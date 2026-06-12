@@ -87,7 +87,7 @@ impl Component for NodeDetailView {
                     format!("node {name} is no longer observed"),
                     theme.dim(),
                 ))
-                .block(Block::bordered()),
+                .block(Block::bordered().border_style(theme.chrome())),
                 area,
             );
             return;
@@ -165,6 +165,7 @@ impl Component for NodeDetailView {
         f.render_widget(
             Paragraph::new(head).block(
                 Block::bordered()
+                    .border_style(theme.chrome())
                     .title(title)
                     .title_style(theme.title())
                     .title_top(
@@ -223,6 +224,7 @@ impl Component for NodeDetailView {
         )
         .block(
             Block::bordered()
+                .border_style(theme.chrome())
                 .title(format!(" PODS ({}) — Enter opens workload ", m.pods.len()))
                 .title_style(theme.title()),
         )

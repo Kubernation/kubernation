@@ -17,6 +17,7 @@ use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::symbols::{bar, node_glyph, pod_glyph};
 use super::{Action, Component, Edge, OverlayMode, RenderCtx};
+use crate::state::attention::Severity;
 use crate::state::model::{NodeHealth, NodeTile, PodState, ZoneColumn};
 use crate::util::truncate;
 
@@ -32,6 +33,9 @@ pub struct MapView {
     scroll_row: usize,
     /// (cols, rows) of the last rendered viewport — paging jump distances.
     last_visible: (usize, usize),
+    /// True when the sidebar WORLD panel is showing this view's minimap, so
+    /// the floating overlay stays out of the way.
+    pub external_minimap: bool,
 }
 
 impl Default for MapView {
@@ -41,7 +45,21 @@ impl Default for MapView {
             scroll_col: 0,
             scroll_row: 0,
             last_visible: (1, 8),
+            external_minimap: false,
         }
+    }
+}
+
+impl MapView {
+    /// (scroll_col, scroll_row, visible_cols, visible_rows) as of the last
+    /// render — the sidebar uses this to frame the viewport on the world.
+    pub fn viewport(&self) -> (usize, usize, usize, usize) {
+        (
+            self.scroll_col,
+            self.scroll_row,
+            self.last_visible.0,
+            self.last_visible.1,
+        )
     }
 }
 
@@ -138,7 +156,14 @@ impl Component for MapView {
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &RenderCtx) {
         if !ctx.ready {
-            let msg = format!("⟳ syncing observed world from {} …", ctx.world.meta.context);
+            // Fog of war: the world is unexplored until the first sync lands.
+            let buf = f.buffer_mut();
+            for yy in area.top()..area.bottom() {
+                for xx in area.left()..area.right() {
+                    buf.set_string(xx, yy, "▒", ctx.theme.fog());
+                }
+            }
+            let msg = format!(" exploring {} … ", ctx.world.meta.context);
             f.render_widget(
                 Paragraph::new(Line::styled(msg, ctx.theme.dim())).centered(),
                 vcenter(area),
@@ -218,12 +243,13 @@ impl Component for MapView {
             );
         }
 
-        // Minimap: only when the board exceeds the viewport.
+        // Minimap: only when the board exceeds the viewport (and the
+        // sidebar isn't already showing it).
         let overflows = self.scroll_col > 0
             || self.scroll_row > 0
             || visible_cols < zones.len()
             || visible_rows < max_rows_any;
-        if overflows {
+        if overflows && !self.external_minimap {
             draw_minimap(
                 buf,
                 area,
@@ -341,22 +367,50 @@ fn draw_minimap(
         }
     }
     let block = Block::bordered()
-        .border_style(theme.dim())
-        .title(format!(" MAP · {} ", ctx.models.map.total_nodes))
-        .title_style(theme.dim());
+        .border_style(theme.chrome())
+        .title(" WORLD ")
+        .title_style(theme.title());
     let inner = block.inner(area);
     block.render(area, buf);
+    draw_world_cells(buf, inner, ctx, cursor, viewport);
+}
+
+/// The world grid itself — dark ocean, land cells, a framed viewport.
+/// Shared by the floating overlay and the sidebar WORLD panel. `inner`
+/// includes a one-cell margin all around for the viewport frame.
+pub(crate) fn draw_world_cells(
+    buf: &mut Buffer,
+    inner: Rect,
+    ctx: &RenderCtx,
+    cursor: (usize, usize),
+    viewport: (usize, usize, usize, usize),
+) {
+    let theme = ctx.theme;
+    let zones = &ctx.models.map.zones;
+    let zcount = zones.len() as u16;
+    let max_rows = zones.iter().map(|z| z.nodes.len()).max().unwrap_or(0) as u16;
+    if zcount == 0 || max_rows == 0 || inner.width < 3 || inner.height < 3 {
+        return;
+    }
+    // Ocean fill.
+    for yy in inner.top()..inner.bottom() {
+        for xx in inner.left()..inner.right() {
+            buf.set_string(xx, yy, " ", theme.ocean());
+        }
+    }
+    let grid_w = zcount * 2 - 1;
+    if grid_w + 2 > inner.width {
+        return; // too many zones for this panel; ocean stays empty
+    }
+    let k = max_rows.div_ceil(inner.height - 2).max(1);
     let origin = (inner.x + 1, inner.y + 1);
 
-    // Node cells, worst-state-wins within a compressed cell.
+    // Land cells, worst-state-wins within a compressed cell.
     for (zi, zone) in zones.iter().enumerate() {
         let cx = origin.0 + zi as u16 * 2;
         for (ci, chunk) in zone.nodes.chunks(k as usize).enumerate() {
             let worst = worst_health(chunk.iter());
-            let (ch, style) = match worst {
-                NodeHealth::Healthy => ("·", theme.dim()),
-                other => ("▪", theme.node(other)),
-            };
+            let (ch, style) = theme.land_cell(worst);
             let is_cursor = zi == cursor.0 && cursor.1 / k as usize == ci;
             let style = if is_cursor {
                 style.patch(theme.selection())
@@ -367,16 +421,22 @@ fn draw_minimap(
         }
     }
 
-    // Viewport brackets in the margin columns, hugging the first and last
-    // visible cell rows exactly (no half-row exists to sit between).
+    // Viewport frame in the margin columns, hugging the first and last
+    // visible cell rows exactly (no half-row exists to sit between). A
+    // single-row viewport would collapse the corners onto one cell row, so
+    // it borrows the margin rows above and below instead.
     let (sc, sr, vc, vr) = viewport;
     let last_col = (sc + vc).min(zones.len()).saturating_sub(1);
     let last_row = ((sr + vr).min(max_rows as usize)).saturating_sub(1);
     let x0 = origin.0 + sc as u16 * 2 - 1;
     let x1 = origin.0 + last_col as u16 * 2 + 1;
-    let y0 = origin.1 + sr as u16 / k;
-    let y1 = origin.1 + last_row as u16 / k;
-    let bstyle = theme.zone();
+    let mut y0 = origin.1 + sr as u16 / k;
+    let mut y1 = origin.1 + last_row as u16 / k;
+    if y0 == y1 {
+        y0 -= 1;
+        y1 += 1;
+    }
+    let bstyle = theme.viewport();
     buf.set_string(x0, y0, "┌", bstyle);
     buf.set_string(x1, y0, "┐", bstyle);
     buf.set_string(x0, y1, "└", bstyle);
@@ -402,16 +462,24 @@ fn worst_pod_state(tile: &NodeTile) -> PodState {
 fn draw_tile(buf: &mut Buffer, x: u16, y: u16, tile: &NodeTile, selected: bool, ctx: &RenderCtx) {
     let theme = ctx.theme;
     let w = TILE_W as usize;
+    let name_w = w - 4;
 
-    // Line 0: glyph + name + condition marker, colored by the active overlay.
-    let name_style = match ctx.overlay {
-        OverlayMode::Pressure => theme.node(tile.health),
-        OverlayMode::ReplicaHealth => theme.pod(worst_pod_state(tile)),
-        OverlayMode::Namespace => tile
-            .dominant_ns
-            .as_deref()
-            .map(|ns| theme.namespace(ns))
-            .unwrap_or_default(),
+    // Line 0: terrain glyph (health-colored), white city-name label, and a
+    // condition marker — the overlays repaint the label with their signal.
+    let (glyph_style, name_style) = match ctx.overlay {
+        OverlayMode::Pressure => (theme.node(tile.health), theme.tile_name()),
+        OverlayMode::ReplicaHealth => {
+            let s = theme.pod(worst_pod_state(tile));
+            (s, s)
+        }
+        OverlayMode::Namespace => {
+            let s = tile
+                .dominant_ns
+                .as_deref()
+                .map(|ns| theme.namespace(ns))
+                .unwrap_or_default();
+            (s, s)
+        }
     };
     let marker = if !tile.ready {
         "✗"
@@ -422,21 +490,24 @@ fn draw_tile(buf: &mut Buffer, x: u16, y: u16, tile: &NodeTile, selected: bool, 
     } else {
         " "
     };
-    let head = format!(
-        "{} {:<w$.w$}{}",
-        node_glyph(tile.health),
-        truncate(&tile.name, w - 4),
-        marker,
-        w = w - 4,
-    );
-    let head_style = if selected {
-        theme.selection()
+    let name = format!("{:<name_w$.name_w$}", truncate(&tile.name, name_w));
+    if selected {
+        let head = format!("{} {name}{marker}", node_glyph(tile.health));
+        buf.set_stringn(x, y, head, w, theme.selection());
     } else {
-        name_style
-    };
-    buf.set_stringn(x, y, head, w, head_style);
+        buf.set_string(x, y, node_glyph(tile.health).to_string(), glyph_style);
+        buf.set_stringn(x + 2, y, name, name_w, name_style);
+        let marker_style = if !tile.ready {
+            theme.severity(Severity::Critical)
+        } else if !tile.abnormal.is_empty() {
+            theme.severity(Severity::Warning)
+        } else {
+            theme.node(NodeHealth::Cordoned)
+        };
+        buf.set_string(x + 2 + name_w as u16, y, marker, marker_style);
+    }
 
-    // Lines 1-2: request-pressure gauges.
+    // Lines 1-2: request-pressure gauges (food-storage green when calm).
     let gauge_w = w - 8;
     let cpu = format!(
         "c {} {:>3.0}%",
@@ -451,7 +522,7 @@ fn draw_tile(buf: &mut Buffer, x: u16, y: u16, tile: &NodeTile, selected: bool, 
     );
     buf.set_stringn(x, y + 2, mem, w, theme.ratio(tile.mem_ratio));
 
-    // Line 3: pod glyphs (overlay decides their coloring) + count.
+    // Line 3: pod glyphs (overlay decides their coloring) + population badge.
     let count = format!("{}p", tile.pods.len());
     let max_glyphs = w.saturating_sub(count.len() + 1);
     let mut gx = x;
@@ -466,7 +537,7 @@ fn draw_tile(buf: &mut Buffer, x: u16, y: u16, tile: &NodeTile, selected: bool, 
     if tile.pods.len() > max_glyphs {
         buf.set_string(gx, y + 3, "+", theme.dim());
     }
-    buf.set_string(x + (w - count.len()) as u16, y + 3, count, theme.dim());
+    buf.set_string(x + (w - count.len()) as u16, y + 3, count, theme.badge());
 }
 
 #[cfg(test)]
@@ -536,8 +607,8 @@ mod tests {
         assert!(text.contains("✗"), "failing pod glyph missing:\n{text}");
         assert!(text.contains("●"), "ok pod glyph missing:\n{text}");
         assert!(text.contains("2p"), "pod count missing:\n{text}");
-        // Board fits the viewport → no minimap.
-        assert!(!text.contains("MAP ·"), "minimap should be hidden:\n{text}");
+        // Board fits the viewport → no world overlay.
+        assert!(!text.contains("WORLD"), "minimap should be hidden:\n{text}");
     }
 
     #[test]
@@ -644,8 +715,8 @@ mod tests {
         term.draw(|f| view.render(f, f.area(), &ctx)).unwrap();
         let text = buffer_text(&term);
 
-        assert!(text.contains("MAP · 100"), "minimap title missing:\n{text}");
-        assert!(text.contains('·'), "healthy minimap cells missing");
+        assert!(text.contains("WORLD"), "world panel title missing:\n{text}");
+
         assert!(text.contains('▪'), "degraded minimap cell missing:\n{text}");
         // Block border + viewport brackets both contribute corners.
         assert!(

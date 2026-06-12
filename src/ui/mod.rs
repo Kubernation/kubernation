@@ -4,6 +4,7 @@ pub mod context_picker;
 pub mod help;
 pub mod map;
 pub mod node_detail;
+pub mod sidebar;
 pub mod status_bar;
 pub mod symbols;
 pub mod theme;

@@ -46,7 +46,7 @@ src/
                  fixtures.rs  test-only synthetic worlds
   ui/            components implementing the Component trait
                  (map, workloads, city, node_detail, attention_panel,
-                  status_bar, help, context_picker, theme, symbols)
+                  sidebar, status_bar, help, context_picker, theme, symbols)
 ```
 
 **Data flow:** watchers (kube 3.x reflectors) keep `ObservedWorld` stores
@@ -101,14 +101,22 @@ what makes the interesting logic unit-testable without a cluster.
   observed node's `spec.providerID` (aws/gce/azure/kind/k3s prefixes).
 - **In-cluster config is not supported** (operator-laptop tool); revisit if
   a read-only web/agent mode ever appears.
-- **Minimap** (2026-06-12): auto-appears bottom-right of the map only when
-  the board exceeds the viewport — no toggle, no config. One cell per node
-  in zone columns; when a zone is taller than the panel, `k` nodes collapse
-  into one cell with worst-state-wins coloring. The viewport frame hugs the
-  first/last visible cell rows exactly (there is no half-row to sit
-  between). It bails out silently rather than smothering the board when
-  zones are too numerous to fit (~60+ zones — horizontal compression is a
-  future step).
+- **Minimap / WORLD panel** (2026-06-12): one cell per node in zone
+  columns; when a zone is taller than the panel, `k` nodes collapse into
+  one cell with worst-state-wins coloring. The viewport frame hugs the
+  first/last visible cell rows exactly (no half-row exists); a single-row
+  frame borrows the margin rows above/below so the corners can't collide.
+  It bails out silently rather than smothering the board when zones are too
+  numerous to fit (~60+ zones — horizontal compression is a future step).
+- **Civ sidebar** (2026-06-12, visual pivot at user request): on the map
+  screen, ≥110 cols (≥150 paired) adds a right sidebar shaped like Civ 2's:
+  WORLD (the minimap, permanent home), STATUS (context/platform, node/pod
+  counts, concern rollup, overlay), ORDERS (the selected tile — Civ's
+  "Moving Unit" box: health, zone, conditions, pressure, pod census).
+  Below the threshold the floating WORLD overlay takes back over
+  (`MapView::external_minimap` suppresses it when the sidebar is up). The
+  sidebar always shows the *focused* world. K8s terms are never renamed to
+  Civ terms — the grammar is Civ, the nouns stay kubectl-greppable.
 - **`Store::wait_until_ready` allows ONE concurrent waiter per store** (found
   2026-06-12): kube's readiness uses a `DelayedInit` over a futures oneshot
   receiver, which holds a single waker slot. Two tasks awaiting the same
@@ -159,18 +167,24 @@ what makes the interesting logic unit-testable without a cluster.
 | `◆`   | pod succeeded (completed)     |
 | `‼ ! ·` | critical / warning / info   |
 | `▓░`  | gauge filled / empty          |
-| `·` / `▪` | minimap node cell: healthy / degraded (colored by worst state) |
-| `┌┐└┘` | minimap viewport frame (reversed cell = cursor) |
+| `▪` (civ) / `·` (plain) | world-panel node cell, colored by worst state |
+| `┌┐└┘` | world-panel viewport frame (reversed cell = cursor) |
+| `▒`   | fog of war (world not yet synced)  |
 
 Health precedence on a tile: NotReady > Cordoned > Pressure > Healthy.
 Zone headers carry a `▪N` rollup (colored by the zone's worst node) when
 any node in the zone is degraded.
 
-**Color discipline:** color encodes meaning, never decoration. Running is
-the *absence* of red, not green. Saturated red/yellow are reserved for
-attention. Namespace overlay uses a muted no-red palette. Mono mode
-(`color = "mono"`) carries the same meanings via bold/dim/reverse only.
-All colors are named ANSI — safe on 256-color terminals.
+**Color discipline:** color encodes meaning, never decoration — and in the
+default **civ palette** (2026-06-12, user call), *terrain*: parchment-gold
+panel chrome, green for healthy land (tiles, zone headers, calm gauges,
+muted-green running pods), white city-name labels, and a blue-ocean WORLD
+panel with light-green land cells. Saturated red / bold yellow remain
+reserved for attention — trouble pops against terrain, never competes with
+it (pinned by a theme test). `color = "plain"` restores the pre-civ
+restrained palette (healthy = no color at all); `color = "mono"` carries
+all meanings via bold/dim/reverse only. All colors are named ANSI — safe
+on 256-color terminals.
 
 ## Keymap
 

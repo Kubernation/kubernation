@@ -61,6 +61,7 @@ pub fn render(f: &mut Frame, theme: &Theme) {
     let area = centered(f.area(), 66, h);
     f.render_widget(Clear, area);
     let block = Block::bordered()
+        .border_style(theme.chrome())
         .title(" KEYMAP ")
         .title_style(theme.title())
         .padding(Padding::horizontal(2));

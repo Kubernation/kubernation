@@ -59,7 +59,10 @@ impl Component for WorkloadListView {
             Some(l) => format!(" WORKLOADS — {l} "),
             None => " WORKLOADS ".to_string(),
         };
-        let block = Block::bordered().title(title).title_style(theme.title());
+        let block = Block::bordered()
+            .border_style(theme.chrome())
+            .title(title)
+            .title_style(theme.title());
         let rows = &ctx.models.workloads;
         if rows.is_empty() {
             let msg = if ctx.ready {

@@ -1,7 +1,10 @@
-//! Color discipline: color encodes meaning, never decoration. A Running pod
-//! is the *absence* of red. Saturated colors are reserved for things that
-//! need the operator's attention. Mono mode carries the same meanings with
-//! modifiers only.
+//! Color discipline: color encodes meaning, never decoration — and in the
+//! default "civ" palette, *terrain*. Healthy infrastructure reads as living
+//! land (greens, parchment chrome, blue ocean on the world panel) the way a
+//! healthy Civ empire does, while saturated red/yellow stay reserved for
+//! things that need the operator's attention: trouble must pop against
+//! terrain, never compete with it. `color = "plain"` keeps the old
+//! restrained palette; `mono` carries the same meanings with modifiers only.
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -13,17 +16,53 @@ use crate::util::fnv1a64;
 #[derive(Debug, Clone, Copy)]
 pub struct Theme {
     mono: bool,
+    plain: bool,
 }
 
 impl Theme {
     pub fn new(mode: ColorMode) -> Self {
         Self {
             mono: mode == ColorMode::Mono,
+            plain: mode == ColorMode::Plain,
         }
     }
 
+    fn civ(&self) -> bool {
+        !self.mono && !self.plain
+    }
+
+    /// Panel borders — parchment, like Civ's window chrome.
+    pub fn chrome(&self) -> Style {
+        if self.civ() {
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::DIM)
+        } else if self.mono {
+            Style::new().add_modifier(Modifier::DIM)
+        } else {
+            Style::new()
+        }
+    }
+
+    /// Panel titles — gold on the parchment chrome.
     pub fn title(&self) -> Style {
-        Style::new().add_modifier(Modifier::BOLD)
+        if self.civ() {
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().add_modifier(Modifier::BOLD)
+        }
+    }
+
+    /// Node names on tiles — white city labels, exactly like the board.
+    pub fn tile_name(&self) -> Style {
+        if self.civ() {
+            Style::new().fg(Color::White)
+        } else {
+            Style::new()
+        }
+    }
+
+    /// The pod-count chip on a tile — Civ's population badge.
+    pub fn badge(&self) -> Style {
+        Style::new().add_modifier(Modifier::REVERSED | Modifier::DIM)
     }
 
     pub fn dim(&self) -> Style {
@@ -31,6 +70,15 @@ impl Theme {
             Style::new().add_modifier(Modifier::DIM)
         } else {
             Style::new().fg(Color::DarkGray)
+        }
+    }
+
+    /// Fog of war — the unsynced world.
+    pub fn fog(&self) -> Style {
+        if self.mono {
+            Style::new().add_modifier(Modifier::DIM)
+        } else {
+            Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM)
         }
     }
 
@@ -60,7 +108,10 @@ impl Theme {
             };
         }
         match s {
-            PodState::Ok => Style::new(), // running is the absence of red
+            // Running is still the absence of *alarm*: on the civ palette a
+            // healthy pod is muted terrain green, never saturated.
+            PodState::Ok if self.civ() => Style::new().fg(Color::Green).add_modifier(Modifier::DIM),
+            PodState::Ok => Style::new(),
             PodState::Starting => Style::new().fg(Color::Cyan),
             PodState::Pending => Style::new().fg(Color::DarkGray),
             PodState::Terminating => Style::new().fg(Color::DarkGray),
@@ -80,6 +131,8 @@ impl Theme {
             };
         }
         match h {
+            // Healthy land is green; trouble keeps the reserved colors.
+            NodeHealth::Healthy if self.civ() => Style::new().fg(Color::Green),
             NodeHealth::Healthy => Style::new(),
             NodeHealth::Cordoned => Style::new().fg(Color::Yellow),
             NodeHealth::Pressure => Style::new().fg(Color::LightRed),
@@ -88,6 +141,7 @@ impl Theme {
     }
 
     /// Request-pressure gauge buckets; thresholds in `state::model`.
+    /// Calm gauges on the civ palette are food-storage green.
     pub fn ratio(&self, r: f64) -> Style {
         use crate::state::model::{PRESSURE_ELEVATED, PRESSURE_HIGH};
         if self.mono {
@@ -101,6 +155,8 @@ impl Theme {
             Style::new().fg(Color::Red)
         } else if r >= PRESSURE_ELEVATED {
             Style::new().fg(Color::Yellow)
+        } else if self.civ() {
+            Style::new().fg(Color::Green).add_modifier(Modifier::DIM)
         } else {
             Style::new().fg(Color::DarkGray)
         }
@@ -110,11 +166,64 @@ impl Theme {
         Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD)
     }
 
+    /// Zone headers — landmass names.
     pub fn zone(&self) -> Style {
         if self.mono {
             Style::new().add_modifier(Modifier::BOLD)
+        } else if self.civ() {
+            Style::new().fg(Color::Green).add_modifier(Modifier::BOLD)
         } else {
             Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD)
+        }
+    }
+
+    // --- World panel (minimap): dark ocean, green land, white viewport ----
+
+    /// Ocean fill behind the world panel cells.
+    pub fn ocean(&self) -> Style {
+        if self.civ() {
+            Style::new().fg(Color::LightBlue).bg(Color::Blue)
+        } else {
+            Style::new()
+        }
+    }
+
+    /// A world-panel node cell, colored by the node's worst state.
+    pub fn land(&self, h: NodeHealth) -> Style {
+        let base = match h {
+            NodeHealth::Healthy if self.civ() => Style::new().fg(Color::LightGreen),
+            NodeHealth::Healthy => self.dim(),
+            other => self.node(other),
+        };
+        if self.civ() {
+            base.bg(Color::Blue)
+        } else {
+            base
+        }
+    }
+
+    /// Glyph + style for a world-panel cell. Civ palette: solid green land
+    /// on ocean; plain palette keeps the quiet dot field.
+    pub fn land_cell(&self, h: NodeHealth) -> (&'static str, Style) {
+        if self.civ() {
+            ("▪", self.land(h))
+        } else {
+            match h {
+                NodeHealth::Healthy => ("·", self.dim()),
+                other => ("▪", self.node(other)),
+            }
+        }
+    }
+
+    /// The viewport rectangle on the world panel.
+    pub fn viewport(&self) -> Style {
+        if self.civ() {
+            Style::new()
+                .fg(Color::White)
+                .bg(Color::Blue)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            self.zone()
         }
     }
 
@@ -164,5 +273,33 @@ impl Theme {
             Color::LightMagenta,
         ];
         PALETTE[(fnv1a64(ns) % 8) as usize].into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn civ_palette_keeps_alarm_colors_reserved() {
+        let civ = Theme::new(ColorMode::Auto);
+        // Healthy terrain is green, not the reserved colors.
+        assert_eq!(civ.node(NodeHealth::Healthy).fg, Some(Color::Green));
+        // Trouble is identical across palettes.
+        let plain = Theme::new(ColorMode::Plain);
+        assert_eq!(
+            civ.severity(Severity::Critical),
+            plain.severity(Severity::Critical)
+        );
+        assert_eq!(
+            civ.node(NodeHealth::NotReady),
+            plain.node(NodeHealth::NotReady)
+        );
+        // Plain keeps the old restraint: healthy carries no color at all.
+        assert_eq!(plain.node(NodeHealth::Healthy), Style::new());
+        // Mono never emits color.
+        let mono = Theme::new(ColorMode::Mono);
+        assert_eq!(mono.zone().fg, None);
+        assert_eq!(mono.land(NodeHealth::NotReady).fg, None);
     }
 }

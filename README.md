@@ -116,11 +116,19 @@ The `c`/`m` gauges show **scheduling pressure** — the sum of pod resource
 elevated (≥70%) is yellow, high (≥90%) is red. Color is reserved for
 meaning: a running pod is the absence of red, not green.
 
-When the board is bigger than the terminal, a **minimap** appears in the
-bottom-right corner: one cell per node (`·` healthy, `▪` degraded, colored
-by the worst state), `┌┐└┘` framing the visible viewport, the reversed cell
-marking your cursor. Zone headers also roll up trouble (`─ z-c · 20 ▪2 ─`)
-so a degraded zone is visible without scrolling to it.
+On terminals ≥110 columns the map gains a Civ-style sidebar: **WORLD**
+(green land cells on blue ocean, one per node, `┌┐└┘` framing your
+viewport), **STATUS** (nodes/pods/concerns — your people and gold), and
+**ORDERS** (the selected tile: health, zone, pressure, pod census — the
+"Moving Unit" box). On narrower terminals a floating WORLD overlay appears
+bottom-right whenever the board exceeds the viewport. Zone headers roll up
+trouble (`─ z-c · 20 ▪2 ─`) so a degraded zone is visible without
+scrolling to it.
+
+The default palette is **civ**: parchment chrome, green terrain, white
+city labels, blue ocean — with red and yellow strictly reserved for things
+needing attention. Prefer the old restrained look? `color = "plain"` in
+`~/.config/k8sciv/config.toml`; `color = "mono"` for no color at all.
 
 ## The conceptual model
 

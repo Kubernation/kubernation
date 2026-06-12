@@ -24,7 +24,7 @@ use crate::ui::map::MapView;
 use crate::ui::node_detail::NodeDetailView;
 use crate::ui::theme::Theme;
 use crate::ui::workloads::WorkloadListView;
-use crate::ui::{Action, Component, Edge, OverlayMode, RenderCtx, help, status_bar};
+use crate::ui::{Action, Component, Edge, OverlayMode, RenderCtx, help, sidebar, status_bar};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -501,13 +501,32 @@ impl App {
 
             match self.screens.last().copied().unwrap_or(Screen::Map) {
                 Screen::Map => {
-                    if self.warm.is_some() {
+                    // Civ-style sidebar (WORLD/STATUS/ORDERS) when there's
+                    // room; otherwise the floating world overlay serves.
+                    let paired = self.warm.is_some();
+                    let min_w = if paired { 150 } else { 110 };
+                    let (board_a, side_a) = if f.area().width >= min_w {
+                        let [b, s] = Layout::horizontal([
+                            Constraint::Min(40),
+                            Constraint::Length(sidebar::SIDEBAR_W),
+                        ])
+                        .areas(main_a);
+                        (b, Some(s))
+                    } else {
+                        (main_a, None)
+                    };
+                    self.map_hot.external_minimap =
+                        side_a.is_some() && self.focus == ClusterId::Hot;
+                    self.map_warm.external_minimap =
+                        side_a.is_some() && self.focus == ClusterId::Warm;
+
+                    if paired {
                         let [left_a, div_a, right_a] = Layout::horizontal([
                             Constraint::Percentage(50),
                             Constraint::Length(1),
                             Constraint::Fill(1),
                         ])
-                        .areas(main_a);
+                        .areas(board_a);
                         let [lb, lmap] =
                             Layout::vertical([Constraint::Length(1), Constraint::Min(4)])
                                 .areas(left_a);
@@ -527,7 +546,16 @@ impl App {
                         divider(f, div_a, &self.theme);
                     } else {
                         let ctx = ctx!(self, ClusterId::Hot);
-                        self.map_hot.render(f, main_a, &ctx);
+                        self.map_hot.render(f, board_a, &ctx);
+                    }
+                    if let Some(sa) = side_a {
+                        let focus = self.view_cluster(Screen::Map);
+                        let focused_map = match focus {
+                            ClusterId::Hot => &self.map_hot,
+                            ClusterId::Warm => &self.map_warm,
+                        };
+                        let ctx = ctx!(self, focus);
+                        sidebar::render(f, sa, &ctx, focused_map);
                     }
                 }
                 Screen::Workloads => {

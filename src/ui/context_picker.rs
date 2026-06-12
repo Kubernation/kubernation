@@ -64,6 +64,7 @@ impl ContextPicker {
         let list = List::new(items)
             .block(
                 Block::bordered()
+                    .border_style(theme.chrome())
                     .title(" SWITCH CONTEXT ")
                     .title_style(theme.title()),
             )

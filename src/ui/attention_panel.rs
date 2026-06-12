@@ -163,6 +163,7 @@ impl Component for AttentionPanel {
             " n cycles · Tab focuses · a collapses "
         };
         let block = Block::bordered()
+            .border_style(theme.chrome())
             .title(format!(" ATTENTION ({}) ", concerns.len()))
             .title_style(theme.title())
             .title_bottom(Line::styled(hint, theme.dim()).right_aligned());

@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Row, Table, TableState};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent};
 
-use super::symbols::pod_glyph;
+use super::symbols::{bar, pod_glyph};
 use super::{Action, Component, RenderCtx};
 use crate::state::attention::Severity;
 use crate::state::model::{CityModel, RolloutStatus, WorkloadRef, build_city};
@@ -88,7 +88,7 @@ impl Component for CityView {
                     format!("{title} is no longer observed"),
                     theme.dim(),
                 ))
-                .block(Block::bordered()),
+                .block(Block::bordered().border_style(theme.chrome())),
                 area,
             );
             return;
@@ -118,6 +118,7 @@ impl Component for CityView {
             None => format!(" {} ", m.r),
         };
         let head_block = Block::bordered()
+            .border_style(theme.chrome())
             .title(title)
             .title_style(theme.title())
             .title_top(Line::styled(rollout, status_style).right_aligned());
@@ -126,9 +127,22 @@ impl Component for CityView {
         } else {
             Default::default()
         };
+        // Replica storage bar — the city's granary.
+        let fill = if m.desired > 0 {
+            (m.ready as f64 / m.desired as f64).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let bar_style = if m.ready < m.desired {
+            theme.severity(Severity::Warning)
+        } else {
+            theme.ratio(0.0)
+        };
         let mut lines = vec![
             Line::from(vec![
                 Span::raw("replicas  "),
+                Span::styled(bar(fill, 10), bar_style),
+                Span::raw(" "),
                 Span::styled(format!("{} desired", m.desired), theme.title()),
                 Span::raw(" · "),
                 Span::styled(format!("{} ready", m.ready), gap_style),
@@ -190,6 +204,7 @@ impl Component for CityView {
         .header(Row::new(vec![" ", "POD", "STATUS", "RST", "AGE", "NODE"]).style(theme.dim()))
         .block(
             Block::bordered()
+                .border_style(theme.chrome())
                 .title(format!(" PODS ({}) ", m.pods.len()))
                 .title_style(theme.title()),
         )
@@ -226,6 +241,7 @@ impl Component for CityView {
         f.render_widget(
             Paragraph::new(owned_lines).block(
                 Block::bordered()
+                    .border_style(theme.chrome())
                     .title(" OWNED ")
                     .title_style(theme.title()),
             ),
@@ -257,6 +273,7 @@ impl Component for CityView {
         f.render_widget(
             Paragraph::new(ev_lines).block(
                 Block::bordered()
+                    .border_style(theme.chrome())
                     .title(" RECENT EVENTS ")
                     .title_style(theme.title()),
             ),
