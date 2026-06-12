@@ -1,7 +1,7 @@
 //! The symbol grammar — one consistent visual vocabulary, documented in
 //! CLAUDE.md. Changing any glyph is a breaking change to the operator's eye.
 
-use crate::state::model::{NodeHealth, PodState};
+use k8sciv_core::state::model::{NodeHealth, PodState};
 
 pub fn node_glyph(h: NodeHealth) -> char {
     match h {

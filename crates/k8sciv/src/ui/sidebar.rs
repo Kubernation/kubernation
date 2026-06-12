@@ -12,10 +12,10 @@ use ratatui::widgets::{Block, Paragraph};
 use super::map::{CITY, MapView, draw_world_cells};
 use super::symbols::{node_glyph, pod_glyph};
 use super::{OverlayMode, RenderCtx};
-use crate::state::attention::{Severity, severity_counts};
-use crate::state::model::{PodState, RolloutStatus};
-use crate::state::world::{Province, Region};
-use crate::util::truncate;
+use k8sciv_core::state::attention::{Severity, severity_counts};
+use k8sciv_core::state::model::{PodState, RolloutStatus};
+use k8sciv_core::state::world::{Province, Region};
+use k8sciv_core::util::truncate;
 
 pub const SIDEBAR_W: u16 = 30;
 
@@ -239,7 +239,7 @@ fn province_orders(orders: &mut Vec<Line>, p: &Province, ctx: &RenderCtx) {
     if tile.cordoned {
         orders.push(Line::from(Span::styled(
             "cordoned ⊘",
-            theme.node(crate::state::model::NodeHealth::Cordoned),
+            theme.node(k8sciv_core::state::model::NodeHealth::Cordoned),
         )));
     }
     orders.push(Line::from(vec![

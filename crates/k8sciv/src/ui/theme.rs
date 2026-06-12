@@ -9,9 +9,9 @@
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::config::ColorMode;
-use crate::state::attention::Severity;
-use crate::state::model::{NodeHealth, PodState};
-use crate::util::fnv1a64;
+use k8sciv_core::state::attention::Severity;
+use k8sciv_core::state::model::{NodeHealth, PodState};
+use k8sciv_core::util::fnv1a64;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Theme {
@@ -138,7 +138,7 @@ impl Theme {
     /// Request-pressure gauge buckets; thresholds in `state::model`.
     /// Calm gauges on the civ palette are food-storage green.
     pub fn ratio(&self, r: f64) -> Style {
-        use crate::state::model::{PRESSURE_ELEVATED, PRESSURE_HIGH};
+        use k8sciv_core::state::model::{PRESSURE_ELEVATED, PRESSURE_HIGH};
         if self.mono {
             return if r >= PRESSURE_HIGH {
                 Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED)
@@ -300,8 +300,8 @@ impl Theme {
 
     /// Pair sync badges: in-sync is silence, drift is yellow, a workload
     /// missing on the warm side is the dangerous one.
-    pub fn sync(&self, state: &crate::state::pair::SyncState) -> Style {
-        use crate::state::pair::SyncState;
+    pub fn sync(&self, state: &k8sciv_core::state::pair::SyncState) -> Style {
+        use k8sciv_core::state::pair::SyncState;
         match state {
             SyncState::InSync => self.dim(),
             SyncState::Drift { .. } => self.severity(Severity::Warning),

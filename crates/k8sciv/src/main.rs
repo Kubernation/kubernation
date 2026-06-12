@@ -1,11 +1,8 @@
 mod app;
 mod config;
 mod events;
-mod k8s;
 mod logging;
-mod state;
 mod ui;
-mod util;
 
 use clap::Parser;
 use color_eyre::Result;
@@ -15,9 +12,9 @@ use crate::app::App;
 use crate::config::Config;
 use crate::config::cli::Args;
 use crate::events::ClusterId;
-use crate::k8s::watch::WorldHandle;
-use crate::state::model::Models;
-use crate::state::pair::PairSync;
+use k8sciv_core::k8s::watch::WorldHandle;
+use k8sciv_core::state::model::Models;
+use k8sciv_core::state::pair::PairSync;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -28,7 +25,8 @@ async fn main() -> Result<()> {
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "k8sciv starting");
 
     let hot_cluster =
-        k8s::client::connect(args.kubeconfig.as_deref(), args.context.as_deref()).await?;
+        k8sciv_core::k8s::client::connect(args.kubeconfig.as_deref(), args.context.as_deref())
+            .await?;
     let warm_name = args.warm.clone().or_else(|| cfg.warm_context.clone());
     if warm_name.as_deref() == Some(hot_cluster.meta.context.as_str()) {
         return Err(eyre!(
@@ -37,7 +35,9 @@ async fn main() -> Result<()> {
         ));
     }
     let warm_cluster = match &warm_name {
-        Some(w) => Some(k8s::client::connect(args.kubeconfig.as_deref(), Some(w)).await?),
+        Some(w) => {
+            Some(k8sciv_core::k8s::client::connect(args.kubeconfig.as_deref(), Some(w)).await?)
+        }
         None => None,
     };
 
@@ -49,12 +49,24 @@ async fn main() -> Result<()> {
     }
 
     let (tx, rx) = tokio::sync::mpsc::channel(1024);
-    let hot_proj = k8s::client::resolve_projections(&hot_cluster.client, &wanted).await;
-    let hot = k8s::watch::spawn(&hot_cluster, ClusterId::Hot, tx.clone(), &hot_proj);
+    let sink = {
+        let tx = tx.clone();
+        move |id, delta| {
+            let _ = tx.try_send(events::AppEvent::World(id, delta));
+        }
+    };
+    let hot_proj =
+        k8sciv_core::k8s::client::resolve_projections(&hot_cluster.client, &wanted).await;
+    let hot = k8sciv_core::k8s::watch::spawn(&hot_cluster, ClusterId::Hot, sink.clone(), &hot_proj);
     let warm = match &warm_cluster {
         Some(c) => {
-            let proj = k8s::client::resolve_projections(&c.client, &wanted).await;
-            Some(k8s::watch::spawn(c, ClusterId::Warm, tx.clone(), &proj))
+            let proj = k8sciv_core::k8s::client::resolve_projections(&c.client, &wanted).await;
+            Some(k8sciv_core::k8s::watch::spawn(
+                c,
+                ClusterId::Warm,
+                sink,
+                &proj,
+            ))
         }
         None => None,
     };

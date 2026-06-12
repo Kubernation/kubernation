@@ -15,10 +15,10 @@ use ratatui::layout::Rect;
 use ratatui_crossterm::crossterm::event::KeyEvent;
 
 use crate::events::ClusterId;
-use crate::state::attention::Concern;
-use crate::state::model::{Models, WorkloadRef};
-use crate::state::observed::ObservedWorld;
-use crate::state::pair::PairSync;
+use k8sciv_core::state::attention::Concern;
+use k8sciv_core::state::model::{Models, WorkloadRef};
+use k8sciv_core::state::observed::ObservedWorld;
+use k8sciv_core::state::pair::PairSync;
 use theme::Theme;
 
 /// What a component asks the app to do in response to input. (Quit, back,

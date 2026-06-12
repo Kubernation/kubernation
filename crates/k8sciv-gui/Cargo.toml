@@ -1,0 +1,12 @@
+[package]
+name = "k8sciv-gui"
+description = "K8sCiv GUI spike: a windowed Civ-style map client over k8sciv-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+k8sciv-core = { path = "../k8sciv-core" }
+macroquad = "0.4"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+clap = { version = "4", features = ["derive"] }

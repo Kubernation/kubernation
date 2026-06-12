@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use super::RenderCtx;
-use crate::util::truncate;
+use k8sciv_core::util::truncate;
 
 fn counts(ctx: &RenderCtx) -> String {
     if ctx.ready {

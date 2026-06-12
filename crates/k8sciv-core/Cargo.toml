@@ -1,0 +1,19 @@
+[package]
+name = "k8sciv-core"
+description = "K8sCiv core: observed-world data layer and pure world/attention models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Synthetic-world builders for tests and frontend prototypes.
+fixtures = []
+
+[dependencies]
+kube = { version = "3.1", features = ["client", "runtime"] }
+k8s-openapi = { version = "0.27", features = ["v1_33"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures = "0.3"
+color-eyre = "0.6"
+tracing = "0.1"
+serde = { version = "1.0.228", default-features = false }

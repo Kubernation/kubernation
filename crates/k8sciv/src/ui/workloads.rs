@@ -5,8 +5,8 @@ use ratatui::widgets::{Block, Paragraph, Row, Table, TableState};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent};
 
 use super::{Action, Component, RenderCtx};
-use crate::state::model::RolloutStatus;
-use crate::util::format_age_opt;
+use k8sciv_core::state::model::RolloutStatus;
+use k8sciv_core::util::format_age_opt;
 
 /// Flat list of Deployments / StatefulSets / DaemonSets; Enter opens the
 /// city screen for the selected workload.
@@ -86,14 +86,14 @@ impl Component for WorkloadListView {
                     None => Span::raw(" "),
                 };
                 let ready_style = if w.ready < w.desired {
-                    theme.severity(crate::state::attention::Severity::Warning)
+                    theme.severity(k8sciv_core::state::attention::Severity::Warning)
                 } else {
                     Default::default()
                 };
                 let status_style = match w.status {
                     RolloutStatus::Complete => theme.dim(),
                     RolloutStatus::Stalled => {
-                        theme.severity(crate::state::attention::Severity::Critical)
+                        theme.severity(k8sciv_core::state::attention::Severity::Critical)
                     }
                     _ => Default::default(),
                 };
@@ -163,11 +163,11 @@ mod tests {
     use super::*;
     use crate::config::ColorMode;
     use crate::events::ClusterId;
-    use crate::state::fixtures as fx;
-    use crate::state::model::Models;
-    use crate::state::pair::PairSync;
     use crate::ui::theme::Theme;
     use crate::ui::{Component, OverlayMode, RenderCtx};
+    use k8sciv_core::state::fixtures as fx;
+    use k8sciv_core::state::model::Models;
+    use k8sciv_core::state::pair::PairSync;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 

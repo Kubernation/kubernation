@@ -6,8 +6,8 @@ use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent};
 
 use super::{Action, Component, RenderCtx};
 use crate::events::ClusterId;
-use crate::state::attention::{Concern, Severity, Target, severity_counts};
-use crate::util::truncate;
+use k8sciv_core::state::attention::{Concern, Severity, Target, severity_counts};
+use k8sciv_core::util::truncate;
 
 /// The persistent concern queue. Collapsed it is a one-line summary; `a`
 /// expands it; `n` cycles to the next concern and jumps to its view — the

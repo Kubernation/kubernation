@@ -9,13 +9,18 @@ use kube::api::Api;
 use kube::runtime::reflector::store::Writer;
 use kube::runtime::{WatchStreamExt, reflector, watcher};
 use kube::{Resource, ResourceExt};
-use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 
 use kube::core::{ApiResource, DynamicObject};
 
 use super::client::Cluster;
-use crate::events::{AppEvent, ClusterId, WorldDelta};
+
+/// How watchers tell a frontend "this slice changed". Frontends wrap their
+/// own channel/flag; watchers call it from async tasks, so it must be
+/// cheap and non-blocking.
+pub trait DeltaSink: Fn(ClusterId, WorldDelta) + Send + Sync + Clone + 'static {}
+impl<T: Fn(ClusterId, WorldDelta) + Send + Sync + Clone + 'static> DeltaSink for T {}
+use crate::events::{ClusterId, WorldDelta};
 use crate::state::observed::{CustomWatch, ObservedWorld, RecentEvent};
 
 /// Owns the informer tasks for one cluster context. Dropping it (e.g. on
@@ -39,7 +44,7 @@ impl Drop for WorldHandle {
 pub fn spawn(
     cluster: &Cluster,
     id: ClusterId,
-    tx: Sender<AppEvent>,
+    sink: impl DeltaSink,
     projections: &[(String, ApiResource)],
 ) -> WorldHandle {
     let c = &cluster.client;
@@ -51,7 +56,7 @@ pub fn spawn(
         let writer = Writer::<DynamicObject>::new(ar.clone());
         let store = writer.as_reader();
         let api = Api::<DynamicObject>::all_with(c.clone(), ar);
-        tasks.push(spawn_dynamic(api, writer, id, tx.clone()));
+        tasks.push(spawn_dynamic(api, writer, id, sink.clone()));
         customs.push(CustomWatch {
             kind: kind.clone(),
             store,
@@ -63,7 +68,7 @@ pub fn spawn(
         Api::all(c.clone()),
         w,
         id,
-        tx.clone(),
+        sink.clone(),
         WorldDelta::Nodes,
     ));
     let (pods, w) = reflector::store::<Pod>();
@@ -71,7 +76,7 @@ pub fn spawn(
         Api::all(c.clone()),
         w,
         id,
-        tx.clone(),
+        sink.clone(),
         WorldDelta::Pods,
     ));
     let (deployments, w) = reflector::store::<Deployment>();
@@ -79,7 +84,7 @@ pub fn spawn(
         Api::all(c.clone()),
         w,
         id,
-        tx.clone(),
+        sink.clone(),
         WorldDelta::Workloads,
     ));
     let (replicasets, w) = reflector::store::<ReplicaSet>();
@@ -87,7 +92,7 @@ pub fn spawn(
         Api::all(c.clone()),
         w,
         id,
-        tx.clone(),
+        sink.clone(),
         WorldDelta::Workloads,
     ));
     let (statefulsets, w) = reflector::store::<StatefulSet>();
@@ -95,7 +100,7 @@ pub fn spawn(
         Api::all(c.clone()),
         w,
         id,
-        tx.clone(),
+        sink.clone(),
         WorldDelta::Workloads,
     ));
     let (daemonsets, w) = reflector::store::<DaemonSet>();
@@ -103,7 +108,7 @@ pub fn spawn(
         Api::all(c.clone()),
         w,
         id,
-        tx.clone(),
+        sink.clone(),
         WorldDelta::Workloads,
     ));
     let (pvcs, w) = reflector::store::<PersistentVolumeClaim>();
@@ -111,7 +116,7 @@ pub fn spawn(
         Api::all(c.clone()),
         w,
         id,
-        tx.clone(),
+        sink.clone(),
         WorldDelta::Storage,
     ));
     let (services, w) = reflector::store::<Service>();
@@ -119,7 +124,7 @@ pub fn spawn(
         Api::all(c.clone()),
         w,
         id,
-        tx.clone(),
+        sink.clone(),
         WorldDelta::Services,
     ));
 
@@ -128,18 +133,19 @@ pub fn spawn(
         Api::all(c.clone()),
         id,
         events.clone(),
-        tx.clone(),
+        sink.clone(),
     ));
 
-    // Tell the UI when the core stores have finished their initial list.
+    // Tell the frontend when the core stores have finished their initial
+    // list.
     {
         let nodes = nodes.clone();
         let pods = pods.clone();
-        let tx = tx.clone();
+        let sink = sink.clone();
         tasks.push(tokio::spawn(async move {
             let _ = nodes.wait_until_ready().await;
             let _ = pods.wait_until_ready().await;
-            let _ = tx.try_send(AppEvent::World(id, WorldDelta::Ready));
+            sink(id, WorldDelta::Ready);
         }));
     }
 
@@ -163,7 +169,7 @@ fn spawn_reflector<K>(
     api: Api<K>,
     writer: Writer<K>,
     id: ClusterId,
-    tx: Sender<AppEvent>,
+    sink: impl DeltaSink,
     delta: WorldDelta,
 ) -> JoinHandle<()>
 where
@@ -191,9 +197,7 @@ where
             match stream.next().await {
                 // try_send: deltas are dirty-bits; dropping one under
                 // backpressure is harmless because rebuilds are wholesale.
-                Some(Ok(_)) => {
-                    let _ = tx.try_send(AppEvent::World(id, delta));
-                }
+                Some(Ok(_)) => sink(id, delta),
                 Some(Err(err)) => {
                     tracing::warn!(?delta, %err, "watcher error (backoff will retry)");
                 }
@@ -215,7 +219,7 @@ fn spawn_dynamic(
     api: Api<DynamicObject>,
     writer: Writer<DynamicObject>,
     id: ClusterId,
-    tx: Sender<AppEvent>,
+    sink: impl DeltaSink,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let stream = watcher(api, watcher::Config::default())
@@ -228,9 +232,7 @@ fn spawn_dynamic(
         let mut stream = pin!(stream);
         loop {
             match stream.next().await {
-                Some(Ok(_)) => {
-                    let _ = tx.try_send(AppEvent::World(id, WorldDelta::Custom));
-                }
+                Some(Ok(_)) => sink(id, WorldDelta::Custom),
                 Some(Err(err)) => {
                     tracing::warn!(%err, "custom watcher error (will retry)");
                 }
@@ -247,7 +249,7 @@ fn spawn_events(
     api: Api<Event>,
     id: ClusterId,
     ring: Arc<Mutex<VecDeque<RecentEvent>>>,
-    tx: Sender<AppEvent>,
+    sink: impl DeltaSink,
 ) -> JoinHandle<()> {
     const CAP: usize = 500;
     tokio::spawn(async move {
@@ -266,7 +268,7 @@ fn spawn_events(
                             g.pop_front();
                         }
                     }
-                    let _ = tx.try_send(AppEvent::World(id, WorldDelta::Events));
+                    sink(id, WorldDelta::Events);
                 }
                 Some(Err(err)) => {
                     tracing::warn!(%err, "event watcher error (backoff will retry)");

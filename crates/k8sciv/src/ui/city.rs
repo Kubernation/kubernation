@@ -10,9 +10,9 @@ use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent};
 
 use super::symbols::{bar, pod_glyph};
 use super::{Action, Component, RenderCtx};
-use crate::state::attention::Severity;
-use crate::state::model::{CityModel, RolloutStatus, WorkloadRef, build_city};
-use crate::util::{format_age_opt, truncate};
+use k8sciv_core::state::attention::Severity;
+use k8sciv_core::state::model::{CityModel, RolloutStatus, WorkloadRef, build_city};
+use k8sciv_core::util::{format_age_opt, truncate};
 
 #[derive(Default)]
 pub struct CityView {
@@ -286,10 +286,10 @@ impl Component for CityView {
 mod tests {
     use super::*;
     use crate::config::ColorMode;
-    use crate::state::fixtures as fx;
-    use crate::state::model::{Models, WorkloadKind};
     use crate::ui::OverlayMode;
     use crate::ui::theme::Theme;
+    use k8sciv_core::state::fixtures as fx;
+    use k8sciv_core::state::model::{Models, WorkloadKind};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 

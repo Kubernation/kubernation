@@ -5,5 +5,5 @@ pub mod pair;
 pub mod planned;
 pub mod world;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "fixtures"))]
 pub mod fixtures;

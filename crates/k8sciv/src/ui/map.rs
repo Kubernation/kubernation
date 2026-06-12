@@ -12,9 +12,9 @@ use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::symbols::node_glyph;
 use super::{Action, Component, Edge, OverlayMode, RenderCtx};
-use crate::state::model::NodeHealth;
-use crate::state::world::{City, Province, Region, WorldModel};
-use crate::util::truncate;
+use k8sciv_core::state::model::NodeHealth;
+use k8sciv_core::state::world::{City, Province, Region, WorldModel};
+use k8sciv_core::util::truncate;
 
 pub const CITY: char = '◍';
 pub const INFRA: char = '≣';
@@ -339,7 +339,9 @@ fn draw_city(buf: &mut Buffer, area: Rect, cam: (u16, u16), c: &City, ctx: &Rend
     let theme = ctx.theme;
     let pop_style = match c.severity {
         Some(sev) => theme.severity(sev),
-        None if c.ready < c.desired => theme.severity(crate::state::attention::Severity::Warning),
+        None if c.ready < c.desired => {
+            theme.severity(k8sciv_core::state::attention::Severity::Warning)
+        }
         None => theme.city(),
     };
     if let Some((sx, sy)) = project(area, cam, c.x, c.y) {
@@ -364,7 +366,7 @@ fn draw_island(
     buf: &mut Buffer,
     area: Rect,
     cam: (u16, u16),
-    isl: &crate::state::world::Island,
+    isl: &k8sciv_core::state::world::Island,
     ctx: &RenderCtx,
 ) {
     let theme = ctx.theme;
@@ -552,9 +554,9 @@ mod tests {
     use super::*;
     use crate::config::ColorMode;
     use crate::events::ClusterId;
-    use crate::state::fixtures as fx;
-    use crate::state::model::Models;
     use crate::ui::theme::Theme;
+    use k8sciv_core::state::fixtures as fx;
+    use k8sciv_core::state::model::Models;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -587,7 +589,7 @@ mod tests {
         };
     }
 
-    fn demo_world() -> (crate::state::observed::ObservedWorld, fx::Seeds) {
+    fn demo_world() -> (k8sciv_core::state::observed::ObservedWorld, fx::Seeds) {
         let (world, mut s) = fx::world();
         s.node(fx::node("n-alpha", Some("z-a")));
         s.node(fx::node("n-bravo", Some("z-b")));
@@ -664,7 +666,7 @@ mod tests {
 
     /// 100 nodes across 5 zones, 1000 pods in 20 deployments — the shared
     /// at-scale fixture for perf and minimap tests.
-    fn big_world() -> (crate::state::observed::ObservedWorld, fx::Seeds) {
+    fn big_world() -> (k8sciv_core::state::observed::ObservedWorld, fx::Seeds) {
         const ZONES: [&str; 5] = ["z-a", "z-b", "z-c", "z-d", "z-e"];
         let (world, mut s) = fx::world();
         for n in 0..100 {

@@ -10,9 +10,9 @@ use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent};
 
 use super::symbols::{bar, node_glyph, pod_glyph};
 use super::{Action, Component, RenderCtx};
-use crate::state::attention::Severity;
-use crate::state::model::{NodeDetailModel, build_node_detail};
-use crate::util::{format_age_opt, human_bytes};
+use k8sciv_core::state::attention::Severity;
+use k8sciv_core::state::model::{NodeDetailModel, build_node_detail};
+use k8sciv_core::util::{format_age_opt, human_bytes};
 
 #[derive(Default)]
 pub struct NodeDetailView {

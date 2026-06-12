@@ -12,11 +12,6 @@ use tokio::time::MissedTickBehavior;
 
 use crate::config::Config;
 use crate::events::{AppEvent, ClusterId, WorldDelta};
-use crate::k8s::{client, watch, watch::WorldHandle};
-use crate::state::attention::Concern;
-use crate::state::model::Models;
-use crate::state::pair::PairSync;
-use crate::state::planned::PlannedWorld;
 use crate::ui::attention_panel::AttentionPanel;
 use crate::ui::city::CityView;
 use crate::ui::context_picker::ContextPicker;
@@ -25,6 +20,11 @@ use crate::ui::node_detail::NodeDetailView;
 use crate::ui::theme::Theme;
 use crate::ui::workloads::WorkloadListView;
 use crate::ui::{Action, Component, Edge, OverlayMode, RenderCtx, help, sidebar, status_bar};
+use k8sciv_core::k8s::{client, watch, watch::WorldHandle};
+use k8sciv_core::state::attention::Concern;
+use k8sciv_core::state::model::Models;
+use k8sciv_core::state::pair::PairSync;
+use k8sciv_core::state::planned::PlannedWorld;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -484,7 +484,13 @@ impl App {
             Ok(cluster) => {
                 // New informer set first; the old one aborts on drop.
                 let proj = client::resolve_projections(&cluster.client, &self.projections).await;
-                self.hot = watch::spawn(&cluster, ClusterId::Hot, self.tx.clone(), &proj);
+                let sink = {
+                    let tx = self.tx.clone();
+                    move |id, delta| {
+                        let _ = tx.try_send(AppEvent::World(id, delta));
+                    }
+                };
+                self.hot = watch::spawn(&cluster, ClusterId::Hot, sink, &proj);
                 self.ready_hot = false;
                 self.dirty = true;
                 self.models_hot = Models::default();
@@ -647,7 +653,7 @@ fn banner(f: &mut ratatui::Frame, area: Rect, ctx: &RenderCtx) {
         ctx.theme.dim()
     };
     let buf = f.buffer_mut();
-    let mut padded: String = crate::util::truncate(&text, area.width as usize);
+    let mut padded: String = k8sciv_core::util::truncate(&text, area.width as usize);
     while (padded.chars().count() as u16) < area.width {
         padded.push(' ');
     }
