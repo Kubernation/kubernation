@@ -31,29 +31,30 @@ side with sync-state badges (see "The pair" below). Future (designed-for,
 not built): external managed services as foreign powers, chaos events as
 barbarian raids, and the planning-turn staged-diff intervention model.
 
-## Architecture
+## Architecture (cargo workspace)
 
 ```
-src/
-  main.rs        entry; clap CLI; --smoke headless mode; terminal lifecycle
-  app.rs         composition root: event loop, screen stack, context switch
-  events.rs      AppEvent/WorldDelta; blocking input thread → tokio channel
-  logging.rs     tracing → file (never stderr; stderr corrupts the TUI)
-  util.rs        fnv1a64 stable hash, age/bytes formatting
-  config/        Config (~/.config/k8sciv/config.toml) + clap Args
-  k8s/           DATA LAYER: client+platform detect, quantity parsing,
-                 reflector spawning (watch.rs)
-  state/         observed.rs  ObservedWorld (reflector stores + event ring
+crates/
+  k8sciv-core/   NO UI DEPS — everything frontends share:
+    events.rs    ClusterId / WorldDelta vocabulary
+    k8s/         DATA LAYER: client+platform detect, quantity parsing,
+                 reflector spawning (watch.rs; spawn() takes a DeltaSink
+                 closure so any frontend can subscribe)
+    state/       observed.rs  ObservedWorld (reflector stores + event ring
                               + dynamic custom-resource stores)
                  world.rs     PURE world geometry: continents/provinces/
                               cities/islands, placement, hit-testing
                  planned.rs   PlannedWorld stub (future planning turn)
-                 model.rs     PURE derivations: map/workloads/city/node models
+                 model.rs     PURE derivations: map/workloads/city/node
                  attention.rs PURE detectors → severity-ordered concerns
-                 fixtures.rs  test-only synthetic worlds
-  ui/            components implementing the Component trait
-                 (map, workloads, city, node_detail, attention_panel,
-                  sidebar, status_bar, help, context_picker, theme, symbols)
+                 fixtures.rs  synthetic worlds (feature = "fixtures")
+    util.rs      fnv1a64 stable hash, age/bytes formatting
+  k8sciv/        THE TUI (the product): main/app/events/logging/config
+                 + ui/ components (map, workloads, city, node_detail,
+                 attention_panel, sidebar, status_bar, help, picker,
+                 theme, symbols). `cargo run` = this (default-members).
+  k8sciv-gui/    SPIKE: macroquad windowed client over the same core —
+                 see "GUI spike" in the decisions log.
 ```
 
 **Data flow:** watchers (kube 3.x reflectors) keep `ObservedWorld` stores
@@ -142,6 +143,18 @@ what makes the interesting logic unit-testable without a cluster.
   on a cluster are skipped with a log line — a pair may project
   asymmetrically. Demo: `gizmos.example.com` in hack/samples-crd.yaml
   (applied before samples.yaml so the kind is established).
+- **Workspace split + GUI spike** (2026-06-12, "spike" decision after the
+  renderer-options review): k8sciv-core holds the data layer and pure
+  models; `watch::spawn` takes a `DeltaSink` closure (not a TUI channel)
+  so frontends subscribe their own way. crates/k8sciv-gui is a macroquad
+  windowed client: tokio on a net thread publishing `Arc<Models>`
+  snapshots, terrain-colored provinces, city circles sized by population
+  with Civ-style name plates, namespace islands, pan/wheel-zoom camera,
+  click-to-inspect ORDERS, attention strip, `--screenshot` for headless
+  verification (docs/gui-spike.png). SPIKE quality: no tests, flat colors,
+  ASCII-only text (macroquad default font has no exotic glyphs — `ascii()`
+  sanitizer). Next steps if promoted: Kenney CC0 tile sprites, hover
+  tooltips, city/node detail panels, pair view.
 - **`Store::wait_until_ready` allows ONE concurrent waiter per store** (found
   2026-06-12): kube's readiness uses a `DelayedInit` over a futures oneshot
   receiver, which holds a single waker slot. Two tasks awaiting the same
@@ -228,6 +241,7 @@ make smoke      # headless: connect, print world summary, exit (CI gate)
 make lint test  # fmt --check, clippy -D warnings, cargo test
 make kind-down
 
+make gui        # windowed client spike (macroquad) against the dev cluster
 make perf-up    # kwok-simulated 100-node / 1000-pod cluster (needs kwokctl)
 make perf       # run the TUI against it
 make perf-test  # release-mode rebuild+frame budget test (<100ms asserted)

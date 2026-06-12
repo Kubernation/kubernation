@@ -73,6 +73,20 @@ the workload list gains a SYNC column (`=` in sync, `≠r` replica drift,
 and the attention queue merges both worlds with `H`/`W` tags plus a single
 aggregate drift concern.
 
+### GUI spike (windowed client)
+
+![GUI spike](docs/gui-spike.png)
+
+```sh
+make gui    # or: cargo run -p k8sciv-gui --release -- --context <ctx>
+```
+
+The same `k8sciv-core` world model rendered as a real 2D game view
+(macroquad): smooth pan (WASD/arrows), wheel zoom, click-to-inspect,
+city circles sized by population with Civ-style name plates, and the
+attention strip. Spike quality — flat colors and shapes, no art assets
+yet; it exists to prove the core/frontend split and the windowed feel.
+
 ### Performance rig
 
 ```sh

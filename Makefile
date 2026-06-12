@@ -88,4 +88,4 @@ lint:
 
 ## test: unit + snapshot tests
 test:
-	cargo test
+	cargo test --workspace

@@ -115,6 +115,24 @@ const WARN: Color = Color::new(0.88, 0.72, 0.18, 1.0);
 const ROAD: Color = Color::new(0.45, 0.33, 0.20, 1.0);
 const STRUCT: Color = Color::new(0.45, 0.85, 0.90, 1.0);
 
+/// macroquad's built-in font is ASCII-ish; swap the TUI glyph vocabulary
+/// for plain characters so nothing renders as tofu.
+fn ascii(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '—' | '–' => '-',
+            '·' => '.',
+            '×' => 'x',
+            '▸' => '>',
+            '‼' => '!',
+            '⊘' => 'o',
+            '…' => '~',
+            c if c.is_ascii() => c,
+            _ => '?',
+        })
+        .collect()
+}
+
 fn terrain(h: NodeHealth) -> Color {
     match h {
         NodeHealth::Healthy => Color::new(0.29, 0.49, 0.23, 1.0),
@@ -274,9 +292,9 @@ async fn main() {
 
         match models.as_ref() {
             None => {
-                draw_text(&status, 40.0, 60.0, 30.0, PARCHMENT);
+                draw_text(ascii(&status), 40.0, 60.0, 30.0, PARCHMENT);
                 draw_text(
-                    "▒ the world is unexplored — fog of war ▒",
+                    "the world is unexplored - fog of war",
                     40.0,
                     100.0,
                     24.0,
@@ -412,12 +430,12 @@ async fn main() {
                 } else {
                     for (i, c) in m.attention.iter().take(3).enumerate() {
                         let marker = if i == concern_idx % m.attention.len() {
-                            "▶ "
+                            "> "
                         } else {
                             "  "
                         };
                         draw_text(
-                            format!("{marker}{} — {}", c.title, c.detail),
+                            ascii(&format!("{marker}{} - {}", c.title, c.detail)),
                             16.0,
                             base + 20.0 + i as f32 * 19.0,
                             16.0,
@@ -431,7 +449,13 @@ async fn main() {
         // --- chrome -----------------------------------------------------
         draw_rectangle(0.0, 0.0, screen_width(), 30.0, PANEL);
         draw_rectangle(0.0, 30.0, screen_width(), 2.0, PARCHMENT);
-        draw_text(format!("K8SCIV — {status}"), 12.0, 21.0, 20.0, PARCHMENT);
+        draw_text(
+            ascii(&format!("K8SCIV - {status}")),
+            12.0,
+            21.0,
+            20.0,
+            PARCHMENT,
+        );
         let help =
             "WASD/arrows pan · wheel zoom · click inspect · ]/[ cities · N next concern · Q quit";
         let hm = measure_text(help, None, 15, 1.0);
@@ -512,7 +536,7 @@ fn draw_orders(world: &WorldModel, m: &Models, sel: (u16, u16)) {
     draw_rectangle_lines(10.0, y0, 330.0, h, 2.0, PARCHMENT);
     draw_text("ORDERS", 20.0, y0 + 18.0, 15.0, PARCHMENT);
     for (i, (text, color)) in lines.iter().enumerate() {
-        draw_text(text, 20.0, y0 + 38.0 + i as f32 * 19.0, 16.0, *color);
+        draw_text(ascii(text), 20.0, y0 + 38.0 + i as f32 * 19.0, 16.0, *color);
     }
 }
 
