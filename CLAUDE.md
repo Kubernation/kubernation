@@ -100,6 +100,14 @@ what makes the interesting logic unit-testable without a cluster.
   observed node's `spec.providerID` (aws/gce/azure/kind/k3s prefixes).
 - **In-cluster config is not supported** (operator-laptop tool); revisit if
   a read-only web/agent mode ever appears.
+- **Minimap** (2026-06-12): auto-appears bottom-right of the map only when
+  the board exceeds the viewport — no toggle, no config. One cell per node
+  in zone columns; when a zone is taller than the panel, `k` nodes collapse
+  into one cell with worst-state-wins coloring. The viewport frame hugs the
+  first/last visible cell rows exactly (there is no half-row to sit
+  between). It bails out silently rather than smothering the board when
+  zones are too numerous to fit (~60+ zones — horizontal compression is a
+  future step).
 - **`Store::wait_until_ready` allows ONE concurrent waiter per store** (found
   2026-06-12): kube's readiness uses a `DelayedInit` over a futures oneshot
   receiver, which holds a single waker slot. Two tasks awaiting the same
@@ -126,8 +134,12 @@ what makes the interesting logic unit-testable without a cluster.
 | `◆`   | pod succeeded (completed)     |
 | `‼ ! ·` | critical / warning / info   |
 | `▓░`  | gauge filled / empty          |
+| `·` / `▪` | minimap node cell: healthy / degraded (colored by worst state) |
+| `┌┐└┘` | minimap viewport frame (reversed cell = cursor) |
 
 Health precedence on a tile: NotReady > Cordoned > Pressure > Healthy.
+Zone headers carry a `▪N` rollup (colored by the zone's worst node) when
+any node in the zone is degraded.
 
 **Color discipline:** color encodes meaning, never decoration. Running is
 the *absence* of red, not green. Saturated red/yellow are reserved for
@@ -137,7 +149,8 @@ All colors are named ANSI — safe on 256-color terminals.
 
 ## Keymap
 
-`h/j/k/l`+arrows move · `Enter` opens · `Esc` back · `m` map ·
+`h/j/k/l`+arrows move · `PgUp/PgDn` page, `Ctrl+u/d` half page,
+`Home/End` first/last zone · `Enter` opens · `Esc` back · `m` map ·
 `w` workloads · `n` next concern · `a` attention panel · `Tab` focus panel ·
 `c` context picker · `1/2/3` overlays (pressure/replicas/namespace) ·
 `?` keymap · `q`/Ctrl-C quit. Keep `help.rs` in sync with any change.
@@ -190,7 +203,8 @@ never blocks input.
 
 ## Deferred (deliberately)
 
-Minimap (scroll hints `◂▸▴▾` stand in for now) · metrics-server live usage ·
-mutations & the planning-turn diff UI · hot/warm pair · external services /
-chaos layers · logs & live tail · Job/CronJob city screens · namespace
-filtering · mouse support.
+Metrics-server live usage · mutations & the planning-turn diff UI ·
+hot/warm pair · external services / chaos layers · logs & live tail ·
+Job/CronJob city screens · namespace filtering · mouse support · minimap
+horizontal compression for very wide zone counts (~60+) · zoom levels
+(compact 1-line tiles for very large boards).

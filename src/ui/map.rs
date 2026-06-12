@@ -12,12 +12,12 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
-use ratatui::widgets::Paragraph;
-use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::widgets::{Block, Paragraph, Widget};
+use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::symbols::{bar, node_glyph, pod_glyph};
 use super::{Action, Component, OverlayMode, RenderCtx};
-use crate::state::model::{NodeTile, PodState};
+use crate::state::model::{NodeHealth, NodeTile, PodState, ZoneColumn};
 use crate::util::truncate;
 
 pub const TILE_W: u16 = 22;
@@ -25,12 +25,24 @@ pub const TILE_H: u16 = 4;
 const COL_GAP: u16 = 2;
 const ROW_GAP: u16 = 1;
 
-#[derive(Default)]
 pub struct MapView {
     /// (zone column index, node index within column)
     pub cursor: (usize, usize),
     scroll_col: usize,
     scroll_row: usize,
+    /// (cols, rows) of the last rendered viewport — paging jump distances.
+    last_visible: (usize, usize),
+}
+
+impl Default for MapView {
+    fn default() -> Self {
+        Self {
+            cursor: (0, 0),
+            scroll_col: 0,
+            scroll_row: 0,
+            last_visible: (1, 8),
+        }
+    }
 }
 
 impl MapView {
@@ -66,11 +78,28 @@ impl MapView {
 
 impl Component for MapView {
     fn handle_key(&mut self, key: KeyEvent, ctx: &RenderCtx) -> Option<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let page = self.last_visible.1 as isize;
         match key.code {
             KeyCode::Left | KeyCode::Char('h') => self.move_zone(-1, ctx),
             KeyCode::Right | KeyCode::Char('l') => self.move_zone(1, ctx),
             KeyCode::Up | KeyCode::Char('k') => self.move_node(-1, ctx),
             KeyCode::Down | KeyCode::Char('j') => self.move_node(1, ctx),
+            KeyCode::PageDown => self.move_node(page, ctx),
+            KeyCode::PageUp => self.move_node(-page, ctx),
+            KeyCode::Char('d') if ctrl => self.move_node((page / 2).max(1), ctx),
+            KeyCode::Char('u') if ctrl => self.move_node(-((page / 2).max(1)), ctx),
+            KeyCode::Home => {
+                self.cursor.0 = 0;
+                self.move_zone(0, ctx);
+            }
+            KeyCode::End => {
+                let zones = ctx.models.map.zones.len();
+                if zones > 0 {
+                    self.cursor.0 = zones - 1;
+                    self.move_zone(0, ctx);
+                }
+            }
             KeyCode::Char('g') => self.cursor.1 = 0,
             KeyCode::Char('G') => {
                 if let Some(col) = ctx.models.map.zones.get(self.cursor.0) {
@@ -119,6 +148,7 @@ impl Component for MapView {
         // Keep the cursor inside the viewport.
         let visible_cols = (((area.width + COL_GAP) / (TILE_W + COL_GAP)) as usize).max(1);
         let visible_rows = (((area.height - 1) / (TILE_H + ROW_GAP)) as usize).max(1);
+        self.last_visible = (visible_cols, visible_rows);
         if self.cursor.0 < self.scroll_col {
             self.scroll_col = self.cursor.0;
         }
@@ -141,14 +171,7 @@ impl Component for MapView {
         {
             let zone = &zones[zi];
             let x = area.x + vi as u16 * (TILE_W + COL_GAP);
-
-            // Zone header: ─ z-a · 3 ───────────
-            let label = format!("─ {} · {} ", truncate(&zone.name, 14), zone.nodes.len());
-            let mut header: String = label.chars().take(TILE_W as usize).collect();
-            while (header.chars().count() as u16) < TILE_W {
-                header.push('─');
-            }
-            buf.set_string(x, area.y, header, ctx.theme.zone());
+            draw_zone_header(buf, x, area.y, zone, ctx);
 
             for (vr, ni) in (self.scroll_row..zone.nodes.len())
                 .take(visible_rows)
@@ -180,6 +203,21 @@ impl Component for MapView {
                 hint_style,
             );
         }
+
+        // Minimap: only when the board exceeds the viewport.
+        let overflows = self.scroll_col > 0
+            || self.scroll_row > 0
+            || visible_cols < zones.len()
+            || visible_rows < max_rows_any;
+        if overflows {
+            draw_minimap(
+                buf,
+                area,
+                ctx,
+                self.cursor,
+                (self.scroll_col, self.scroll_row, visible_cols, visible_rows),
+            );
+        }
     }
 }
 
@@ -189,6 +227,146 @@ fn vcenter(area: Rect) -> Rect {
         height: 1,
         ..area
     }
+}
+
+fn health_rank(h: NodeHealth) -> u8 {
+    match h {
+        NodeHealth::Healthy => 0,
+        NodeHealth::Cordoned => 1,
+        NodeHealth::Pressure => 2,
+        NodeHealth::NotReady => 3,
+    }
+}
+
+fn worst_health<'a>(tiles: impl Iterator<Item = &'a NodeTile>) -> NodeHealth {
+    tiles
+        .map(|t| t.health)
+        .max_by_key(|h| health_rank(*h))
+        .unwrap_or(NodeHealth::Healthy)
+}
+
+/// Zone header: `─ z-a · 20 ▪3 ──────` — the ▪N rollup (colored by the
+/// worst node state) says "this zone needs a look" without scrolling.
+fn draw_zone_header(buf: &mut Buffer, x: u16, y: u16, zone: &ZoneColumn, ctx: &RenderCtx) {
+    let theme = ctx.theme;
+    let base = format!("─ {} · {} ", truncate(&zone.name, 12), zone.nodes.len());
+    let mut used = base.chars().count().min(TILE_W as usize);
+    buf.set_stringn(x, y, &base, TILE_W as usize, theme.zone());
+
+    let bad = zone
+        .nodes
+        .iter()
+        .filter(|t| t.health != NodeHealth::Healthy)
+        .count();
+    if bad > 0 && used + 3 < TILE_W as usize {
+        let worst = worst_health(zone.nodes.iter());
+        let seg = format!("▪{bad} ");
+        buf.set_stringn(
+            x + used as u16,
+            y,
+            &seg,
+            TILE_W as usize - used,
+            theme.node(worst),
+        );
+        used += seg.chars().count();
+    }
+    if used < TILE_W as usize {
+        buf.set_string(
+            x + used as u16,
+            y,
+            "─".repeat(TILE_W as usize - used),
+            theme.zone(),
+        );
+    }
+}
+
+/// Corner minimap: the whole board at one character per node (or per `k`
+/// nodes when a zone is taller than the panel), zone columns left to right.
+/// `┌┐└┘` brackets frame the visible viewport; the reversed cell is the
+/// cursor. Appears bottom-right only when the board exceeds the viewport.
+fn draw_minimap(
+    buf: &mut Buffer,
+    map_area: Rect,
+    ctx: &RenderCtx,
+    cursor: (usize, usize),
+    viewport: (usize, usize, usize, usize),
+) {
+    let theme = ctx.theme;
+    let zones = &ctx.models.map.zones;
+    let zcount = zones.len() as u16;
+    let max_rows = zones.iter().map(|z| z.nodes.len()).max().unwrap_or(0) as u16;
+    if zcount == 0 || max_rows == 0 {
+        return;
+    }
+
+    // Vertical compression: k nodes per cell so tall zones still fit.
+    let avail_h = map_area.height.saturating_sub(6);
+    if avail_h == 0 {
+        return;
+    }
+    let k = max_rows.div_ceil(avail_h).max(1);
+    let grid_w = zcount * 2 - 1;
+    let grid_h = max_rows.div_ceil(k);
+    let w = grid_w + 4; // bracket margin + border
+    let h = grid_h + 4;
+    if map_area.width < w + 4 || map_area.height < h + 1 {
+        return; // not enough room without smothering the board
+    }
+
+    let area = Rect {
+        x: map_area.right() - w - 1,
+        y: map_area.bottom() - h,
+        width: w,
+        height: h,
+    };
+    for yy in area.top()..area.bottom() {
+        for xx in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((xx, yy)) {
+                cell.reset();
+            }
+        }
+    }
+    let block = Block::bordered()
+        .border_style(theme.dim())
+        .title(format!(" MAP · {} ", ctx.models.map.total_nodes))
+        .title_style(theme.dim());
+    let inner = block.inner(area);
+    block.render(area, buf);
+    let origin = (inner.x + 1, inner.y + 1);
+
+    // Node cells, worst-state-wins within a compressed cell.
+    for (zi, zone) in zones.iter().enumerate() {
+        let cx = origin.0 + zi as u16 * 2;
+        for (ci, chunk) in zone.nodes.chunks(k as usize).enumerate() {
+            let worst = worst_health(chunk.iter());
+            let (ch, style) = match worst {
+                NodeHealth::Healthy => ("·", theme.dim()),
+                other => ("▪", theme.node(other)),
+            };
+            let is_cursor = zi == cursor.0 && cursor.1 / k as usize == ci;
+            let style = if is_cursor {
+                style.patch(theme.selection())
+            } else {
+                style
+            };
+            buf.set_string(cx, origin.1 + ci as u16, ch, style);
+        }
+    }
+
+    // Viewport brackets in the margin columns, hugging the first and last
+    // visible cell rows exactly (no half-row exists to sit between).
+    let (sc, sr, vc, vr) = viewport;
+    let last_col = (sc + vc).min(zones.len()).saturating_sub(1);
+    let last_row = ((sr + vr).min(max_rows as usize)).saturating_sub(1);
+    let x0 = origin.0 + sc as u16 * 2 - 1;
+    let x1 = origin.0 + last_col as u16 * 2 + 1;
+    let y0 = origin.1 + sr as u16 / k;
+    let y1 = origin.1 + last_row as u16 / k;
+    let bstyle = theme.zone();
+    buf.set_string(x0, y0, "┌", bstyle);
+    buf.set_string(x1, y0, "┐", bstyle);
+    buf.set_string(x0, y1, "└", bstyle);
+    buf.set_string(x1, y1, "┘", bstyle);
 }
 
 fn worst_pod_state(tile: &NodeTile) -> PodState {
@@ -339,6 +517,8 @@ mod tests {
         assert!(text.contains("✗"), "failing pod glyph missing:\n{text}");
         assert!(text.contains("●"), "ok pod glyph missing:\n{text}");
         assert!(text.contains("2p"), "pod count missing:\n{text}");
+        // Board fits the viewport → no minimap.
+        assert!(!text.contains("MAP ·"), "minimap should be hidden:\n{text}");
     }
 
     #[test]
@@ -371,12 +551,9 @@ mod tests {
         assert_eq!(view.cursor, (1, 0));
     }
 
-    /// Criterion 6 evidence: at 100 nodes / 1000 pods, a full world rebuild
-    /// (map + workloads + attention) plus a rendered frame must fit the
-    /// 100ms input-latency budget. Asserted in release (`make perf-test`);
-    /// debug builds only report the numbers.
-    #[test]
-    fn scale_rebuild_and_render_within_budget() {
+    /// 100 nodes across 5 zones, 1000 pods in 20 deployments — the shared
+    /// at-scale fixture for perf and minimap tests.
+    fn big_world() -> (crate::state::observed::ObservedWorld, fx::Seeds) {
         const ZONES: [&str; 5] = ["z-a", "z-b", "z-c", "z-d", "z-e"];
         let (world, mut s) = fx::world();
         for n in 0..100 {
@@ -401,7 +578,86 @@ mod tests {
                 s.pod(pod);
             }
         }
+        (world, s)
+    }
 
+    #[test]
+    fn minimap_appears_on_overflow_with_viewport_brackets() {
+        let (world, mut s) = big_world();
+        // One degraded node so the minimap shows a ▪ cell and the zone
+        // header carries a rollup.
+        s.node(fx::node_with_condition(
+            fx::node("perf-node-000", Some("z-a")),
+            "Ready",
+            "False",
+        ));
+        let models = Models::build(&world);
+        let theme = Theme::new(ColorMode::Auto);
+        let ctx = RenderCtx {
+            models: &models,
+            world: &world,
+            theme: &theme,
+            overlay: OverlayMode::Pressure,
+            ready: true,
+        };
+        let mut view = MapView::default();
+        let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        term.draw(|f| view.render(f, f.area(), &ctx)).unwrap();
+        let text = buffer_text(&term);
+
+        assert!(text.contains("MAP · 100"), "minimap title missing:\n{text}");
+        assert!(text.contains('·'), "healthy minimap cells missing");
+        assert!(text.contains('▪'), "degraded minimap cell missing:\n{text}");
+        // Block border + viewport brackets both contribute corners.
+        assert!(
+            text.matches('┌').count() >= 2 && text.matches('┘').count() >= 2,
+            "viewport brackets missing:\n{text}"
+        );
+        // Zone header rollup for the NotReady node.
+        assert!(text.contains("▪1"), "zone rollup missing:\n{text}");
+    }
+
+    #[test]
+    fn paging_keys_jump_by_viewport() {
+        let (world, _s) = big_world();
+        let models = Models::build(&world);
+        let theme = Theme::new(ColorMode::Auto);
+        let ctx = RenderCtx {
+            models: &models,
+            world: &world,
+            theme: &theme,
+            overlay: OverlayMode::Pressure,
+            ready: true,
+        };
+        let mut view = MapView::default();
+        let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        term.draw(|f| view.render(f, f.area(), &ctx)).unwrap();
+        // 40 rows → header + 7 tile rows visible.
+        use ratatui_crossterm::crossterm::event::{KeyCode, KeyModifiers};
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+
+        view.handle_key(key(KeyCode::PageDown), &ctx);
+        assert_eq!(view.cursor, (0, 7));
+        view.handle_key(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            &ctx,
+        );
+        assert_eq!(view.cursor, (0, 4));
+        view.handle_key(key(KeyCode::End), &ctx);
+        assert_eq!(view.cursor.0, 4);
+        view.handle_key(key(KeyCode::Home), &ctx);
+        assert_eq!(view.cursor.0, 0);
+        view.handle_key(key(KeyCode::PageUp), &ctx);
+        assert_eq!(view.cursor, (0, 0));
+    }
+
+    /// Criterion 6 evidence: at 100 nodes / 1000 pods, a full world rebuild
+    /// (map + workloads + attention) plus a rendered frame must fit the
+    /// 100ms input-latency budget. Asserted in release (`make perf-test`);
+    /// debug builds only report the numbers.
+    #[test]
+    fn scale_rebuild_and_render_within_budget() {
+        let (world, _s) = big_world();
         let theme = Theme::new(ColorMode::Auto);
         let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
         let mut view = MapView::default();

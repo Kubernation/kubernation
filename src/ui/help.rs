@@ -11,6 +11,9 @@ const KEYMAP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("h j k l / arrows", "move cursor / selection"),
             ("g / G", "first / last item"),
+            ("PgUp / PgDn", "page within a zone column"),
+            ("Ctrl+u / Ctrl+d", "half page"),
+            ("Home / End", "first / last zone"),
             ("Enter", "open the thing under the cursor"),
             ("Esc / Backspace", "back"),
         ],

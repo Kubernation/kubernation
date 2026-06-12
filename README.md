@@ -75,6 +75,7 @@ tick (250ms default), so a noisy cluster can never make typing lag.
 | Key | Action |
 | --- | ------ |
 | `h j k l` / arrows | move cursor / selection |
+| `PgUp/PgDn` · `Ctrl+u/d` · `Home/End` | page within a zone · half page · first/last zone |
 | `Enter` | open the thing under the cursor |
 | `Esc` / `Backspace` | back |
 | `m` / `w` | map · workload list |
@@ -100,6 +101,12 @@ The `c`/`m` gauges show **scheduling pressure** — the sum of pod resource
 *requests* on the node versus allocatable — not live usage. Calm is gray,
 elevated (≥70%) is yellow, high (≥90%) is red. Color is reserved for
 meaning: a running pod is the absence of red, not green.
+
+When the board is bigger than the terminal, a **minimap** appears in the
+bottom-right corner: one cell per node (`·` healthy, `▪` degraded, colored
+by the worst state), `┌┐└┘` framing the visible viewport, the reversed cell
+marking your cursor. Zone headers also roll up trouble (`─ z-c · 20 ▪2 ─`)
+so a degraded zone is visible without scrolling to it.
 
 ## The conceptual model
 
