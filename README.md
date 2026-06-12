@@ -54,6 +54,22 @@ cargo run --release -- --context <kubeconfig-context>
 Useful targets: `make smoke` (headless connect + world summary),
 `make lint`, `make test`, `make kind-down`.
 
+### Performance rig
+
+```sh
+make perf-up      # kwok-simulated cluster: 100 nodes (5 zones), 1000 pods
+make perf         # run the TUI against it
+make perf-test    # release-mode budget test: rebuild + frame < 100ms
+make perf-down
+```
+
+Measured on an M4 Max: a full world rebuild (map + workloads + attention)
+plus a rendered 140×40 frame at 100 nodes / 1000 pods takes **~0.5ms
+average, <1ms worst** (`make perf-test`); against the live kwok cluster, 40
+freshly scaled-up pods were reflected in the UI **81ms** after `kubectl
+scale` returned. Input redraws immediately; world churn coalesces at the
+tick (250ms default), so a noisy cluster can never make typing lag.
+
 ## Keys
 
 | Key | Action |

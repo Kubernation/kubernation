@@ -1,7 +1,10 @@
 CLUSTER ?= k8sciv
 KCTX    := kind-$(CLUSTER)
+PERF_CLUSTER ?= k8sciv-perf
+PERF_KCTX    := kwok-$(PERF_CLUSTER)
 
-.PHONY: dev kind-up samples run smoke kind-down lint test
+.PHONY: dev kind-up samples run smoke kind-down lint test \
+        perf-up perf perf-test perf-down
 
 ## dev: full loop — cluster up, samples applied, TUI running
 dev: kind-up samples run
@@ -27,6 +30,24 @@ smoke:
 ## kind-down: delete the dev cluster
 kind-down:
 	kind delete cluster --name $(CLUSTER)
+
+## perf-up: kwok-simulated 100-node / 1000-pod cluster (needs kwokctl)
+perf-up:
+	@kwokctl get clusters 2>/dev/null | grep -qx '$(PERF_CLUSTER)' || \
+		kwokctl create cluster --name $(PERF_CLUSTER)
+	hack/perf-seed.sh $(PERF_KCTX)
+
+## perf: run the TUI against the kwok perf cluster
+perf:
+	cargo run --release -- --context $(PERF_KCTX)
+
+## perf-test: release-mode rebuild+frame latency budget (<100ms asserted)
+perf-test:
+	cargo test --release scale_rebuild -- --nocapture
+
+## perf-down: delete the kwok perf cluster
+perf-down:
+	kwokctl delete cluster --name $(PERF_CLUSTER)
 
 ## lint: formatting + clippy, the same gate as CI
 lint:

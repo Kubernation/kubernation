@@ -118,23 +118,25 @@ impl Agg {
 pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -> Vec<Concern> {
     let idx = OwnerIndex::build(world);
     let mut concerns: Vec<Concern> = Vec::new();
+    // One snapshot for the whole pass — Store::state() clones a Vec per call.
+    let pods = world.pods.state();
 
     // --- Pod-level signals, aggregated per owning workload -----------------
     let mut by_workload: BTreeMap<WorkloadRef, Agg> = BTreeMap::new();
-    for pod in world.pods.state() {
-        let (state, reason) = pod_state(&pod);
+    for pod in &pods {
+        let (state, reason) = pod_state(pod);
         let mut agg = Agg::default();
         agg.classify(&reason, state);
-        if pod_oom_killed(&pod) {
+        if pod_oom_killed(pod) {
             agg.oom += 1;
         }
-        if pod_restarts(&pod) >= RESTART_THRESHOLD {
+        if pod_restarts(pod) >= RESTART_THRESHOLD {
             agg.flapping += 1;
         }
         if !agg.any() {
             continue;
         }
-        match idx.workload_of(&pod) {
+        match idx.workload_of(pod) {
             Some(r) => {
                 let e = by_workload.entry(r).or_default();
                 e.crash += agg.crash;
@@ -308,7 +310,7 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
         }
         if ev.kind == "Pod" {
             // Skip if the pod's workload already has a concern.
-            let owned = world.pods.state().iter().any(|p| {
+            let owned = pods.iter().any(|p| {
                 p.metadata.name.as_deref() == Some(&ev.name)
                     && p.metadata.namespace.as_deref() == Some(&ev.namespace)
                     && idx.workload_of(p).is_some_and(|r| {

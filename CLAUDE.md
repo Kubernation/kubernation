@@ -149,6 +149,11 @@ make dev        # kind-up + samples + run (the standard loop)
 make smoke      # headless: connect, print world summary, exit (CI gate)
 make lint test  # fmt --check, clippy -D warnings, cargo test
 make kind-down
+
+make perf-up    # kwok-simulated 100-node / 1000-pod cluster (needs kwokctl)
+make perf       # run the TUI against it
+make perf-test  # release-mode rebuild+frame budget test (<100ms asserted)
+make perf-down
 ```
 
 Develop against kind only (`hack/kind-config.yaml`, cluster `k8sciv`,
@@ -172,10 +177,20 @@ Config: `~/.config/k8sciv/config.toml` (`tick_ms`, `color`,
 - Document non-obvious decisions in this file's Decisions log as you make
   them.
 
+## Performance evidence (criterion 6)
+
+Synthetic: `make perf-test` builds a fixture world of 100 nodes / 1000 pods
+and times full rebuild (map + workloads + attention) plus a rendered
+140×40 frame — measured 2026-06-12 on the M4 Max at **avg ~0.5ms, worst
+<1ms**, asserted <100ms in release. Live: `make perf-up && make perf` runs
+against a kwok-simulated cluster of the same size (`hack/perf-seed.sh`,
+5 zones × 20 nodes, 20 deployments × 50 replicas). Input latency is
+unmeasurable by eye; world rebuilds are coalesced at tick cadence so churn
+never blocks input.
+
 ## Deferred (deliberately)
 
 Minimap (scroll hints `◂▸▴▾` stand in for now) · metrics-server live usage ·
 mutations & the planning-turn diff UI · hot/warm pair · external services /
 chaos layers · logs & live tail · Job/CronJob city screens · namespace
-filtering · mouse support · kwok-based 100-node perf rig (synthetic render
-benchmarks exist via fixtures; a kwok target is the next perf step).
+filtering · mouse support.

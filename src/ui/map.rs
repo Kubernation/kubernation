@@ -370,4 +370,68 @@ mod tests {
         assert_eq!(view.handle_key(key(KeyCode::Char('j')), &ctx), None);
         assert_eq!(view.cursor, (1, 0));
     }
+
+    /// Criterion 6 evidence: at 100 nodes / 1000 pods, a full world rebuild
+    /// (map + workloads + attention) plus a rendered frame must fit the
+    /// 100ms input-latency budget. Asserted in release (`make perf-test`);
+    /// debug builds only report the numbers.
+    #[test]
+    fn scale_rebuild_and_render_within_budget() {
+        const ZONES: [&str; 5] = ["z-a", "z-b", "z-c", "z-d", "z-e"];
+        let (world, mut s) = fx::world();
+        for n in 0..100 {
+            s.node(fx::node(&format!("perf-node-{n:03}"), Some(ZONES[n % 5])));
+        }
+        for d in 0..20 {
+            let deploy = format!("app-{d:02}");
+            let rs = format!("app-{d:02}-abc");
+            s.deployment(fx::deployment("perf", &deploy, 50, 50));
+            s.replicaset(fx::replicaset("perf", &rs, &deploy));
+            for p in 0..50 {
+                let node = format!("perf-node-{:03}", (d * 50 + p) % 100);
+                let mut pod = fx::pod_requests(
+                    fx::pod("perf", &format!("{rs}-{p:02}"), Some(&node)),
+                    "100m",
+                    "128Mi",
+                );
+                pod = fx::pod_owned(pod, "ReplicaSet", &rs);
+                if p == 0 {
+                    pod = fx::pod_waiting(pod, "CrashLoopBackOff"); // keep attention busy
+                }
+                s.pod(pod);
+            }
+        }
+
+        let theme = Theme::new(ColorMode::Auto);
+        let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        let mut view = MapView::default();
+
+        let mut worst = std::time::Duration::ZERO;
+        let t_all = std::time::Instant::now();
+        for i in 0..20usize {
+            let t = std::time::Instant::now();
+            let models = Models::build(&world);
+            let ctx = RenderCtx {
+                models: &models,
+                world: &world,
+                theme: &theme,
+                overlay: OverlayMode::Pressure,
+                ready: true,
+            };
+            // Wiggle the cursor so the scroll-clamping paths run too.
+            view.cursor = (i % 5, (i * 3) % 20);
+            term.draw(|f| view.render(f, f.area(), &ctx)).unwrap();
+            worst = worst.max(t.elapsed());
+            assert_eq!(models.map.total_nodes, 100);
+            assert_eq!(models.map.total_pods, 1000);
+        }
+        let avg = t_all.elapsed() / 20;
+        println!("scale 100n/1000p: avg {avg:?}, worst {worst:?} per rebuild+frame");
+        if !cfg!(debug_assertions) {
+            assert!(
+                worst < std::time::Duration::from_millis(100),
+                "worst rebuild+frame {worst:?} exceeds the 100ms budget"
+            );
+        }
+    }
 }
