@@ -148,3 +148,20 @@ spec:
   resources:
     requests:
       storage: 1Gi
+---
+# Custom resources: projected onto the world map as island structures.
+apiVersion: example.com/v1
+kind: Gizmo
+metadata:
+  name: alpha-frobnicator
+  namespace: k8sciv-demo
+spec:
+  power: 7
+---
+apiVersion: example.com/v1
+kind: Gizmo
+metadata:
+  name: beta-frobnicator
+  namespace: k8sciv-demo
+spec:
+  power: 3

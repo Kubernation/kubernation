@@ -41,11 +41,23 @@ async fn main() -> Result<()> {
         None => None,
     };
 
+    let mut wanted = args.project.clone();
+    for p in &cfg.projections {
+        if !wanted.contains(p) {
+            wanted.push(p.clone());
+        }
+    }
+
     let (tx, rx) = tokio::sync::mpsc::channel(1024);
-    let hot = k8s::watch::spawn(&hot_cluster, ClusterId::Hot, tx.clone());
-    let warm = warm_cluster
-        .as_ref()
-        .map(|c| k8s::watch::spawn(c, ClusterId::Warm, tx.clone()));
+    let hot_proj = k8s::client::resolve_projections(&hot_cluster.client, &wanted).await;
+    let hot = k8s::watch::spawn(&hot_cluster, ClusterId::Hot, tx.clone(), &hot_proj);
+    let warm = match &warm_cluster {
+        Some(c) => {
+            let proj = k8s::client::resolve_projections(&c.client, &wanted).await;
+            Some(k8s::watch::spawn(c, ClusterId::Warm, tx.clone(), &proj))
+        }
+        None => None,
+    };
 
     if args.smoke {
         return smoke(hot, warm, rx).await;
@@ -55,7 +67,7 @@ async fn main() -> Result<()> {
     // like a normal CLI instead of corrupting an alternate screen.
     let terminal = ratatui::init();
     events::spawn_input_thread(tx.clone());
-    let result = App::new(cfg, args.kubeconfig.clone(), hot, warm, tx, rx)
+    let result = App::new(cfg, args.kubeconfig.clone(), wanted, hot, warm, tx, rx)
         .run(terminal)
         .await;
     ratatui::restore();
@@ -104,12 +116,13 @@ async fn smoke(
 
     let summarize = |label: &str, h: &WorldHandle, m: &Models| {
         println!(
-            "{label}context={} platform={} nodes={} pods={} workloads={} concerns={}",
+            "{label}context={} platform={} nodes={} pods={} workloads={} customs={} concerns={}",
             h.world.meta.context,
             h.world.meta.platform.label(),
             m.map.total_nodes,
             m.map.total_pods,
             m.workloads.len(),
+            h.world.custom_entries().len(),
             m.attention.len()
         );
     };

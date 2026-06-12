@@ -60,11 +60,6 @@ impl Theme {
         }
     }
 
-    /// The pod-count chip on a tile — Civ's population badge.
-    pub fn badge(&self) -> Style {
-        Style::new().add_modifier(Modifier::REVERSED | Modifier::DIM)
-    }
-
     pub fn dim(&self) -> Style {
         if self.mono {
             Style::new().add_modifier(Modifier::DIM)
@@ -174,6 +169,70 @@ impl Theme {
             Style::new().fg(Color::Green).add_modifier(Modifier::BOLD)
         } else {
             Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD)
+        }
+    }
+
+    // --- The world map ---------------------------------------------------
+
+    /// Open-sea wave marks on the main board.
+    pub fn sea(&self) -> Style {
+        if self.civ() {
+            Style::new().fg(Color::Blue)
+        } else {
+            self.dim()
+        }
+    }
+
+    /// Terrain texture on a province, keyed to its health. Calm land is
+    /// quiet green; trouble textures use the reserved colors, dimmed so
+    /// city badges still outrank them.
+    pub fn terrain(&self, h: NodeHealth) -> Style {
+        let base = match h {
+            NodeHealth::Healthy if self.civ() => Style::new().fg(Color::Green),
+            NodeHealth::Healthy => self.dim(),
+            NodeHealth::Cordoned => Style::new().fg(Color::Yellow),
+            NodeHealth::Pressure => Style::new().fg(Color::LightRed),
+            NodeHealth::NotReady => Style::new().fg(Color::Red),
+        };
+        if self.mono {
+            Style::new().add_modifier(Modifier::DIM)
+        } else {
+            base.add_modifier(Modifier::DIM)
+        }
+    }
+
+    /// Province (node) label row on the map.
+    pub fn province(&self, h: NodeHealth) -> Style {
+        match h {
+            NodeHealth::Healthy => self.dim(),
+            other => self.node(other),
+        }
+    }
+
+    /// A healthy city's badge — settlements are white like their labels.
+    pub fn city(&self) -> Style {
+        if self.civ() {
+            Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().add_modifier(Modifier::BOLD)
+        }
+    }
+
+    /// Island sand.
+    pub fn shore(&self) -> Style {
+        if self.civ() {
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::DIM)
+        } else {
+            self.dim()
+        }
+    }
+
+    /// A projected custom-resource structure.
+    pub fn structure(&self) -> Style {
+        if self.mono {
+            Style::new().add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(Color::LightCyan)
         }
     }
 

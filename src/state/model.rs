@@ -11,6 +11,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 
 use super::attention::{self, Concern, Severity, Target};
 use super::observed::{ObservedWorld, RecentEvent};
+use super::world::{WorldModel, build_world};
 use crate::k8s::quantity;
 use crate::util::fnv1a64;
 
@@ -168,6 +169,7 @@ impl fmt::Display for WorkloadRef {
 
 /// Resolves pod → owning workload. ReplicaSet hops to its Deployment via an
 /// index built once per rebuild, so resolution is O(1) per pod.
+#[derive(Default)]
 pub struct OwnerIndex {
     rs_to_deploy: HashMap<(String, String), String>,
 }
@@ -239,6 +241,8 @@ pub struct PodGlyph {
     pub namespace: String,
     pub name: String,
     pub state: PodState,
+    /// Controller workload (through the RS chain), for city placement.
+    pub owner: Option<WorkloadRef>,
 }
 
 #[derive(Debug, Clone)]
@@ -255,7 +259,6 @@ pub struct NodeTile {
     pub cpu_ratio: f64,
     pub mem_ratio: f64,
     pub pods: Vec<PodGlyph>,
-    pub dominant_ns: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -271,11 +274,7 @@ pub struct MapModel {
     pub total_pods: usize,
 }
 
-impl MapModel {
-    pub fn tile(&self, zone_idx: usize, node_idx: usize) -> Option<&NodeTile> {
-        self.zones.get(zone_idx)?.nodes.get(node_idx)
-    }
-}
+impl MapModel {}
 
 pub fn node_zone(node: &Node) -> String {
     node.metadata
@@ -339,7 +338,7 @@ pub fn node_request_ratios(node: &Node, pods: &[&Pod]) -> (f64, f64) {
     (ratio(cpu, alloc_cpu), ratio(mem, alloc_mem))
 }
 
-pub fn build_node_tile(node: &Node, pods_on_node: &[&Pod]) -> NodeTile {
+pub fn build_node_tile(node: &Node, pods_on_node: &[&Pod], idx: &OwnerIndex) -> NodeTile {
     let ready = node_ready(node);
     let cordoned = node
         .spec
@@ -375,18 +374,10 @@ pub fn build_node_tile(node: &Node, pods_on_node: &[&Pod]) -> NodeTile {
             namespace: p.metadata.namespace.clone().unwrap_or_default(),
             name: p.metadata.name.clone().unwrap_or_default(),
             state: pod_state(p).0,
+            owner: idx.workload_of(p),
         })
         .collect();
     pods.sort_by(|a, b| (&a.namespace, &a.name).cmp(&(&b.namespace, &b.name)));
-
-    let mut ns_counts: HashMap<&str, usize> = HashMap::new();
-    for p in &pods {
-        *ns_counts.entry(p.namespace.as_str()).or_default() += 1;
-    }
-    let dominant_ns = ns_counts
-        .into_iter()
-        .max_by_key(|(ns, n)| (*n, std::cmp::Reverse(*ns)))
-        .map(|(ns, _)| ns.to_string());
 
     NodeTile {
         name: node.metadata.name.clone().unwrap_or_default(),
@@ -398,13 +389,13 @@ pub fn build_node_tile(node: &Node, pods_on_node: &[&Pod]) -> NodeTile {
         cpu_ratio,
         mem_ratio,
         pods,
-        dominant_ns,
     }
 }
 
 /// Zone columns sorted by name; nodes within a zone ordered by stable hash
 /// of the node name so the layout never reshuffles between reconciles.
 pub fn build_map(world: &ObservedWorld) -> MapModel {
+    let idx = OwnerIndex::build(world);
     let pods = world.pods.state();
     let mut by_node: HashMap<String, Vec<&Pod>> = HashMap::new();
     for p in &pods {
@@ -418,7 +409,7 @@ pub fn build_map(world: &ObservedWorld) -> MapModel {
     for node in &nodes {
         let name = node.metadata.name.clone().unwrap_or_default();
         let on_node = by_node.get(&name).map(Vec::as_slice).unwrap_or(&[]);
-        let tile = build_node_tile(node, on_node);
+        let tile = build_node_tile(node, on_node, &idx);
         zones.entry(tile.zone.clone()).or_default().push(tile);
     }
     let mut zones: Vec<ZoneColumn> = zones
@@ -943,7 +934,6 @@ pub fn build_node_detail(world: &ObservedWorld, name: &str) -> Option<NodeDetail
         .state()
         .into_iter()
         .find(|n| n.metadata.name.as_deref() == Some(name))?;
-    let idx = OwnerIndex::build(world);
 
     let pods_arc = world.pods.state();
     let on_node: Vec<&Pod> = pods_arc
@@ -951,7 +941,8 @@ pub fn build_node_detail(world: &ObservedWorld, name: &str) -> Option<NodeDetail
         .map(|p| p.as_ref())
         .filter(|p| p.spec.as_ref().and_then(|s| s.node_name.as_deref()) == Some(name))
         .collect();
-    let tile = build_node_tile(&node, &on_node);
+    let idx = OwnerIndex::build(world);
+    let tile = build_node_tile(&node, &on_node, &idx);
 
     let mut info = Vec::new();
     if let Some(ni) = node.status.as_ref().and_then(|s| s.node_info.as_ref()) {
@@ -1029,6 +1020,8 @@ pub struct Models {
     pub workloads: Vec<WorkloadRow>,
     pub attention: Vec<Concern>,
     pub workload_severity: HashMap<WorkloadRef, Severity>,
+    /// The explorable world projection of all of the above.
+    pub world: WorldModel,
 }
 
 impl Models {
@@ -1045,11 +1038,18 @@ impl Models {
                     .or_insert(c.severity);
             }
         }
+        let world_model = build_world(
+            &map,
+            &workloads,
+            &workload_severity,
+            &world.custom_entries(),
+        );
         Models {
             map,
             workloads,
             attention,
             workload_severity,
+            world: world_model,
         }
     }
 }
@@ -1114,7 +1114,7 @@ mod tests {
             fx::pod_requests(fx::pod("d", "p3", Some("n1")), "4", "8Gi"),
             "Succeeded",
         );
-        let tile = build_node_tile(&n, &[&p1, &p2, &done]);
+        let tile = build_node_tile(&n, &[&p1, &p2, &done], &OwnerIndex::default());
         assert!(
             (tile.cpu_ratio - 0.5).abs() < 1e-9,
             "cpu {}",
@@ -1133,7 +1133,7 @@ mod tests {
     fn node_health_precedence() {
         let not_ready = fx::node_with_condition(fx::node("n1", None), "Ready", "False");
         assert_eq!(
-            build_node_tile(&not_ready, &[]).health,
+            build_node_tile(&not_ready, &[], &OwnerIndex::default()).health,
             NodeHealth::NotReady
         );
 
@@ -1143,15 +1143,18 @@ mod tests {
             "Ready",
             "False",
         ));
-        assert_eq!(build_node_tile(&both, &[]).health, NodeHealth::NotReady);
+        assert_eq!(
+            build_node_tile(&both, &[], &OwnerIndex::default()).health,
+            NodeHealth::NotReady
+        );
 
         let cordoned = fx::cordoned(fx::node("n3", None));
-        let t = build_node_tile(&cordoned, &[]);
+        let t = build_node_tile(&cordoned, &[], &OwnerIndex::default());
         assert_eq!(t.health, NodeHealth::Cordoned);
         assert!(t.cordoned);
 
         let pressured = fx::node_with_condition(fx::node("n4", None), "MemoryPressure", "True");
-        let t = build_node_tile(&pressured, &[]);
+        let t = build_node_tile(&pressured, &[], &OwnerIndex::default());
         assert_eq!(t.health, NodeHealth::Pressure);
         assert_eq!(t.abnormal, vec!["Mem"]);
     }

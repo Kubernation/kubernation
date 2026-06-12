@@ -31,6 +31,9 @@ pub struct Config {
     /// Warm-standby context to observe alongside the hot cluster
     /// (`--warm` overrides).
     pub warm_context: Option<String>,
+    /// CRDs to project onto the world map as island structures, by CRD
+    /// name, e.g. "gizmos.example.com" (`--project` adds more).
+    pub projections: Vec<String>,
 }
 
 impl Config {

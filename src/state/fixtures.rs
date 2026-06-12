@@ -78,6 +78,7 @@ pub fn world() -> (ObservedWorld, Seeds) {
         pvcs,
         services,
         events: Arc::new(Mutex::new(VecDeque::new())),
+        customs: Arc::new(Vec::new()),
     };
     let seeds = Seeds {
         nodes: nodes_w,

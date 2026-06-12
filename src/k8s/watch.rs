@@ -12,9 +12,11 @@ use kube::{Resource, ResourceExt};
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 
+use kube::core::{ApiResource, DynamicObject};
+
 use super::client::Cluster;
 use crate::events::{AppEvent, ClusterId, WorldDelta};
-use crate::state::observed::{ObservedWorld, RecentEvent};
+use crate::state::observed::{CustomWatch, ObservedWorld, RecentEvent};
 
 /// Owns the informer tasks for one cluster context. Dropping it (e.g. on
 /// context switch) aborts every watcher.
@@ -34,9 +36,27 @@ impl Drop for WorldHandle {
 /// Spawn the full informer set for a cluster and return the observed world
 /// backed by their stores. One call per context; multi-cluster later means
 /// calling this once per member of the pair.
-pub fn spawn(cluster: &Cluster, id: ClusterId, tx: Sender<AppEvent>) -> WorldHandle {
+pub fn spawn(
+    cluster: &Cluster,
+    id: ClusterId,
+    tx: Sender<AppEvent>,
+    projections: &[(String, ApiResource)],
+) -> WorldHandle {
     let c = &cluster.client;
     let mut tasks = Vec::new();
+
+    // Dynamic custom-resource projections (resolved from CRDs at connect).
+    let mut customs = Vec::new();
+    for (kind, ar) in projections {
+        let writer = Writer::<DynamicObject>::new(ar.clone());
+        let store = writer.as_reader();
+        let api = Api::<DynamicObject>::all_with(c.clone(), ar);
+        tasks.push(spawn_dynamic(api, writer, id, tx.clone()));
+        customs.push(CustomWatch {
+            kind: kind.clone(),
+            store,
+        });
+    }
 
     let (nodes, w) = reflector::store::<Node>();
     tasks.push(spawn_reflector(
@@ -125,6 +145,7 @@ pub fn spawn(cluster: &Cluster, id: ClusterId, tx: Sender<AppEvent>) -> WorldHan
 
     let world = ObservedWorld {
         meta: cluster.meta.clone(),
+        customs: Arc::new(customs),
         nodes,
         pods,
         deployments,
@@ -188,6 +209,40 @@ where
 /// Events are high-churn and mostly noise after the fact; rather than a full
 /// reflector store we keep a bounded ring of the most recent ones, deduped
 /// by (kind, ns, name, reason).
+/// Reflector loop for a projected custom resource (DynamicObject needs an
+/// explicit ApiResource dyntype, so it can't share `spawn_reflector`).
+fn spawn_dynamic(
+    api: Api<DynamicObject>,
+    writer: Writer<DynamicObject>,
+    id: ClusterId,
+    tx: Sender<AppEvent>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let stream = watcher(api, watcher::Config::default())
+            .default_backoff()
+            .modify(|obj| {
+                obj.managed_fields_mut().clear();
+            })
+            .reflect(writer)
+            .touched_objects();
+        let mut stream = pin!(stream);
+        loop {
+            match stream.next().await {
+                Some(Ok(_)) => {
+                    let _ = tx.try_send(AppEvent::World(id, WorldDelta::Custom));
+                }
+                Some(Err(err)) => {
+                    tracing::warn!(%err, "custom watcher error (will retry)");
+                }
+                None => {
+                    tracing::warn!("custom watcher stream ended");
+                    break;
+                }
+            }
+        }
+    })
+}
+
 fn spawn_events(
     api: Api<Event>,
     id: ClusterId,

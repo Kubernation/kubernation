@@ -1,16 +1,17 @@
 # K8sCiv
 
-**The cluster as a living map.** A terminal UI for observing Kubernetes,
-built on the interface grammar of early Sid Meier's Civilization: a spatial
-main view of node tiles grouped by failure zone, a "city screen" giving one
-workload full context, and an attention queue that brings problems to you —
-the *next unit needing orders* — instead of making you go hunting through
-dashboards.
+**The cluster as a living world.** A terminal UI for observing Kubernetes,
+built on the interface grammar of early Sid Meier's Civilization: a 2D
+world you explore — zones are continents, nodes are provinces of terrain,
+workloads are cities sited where their pods run — plus a "city screen"
+giving one workload full context, and an attention queue that brings
+problems to you — the *next unit needing orders* — instead of making you
+go hunting through dashboards.
 
 This is not a retro skin on k9s. It is a different operator model:
 
-- **Spatial, not tabular.** Nodes are terrain tiles in zone columns, laid
-  out by stable hash so the map never reshuffles under your eyes.
+- **Spatial, not tabular.** Your resources project onto a stable world
+  map; geography means something (failure domains, placement, drift).
 - **Attention-driven.** Failing pods, stuck rollouts, pending PVCs, nodes
   under pressure — aggregated, ranked, and one keypress (`n`) from their
   full context.
@@ -19,23 +20,27 @@ This is not a retro skin on k9s. It is a different operator model:
   model: staged diffs committed deliberately, like ending a turn.
 
 ```text
- K8SCIV ▏kind-k8sciv ▏kind ▏https://127.0.0.1:50970/ ▏nodes 4 · pods 26                  overlay PRESSURE ▏? help
-─ z-a · 1 ────────────  ─ z-b · 1 ────────────  ─ z-c · 1 ────────────  ─ unzoned · 1 ────────
-▣ k8sciv-worker         ▣ k8sciv-worker2        ▣ k8sciv-worker3        ▣ k8sciv-control-pl…
-c ░░░░░░░░░░░░░░   1%   c ░░░░░░░░░░░░░░   1%   c ░░░░░░░░░░░░░░   1%   c ▓░░░░░░░░░░░░░   6%
-m ░░░░░░░░░░░░░░   1%   m ░░░░░░░░░░░░░░   1%   m ░░░░░░░░░░░░░░   1%   m ░░░░░░░░░░░░░░   2%
-◌●●●●●              6p  ●✗●●●●              6p  ●✗●●●               5p  ●●●●●●●●●           9p
-
-┌ ATTENTION (10) ────────────────────────────────────────────────────────────────────────────────┐
-│▸‼ deploy k8sciv-demo/crashy — CrashLoopBackOff ×2     0/2 ready · rollout Progressing (0/2)    │
-│ ! pvc k8sciv-demo/stuck-pvc — Pending                 storageClass does-not-exist              │
-│ · events: ProvisioningFailed ×42 on persistentvolumeclaim k8sciv-demo/stuck-pvc                │
-│ · events: Unhealthy ×2 on pod kube-system/coredns-589f44dc88-rxdp2                             │
-└─────────────────────────────────────────────── n cycles · Tab focuses · a collapses ───────────┘
+ K8SCIV ▏kind-k8sciv ▏kind ▏https://127.0.0.1:50970/ ▏4n·25p                     overlay PRESSURE ▏? help
+~≈ z-a · 1 ≈                   ≈ z-b · 1 ≈                  ≈ z-c · 1 ≈        ┌ WORLD ────────────┐
+ ▣ k8sciv-worker ●5 ≣3      ~  ▣ k8sciv-worker2 ●6 ≣3       ▣ k8sciv-worker3   │ ┌              ┐  │
+ ,    ,    ,    ,    ,         ,   ◍0‼   ,    ,    ,    ~   ,    ,    ,    ,   │  ▪ ▪ ▪ ▪          │
+    ,    ,    ,    ,    ,  ~      ,crashy   ,    ,          ,    ,   ◍2   ,    │ └              ┘  │
+                 ~              ,◍3  ,    ,    ,            ,  coredns  ,      ├ STATUS ───────────┤
+       ~                  ~   ,  web    ,    ,    ,    ~    ,    ,    ,    ,   │ 4 provinces 6 cities
+                ~                ◍2   ,    ,    ,           ~                  │ 25 pods  ‼1 !1 ·1
+      ~                  ~     , db ,    ,    ,    ,                  ~        ├ ORDERS ───────────┤
+  ≈ k8sciv-demo ≈  ·          ~                  ~                  ~          │ ◍ crashy
+   ✦ gizmo/alpha-frob…                  ~                  ~                   │ pop 0 of 2 desired
+ · ✦ gizmo/beta-frobn…     ~                  ~                  ~             │ ‼ needs attention
+┌ ATTENTION (3) ───────────────────────────────────────────────────────────────────────────────────┐
+│▸‼ deploy k8sciv-demo/crashy — CrashLoopBackOff ×2     0/2 ready · rollout Progressing (0/2)      │
+│ ! pvc k8sciv-demo/stuck-pvc — Pending                 storageClass does-not-exist                │
+└──────────────────────────────────────────────── n cycles · Tab focuses · a collapses ────────────┘
 ```
 
-*(Real capture from `make dev` — the `✗` glyphs are the intentionally
-crash-looping sample deployment, and `◌` is a pod mid-termination.)*
+*(Real capture from `make dev` — crashy's city flies a `‼` flag with
+population 0, the `✦` structures on the isle of k8sciv-demo are live
+custom resources, and `≣3` marks three daemonset roads per province.)*
 
 ## Quick start
 
@@ -89,7 +94,8 @@ tick (250ms default), so a noisy cluster can never make typing lag.
 | Key | Action |
 | --- | ------ |
 | `h j k l` / arrows | move cursor / selection |
-| `PgUp/PgDn` · `Ctrl+u/d` · `Home/End` | page within a zone · half page · first/last zone |
+| `]` / `[` | sail to next / previous city |
+| `PgUp/PgDn` · `Ctrl+u/d` · `Home/End` | page the map · half page · west/east continent |
 | `Enter` | open the thing under the cursor |
 | `Esc` / `Backspace` | back |
 | `m` / `w` | map · workload list |
@@ -100,30 +106,52 @@ tick (250ms default), so a noisy cluster can never make typing lag.
 | `?` | full keymap |
 | `q` / `Ctrl-C` | quit |
 
-## Reading the map
+## Reading the world
 
-| Glyph | Node | | Glyph | Pod |
-| --- | --- | --- | --- | --- |
-| `▣` | healthy | | `●` | running & ready |
-| `▤` | cordoned | | `◐` | running, not ready |
-| `▥` | under pressure | | `○` | pending |
-| `▦` | NotReady | | `◌` | terminating |
-| | | | `✗` | failing |
-| | | | `◆` | succeeded |
+```
+≈ z-a · 1 ≈                    ≈ z-b · 1 ≈
+ ▣ k8sciv-worker ●5 ≣3      ~  ▣ k8sciv-worker2 ●6 ≣3
+ ,    ,    ,    ,    ,         ,   ◍0‼   ,    ,    ,
+    ,    ,    ,    ,    ,  ~      ,crashy   ,    ,
+                 ~              ,◍3  ,    ,    ,
+       ~                  ~   ,  web    ,    ,    ,
+  ≈ k8sciv-demo ≈  ·   ~
+   ✦ gizmo/alpha-frob…          ~
+ · ✦ gizmo/beta-frobn…
+```
 
-The `c`/`m` gauges show **scheduling pressure** — the sum of pod resource
-*requests* on the node versus allocatable — not live usage. Calm is gray,
-elevated (≥70%) is yellow, high (≥90%) is red. Color is reserved for
-meaning: a running pod is the absence of red, not green.
+Zones are **continents**; each node is a **province** of land whose
+terrain texture tells its state (`,` grass · `=` cordon fence · `∩`
+drought/pressure · `×` wasteland/NotReady). Workloads are **cities**
+(`◍N` — population = ready replicas, flagged `‼`/`!` when concerning)
+sited on the province hosting most of their pods, so a city *migrates
+when its pods do*. DaemonSets pave `≣` roads instead of building cities.
+Anything with no place on the land — projected custom resources (`✦`) and
+zero-pod workloads (`◌`) — lives on **namespace islands** in the southern
+sea. Walk anywhere with `h/j/k/l`; `]`/`[` sail city to city; `Enter`
+opens whatever you stand on.
 
-On terminals ≥110 columns the map gains a Civ-style sidebar: **WORLD**
-(green land cells on blue ocean, one per node, `┌┐└┘` framing your
-viewport), **STATUS** (nodes/pods/concerns — your people and gold), and
-**ORDERS** (the selected tile: health, zone, pressure, pod census — the
-"Moving Unit" box). On narrower terminals a floating WORLD overlay appears
-bottom-right whenever the board exceeds the viewport. Zone headers roll up
-trouble (`─ z-c · 20 ▪2 ─`) so a degraded zone is visible without
-scrolling to it.
+Pods keep their glyphs in city and node screens: `●` ready · `◐` starting
+· `○` pending · `◌` terminating · `✗` failing · `◆` succeeded. Pressure
+gauges show **scheduling pressure** (requests ÷ allocatable), not live
+usage; calm is green, elevated (≥70%) yellow, high (≥90%) red.
+
+On terminals ≥110 columns the map gains the Civ sidebar: **WORLD** (the
+chart: green land on blue ocean, `┌┐└┘` framing your viewport), **STATUS**
+(provinces/cities/pods/concerns — your people and gold), and **ORDERS**
+(whatever the cursor stands on — city, province, structure, or open sea).
+Narrower terminals get a floating WORLD chart instead.
+
+### Projecting custom resources
+
+```sh
+k8sciv --context prod --project certificates.cert-manager.io --project gizmos.example.com
+```
+
+Each `--project` (or config `projections = [...]`) resolves the CRD at
+connect and watches its instances live; they appear as `✦` structures on
+their namespace's island. CRDs absent on a cluster are skipped quietly —
+a hot/warm pair may project asymmetrically.
 
 The default palette is **civ**: parchment chrome, green terrain, white
 city labels, blue ocean — with red and yellow strictly reserved for things
@@ -146,7 +174,7 @@ Optional file at `~/.config/k8sciv/config.toml`:
 
 ```toml
 tick_ms = 250              # world-change coalescing cadence
-color = "auto"             # "auto" | "mono"
+color = "auto"             # "auto" (civ) | "plain" | "mono"
 attention_expanded = false # start with the panel expanded
 ```
 

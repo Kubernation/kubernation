@@ -1,7 +1,10 @@
 use std::path::Path;
 
 use color_eyre::eyre::{Result, eyre};
+use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
+use kube::api::{Api, ListParams};
 use kube::config::{KubeConfigOptions, Kubeconfig};
+use kube::core::ApiResource;
 use kube::{Client, Config};
 
 /// Cluster identity shown in the status bar; the "politics of the world".
@@ -121,6 +124,60 @@ pub async fn connect(kubeconfig: Option<&Path>, context: Option<&str>) -> Result
             all_contexts,
         },
     })
+}
+
+/// Resolve requested CRD projections ("plural.group" names, e.g.
+/// "gizmos.example.com") into dynamic ApiResources. Resolution happens once
+/// at connect; CRDs that don't exist on this cluster are skipped with a log
+/// line, so a pair can project asymmetrically.
+pub async fn resolve_projections(client: &Client, wanted: &[String]) -> Vec<(String, ApiResource)> {
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let api = Api::<CustomResourceDefinition>::all(client.clone());
+    let crds = match api.list(&ListParams::default()).await {
+        Ok(list) => list.items,
+        Err(err) => {
+            tracing::warn!(%err, "could not list CRDs; no projections active");
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for name in wanted {
+        let Some(crd) = crds
+            .iter()
+            .find(|c| c.metadata.name.as_deref() == Some(name))
+        else {
+            tracing::warn!(%name, "projection CRD not found on this cluster; skipping");
+            continue;
+        };
+        let spec = &crd.spec;
+        let Some(version) = spec
+            .versions
+            .iter()
+            .find(|v| v.served && v.storage)
+            .or_else(|| spec.versions.iter().find(|v| v.served))
+        else {
+            tracing::warn!(%name, "projection CRD has no served version; skipping");
+            continue;
+        };
+        let kind_label = spec
+            .names
+            .singular
+            .clone()
+            .unwrap_or_else(|| spec.names.kind.to_lowercase());
+        out.push((
+            kind_label,
+            ApiResource {
+                group: spec.group.clone(),
+                version: version.name.clone(),
+                api_version: format!("{}/{}", spec.group, version.name),
+                kind: spec.names.kind.clone(),
+                plural: spec.names.plural.clone(),
+            },
+        ));
+    }
+    out
 }
 
 #[cfg(test)]

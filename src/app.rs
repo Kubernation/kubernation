@@ -70,6 +70,7 @@ pub struct App {
     cfg: Config,
     theme: Theme,
     kubeconfig: Option<PathBuf>,
+    projections: Vec<String>,
 
     tx: Sender<AppEvent>,
     rx: Receiver<AppEvent>,
@@ -105,9 +106,11 @@ pub struct App {
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cfg: Config,
         kubeconfig: Option<PathBuf>,
+        projections: Vec<String>,
         hot: WorldHandle,
         warm: Option<WorldHandle>,
         tx: Sender<AppEvent>,
@@ -120,6 +123,7 @@ impl App {
             cfg,
             theme,
             kubeconfig,
+            projections,
             tx,
             rx,
             hot,
@@ -263,6 +267,20 @@ impl App {
         {
             let ctx = ctx!(self, ClusterId::Hot);
             self.attention_panel.update(&ctx);
+        }
+    }
+
+    fn models_for(&self, id: ClusterId) -> &Models {
+        match id {
+            ClusterId::Hot => &self.models_hot,
+            ClusterId::Warm => self.models_warm.as_ref().unwrap_or(&self.models_hot),
+        }
+    }
+
+    fn map_for(&mut self, id: ClusterId) -> &mut MapView {
+        match id {
+            ClusterId::Hot => &mut self.map_hot,
+            ClusterId::Warm => &mut self.map_warm,
         }
     }
 
@@ -419,12 +437,21 @@ impl App {
                 self.go_home(Screen::Workloads);
             }
             Action::OpenNode(name) => {
+                // Park the explorer on the province too, so returning to
+                // the map lands where the attention pointed.
+                if let Some(pos) = self.models_for(source).world.province_pos(&name) {
+                    self.map_for(source).jump_to(pos);
+                }
                 self.node.open(name);
                 self.node_cluster = source;
                 self.focus = source;
                 self.push_screen(Screen::Node);
             }
             Action::OpenWorkload(r) => {
+                let world = &self.models_for(source).world;
+                if let Some(pos) = world.city_pos(&r).or_else(|| world.structure_pos(&r)) {
+                    self.map_for(source).jump_to(pos);
+                }
                 self.city.open(r);
                 self.city_cluster = source;
                 self.focus = source;
@@ -456,7 +483,8 @@ impl App {
         match client::connect(self.kubeconfig.as_deref(), Some(&name)).await {
             Ok(cluster) => {
                 // New informer set first; the old one aborts on drop.
-                self.hot = watch::spawn(&cluster, ClusterId::Hot, self.tx.clone());
+                let proj = client::resolve_projections(&cluster.client, &self.projections).await;
+                self.hot = watch::spawn(&cluster, ClusterId::Hot, self.tx.clone(), &proj);
                 self.ready_hot = false;
                 self.dirty = true;
                 self.models_hot = Models::default();

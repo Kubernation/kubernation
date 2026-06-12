@@ -9,11 +9,12 @@ const KEYMAP: &[(&str, &[(&str, &str)])] = &[
     (
         "NAVIGATE",
         &[
-            ("h j k l / arrows", "move cursor / selection"),
+            ("h j k l / arrows", "explore the world / move selection"),
+            ("] / [", "sail to next / previous city"),
             ("g / G", "first / last item"),
-            ("PgUp / PgDn", "page within a zone column"),
+            ("PgUp / PgDn", "page the map"),
             ("Ctrl+u / Ctrl+d", "half page"),
-            ("Home / End", "first / last zone"),
+            ("Home / End", "westmost / eastmost continent"),
             ("Enter", "open the thing under the cursor"),
             ("Esc / Backspace", "back"),
         ],

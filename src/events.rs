@@ -37,6 +37,8 @@ pub enum WorldDelta {
     Storage,
     Services,
     Events,
+    /// Projected custom-resource instances changed.
+    Custom,
     /// Node and pod stores have completed their initial list.
     Ready,
 }

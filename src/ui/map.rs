@@ -1,12 +1,7 @@
-//! The main map: zone columns of node tiles. This is the game board.
-//!
-//! Tile anatomy (22×4):
-//! ```text
-//! ▣ kind-worker2     ⚠M
-//! c ▓▓▓▓▓▓░░░░░░  52%
-//! m ▓▓▓░░░░░░░░░  28%
-//! ●●●●●◐○✗          12p
-//! ```
+//! The world view: the game board. Continents of node-provinces with
+//! health-textured terrain, workload cities with population badges and
+//! name labels, daemonset roads, and namespace islands for the abstract
+//! things. The cursor explores cell by cell; the camera follows.
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -15,25 +10,25 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Widget};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::symbols::{bar, node_glyph, pod_glyph};
+use super::symbols::node_glyph;
 use super::{Action, Component, Edge, OverlayMode, RenderCtx};
-use crate::state::attention::Severity;
-use crate::state::model::{NodeHealth, NodeTile, PodState, ZoneColumn};
+use crate::state::model::NodeHealth;
+use crate::state::world::{City, Province, Region, WorldModel};
 use crate::util::truncate;
 
-pub const TILE_W: u16 = 22;
-pub const TILE_H: u16 = 4;
-const COL_GAP: u16 = 2;
-const ROW_GAP: u16 = 1;
+pub const CITY: char = '◍';
+pub const INFRA: char = '≣';
+
+/// Minimap inputs: cursor province cell and visible-province viewport.
+pub type ChartState = (Option<(usize, usize)>, (usize, usize, usize, usize));
 
 pub struct MapView {
-    /// (zone column index, node index within column)
-    pub cursor: (usize, usize),
-    scroll_col: usize,
-    scroll_row: usize,
-    /// (cols, rows) of the last rendered viewport — paging jump distances.
-    last_visible: (usize, usize),
-    /// True when the sidebar WORLD panel is showing this view's minimap, so
+    /// Absolute world cell under the explorer's cursor.
+    pub cursor: (u16, u16),
+    cam: (u16, u16),
+    /// (w, h) of the last rendered viewport — paging distances.
+    last_view: (u16, u16),
+    /// True when the sidebar WORLD panel is showing this view's chart, so
     /// the floating overlay stays out of the way.
     pub external_minimap: bool,
 }
@@ -41,223 +36,377 @@ pub struct MapView {
 impl Default for MapView {
     fn default() -> Self {
         Self {
-            cursor: (0, 0),
-            scroll_col: 0,
-            scroll_row: 0,
-            last_visible: (1, 8),
+            cursor: (2, 1), // first province label cell, not open sea
+            cam: (0, 0),
+            last_view: (80, 20),
             external_minimap: false,
         }
     }
 }
 
 impl MapView {
-    /// (scroll_col, scroll_row, visible_cols, visible_rows) as of the last
-    /// render — the sidebar uses this to frame the viewport on the world.
-    pub fn viewport(&self) -> (usize, usize, usize, usize) {
+    /// Jump the explorer to a world position (attention routing).
+    pub fn jump_to(&mut self, pos: (u16, u16)) {
+        self.cursor = pos;
+    }
+
+    /// Minimap inputs: cursor province (col,row) and visible-province
+    /// viewport, both in node-grid coordinates.
+    pub fn chart_state(&self, world: &WorldModel) -> ChartState {
         (
-            self.scroll_col,
-            self.scroll_row,
-            self.last_visible.0,
-            self.last_visible.1,
+            world.province_index_at(self.cursor.0, self.cursor.1),
+            world.visible_provinces(self.cam, self.last_view),
         )
     }
-}
 
-impl MapView {
-    pub fn selected_node(&self, ctx: &RenderCtx) -> Option<String> {
-        ctx.models
-            .map
-            .tile(self.cursor.0, self.cursor.1)
-            .map(|t| t.name.clone())
+    fn clamp_cursor(&mut self, world: &WorldModel) {
+        self.cursor.0 = self.cursor.0.min(world.width.saturating_sub(1));
+        self.cursor.1 = self.cursor.1.min(world.height.saturating_sub(1));
     }
 
-    /// Returns false when the cursor was already pinned at the edge.
-    fn move_zone(&mut self, delta: isize, ctx: &RenderCtx) -> bool {
-        let zones = &ctx.models.map.zones;
-        if zones.is_empty() {
-            return false;
-        }
-        let before = self.cursor.0;
-        let z = (self.cursor.0 as isize + delta).clamp(0, zones.len() as isize - 1) as usize;
-        let max_node = zones[z].nodes.len().saturating_sub(1);
-        self.cursor = (z, self.cursor.1.min(max_node));
-        delta == 0 || self.cursor.0 != before
+    fn move_by(&mut self, dx: i32, dy: i32, world: &WorldModel) {
+        let x = (self.cursor.0 as i32 + dx).clamp(0, world.width as i32 - 1);
+        let y = (self.cursor.1 as i32 + dy).clamp(0, world.height as i32 - 1);
+        self.cursor = (x as u16, y as u16);
     }
 
-    fn move_node(&mut self, delta: isize, ctx: &RenderCtx) {
-        let zones = &ctx.models.map.zones;
-        let Some(col) = zones.get(self.cursor.0) else {
+    /// Cycle to the next/previous city in stable world order.
+    fn cycle_city(&mut self, world: &WorldModel, dir: i32) {
+        let cities: Vec<&City> = world.cities().collect();
+        if cities.is_empty() {
             return;
+        }
+        let key = |c: &City| (c.y, c.x);
+        let cur = (self.cursor.1, self.cursor.0);
+        let pos = if dir > 0 {
+            cities.iter().position(|c| key(c) > cur).unwrap_or(0)
+        } else {
+            cities
+                .iter()
+                .rposition(|c| key(c) < cur)
+                .unwrap_or(cities.len() - 1)
         };
-        if col.nodes.is_empty() {
-            return;
-        }
-        let n = (self.cursor.1 as isize + delta).clamp(0, col.nodes.len() as isize - 1) as usize;
-        self.cursor.1 = n;
+        self.cursor = (cities[pos].x, cities[pos].y);
     }
 }
 
 impl Component for MapView {
     fn handle_key(&mut self, key: KeyEvent, ctx: &RenderCtx) -> Option<Action> {
+        let world = &ctx.models.world;
+        if world.width == 0 {
+            return None;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let page = self.last_visible.1 as isize;
+        let page = self.last_view.1 as i32;
         match key.code {
             KeyCode::Left | KeyCode::Char('h') => {
-                let moved = self.move_zone(-1, ctx);
-                if !moved {
+                if self.cursor.0 == 0 {
                     return Some(Action::EdgeReached(Edge::Left));
                 }
+                self.move_by(-1, 0, world);
             }
             KeyCode::Right | KeyCode::Char('l') => {
-                let moved = self.move_zone(1, ctx);
-                if !moved {
+                if self.cursor.0 + 1 >= world.width {
                     return Some(Action::EdgeReached(Edge::Right));
                 }
+                self.move_by(1, 0, world);
             }
-            KeyCode::Up | KeyCode::Char('k') => self.move_node(-1, ctx),
-            KeyCode::Down | KeyCode::Char('j') => self.move_node(1, ctx),
-            KeyCode::PageDown => self.move_node(page, ctx),
-            KeyCode::PageUp => self.move_node(-page, ctx),
-            KeyCode::Char('d') if ctrl => self.move_node((page / 2).max(1), ctx),
-            KeyCode::Char('u') if ctrl => self.move_node(-((page / 2).max(1)), ctx),
+            KeyCode::Up | KeyCode::Char('k') => self.move_by(0, -1, world),
+            KeyCode::Down | KeyCode::Char('j') => self.move_by(0, 1, world),
+            KeyCode::PageDown => self.move_by(0, page, world),
+            KeyCode::PageUp => self.move_by(0, -page, world),
+            KeyCode::Char('d') if ctrl => self.move_by(0, (page / 2).max(1), world),
+            KeyCode::Char('u') if ctrl => self.move_by(0, -(page / 2).max(1), world),
+            KeyCode::Char(']') => self.cycle_city(world, 1),
+            KeyCode::Char('[') => self.cycle_city(world, -1),
             KeyCode::Home => {
-                self.cursor.0 = 0;
-                let _ = self.move_zone(0, ctx);
+                if let Some(c) = world.continents.first() {
+                    self.cursor.0 = c.x + 2;
+                }
             }
             KeyCode::End => {
-                let zones = ctx.models.map.zones.len();
-                if zones > 0 {
-                    self.cursor.0 = zones - 1;
-                    let _ = self.move_zone(0, ctx);
+                if let Some(c) = world.continents.last() {
+                    self.cursor.0 = c.x + 2;
                 }
+                self.clamp_cursor(world);
             }
-            KeyCode::Char('g') => self.cursor.1 = 0,
-            KeyCode::Char('G') => {
-                if let Some(col) = ctx.models.map.zones.get(self.cursor.0) {
-                    self.cursor.1 = col.nodes.len().saturating_sub(1);
-                }
+            KeyCode::Char('g') => self.cursor.1 = 1.min(world.height.saturating_sub(1)),
+            KeyCode::Char('G') => self.cursor.1 = world.height.saturating_sub(2),
+            KeyCode::Enter => {
+                return match world.region_at(self.cursor.0, self.cursor.1) {
+                    Region::City(_, c) => Some(Action::OpenWorkload(c.r.clone())),
+                    Region::Province(p) => Some(Action::OpenNode(p.tile.name.clone())),
+                    Region::Structure(_, s) => s.workload.clone().map(Action::OpenWorkload),
+                    _ => None,
+                };
             }
-            KeyCode::Enter => return self.selected_node(ctx).map(Action::OpenNode),
             _ => {}
         }
         None
     }
 
     fn update(&mut self, ctx: &RenderCtx) {
-        let zones = &ctx.models.map.zones;
-        if zones.is_empty() {
-            self.cursor = (0, 0);
-            return;
-        }
-        let z = self.cursor.0.min(zones.len() - 1);
-        let n = self.cursor.1.min(zones[z].nodes.len().saturating_sub(1));
-        self.cursor = (z, n);
+        self.clamp_cursor(&ctx.models.world);
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &RenderCtx) {
+        let theme = ctx.theme;
         if !ctx.ready {
             // Fog of war: the world is unexplored until the first sync lands.
             let buf = f.buffer_mut();
             for yy in area.top()..area.bottom() {
                 for xx in area.left()..area.right() {
-                    buf.set_string(xx, yy, "▒", ctx.theme.fog());
+                    buf.set_string(xx, yy, "▒", theme.fog());
                 }
             }
             let msg = format!(" exploring {} … ", ctx.world.meta.context);
             f.render_widget(
-                Paragraph::new(Line::styled(msg, ctx.theme.dim())).centered(),
+                Paragraph::new(Line::styled(msg, theme.dim())).centered(),
                 vcenter(area),
             );
             return;
         }
-        let zones = &ctx.models.map.zones;
-        if zones.is_empty() {
+        let world = &ctx.models.world;
+        if world.continents.is_empty() {
             f.render_widget(
-                Paragraph::new(Line::styled("no nodes observed", ctx.theme.dim())).centered(),
+                Paragraph::new(Line::styled(
+                    "no land sighted — no nodes observed",
+                    theme.dim(),
+                ))
+                .centered(),
                 vcenter(area),
             );
             return;
         }
-        if area.width < TILE_W || area.height < TILE_H + 2 {
+        if area.width < 30 || area.height < 6 {
             f.render_widget(Paragraph::new("terminal too small"), area);
             return;
         }
 
-        // Keep the cursor inside the viewport.
-        let visible_cols = (((area.width + COL_GAP) / (TILE_W + COL_GAP)) as usize).max(1);
-        let visible_rows = (((area.height - 1) / (TILE_H + ROW_GAP)) as usize).max(1);
-        self.last_visible = (visible_cols, visible_rows);
-        if self.cursor.0 < self.scroll_col {
-            self.scroll_col = self.cursor.0;
+        self.last_view = (area.width, area.height);
+        // Camera follows the cursor with the window clamped to the world.
+        if self.cursor.0 < self.cam.0 {
+            self.cam.0 = self.cursor.0;
         }
-        if self.cursor.0 >= self.scroll_col + visible_cols {
-            self.scroll_col = self.cursor.0 + 1 - visible_cols;
+        if self.cursor.0 >= self.cam.0 + area.width {
+            self.cam.0 = self.cursor.0 + 1 - area.width;
         }
-        if self.cursor.1 < self.scroll_row {
-            self.scroll_row = self.cursor.1;
+        if self.cursor.1 < self.cam.1 {
+            self.cam.1 = self.cursor.1;
         }
-        if self.cursor.1 >= self.scroll_row + visible_rows {
-            self.scroll_row = self.cursor.1 + 1 - visible_rows;
+        if self.cursor.1 >= self.cam.1 + area.height {
+            self.cam.1 = self.cursor.1 + 1 - area.height;
         }
+        self.cam.0 = self.cam.0.min(world.width.saturating_sub(area.width));
+        self.cam.1 = self.cam.1.min(world.height.saturating_sub(area.height));
 
         let buf = f.buffer_mut();
-        let max_rows_any = zones.iter().map(|z| z.nodes.len()).max().unwrap_or(0);
+        let (cam_x, cam_y) = self.cam;
 
-        for (vi, zi) in (self.scroll_col..zones.len())
-            .take(visible_cols)
-            .enumerate()
-        {
-            let zone = &zones[zi];
-            let x = area.x + vi as u16 * (TILE_W + COL_GAP);
-            draw_zone_header(buf, x, area.y, zone, ctx);
-
-            for (vr, ni) in (self.scroll_row..zone.nodes.len())
-                .take(visible_rows)
-                .enumerate()
-            {
-                let tile = &zone.nodes[ni];
-                let y = area.y + 1 + vr as u16 * (TILE_H + ROW_GAP);
-                // The inactive continent keeps its cursor but mutes it.
-                let selected = ctx.focused && (zi, ni) == self.cursor;
-                draw_tile(buf, x, y, tile, selected, ctx);
+        // --- Open sea ------------------------------------------------------
+        let sea = theme.sea();
+        for vy in 0..area.height {
+            let wy = cam_y + vy;
+            for vx in 0..area.width {
+                let wx = cam_x + vx;
+                if (wx as u32 * 7 + wy as u32 * 13).is_multiple_of(19) {
+                    buf.set_string(area.x + vx, area.y + vy, "~", sea);
+                }
             }
         }
 
-        // Scroll hints.
-        let hint_style = ctx.theme.dim();
-        if self.scroll_col > 0 {
-            buf.set_string(area.x, area.y, "◂", hint_style);
-        }
-        if self.scroll_col + visible_cols < zones.len() {
-            buf.set_string(area.x + area.width - 1, area.y, "▸", hint_style);
-        }
-        if self.scroll_row > 0 {
-            buf.set_string(area.x + area.width - 1, area.y + 1, "▴", hint_style);
-        }
-        if self.scroll_row + visible_rows < max_rows_any {
-            buf.set_string(
-                area.x + area.width - 1,
-                area.y + area.height - 1,
-                "▾",
-                hint_style,
-            );
+        // --- Continents ------------------------------------------------------
+        for cont in &world.continents {
+            // The landmass name on the shore above it.
+            if let Some((sx, sy)) =
+                project(area, (cam_x, cam_y), cont.x + 1, cont.y.saturating_sub(1))
+            {
+                let label = format!("≈ {} · {} ≈", cont.zone, cont.provinces.len());
+                let width = (area.right() - sx).min(cont.w) as usize;
+                buf.set_stringn(sx, sy, &label, width, theme.zone());
+            }
+            for p in &cont.provinces {
+                draw_province(buf, area, (cam_x, cam_y), p, ctx);
+            }
         }
 
-        // Minimap: only when the board exceeds the viewport (and the
-        // sidebar isn't already showing it).
-        let overflows = self.scroll_col > 0
-            || self.scroll_row > 0
-            || visible_cols < zones.len()
-            || visible_rows < max_rows_any;
-        if overflows && !self.external_minimap {
-            draw_minimap(
-                buf,
-                area,
-                ctx,
-                self.cursor,
-                (self.scroll_col, self.scroll_row, visible_cols, visible_rows),
-            );
+        // --- Islands ---------------------------------------------------------
+        for isl in &world.islands {
+            draw_island(buf, area, (cam_x, cam_y), isl, ctx);
         }
+
+        // --- Cursor ----------------------------------------------------------
+        if ctx.focused
+            && let (Some(vx), Some(vy)) = (
+                self.cursor.0.checked_sub(cam_x),
+                self.cursor.1.checked_sub(cam_y),
+            )
+            && vx < area.width
+            && vy < area.height
+            && let Some(cell) = buf.cell_mut((area.x + vx, area.y + vy))
+        {
+            let patched = cell.style().patch(theme.selection());
+            cell.set_style(patched);
+        }
+
+        // --- Scroll hints ------------------------------------------------------
+        let hint = theme.dim();
+        if cam_x > 0 {
+            buf.set_string(area.x, area.y, "◂", hint);
+        }
+        if cam_x + area.width < world.width {
+            buf.set_string(area.x + area.width - 1, area.y, "▸", hint);
+        }
+        if cam_y > 0 {
+            buf.set_string(area.x + area.width - 1, area.y + 1, "▴", hint);
+        }
+        if cam_y + area.height < world.height {
+            buf.set_string(area.x + area.width - 1, area.y + area.height - 1, "▾", hint);
+        }
+
+        // Floating world chart when the sidebar isn't already showing it.
+        let overflows = world.width > area.width || world.height > area.height;
+        if overflows && !self.external_minimap {
+            let (cursor_cell, viewport) = self.chart_state(world);
+            draw_minimap(buf, area, ctx, cursor_cell, viewport);
+        }
+    }
+}
+
+/// World cell → viewport cell, if visible.
+fn project(area: Rect, cam: (u16, u16), wx: u16, wy: u16) -> Option<(u16, u16)> {
+    let vx = wx.checked_sub(cam.0)?;
+    let vy = wy.checked_sub(cam.1)?;
+    (vx < area.width && vy < area.height).then_some((area.x + vx, area.y + vy))
+}
+
+fn terrain_char(h: NodeHealth) -> char {
+    match h {
+        NodeHealth::Healthy => ',',
+        NodeHealth::Cordoned => '=',
+        NodeHealth::Pressure => '∩',
+        NodeHealth::NotReady => '×',
+    }
+}
+
+fn draw_province(buf: &mut Buffer, area: Rect, cam: (u16, u16), p: &Province, ctx: &RenderCtx) {
+    let theme = ctx.theme;
+    let dim_terrain = ctx.overlay == OverlayMode::ReplicaHealth;
+
+    // Land: solid ground (no sea showing through) with a sparse terrain
+    // texture keyed to the province's health.
+    let tex = terrain_char(p.tile.health);
+    let tex_style = if dim_terrain {
+        theme.dim()
+    } else {
+        theme.terrain(p.tile.health)
+    };
+    for wy in p.y..p.y + p.h {
+        for wx in p.x..p.x + p.w {
+            if let Some((sx, sy)) = project(area, cam, wx, wy) {
+                if (wx as u32 * 31 + wy as u32 * 17).is_multiple_of(5) {
+                    buf.set_string(sx, sy, tex.to_string(), tex_style);
+                } else {
+                    buf.set_string(sx, sy, " ", ratatui::style::Style::new());
+                }
+            }
+        }
+    }
+
+    // Province label: glyph + name + pod count + infrastructure roads.
+    if let Some((sx, sy)) = project(area, cam, p.x + 1, p.y) {
+        let max = (p.w - 2) as usize;
+        let mut label = format!(
+            "{} {} ●{}",
+            node_glyph(p.tile.health),
+            truncate(&p.tile.name, max.saturating_sub(8)),
+            p.tile.pods.len()
+        );
+        if p.infra > 0 {
+            label.push_str(&format!(" {INFRA}{}", p.infra));
+        }
+        let width = (area.right() - sx).min(max as u16) as usize;
+        buf.set_stringn(sx, sy, &label, width, theme.province(p.tile.health));
+    }
+
+    // Cities.
+    for c in &p.cities {
+        draw_city(buf, area, cam, c, ctx);
+    }
+}
+
+fn draw_city(buf: &mut Buffer, area: Rect, cam: (u16, u16), c: &City, ctx: &RenderCtx) {
+    let theme = ctx.theme;
+    let pop_style = match c.severity {
+        Some(sev) => theme.severity(sev),
+        None if c.ready < c.desired => theme.severity(crate::state::attention::Severity::Warning),
+        None => theme.city(),
+    };
+    if let Some((sx, sy)) = project(area, cam, c.x, c.y) {
+        let mut badge = format!("{CITY}{}", c.ready);
+        if let Some(sev) = c.severity {
+            badge.push_str(sev.glyph());
+        }
+        let width = (area.right() - sx).min(8) as usize;
+        buf.set_stringn(sx, sy, &badge, width, pop_style);
+    }
+    if let Some((sx, sy)) = project(area, cam, c.x, c.y + 1) {
+        let name_style = match ctx.overlay {
+            OverlayMode::Namespace => theme.namespace(&c.r.namespace),
+            _ => theme.tile_name(),
+        };
+        let width = (area.right() - sx).min(14) as usize;
+        buf.set_stringn(sx, sy, truncate(&c.r.name, 14), width, name_style);
+    }
+}
+
+fn draw_island(
+    buf: &mut Buffer,
+    area: Rect,
+    cam: (u16, u16),
+    isl: &crate::state::world::Island,
+    ctx: &RenderCtx,
+) {
+    let theme = ctx.theme;
+    // Sandy shore: solid island ground with sparse texture.
+    for wy in isl.y..isl.y + isl.h {
+        for wx in isl.x..isl.x + isl.w {
+            if let Some((sx, sy)) = project(area, cam, wx, wy) {
+                if (wx as u32 * 13 + wy as u32 * 7).is_multiple_of(4) {
+                    buf.set_string(sx, sy, "·", theme.shore());
+                } else {
+                    buf.set_string(sx, sy, " ", ratatui::style::Style::new());
+                }
+            }
+        }
+    }
+    if let Some((sx, sy)) = project(area, cam, isl.x + 1, isl.y) {
+        let label = format!("≈ {} ≈", truncate(&isl.label, (isl.w - 6) as usize));
+        let width = (area.right() - sx).min(isl.w - 2) as usize;
+        buf.set_stringn(sx, sy, &label, width, theme.zone());
+    }
+    for s in &isl.structures {
+        if let Some((sx, sy)) = project(area, cam, isl.x + 2, s.y) {
+            let label = format!("{} {}/{}", s.glyph, s.kind, s.name);
+            let style = if s.glyph == '✦' {
+                theme.structure()
+            } else {
+                theme.dim()
+            };
+            let width = (area.right() - sx).min(isl.w - 3) as usize;
+            buf.set_stringn(sx, sy, truncate(&label, width), width, style);
+        }
+    }
+    if isl.more > 0
+        && let Some((sx, sy)) = project(area, cam, isl.x + 2, isl.y + isl.h - 1)
+    {
+        buf.set_stringn(
+            sx,
+            sy,
+            format!("+{} more", isl.more),
+            (isl.w - 3) as usize,
+            theme.dim(),
+        );
     }
 }
 
@@ -269,77 +418,21 @@ fn vcenter(area: Rect) -> Rect {
     }
 }
 
-fn health_rank(h: NodeHealth) -> u8 {
-    match h {
-        NodeHealth::Healthy => 0,
-        NodeHealth::Cordoned => 1,
-        NodeHealth::Pressure => 2,
-        NodeHealth::NotReady => 3,
-    }
-}
-
-fn worst_health<'a>(tiles: impl Iterator<Item = &'a NodeTile>) -> NodeHealth {
-    tiles
-        .map(|t| t.health)
-        .max_by_key(|h| health_rank(*h))
-        .unwrap_or(NodeHealth::Healthy)
-}
-
-/// Zone header: `─ z-a · 20 ▪3 ──────` — the ▪N rollup (colored by the
-/// worst node state) says "this zone needs a look" without scrolling.
-fn draw_zone_header(buf: &mut Buffer, x: u16, y: u16, zone: &ZoneColumn, ctx: &RenderCtx) {
-    let theme = ctx.theme;
-    let base = format!("─ {} · {} ", truncate(&zone.name, 12), zone.nodes.len());
-    let mut used = base.chars().count().min(TILE_W as usize);
-    buf.set_stringn(x, y, &base, TILE_W as usize, theme.zone());
-
-    let bad = zone
-        .nodes
-        .iter()
-        .filter(|t| t.health != NodeHealth::Healthy)
-        .count();
-    if bad > 0 && used + 3 < TILE_W as usize {
-        let worst = worst_health(zone.nodes.iter());
-        let seg = format!("▪{bad} ");
-        buf.set_stringn(
-            x + used as u16,
-            y,
-            &seg,
-            TILE_W as usize - used,
-            theme.node(worst),
-        );
-        used += seg.chars().count();
-    }
-    if used < TILE_W as usize {
-        buf.set_string(
-            x + used as u16,
-            y,
-            "─".repeat(TILE_W as usize - used),
-            theme.zone(),
-        );
-    }
-}
-
-/// Corner minimap: the whole board at one character per node (or per `k`
-/// nodes when a zone is taller than the panel), zone columns left to right.
-/// `┌┐└┘` brackets frame the visible viewport; the reversed cell is the
-/// cursor. Appears bottom-right only when the board exceeds the viewport.
+/// Floating world chart (when no sidebar is present): bottom-right,
+/// auto-sized, parchment-framed.
 fn draw_minimap(
     buf: &mut Buffer,
     map_area: Rect,
     ctx: &RenderCtx,
-    cursor: (usize, usize),
+    cursor_cell: Option<(usize, usize)>,
     viewport: (usize, usize, usize, usize),
 ) {
-    let theme = ctx.theme;
     let zones = &ctx.models.map.zones;
     let zcount = zones.len() as u16;
     let max_rows = zones.iter().map(|z| z.nodes.len()).max().unwrap_or(0) as u16;
     if zcount == 0 || max_rows == 0 {
         return;
     }
-
-    // Vertical compression: k nodes per cell so tall zones still fit.
     let avail_h = map_area.height.saturating_sub(6);
     if avail_h == 0 {
         return;
@@ -347,12 +440,11 @@ fn draw_minimap(
     let k = max_rows.div_ceil(avail_h).max(1);
     let grid_w = zcount * 2 - 1;
     let grid_h = max_rows.div_ceil(k);
-    let w = grid_w + 4; // bracket margin + border
+    let w = grid_w + 4;
     let h = grid_h + 4;
     if map_area.width < w + 4 || map_area.height < h + 1 {
         return; // not enough room without smothering the board
     }
-
     let area = Rect {
         x: map_area.right() - w - 1,
         y: map_area.bottom() - h,
@@ -367,22 +459,22 @@ fn draw_minimap(
         }
     }
     let block = Block::bordered()
-        .border_style(theme.chrome())
+        .border_style(ctx.theme.chrome())
         .title(" WORLD ")
-        .title_style(theme.title());
+        .title_style(ctx.theme.title());
     let inner = block.inner(area);
     block.render(area, buf);
-    draw_world_cells(buf, inner, ctx, cursor, viewport);
+    draw_world_cells(buf, inner, ctx, cursor_cell, viewport);
 }
 
-/// The world grid itself — dark ocean, land cells, a framed viewport.
+/// The world chart grid — dark ocean, land cells, a framed viewport.
 /// Shared by the floating overlay and the sidebar WORLD panel. `inner`
 /// includes a one-cell margin all around for the viewport frame.
 pub(crate) fn draw_world_cells(
     buf: &mut Buffer,
     inner: Rect,
     ctx: &RenderCtx,
-    cursor: (usize, usize),
+    cursor_cell: Option<(usize, usize)>,
     viewport: (usize, usize, usize, usize),
 ) {
     let theme = ctx.theme;
@@ -409,9 +501,13 @@ pub(crate) fn draw_world_cells(
     for (zi, zone) in zones.iter().enumerate() {
         let cx = origin.0 + zi as u16 * 2;
         for (ci, chunk) in zone.nodes.chunks(k as usize).enumerate() {
-            let worst = worst_health(chunk.iter());
+            let worst = chunk
+                .iter()
+                .map(|t| t.health)
+                .max_by_key(|h| health_rank(*h))
+                .unwrap_or(NodeHealth::Healthy);
             let (ch, style) = theme.land_cell(worst);
-            let is_cursor = zi == cursor.0 && cursor.1 / k as usize == ci;
+            let is_cursor = cursor_cell.is_some_and(|(zc, nr)| zc == zi && nr / k as usize == ci);
             let style = if is_cursor {
                 style.patch(theme.selection())
             } else {
@@ -423,15 +519,14 @@ pub(crate) fn draw_world_cells(
 
     // Viewport frame in the margin columns, hugging the first and last
     // visible cell rows exactly (no half-row exists to sit between). A
-    // single-row viewport would collapse the corners onto one cell row, so
-    // it borrows the margin rows above and below instead.
+    // single-row viewport borrows the margin rows above and below.
     let (sc, sr, vc, vr) = viewport;
     let last_col = (sc + vc).min(zones.len()).saturating_sub(1);
     let last_row = ((sr + vr).min(max_rows as usize)).saturating_sub(1);
-    let x0 = origin.0 + sc as u16 * 2 - 1;
-    let x1 = origin.0 + last_col as u16 * 2 + 1;
-    let mut y0 = origin.1 + sr as u16 / k;
-    let mut y1 = origin.1 + last_row as u16 / k;
+    let x0 = origin.0 + (sc as u16).min(zcount - 1) * 2 - 1;
+    let x1 = origin.0 + (last_col as u16).min(zcount - 1) * 2 + 1;
+    let mut y0 = origin.1 + (sr as u16).min(max_rows - 1) / k;
+    let mut y1 = origin.1 + (last_row as u16).min(max_rows - 1) / k;
     if y0 == y1 {
         y0 -= 1;
         y1 += 1;
@@ -443,107 +538,20 @@ pub(crate) fn draw_world_cells(
     buf.set_string(x1, y1, "┘", bstyle);
 }
 
-fn worst_pod_state(tile: &NodeTile) -> PodState {
-    let mut worst = PodState::Ok;
-    for p in &tile.pods {
-        worst = match (worst, p.state) {
-            (_, PodState::Failing) | (PodState::Failing, _) => PodState::Failing,
-            (_, PodState::Pending) | (PodState::Pending, _) => PodState::Pending,
-            (_, PodState::Starting) | (PodState::Starting, _) => PodState::Starting,
-            (w, _) => w,
-        };
-        if worst == PodState::Failing {
-            break;
-        }
+fn health_rank(h: NodeHealth) -> u8 {
+    match h {
+        NodeHealth::Healthy => 0,
+        NodeHealth::Cordoned => 1,
+        NodeHealth::Pressure => 2,
+        NodeHealth::NotReady => 3,
     }
-    worst
-}
-
-fn draw_tile(buf: &mut Buffer, x: u16, y: u16, tile: &NodeTile, selected: bool, ctx: &RenderCtx) {
-    let theme = ctx.theme;
-    let w = TILE_W as usize;
-    let name_w = w - 4;
-
-    // Line 0: terrain glyph (health-colored), white city-name label, and a
-    // condition marker — the overlays repaint the label with their signal.
-    let (glyph_style, name_style) = match ctx.overlay {
-        OverlayMode::Pressure => (theme.node(tile.health), theme.tile_name()),
-        OverlayMode::ReplicaHealth => {
-            let s = theme.pod(worst_pod_state(tile));
-            (s, s)
-        }
-        OverlayMode::Namespace => {
-            let s = tile
-                .dominant_ns
-                .as_deref()
-                .map(|ns| theme.namespace(ns))
-                .unwrap_or_default();
-            (s, s)
-        }
-    };
-    let marker = if !tile.ready {
-        "✗"
-    } else if !tile.abnormal.is_empty() {
-        "⚠"
-    } else if tile.cordoned {
-        "⊘"
-    } else {
-        " "
-    };
-    let name = format!("{:<name_w$.name_w$}", truncate(&tile.name, name_w));
-    if selected {
-        let head = format!("{} {name}{marker}", node_glyph(tile.health));
-        buf.set_stringn(x, y, head, w, theme.selection());
-    } else {
-        buf.set_string(x, y, node_glyph(tile.health).to_string(), glyph_style);
-        buf.set_stringn(x + 2, y, name, name_w, name_style);
-        let marker_style = if !tile.ready {
-            theme.severity(Severity::Critical)
-        } else if !tile.abnormal.is_empty() {
-            theme.severity(Severity::Warning)
-        } else {
-            theme.node(NodeHealth::Cordoned)
-        };
-        buf.set_string(x + 2 + name_w as u16, y, marker, marker_style);
-    }
-
-    // Lines 1-2: request-pressure gauges (food-storage green when calm).
-    let gauge_w = w - 8;
-    let cpu = format!(
-        "c {} {:>3.0}%",
-        bar(tile.cpu_ratio, gauge_w),
-        (tile.cpu_ratio * 100.0).min(999.0)
-    );
-    buf.set_stringn(x, y + 1, cpu, w, theme.ratio(tile.cpu_ratio));
-    let mem = format!(
-        "m {} {:>3.0}%",
-        bar(tile.mem_ratio, gauge_w),
-        (tile.mem_ratio * 100.0).min(999.0)
-    );
-    buf.set_stringn(x, y + 2, mem, w, theme.ratio(tile.mem_ratio));
-
-    // Line 3: pod glyphs (overlay decides their coloring) + population badge.
-    let count = format!("{}p", tile.pods.len());
-    let max_glyphs = w.saturating_sub(count.len() + 1);
-    let mut gx = x;
-    for p in tile.pods.iter().take(max_glyphs) {
-        let style = match ctx.overlay {
-            OverlayMode::Namespace => theme.namespace(&p.namespace),
-            _ => theme.pod(p.state),
-        };
-        buf.set_string(gx, y + 3, pod_glyph(p.state).to_string(), style);
-        gx += 1;
-    }
-    if tile.pods.len() > max_glyphs {
-        buf.set_string(gx, y + 3, "+", theme.dim());
-    }
-    buf.set_string(x + (w - count.len()) as u16, y + 3, count, theme.badge());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::ColorMode;
+    use crate::events::ClusterId;
     use crate::state::fixtures as fx;
     use crate::state::model::Models;
     use crate::ui::theme::Theme;
@@ -562,97 +570,95 @@ mod tests {
         out
     }
 
-    /// Snapshot-style: the map renders zone headers, tiles with glyphs,
-    /// gauges, and pod rows for a small fixture world.
-    #[test]
-    fn map_renders_zones_tiles_and_pods() {
+    macro_rules! ctx {
+        ($models:expr, $world:expr, $theme:expr) => {
+            RenderCtx {
+                models: &$models,
+                world: &$world,
+                theme: &$theme,
+                overlay: OverlayMode::Pressure,
+                ready: true,
+                cluster: ClusterId::Hot,
+                focused: true,
+                pair: None,
+                cluster_label: None,
+                attention: &[],
+            }
+        };
+    }
+
+    fn demo_world() -> (crate::state::observed::ObservedWorld, fx::Seeds) {
         let (world, mut s) = fx::world();
         s.node(fx::node("n-alpha", Some("z-a")));
         s.node(fx::node("n-bravo", Some("z-b")));
-        s.pod(fx::pod_requests(
-            fx::pod("demo", "p1", Some("n-alpha")),
-            "2",
-            "4Gi",
-        ));
-        s.pod(fx::pod_waiting(
-            fx::pod("demo", "p2", Some("n-alpha")),
-            "CrashLoopBackOff",
-        ));
+        s.deployment(fx::deployment("demo", "web", 2, 2));
+        s.replicaset(fx::replicaset("demo", "web-abc", "web"));
+        for i in 0..2 {
+            s.pod(fx::pod_owned(
+                fx::pod("demo", &format!("web-abc-{i}"), Some("n-alpha")),
+                "ReplicaSet",
+                "web-abc",
+            ));
+        }
+        (world, s)
+    }
 
+    /// Snapshot-style: provinces, a sited city with population badge and
+    /// name label, and open sea all render.
+    #[test]
+    fn world_renders_provinces_city_and_sea() {
+        let (world, _s) = demo_world();
         let models = Models::build(&world);
         let theme = Theme::new(ColorMode::Auto);
-        let ctx = RenderCtx {
-            models: &models,
-            world: &world,
-            theme: &theme,
-            overlay: OverlayMode::Pressure,
-            ready: true,
-            cluster: crate::events::ClusterId::Hot,
-            focused: true,
-            pair: None,
-            cluster_label: None,
-            attention: &[],
-        };
+        let ctx = ctx!(models, world, theme);
         let mut view = MapView::default();
-        let mut term = Terminal::new(TestBackend::new(50, 12)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(80, 16)).unwrap();
         term.draw(|f| view.render(f, f.area(), &ctx)).unwrap();
         let text = buffer_text(&term);
 
-        assert!(text.contains("─ z-a · 1"), "zone header missing:\n{text}");
-        assert!(text.contains("─ z-b · 1"), "second zone missing:\n{text}");
-        assert!(text.contains("▣ n-alpha"), "tile head missing:\n{text}");
-        assert!(text.contains("▣ n-bravo"), "tile head missing:\n{text}");
-        assert!(text.contains("c ▓"), "cpu gauge missing:\n{text}");
-        assert!(text.contains(" 50%"), "cpu percent missing:\n{text}");
-        assert!(text.contains("✗"), "failing pod glyph missing:\n{text}");
-        assert!(text.contains("●"), "ok pod glyph missing:\n{text}");
-        assert!(text.contains("2p"), "pod count missing:\n{text}");
-        // Board fits the viewport → no world overlay.
-        assert!(!text.contains("WORLD"), "minimap should be hidden:\n{text}");
+        assert!(text.contains("▣ n-alpha ●2"), "province label:\n{text}");
+        assert!(text.contains("▣ n-bravo ●0"), "empty province:\n{text}");
+        assert!(text.contains(&format!("{CITY}2")), "city badge:\n{text}");
+        assert!(text.contains("web"), "city name label:\n{text}");
+        assert!(text.contains('~'), "open sea:\n{text}");
+        assert!(text.contains(','), "grassland texture:\n{text}");
     }
 
     #[test]
-    fn map_cursor_navigation_clamps_and_opens_nodes() {
-        let (world, mut s) = fx::world();
-        s.node(fx::node("n-alpha", Some("z-a")));
-        s.node(fx::node("n-bravo", Some("z-b")));
+    fn explorer_cursor_walks_cities_and_opens_regions() {
+        let (world, _s) = demo_world();
         let models = Models::build(&world);
         let theme = Theme::new(ColorMode::Auto);
-        let ctx = RenderCtx {
-            models: &models,
-            world: &world,
-            theme: &theme,
-            overlay: OverlayMode::Pressure,
-            ready: true,
-            cluster: crate::events::ClusterId::Hot,
-            focused: true,
-            pair: None,
-            cluster_label: None,
-            attention: &[],
-        };
+        let ctx = ctx!(models, world, theme);
         let mut view = MapView::default();
-        use ratatui_crossterm::crossterm::event::{KeyCode, KeyModifiers};
         let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
 
-        // Right into z-b, Enter opens that node.
-        assert_eq!(view.handle_key(key(KeyCode::Char('l')), &ctx), None);
-        let action = view.handle_key(key(KeyCode::Enter), &ctx);
-        assert_eq!(action, Some(Action::OpenNode("n-bravo".into())));
-        // Pushing past the right edge reports it (pair mode crosses over;
-        // single-cluster mode ignores it). Cursor stays clamped.
+        // ']' jumps straight onto the city; Enter opens its city screen.
+        assert_eq!(view.handle_key(key(KeyCode::Char(']')), &ctx), None);
+        let city = models.world.cities().next().unwrap();
+        assert_eq!(view.cursor, (city.x, city.y));
         assert_eq!(
-            view.handle_key(key(KeyCode::Char('l')), &ctx),
-            Some(Action::EdgeReached(Edge::Right))
+            view.handle_key(key(KeyCode::Enter), &ctx),
+            Some(Action::OpenWorkload(city.r.clone()))
         );
-        assert_eq!(view.cursor, (1, 0));
-        // Down clamps within a 1-node column.
-        assert_eq!(view.handle_key(key(KeyCode::Char('j')), &ctx), None);
-        assert_eq!(view.cursor, (1, 0));
-        // And the left edge, after walking back.
-        assert_eq!(view.handle_key(key(KeyCode::Char('h')), &ctx), None);
+
+        // Standing on plain land opens the province's node.
+        view.cursor = (2, 1);
+        assert_eq!(
+            view.handle_key(key(KeyCode::Enter), &ctx),
+            Some(Action::OpenNode("n-alpha".into()))
+        );
+
+        // World edges report for continent crossing in pair mode.
+        view.cursor = (0, 1);
         assert_eq!(
             view.handle_key(key(KeyCode::Char('h')), &ctx),
             Some(Action::EdgeReached(Edge::Left))
+        );
+        view.cursor = (models.world.width - 1, 1);
+        assert_eq!(
+            view.handle_key(key(KeyCode::Char('l')), &ctx),
+            Some(Action::EdgeReached(Edge::Right))
         );
     }
 
@@ -689,8 +695,6 @@ mod tests {
     #[test]
     fn minimap_appears_on_overflow_with_viewport_brackets() {
         let (world, mut s) = big_world();
-        // One degraded node so the minimap shows a ▪ cell and the zone
-        // header carries a rollup.
         s.node(fx::node_with_condition(
             fx::node("perf-node-000", Some("z-a")),
             "Ready",
@@ -698,33 +702,17 @@ mod tests {
         ));
         let models = Models::build(&world);
         let theme = Theme::new(ColorMode::Auto);
-        let ctx = RenderCtx {
-            models: &models,
-            world: &world,
-            theme: &theme,
-            overlay: OverlayMode::Pressure,
-            ready: true,
-            cluster: crate::events::ClusterId::Hot,
-            focused: true,
-            pair: None,
-            cluster_label: None,
-            attention: &[],
-        };
+        let ctx = ctx!(models, world, theme);
         let mut view = MapView::default();
         let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
         term.draw(|f| view.render(f, f.area(), &ctx)).unwrap();
         let text = buffer_text(&term);
 
-        assert!(text.contains("WORLD"), "world panel title missing:\n{text}");
-
-        assert!(text.contains('▪'), "degraded minimap cell missing:\n{text}");
-        // Block border + viewport brackets both contribute corners.
+        assert!(text.contains("WORLD"), "world chart missing:\n{text}");
         assert!(
             text.matches('┌').count() >= 2 && text.matches('┘').count() >= 2,
             "viewport brackets missing:\n{text}"
         );
-        // Zone header rollup for the NotReady node.
-        assert!(text.contains("▪1"), "zone rollup missing:\n{text}");
     }
 
     #[test]
@@ -732,44 +720,31 @@ mod tests {
         let (world, _s) = big_world();
         let models = Models::build(&world);
         let theme = Theme::new(ColorMode::Auto);
-        let ctx = RenderCtx {
-            models: &models,
-            world: &world,
-            theme: &theme,
-            overlay: OverlayMode::Pressure,
-            ready: true,
-            cluster: crate::events::ClusterId::Hot,
-            focused: true,
-            pair: None,
-            cluster_label: None,
-            attention: &[],
-        };
+        let ctx = ctx!(models, world, theme);
         let mut view = MapView::default();
         let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
         term.draw(|f| view.render(f, f.area(), &ctx)).unwrap();
-        // 40 rows → header + 7 tile rows visible.
-        use ratatui_crossterm::crossterm::event::{KeyCode, KeyModifiers};
         let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
 
+        let y0 = view.cursor.1;
         view.handle_key(key(KeyCode::PageDown), &ctx);
-        assert_eq!(view.cursor, (0, 7));
+        assert_eq!(view.cursor.1, y0 + 40);
         view.handle_key(
             KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
             &ctx,
         );
-        assert_eq!(view.cursor, (0, 4));
+        assert_eq!(view.cursor.1, y0 + 20);
         view.handle_key(key(KeyCode::End), &ctx);
-        assert_eq!(view.cursor.0, 4);
+        let last = models.world.continents.last().unwrap();
+        assert_eq!(view.cursor.0, last.x + 2);
         view.handle_key(key(KeyCode::Home), &ctx);
-        assert_eq!(view.cursor.0, 0);
-        view.handle_key(key(KeyCode::PageUp), &ctx);
-        assert_eq!(view.cursor, (0, 0));
+        assert_eq!(view.cursor.0, 2);
     }
 
     /// Criterion 6 evidence: at 100 nodes / 1000 pods, a full world rebuild
-    /// (map + workloads + attention) plus a rendered frame must fit the
-    /// 100ms input-latency budget. Asserted in release (`make perf-test`);
-    /// debug builds only report the numbers.
+    /// (map + workloads + attention + world) plus a rendered frame must fit
+    /// the 100ms input-latency budget. Asserted in release
+    /// (`make perf-test`); debug builds only report the numbers.
     #[test]
     fn scale_rebuild_and_render_within_budget() {
         let (world, _s) = big_world();
@@ -779,23 +754,12 @@ mod tests {
 
         let mut worst = std::time::Duration::ZERO;
         let t_all = std::time::Instant::now();
-        for i in 0..20usize {
+        for i in 0..20u16 {
             let t = std::time::Instant::now();
             let models = Models::build(&world);
-            let ctx = RenderCtx {
-                models: &models,
-                world: &world,
-                theme: &theme,
-                overlay: OverlayMode::Pressure,
-                ready: true,
-                cluster: crate::events::ClusterId::Hot,
-                focused: true,
-                pair: None,
-                cluster_label: None,
-                attention: &[],
-            };
-            // Wiggle the cursor so the scroll-clamping paths run too.
-            view.cursor = (i % 5, (i * 3) % 20);
+            let ctx = ctx!(models, world, theme);
+            // Wiggle the cursor so the camera-follow paths run too.
+            view.cursor = ((i * 13) % models.world.width, (i * 7) % models.world.height);
             term.draw(|f| view.render(f, f.area(), &ctx)).unwrap();
             worst = worst.max(t.elapsed());
             assert_eq!(models.map.total_nodes, 100);

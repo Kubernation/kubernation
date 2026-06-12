@@ -20,11 +20,13 @@ kind-up:
 
 ## samples: apply demo workloads (healthy, crashing, stateful, daemon, stuck PVC)
 samples:
+	kubectl --context $(KCTX) apply -f hack/samples-crd.yaml
+	kubectl --context $(KCTX) wait --for=condition=Established crd/gizmos.example.com --timeout=30s
 	kubectl --context $(KCTX) apply -f hack/samples.yaml
 
 ## run: launch the TUI against the dev cluster
 run:
-	cargo run --release -- --context $(KCTX)
+	cargo run --release -- --context $(KCTX) --project gizmos.example.com
 
 ## smoke: headless connect + world summary (CI / sanity)
 smoke:
@@ -39,6 +41,8 @@ warm-up:
 	@kind get clusters 2>/dev/null | grep -qx '$(WARM_CLUSTER)' || \
 		kind create cluster --config hack/kind-config.yaml --name $(WARM_CLUSTER)
 	kubectl --context $(WARM_KCTX) wait --for=condition=Ready nodes --all --timeout=180s
+	kubectl --context $(WARM_KCTX) apply -f hack/samples-crd.yaml
+	kubectl --context $(WARM_KCTX) wait --for=condition=Established crd/gizmos.example.com --timeout=30s
 	kubectl --context $(WARM_KCTX) apply -f hack/samples.yaml
 
 ## warm-drift: make the warm cluster drift (replica, image, missing workload)
@@ -49,7 +53,7 @@ warm-drift:
 
 ## pair: run the TUI observing hot + warm side by side
 pair:
-	cargo run --release -- --context $(KCTX) --warm $(WARM_KCTX)
+	cargo run --release -- --context $(KCTX) --warm $(WARM_KCTX) --project gizmos.example.com
 
 ## warm-down: delete the warm cluster
 warm-down:

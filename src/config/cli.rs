@@ -23,6 +23,11 @@ pub struct Args {
     #[arg(long, default_value = "info")]
     pub log_level: String,
 
+    /// Project a CRD's instances onto the world map (repeatable; CRD name
+    /// like "gizmos.example.com"; merged with config `projections`)
+    #[arg(long = "project", value_name = "CRD")]
+    pub project: Vec<String>,
+
     /// Connect, wait for the initial sync, print a one-line world summary,
     /// and exit without starting the TUI. Used by CI and the Makefile.
     #[arg(long)]

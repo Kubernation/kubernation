@@ -1,10 +1,14 @@
 # K8sCiv
 
-A Civilization-inspired Kubernetes TUI. The cluster is a living map: nodes
-are terrain tiles grouped into zone columns, workloads are cities with a
-full-context "city screen", and an attention queue surfaces what needs the
-operator's focus — Civ's "next unit needing orders", not a wall of dashboards.
-**MVP is observe-only.** No mutation paths exist anywhere in the codebase.
+A Civilization-inspired Kubernetes TUI. The cluster is a living **world**
+the operator explores: zones are continents, nodes are provinces of
+health-textured terrain, workloads are cities sited where their pods run
+(population badge + name label), DaemonSets are roads, and abstract things
+— custom-resource instances, zero-pod workloads — live on namespace
+islands in the southern sea. An attention queue surfaces what needs focus
+and parks the explorer's cursor on it — Civ's "next unit needing orders",
+not a wall of dashboards.
+**Observe-only.** No mutation paths exist anywhere in the codebase.
 
 The full product brief lives in `k8s-civ-tui-mvp-prompt.md`. Read it before
 proposing scope changes.
@@ -39,7 +43,10 @@ src/
   config/        Config (~/.config/k8sciv/config.toml) + clap Args
   k8s/           DATA LAYER: client+platform detect, quantity parsing,
                  reflector spawning (watch.rs)
-  state/         observed.rs  ObservedWorld (reflector stores + event ring)
+  state/         observed.rs  ObservedWorld (reflector stores + event ring
+                              + dynamic custom-resource stores)
+                 world.rs     PURE world geometry: continents/provinces/
+                              cities/islands, placement, hit-testing
                  planned.rs   PlannedWorld stub (future planning turn)
                  model.rs     PURE derivations: map/workloads/city/node models
                  attention.rs PURE detectors → severity-ordered concerns
@@ -117,6 +124,24 @@ what makes the interesting logic unit-testable without a cluster.
   (`MapView::external_minimap` suppresses it when the sidebar is up). The
   sidebar always shows the *focused* world. K8s terms are never renamed to
   Civ terms — the grammar is Civ, the nouns stay kubectl-greppable.
+- **The world projection** (2026-06-12, "lean into the game metaphor"):
+  the zone-column tile grid was replaced by a 2D world. Cities = workloads
+  (Deploy/STS), sited on the province hosting the plurality of their pods
+  (stable-hash tie-break; a city migrates only when its pods genuinely
+  move). DaemonSets are `≣` roads on every province they touch, never
+  cities. Zero-pod workloads become `◌` encampments on their namespace's
+  island. The explorer cursor walks cells; the camera follows; `]`/`[`
+  sail city to city; Enter opens whatever you stand on; `n` ALSO parks the
+  cursor on the concern's location. ORDERS in the sidebar describes the
+  region under the cursor. Geometry is pure (`state/world.rs`) with
+  placement-stability tests.
+- **Custom-resource projections** (2026-06-12): `--project <crd-name>`
+  (repeatable) or config `projections = [...]` resolves CRDs once at
+  connect (LIST, no CRD watch), spawns `DynamicObject` reflectors, and
+  renders instances as `✦` structures on namespace islands. CRDs missing
+  on a cluster are skipped with a log line — a pair may project
+  asymmetrically. Demo: `gizmos.example.com` in hack/samples-crd.yaml
+  (applied before samples.yaml so the kind is established).
 - **`Store::wait_until_ready` allows ONE concurrent waiter per store** (found
   2026-06-12): kube's readiness uses a `DelayedInit` over a futures oneshot
   receiver, which holds a single waker slot. Two tasks awaiting the same
@@ -188,8 +213,9 @@ on 256-color terminals.
 
 ## Keymap
 
-`h/j/k/l`+arrows move · `PgUp/PgDn` page, `Ctrl+u/d` half page,
-`Home/End` first/last zone · `Enter` opens · `Esc` back · `m` map ·
+`h/j/k/l`+arrows explore · `]`/`[` next/prev city · `PgUp/PgDn` page,
+`Ctrl+u/d` half page, `Home/End` west/east continent · `Enter` opens the
+region under the cursor · `Esc` back · `m` map ·
 `w` workloads · `n` next concern · `a` attention panel · `Tab` focus panel ·
 `c` context picker · `1/2/3` overlays (pressure/replicas/namespace) ·
 `?` keymap · `q`/Ctrl-C quit. Keep `help.rs` in sync with any change.
@@ -211,7 +237,9 @@ make perf-down
 Develop against kind only (`hack/kind-config.yaml`, cluster `k8sciv`,
 context `kind-k8sciv`). `hack/samples.yaml` provides: healthy `web`
 (+Service), crash-looping `crashy`, StatefulSet `db` (+PVCs), DaemonSet
-`agent`, and `stuck-pvc` which never binds (keeps one Warning in the queue).
+`agent`, `stuck-pvc` which never binds (keeps one Warning in the queue),
+and two `Gizmo` customs (CRD in hack/samples-crd.yaml) for projection.
+`make run`/`make pair` pass `--project gizmos.example.com`.
 
 Logs: `~/.local/state/k8sciv/k8sciv.log` (`--log-level`, `RUST_LOG`).
 Config: `~/.config/k8sciv/config.toml` (`tick_ms`, `color`,

@@ -24,9 +24,35 @@ pub struct ObservedWorld {
     pub services: Store<Service>,
     /// Bounded ring of recent events (all types; Warning drives attention).
     pub events: Arc<Mutex<VecDeque<RecentEvent>>>,
+    /// Dynamic custom-resource projections (configured via `projections` /
+    /// `--project`): kind label + reflector store per projected CRD.
+    pub customs: Arc<Vec<CustomWatch>>,
+}
+
+/// One projected custom-resource type.
+#[derive(Clone)]
+pub struct CustomWatch {
+    pub kind: String,
+    pub store: kube::runtime::reflector::Store<kube::core::DynamicObject>,
 }
 
 impl ObservedWorld {
+    /// Flatten projected custom-resource instances for the world model.
+    pub fn custom_entries(&self) -> Vec<crate::state::world::CustomEntry> {
+        let mut out = Vec::new();
+        for cw in self.customs.iter() {
+            for obj in cw.store.state() {
+                out.push(crate::state::world::CustomEntry {
+                    kind: cw.kind.clone(),
+                    namespace: obj.metadata.namespace.clone(),
+                    name: obj.metadata.name.clone().unwrap_or_default(),
+                });
+            }
+        }
+        out.sort_by(|a, b| (&a.kind, &a.namespace, &a.name).cmp(&(&b.kind, &b.namespace, &b.name)));
+        out
+    }
+
     /// Snapshot of the recent-events ring, oldest first.
     pub fn recent_events(&self) -> Vec<RecentEvent> {
         self.events
