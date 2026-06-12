@@ -94,8 +94,9 @@ impl Component for CityView {
             return;
         };
 
+        let head_h = if ctx.pair.is_some() { 5 } else { 4 };
         let [head_a, mid_a, ev_a] = Layout::vertical([
-            Constraint::Length(4),
+            Constraint::Length(head_h),
             Constraint::Min(6),
             Constraint::Length(8),
         ])
@@ -112,8 +113,12 @@ impl Component for CityView {
         if !m.note.is_empty() {
             rollout = format!(" rollout: {} ({}) ", m.status, m.note);
         }
+        let title = match ctx.cluster_label {
+            Some(l) => format!(" {} — {l} ", m.r),
+            None => format!(" {} ", m.r),
+        };
         let head_block = Block::bordered()
-            .title(format!(" {} ", m.r))
+            .title(title)
             .title_style(theme.title())
             .title_top(Line::styled(rollout, status_style).right_aligned());
         let gap_style = if m.ready < m.desired {
@@ -121,7 +126,7 @@ impl Component for CityView {
         } else {
             Default::default()
         };
-        let lines = vec![
+        let mut lines = vec![
             Line::from(vec![
                 Span::raw("replicas  "),
                 Span::styled(format!("{} desired", m.desired), theme.title()),
@@ -141,6 +146,15 @@ impl Component for CityView {
                 theme.dim(),
             )),
         ];
+        if let Some(pair) = ctx.pair {
+            lines.push(match pair.state(&m.r) {
+                Some(st) => Line::from(vec![
+                    Span::raw("pair      "),
+                    Span::styled(st.describe(ctx.cluster), theme.sync(st)),
+                ]),
+                None => Line::styled("pair      unknown", theme.dim()),
+            });
+        }
         f.render_widget(Paragraph::new(lines).block(head_block), head_a);
 
         // --- Middle: pods | owned ----------------------------------------
@@ -293,6 +307,11 @@ mod tests {
             theme: &theme,
             overlay: OverlayMode::Pressure,
             ready: true,
+            cluster: crate::events::ClusterId::Hot,
+            focused: true,
+            pair: None,
+            cluster_label: None,
+            attention: &[],
         };
         let mut view = CityView::default();
         view.open(WorkloadRef {

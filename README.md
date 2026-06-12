@@ -54,6 +54,20 @@ cargo run --release -- --context <kubeconfig-context>
 Useful targets: `make smoke` (headless connect + world summary),
 `make lint`, `make test`, `make kind-down`.
 
+### Hot/warm pair
+
+```sh
+make warm-up warm-drift   # second kind cluster + deliberate drift
+make pair                 # both worlds side by side
+```
+
+Or against real clusters: `k8sciv --context prod --warm prod-standby`.
+The map splits into two continents (`h`/`l` past the edge crosses over),
+the workload list gains a SYNC column (`=` in sync, `≠r` replica drift,
+`≠i` image drift, `−w` missing on warm), the city screen gets a pair line,
+and the attention queue merges both worlds with `H`/`W` tags plus a single
+aggregate drift concern.
+
 ### Performance rig
 
 ```sh

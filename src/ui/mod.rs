@@ -13,8 +13,11 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui_crossterm::crossterm::event::KeyEvent;
 
+use crate::events::ClusterId;
+use crate::state::attention::Concern;
 use crate::state::model::{Models, WorkloadRef};
 use crate::state::observed::ObservedWorld;
+use crate::state::pair::PairSync;
 use theme::Theme;
 
 /// What a component asks the app to do in response to input. (Quit, back,
@@ -25,6 +28,15 @@ pub enum Action {
     OpenNode(String),
     OpenWorkload(WorkloadRef),
     SwitchContext(String),
+    /// Cursor pushed against a map edge — in pair mode the app crosses to
+    /// the other continent.
+    EdgeReached(Edge),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Left,
+    Right,
 }
 
 /// Map color overlays — one primary signal at a time.
@@ -45,13 +57,25 @@ impl OverlayMode {
     }
 }
 
-/// Read-only context handed to components for update/render.
+/// Read-only context handed to components for update/render. One of these
+/// exists per world; the merged attention queue and the pair comparison are
+/// shared across both.
 pub struct RenderCtx<'a> {
     pub models: &'a Models,
     pub world: &'a ObservedWorld,
     pub theme: &'a Theme,
     pub overlay: OverlayMode,
     pub ready: bool,
+    /// Which world this ctx describes.
+    pub cluster: ClusterId,
+    /// False for the inactive continent in pair mode (mutes selection).
+    pub focused: bool,
+    /// Present only in pair mode.
+    pub pair: Option<&'a PairSync>,
+    /// "HOT"/"WARM" in pair mode, None single-cluster (no clutter).
+    pub cluster_label: Option<&'static str>,
+    /// Merged severity-ordered concerns across both worlds.
+    pub attention: &'a [Concern],
 }
 
 /// Common shape for the major views (component pattern per the ratatui

@@ -6,6 +6,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use k8s_openapi::jiff;
 
+use crate::events::ClusterId;
+
 use super::model::{
     MapModel, OwnerIndex, PRESSURE_HIGH, PodState, RolloutStatus, WorkloadRef, WorkloadRow,
     pod_oom_killed, pod_restarts, pod_state,
@@ -50,6 +52,9 @@ pub struct Concern {
     pub target: Target,
     /// Stable identity for cycling; also the sort tiebreaker.
     pub key: String,
+    /// Which member of the pair this belongs to. `build` is single-world
+    /// and always tags Hot; the app re-tags the warm world's list.
+    pub cluster: ClusterId,
 }
 
 #[derive(Default)]
@@ -158,6 +163,7 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
                     .and_then(|s| s.node_name.clone())
                     .map_or(Target::WorkloadList, Target::Node);
                 concerns.push(Concern {
+                    cluster: ClusterId::Hot,
                     severity,
                     title: format!("pod {ns}/{name} — {msg}"),
                     detail: reason.clone(),
@@ -197,6 +203,7 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
         }
         covered_workloads.insert((row.r.namespace.clone(), row.r.name.clone()));
         concerns.push(Concern {
+            cluster: ClusterId::Hot,
             severity,
             title: format!("{} — {headline}", row.r),
             detail,
@@ -210,6 +217,7 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
         if let Some((severity, msg)) = agg.primary() {
             covered_workloads.insert((r.namespace.clone(), r.name.clone()));
             concerns.push(Concern {
+                cluster: ClusterId::Hot,
                 severity,
                 title: format!("{r} — {msg}"),
                 detail: String::new(),
@@ -246,6 +254,7 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
             };
             covered_nodes.insert(tile.name.clone());
             concerns.push(Concern {
+                cluster: ClusterId::Hot,
                 severity,
                 title: format!("node {} — {headline}", tile.name),
                 detail: format!(
@@ -280,6 +289,7 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
             .and_then(|s| s.storage_class_name.clone())
             .unwrap_or_else(|| "default".into());
         concerns.push(Concern {
+            cluster: ClusterId::Hot,
             severity: Severity::Warning,
             title: format!("pvc {ns}/{name} — {phase}"),
             detail: format!("storageClass {sc}"),
@@ -335,6 +345,7 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
             format!("{ns}/{name}")
         };
         concerns.push(Concern {
+            cluster: ClusterId::Hot,
             severity: Severity::Info,
             title: format!(
                 "events: {reason} ×{count} on {} {place}",

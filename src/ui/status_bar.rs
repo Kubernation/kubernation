@@ -4,39 +4,57 @@ use ratatui::layout::Rect;
 use super::RenderCtx;
 use crate::util::truncate;
 
-/// Top line: who/where/how-visible. Context, API endpoint, platform hint,
-/// counts, active overlay. Rendered reversed so it reads as chrome.
-pub fn render(f: &mut Frame, area: Rect, ctx: &RenderCtx, flash: Option<&str>) {
-    if area.height == 0 {
-        return;
-    }
-    let meta = &ctx.world.meta;
-    let style = ctx.theme.bar();
-    let buf = f.buffer_mut();
-
-    // Paint the full bar background first.
-    buf.set_string(area.x, area.y, " ".repeat(area.width as usize), style);
-
-    let counts = if ctx.ready {
+fn counts(ctx: &RenderCtx) -> String {
+    if ctx.ready {
         format!(
-            "nodes {} · pods {}",
+            "{}n·{}p",
             ctx.models.map.total_nodes, ctx.models.map.total_pods
         )
     } else {
-        "syncing…".to_string()
+        "sync…".to_string()
+    }
+}
+
+/// Top line: who/where/how-visible. Single cluster shows full identity; a
+/// pair shows both worlds compactly. Rendered reversed so it reads as chrome.
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    hot: &RenderCtx,
+    warm: Option<&RenderCtx>,
+    flash: Option<&str>,
+) {
+    if area.height == 0 {
+        return;
+    }
+    let style = hot.theme.bar();
+    let buf = f.buffer_mut();
+    buf.set_string(area.x, area.y, " ".repeat(area.width as usize), style);
+
+    let mut left = match warm {
+        None => {
+            let meta = &hot.world.meta;
+            format!(
+                " K8SCIV ▏{} ▏{} ▏{} ▏{}",
+                truncate(&meta.context, 28),
+                meta.platform.label(),
+                truncate(&meta.server, 34),
+                counts(hot),
+            )
+        }
+        Some(w) => format!(
+            " K8SCIV ▏H {} {} ▏W {} {}",
+            truncate(&hot.world.meta.context, 24),
+            counts(hot),
+            truncate(&w.world.meta.context, 24),
+            counts(w),
+        ),
     };
-    let mut left = format!(
-        " K8SCIV ▏{} ▏{} ▏{} ▏{}",
-        truncate(&meta.context, 28),
-        meta.platform.label(),
-        truncate(&meta.server, 34),
-        counts,
-    );
     if let Some(msg) = flash {
         left.push_str(" ▏");
         left.push_str(&truncate(msg, 48));
     }
-    let right = format!("overlay {} ▏? help ", ctx.overlay.label());
+    let right = format!("overlay {} ▏? help ", hot.overlay.label());
 
     buf.set_stringn(area.x, area.y, &left, area.width as usize, style);
     let rw = right.chars().count() as u16;

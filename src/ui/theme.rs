@@ -130,6 +130,24 @@ impl Theme {
         }
     }
 
+    /// Pair sync badges: in-sync is silence, drift is yellow, a workload
+    /// missing on the warm side is the dangerous one.
+    pub fn sync(&self, state: &crate::state::pair::SyncState) -> Style {
+        use crate::state::pair::SyncState;
+        match state {
+            SyncState::InSync => self.dim(),
+            SyncState::Drift { .. } => self.severity(Severity::Warning),
+            SyncState::OnlyHot => self.severity(Severity::Critical),
+            SyncState::OnlyWarm => {
+                if self.mono {
+                    Style::new().add_modifier(Modifier::DIM)
+                } else {
+                    Style::new().fg(Color::Cyan)
+                }
+            }
+        }
+    }
+
     /// Namespace-ownership overlay palette: muted, no reds (red is reserved).
     pub fn namespace(&self, ns: &str) -> Style {
         if self.mono {

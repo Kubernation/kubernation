@@ -55,9 +55,11 @@ impl Component for WorkloadListView {
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &RenderCtx) {
         let theme = ctx.theme;
-        let block = Block::bordered()
-            .title(" WORKLOADS ")
-            .title_style(theme.title());
+        let title = match ctx.cluster_label {
+            Some(l) => format!(" WORKLOADS — {l} "),
+            None => " WORKLOADS ".to_string(),
+        };
+        let block = Block::bordered().title(title).title_style(theme.title());
         let rows = &ctx.models.workloads;
         if rows.is_empty() {
             let msg = if ctx.ready {
@@ -96,7 +98,7 @@ impl Component for WorkloadListView {
                 if !w.note.is_empty() {
                     status = format!("{status} — {}", w.note);
                 }
-                Row::new(vec![
+                let mut cells = vec![
                     sev_span,
                     Span::styled(w.r.kind.to_string(), theme.dim()),
                     Span::raw(w.r.namespace.clone()),
@@ -105,12 +107,19 @@ impl Component for WorkloadListView {
                     Span::raw(w.updated.to_string()),
                     Span::raw(w.available.to_string()),
                     Span::raw(format_age_opt(w.age.as_ref())),
-                    Span::styled(status, status_style),
-                ])
+                ];
+                if let Some(pair) = ctx.pair {
+                    cells.push(match pair.state(&w.r) {
+                        Some(st) => Span::styled(st.badge(), theme.sync(st)),
+                        None => Span::raw(""),
+                    });
+                }
+                cells.push(Span::styled(status, status_style));
+                Row::new(cells)
             })
             .collect();
 
-        let header = Row::new(vec![
+        let mut header = vec![
             " ",
             "KIND",
             "NAMESPACE",
@@ -119,28 +128,91 @@ impl Component for WorkloadListView {
             "UPD",
             "AVL",
             "AGE",
-            "STATUS",
-        ])
-        .style(theme.dim());
+        ];
+        let mut widths = vec![
+            Constraint::Length(1),
+            Constraint::Length(6),
+            Constraint::Min(12),
+            Constraint::Min(16),
+            Constraint::Length(6),
+            Constraint::Length(4),
+            Constraint::Length(4),
+            Constraint::Length(5),
+        ];
+        if ctx.pair.is_some() {
+            header.push("SYNC");
+            widths.push(Constraint::Length(4));
+        }
+        header.push("STATUS");
+        widths.push(Constraint::Min(18));
 
-        let table = Table::new(
-            table_rows,
-            [
-                Constraint::Length(1),
-                Constraint::Length(6),
-                Constraint::Min(12),
-                Constraint::Min(16),
-                Constraint::Length(6),
-                Constraint::Length(4),
-                Constraint::Length(4),
-                Constraint::Length(5),
-                Constraint::Min(18),
-            ],
-        )
-        .header(header)
-        .block(block)
-        .row_highlight_style(theme.selection())
-        .highlight_symbol("▸");
+        let table = Table::new(table_rows, widths)
+            .header(Row::new(header).style(theme.dim()))
+            .block(block)
+            .row_highlight_style(theme.selection())
+            .highlight_symbol("▸");
         f.render_stateful_widget(table, area, &mut self.state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ColorMode;
+    use crate::events::ClusterId;
+    use crate::state::fixtures as fx;
+    use crate::state::model::Models;
+    use crate::state::pair::PairSync;
+    use crate::ui::theme::Theme;
+    use crate::ui::{Component, OverlayMode, RenderCtx};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    /// With a pair attached, the list grows a SYNC column with badges.
+    #[test]
+    fn sync_column_shows_badges() {
+        let (hot, mut hs) = fx::world();
+        let (warm, mut ws) = fx::world();
+        hs.deployment(fx::deployment("demo", "web", 3, 3));
+        ws.deployment(fx::deployment("demo", "web", 1, 1)); // replica drift
+        hs.deployment(fx::deployment("demo", "crashy", 2, 0)); // missing on warm
+        hs.deployment(fx::deployment("demo", "same", 1, 1));
+        ws.deployment(fx::deployment("demo", "same", 1, 1));
+
+        let models = Models::build(&hot);
+        let pair = PairSync::build(&hot, &warm);
+        let theme = Theme::new(ColorMode::Auto);
+        let ctx = RenderCtx {
+            models: &models,
+            world: &hot,
+            theme: &theme,
+            overlay: OverlayMode::Pressure,
+            ready: true,
+            cluster: ClusterId::Hot,
+            focused: true,
+            pair: Some(&pair),
+            cluster_label: Some("HOT"),
+            attention: &[],
+        };
+        let mut view = WorkloadListView::default();
+        let mut term = Terminal::new(TestBackend::new(120, 12)).unwrap();
+        term.draw(|f| view.render(f, f.area(), &ctx)).unwrap();
+        let buf = term.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+
+        assert!(text.contains("WORKLOADS — HOT"), "title missing:\n{text}");
+        assert!(text.contains("SYNC"), "sync header missing:\n{text}");
+        assert!(text.contains("≠r"), "replica-drift badge missing:\n{text}");
+        assert!(
+            text.contains("−w"),
+            "missing-on-warm badge missing:\n{text}"
+        );
+        assert!(text.contains('='), "in-sync badge missing:\n{text}");
     }
 }

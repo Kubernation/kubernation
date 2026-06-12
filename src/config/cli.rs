@@ -14,6 +14,11 @@ pub struct Args {
     #[arg(long)]
     pub context: Option<String>,
 
+    /// Warm-standby context: observe a second cluster side-by-side with
+    /// sync-state badges (overrides config `warm_context`)
+    #[arg(long)]
+    pub warm: Option<String>,
+
     /// Log-file filter, e.g. "info" or "k8sciv=debug" ($RUST_LOG overrides)
     #[arg(long, default_value = "info")]
     pub log_level: String,

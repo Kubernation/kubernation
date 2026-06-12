@@ -25,6 +25,9 @@ pub struct Config {
     pub color: ColorMode,
     /// Start with the attention panel expanded.
     pub attention_expanded: bool,
+    /// Warm-standby context to observe alongside the hot cluster
+    /// (`--warm` overrides).
+    pub warm_context: Option<String>,
 }
 
 impl Config {

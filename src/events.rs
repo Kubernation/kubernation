@@ -1,6 +1,23 @@
 use ratatui_crossterm::crossterm::event::{self, Event as TermEvent};
 use tokio::sync::mpsc;
 
+/// Which member of the (future-pair-ready) cluster set an event came from.
+/// Single-cluster sessions only ever see `Hot`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ClusterId {
+    Hot,
+    Warm,
+}
+
+impl ClusterId {
+    pub fn label(self) -> &'static str {
+        match self {
+            ClusterId::Hot => "HOT",
+            ClusterId::Warm => "WARM",
+        }
+    }
+}
+
 /// Everything the app's single event loop selects over (besides ticks).
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -9,7 +26,7 @@ pub enum AppEvent {
     /// Coarse "something in this slice of the world changed" notification.
     /// The UI re-derives its view models from the store on the next tick;
     /// deltas carry no payload so they are trivially coalescable.
-    World(WorldDelta),
+    World(ClusterId, WorldDelta),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

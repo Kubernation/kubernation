@@ -22,9 +22,10 @@ CNCF landscape layers reframed as concentric zones of operator agency:
 | Observability  | a property of every view, not a separate view             |
 | Platforms      | cluster metadata (status bar platform hint)               |
 
-Future (designed-for, not built): hot/warm cluster pair as two continents,
-external managed services as foreign powers, chaos events as barbarian
-raids, and the planning-turn staged-diff intervention model.
+Built beyond MVP: the **hot/warm cluster pair** — two continents side by
+side with sync-state badges (see "The pair" below). Future (designed-for,
+not built): external managed services as foreign powers, chaos events as
+barbarian raids, and the planning-turn staged-diff intervention model.
 
 ## Architecture
 
@@ -92,10 +93,10 @@ what makes the interesting logic unit-testable without a cluster.
   so terminal input runs on a dedicated blocking thread feeding the tokio
   loop; crossterm types come only from `ratatui_crossterm::crossterm` to
   avoid version skew.
-- **Multi-cluster readiness:** `ObservedWorld` + its informer set
-  (`WorldHandle`, abort-on-drop) are per-context. Context switch = connect,
-  spawn new handle, drop old. A hot/warm pair later is "hold two handles",
-  not a refactor.
+- **Multi-cluster:** `ObservedWorld` + its informer set (`WorldHandle`,
+  abort-on-drop) are per-context. Context switch = connect, spawn new
+  handle, drop old. The hot/warm pair proved the design: adding the second
+  world was "hold two handles + a comparison model", not a refactor.
 - **Platform hint:** kubeconfig heuristics first, refined by the first
   observed node's `spec.providerID` (aws/gce/azure/kind/k3s prefixes).
 - **In-cluster config is not supported** (operator-laptop tool); revisit if
@@ -117,6 +118,30 @@ what makes the interesting logic unit-testable without a cluster.
   everything else (TUI and `--smoke` alike) listens for
   `WorldDelta::Ready` on the event channel. Don't add new
   `wait_until_ready` call sites.
+
+## The pair (hot/warm)
+
+`--warm <context>` (or config `warm_context`) attaches a second cluster:
+
+- **Two continents:** the map splits left (HOT) / right (WARM) with a `║`
+  divider and a banner per side; `h`/`l` pushed past a map edge crosses to
+  the other continent (single-cluster mode ignores the edge signal). Each
+  side keeps its own cursor, scroll, and minimap. Detail views and the
+  workload list belong to one world — titles carry `— HOT` / `— WARM`.
+- **Sync state** (`state/pair.rs`): per-workload comparison of presence,
+  desired replicas, and pod-template image sets. DaemonSet replica counts
+  are exempt (desired tracks node count). Badges: `=` in sync (dim), `≠r`
+  replica drift, `≠i` image drift (yellow), `−w` missing on warm (red, the
+  dangerous direction), `+w` only on warm (cyan). Shown as a SYNC column in
+  the workload list and a "pair" line in the city screen.
+- **Attention:** one merged queue, entries tagged `H`/`W`; `n` routes to
+  the right world's view. Pair drift contributes ONE aggregate concern
+  ("pair drift: N workloads differ"), never per-workload spam.
+- **Events:** `AppEvent::World(ClusterId, WorldDelta)`; each world has its
+  own `WorldHandle`, models, and ready flag. `c` (context picker) switches
+  the hot cluster only; the warm context is fixed at launch.
+- Dev loop: `make warm-up warm-drift` then `make pair` (drift = web scaled
+  3→1, crashy deleted, agent image bumped — one of each badge kind).
 
 ## Symbol grammar (do not improvise new glyphs)
 
@@ -204,7 +229,8 @@ never blocks input.
 ## Deferred (deliberately)
 
 Metrics-server live usage · mutations & the planning-turn diff UI ·
-hot/warm pair · external services / chaos layers · logs & live tail ·
-Job/CronJob city screens · namespace filtering · mouse support · minimap
-horizontal compression for very wide zone counts (~60+) · zoom levels
-(compact 1-line tiles for very large boards).
+external services / chaos layers · logs & live tail · Job/CronJob city
+screens · namespace filtering · mouse support · minimap horizontal
+compression for very wide zone counts (~60+) · zoom levels (compact 1-line
+tiles for very large boards) · pair: per-container image diffs, env/config
+drift, unified single-board mode ("one continent, sync ghosts").

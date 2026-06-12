@@ -16,7 +16,7 @@ use ratatui::widgets::{Block, Paragraph, Widget};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::symbols::{bar, node_glyph, pod_glyph};
-use super::{Action, Component, OverlayMode, RenderCtx};
+use super::{Action, Component, Edge, OverlayMode, RenderCtx};
 use crate::state::model::{NodeHealth, NodeTile, PodState, ZoneColumn};
 use crate::util::truncate;
 
@@ -53,14 +53,17 @@ impl MapView {
             .map(|t| t.name.clone())
     }
 
-    fn move_zone(&mut self, delta: isize, ctx: &RenderCtx) {
+    /// Returns false when the cursor was already pinned at the edge.
+    fn move_zone(&mut self, delta: isize, ctx: &RenderCtx) -> bool {
         let zones = &ctx.models.map.zones;
         if zones.is_empty() {
-            return;
+            return false;
         }
+        let before = self.cursor.0;
         let z = (self.cursor.0 as isize + delta).clamp(0, zones.len() as isize - 1) as usize;
         let max_node = zones[z].nodes.len().saturating_sub(1);
         self.cursor = (z, self.cursor.1.min(max_node));
+        delta == 0 || self.cursor.0 != before
     }
 
     fn move_node(&mut self, delta: isize, ctx: &RenderCtx) {
@@ -81,8 +84,18 @@ impl Component for MapView {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let page = self.last_visible.1 as isize;
         match key.code {
-            KeyCode::Left | KeyCode::Char('h') => self.move_zone(-1, ctx),
-            KeyCode::Right | KeyCode::Char('l') => self.move_zone(1, ctx),
+            KeyCode::Left | KeyCode::Char('h') => {
+                let moved = self.move_zone(-1, ctx);
+                if !moved {
+                    return Some(Action::EdgeReached(Edge::Left));
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                let moved = self.move_zone(1, ctx);
+                if !moved {
+                    return Some(Action::EdgeReached(Edge::Right));
+                }
+            }
             KeyCode::Up | KeyCode::Char('k') => self.move_node(-1, ctx),
             KeyCode::Down | KeyCode::Char('j') => self.move_node(1, ctx),
             KeyCode::PageDown => self.move_node(page, ctx),
@@ -91,13 +104,13 @@ impl Component for MapView {
             KeyCode::Char('u') if ctrl => self.move_node(-((page / 2).max(1)), ctx),
             KeyCode::Home => {
                 self.cursor.0 = 0;
-                self.move_zone(0, ctx);
+                let _ = self.move_zone(0, ctx);
             }
             KeyCode::End => {
                 let zones = ctx.models.map.zones.len();
                 if zones > 0 {
                     self.cursor.0 = zones - 1;
-                    self.move_zone(0, ctx);
+                    let _ = self.move_zone(0, ctx);
                 }
             }
             KeyCode::Char('g') => self.cursor.1 = 0,
@@ -179,7 +192,8 @@ impl Component for MapView {
             {
                 let tile = &zone.nodes[ni];
                 let y = area.y + 1 + vr as u16 * (TILE_H + ROW_GAP);
-                let selected = (zi, ni) == self.cursor;
+                // The inactive continent keeps its cursor but mutes it.
+                let selected = ctx.focused && (zi, ni) == self.cursor;
                 draw_tile(buf, x, y, tile, selected, ctx);
             }
         }
@@ -502,6 +516,11 @@ mod tests {
             theme: &theme,
             overlay: OverlayMode::Pressure,
             ready: true,
+            cluster: crate::events::ClusterId::Hot,
+            focused: true,
+            pair: None,
+            cluster_label: None,
+            attention: &[],
         };
         let mut view = MapView::default();
         let mut term = Terminal::new(TestBackend::new(50, 12)).unwrap();
@@ -534,6 +553,11 @@ mod tests {
             theme: &theme,
             overlay: OverlayMode::Pressure,
             ready: true,
+            cluster: crate::events::ClusterId::Hot,
+            focused: true,
+            pair: None,
+            cluster_label: None,
+            attention: &[],
         };
         let mut view = MapView::default();
         use ratatui_crossterm::crossterm::event::{KeyCode, KeyModifiers};
@@ -543,12 +567,22 @@ mod tests {
         assert_eq!(view.handle_key(key(KeyCode::Char('l')), &ctx), None);
         let action = view.handle_key(key(KeyCode::Enter), &ctx);
         assert_eq!(action, Some(Action::OpenNode("n-bravo".into())));
-        // Clamp at the edge.
-        assert_eq!(view.handle_key(key(KeyCode::Char('l')), &ctx), None);
+        // Pushing past the right edge reports it (pair mode crosses over;
+        // single-cluster mode ignores it). Cursor stays clamped.
+        assert_eq!(
+            view.handle_key(key(KeyCode::Char('l')), &ctx),
+            Some(Action::EdgeReached(Edge::Right))
+        );
         assert_eq!(view.cursor, (1, 0));
         // Down clamps within a 1-node column.
         assert_eq!(view.handle_key(key(KeyCode::Char('j')), &ctx), None);
         assert_eq!(view.cursor, (1, 0));
+        // And the left edge, after walking back.
+        assert_eq!(view.handle_key(key(KeyCode::Char('h')), &ctx), None);
+        assert_eq!(
+            view.handle_key(key(KeyCode::Char('h')), &ctx),
+            Some(Action::EdgeReached(Edge::Left))
+        );
     }
 
     /// 100 nodes across 5 zones, 1000 pods in 20 deployments — the shared
@@ -599,6 +633,11 @@ mod tests {
             theme: &theme,
             overlay: OverlayMode::Pressure,
             ready: true,
+            cluster: crate::events::ClusterId::Hot,
+            focused: true,
+            pair: None,
+            cluster_label: None,
+            attention: &[],
         };
         let mut view = MapView::default();
         let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
@@ -628,6 +667,11 @@ mod tests {
             theme: &theme,
             overlay: OverlayMode::Pressure,
             ready: true,
+            cluster: crate::events::ClusterId::Hot,
+            focused: true,
+            pair: None,
+            cluster_label: None,
+            attention: &[],
         };
         let mut view = MapView::default();
         let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
@@ -673,6 +717,11 @@ mod tests {
                 theme: &theme,
                 overlay: OverlayMode::Pressure,
                 ready: true,
+                cluster: crate::events::ClusterId::Hot,
+                focused: true,
+                pair: None,
+                cluster_label: None,
+                attention: &[],
             };
             // Wiggle the cursor so the scroll-clamping paths run too.
             view.cursor = (i % 5, (i * 3) % 20);

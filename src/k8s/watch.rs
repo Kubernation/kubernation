@@ -13,7 +13,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 
 use super::client::Cluster;
-use crate::events::{AppEvent, WorldDelta};
+use crate::events::{AppEvent, ClusterId, WorldDelta};
 use crate::state::observed::{ObservedWorld, RecentEvent};
 
 /// Owns the informer tasks for one cluster context. Dropping it (e.g. on
@@ -34,7 +34,7 @@ impl Drop for WorldHandle {
 /// Spawn the full informer set for a cluster and return the observed world
 /// backed by their stores. One call per context; multi-cluster later means
 /// calling this once per member of the pair.
-pub fn spawn(cluster: &Cluster, tx: Sender<AppEvent>) -> WorldHandle {
+pub fn spawn(cluster: &Cluster, id: ClusterId, tx: Sender<AppEvent>) -> WorldHandle {
     let c = &cluster.client;
     let mut tasks = Vec::new();
 
@@ -42,6 +42,7 @@ pub fn spawn(cluster: &Cluster, tx: Sender<AppEvent>) -> WorldHandle {
     tasks.push(spawn_reflector(
         Api::all(c.clone()),
         w,
+        id,
         tx.clone(),
         WorldDelta::Nodes,
     ));
@@ -49,6 +50,7 @@ pub fn spawn(cluster: &Cluster, tx: Sender<AppEvent>) -> WorldHandle {
     tasks.push(spawn_reflector(
         Api::all(c.clone()),
         w,
+        id,
         tx.clone(),
         WorldDelta::Pods,
     ));
@@ -56,6 +58,7 @@ pub fn spawn(cluster: &Cluster, tx: Sender<AppEvent>) -> WorldHandle {
     tasks.push(spawn_reflector(
         Api::all(c.clone()),
         w,
+        id,
         tx.clone(),
         WorldDelta::Workloads,
     ));
@@ -63,6 +66,7 @@ pub fn spawn(cluster: &Cluster, tx: Sender<AppEvent>) -> WorldHandle {
     tasks.push(spawn_reflector(
         Api::all(c.clone()),
         w,
+        id,
         tx.clone(),
         WorldDelta::Workloads,
     ));
@@ -70,6 +74,7 @@ pub fn spawn(cluster: &Cluster, tx: Sender<AppEvent>) -> WorldHandle {
     tasks.push(spawn_reflector(
         Api::all(c.clone()),
         w,
+        id,
         tx.clone(),
         WorldDelta::Workloads,
     ));
@@ -77,6 +82,7 @@ pub fn spawn(cluster: &Cluster, tx: Sender<AppEvent>) -> WorldHandle {
     tasks.push(spawn_reflector(
         Api::all(c.clone()),
         w,
+        id,
         tx.clone(),
         WorldDelta::Workloads,
     ));
@@ -84,6 +90,7 @@ pub fn spawn(cluster: &Cluster, tx: Sender<AppEvent>) -> WorldHandle {
     tasks.push(spawn_reflector(
         Api::all(c.clone()),
         w,
+        id,
         tx.clone(),
         WorldDelta::Storage,
     ));
@@ -91,6 +98,7 @@ pub fn spawn(cluster: &Cluster, tx: Sender<AppEvent>) -> WorldHandle {
     tasks.push(spawn_reflector(
         Api::all(c.clone()),
         w,
+        id,
         tx.clone(),
         WorldDelta::Services,
     ));
@@ -98,6 +106,7 @@ pub fn spawn(cluster: &Cluster, tx: Sender<AppEvent>) -> WorldHandle {
     let events = Arc::new(Mutex::new(VecDeque::new()));
     tasks.push(spawn_events(
         Api::all(c.clone()),
+        id,
         events.clone(),
         tx.clone(),
     ));
@@ -110,7 +119,7 @@ pub fn spawn(cluster: &Cluster, tx: Sender<AppEvent>) -> WorldHandle {
         tasks.push(tokio::spawn(async move {
             let _ = nodes.wait_until_ready().await;
             let _ = pods.wait_until_ready().await;
-            let _ = tx.try_send(AppEvent::World(WorldDelta::Ready));
+            let _ = tx.try_send(AppEvent::World(id, WorldDelta::Ready));
         }));
     }
 
@@ -132,6 +141,7 @@ pub fn spawn(cluster: &Cluster, tx: Sender<AppEvent>) -> WorldHandle {
 fn spawn_reflector<K>(
     api: Api<K>,
     writer: Writer<K>,
+    id: ClusterId,
     tx: Sender<AppEvent>,
     delta: WorldDelta,
 ) -> JoinHandle<()>
@@ -161,7 +171,7 @@ where
                 // try_send: deltas are dirty-bits; dropping one under
                 // backpressure is harmless because rebuilds are wholesale.
                 Some(Ok(_)) => {
-                    let _ = tx.try_send(AppEvent::World(delta));
+                    let _ = tx.try_send(AppEvent::World(id, delta));
                 }
                 Some(Err(err)) => {
                     tracing::warn!(?delta, %err, "watcher error (backoff will retry)");
@@ -180,6 +190,7 @@ where
 /// by (kind, ns, name, reason).
 fn spawn_events(
     api: Api<Event>,
+    id: ClusterId,
     ring: Arc<Mutex<VecDeque<RecentEvent>>>,
     tx: Sender<AppEvent>,
 ) -> JoinHandle<()> {
@@ -200,7 +211,7 @@ fn spawn_events(
                             g.pop_front();
                         }
                     }
-                    let _ = tx.try_send(AppEvent::World(WorldDelta::Events));
+                    let _ = tx.try_send(AppEvent::World(id, WorldDelta::Events));
                 }
                 Some(Err(err)) => {
                     tracing::warn!(%err, "event watcher error (backoff will retry)");

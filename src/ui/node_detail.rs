@@ -158,10 +158,14 @@ impl Component for NodeDetailView {
             Line::styled(terrain, theme.dim()),
             Line::styled(conditions, theme.dim()),
         ];
+        let title = match ctx.cluster_label {
+            Some(l) => format!(" NODE {} — {l} ", t.name),
+            None => format!(" NODE {} ", t.name),
+        };
         f.render_widget(
             Paragraph::new(head).block(
                 Block::bordered()
-                    .title(format!(" NODE {} ", t.name))
+                    .title(title)
                     .title_style(theme.title())
                     .title_top(
                         Line::styled(format!(" zone {} ", t.zone), theme.zone()).right_aligned(),
