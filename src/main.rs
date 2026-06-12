@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
     let handle = k8s::watch::spawn(&cluster, tx.clone());
 
     if args.smoke {
-        return smoke(handle).await;
+        return smoke(handle, rx).await;
     }
 
     // Terminal up only after a client exists, so connection errors print
@@ -49,22 +49,24 @@ async fn main() -> Result<()> {
 
 /// --smoke: wait for the initial sync, print one summary line + top
 /// concerns, exit. CI's way of asking "does the world assemble?".
-async fn smoke(handle: WorldHandle) -> Result<()> {
+///
+/// Listens for `WorldDelta::Ready` exactly like the TUI does, rather than
+/// calling `Store::wait_until_ready` itself: kube's readiness signal holds a
+/// single waker slot, so the readiness task in `k8s::watch` must be the only
+/// concurrent waiter per store (see CLAUDE.md decisions log).
+async fn smoke(
+    handle: WorldHandle,
+    mut rx: tokio::sync::mpsc::Receiver<events::AppEvent>,
+) -> Result<()> {
     let w = &handle.world;
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        w.nodes
-            .wait_until_ready()
-            .await
-            .map_err(|e| eyre!("nodes store: {e}"))?;
-        w.pods
-            .wait_until_ready()
-            .await
-            .map_err(|e| eyre!("pods store: {e}"))?;
-        w.deployments
-            .wait_until_ready()
-            .await
-            .map_err(|e| eyre!("deployments store: {e}"))?;
-        Ok::<_, color_eyre::Report>(())
+        loop {
+            match rx.recv().await {
+                Some(events::AppEvent::World(events::WorldDelta::Ready)) => break Ok(()),
+                Some(_) => continue,
+                None => break Err(eyre!("event channel closed before initial sync")),
+            }
+        }
     })
     .await
     .map_err(|_| eyre!("timed out waiting for initial sync (20s)"))??;

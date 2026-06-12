@@ -54,7 +54,7 @@ pub fn render(f: &mut Frame, theme: &Theme) {
     lines.pop(); // trailing blank
 
     let h = (lines.len() as u16) + 4;
-    let area = centered(f.area(), 58, h);
+    let area = centered(f.area(), 66, h);
     f.render_widget(Clear, area);
     let block = Block::bordered()
         .title(" KEYMAP ")
