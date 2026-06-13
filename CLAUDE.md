@@ -53,8 +53,12 @@ crates/
                  + ui/ components (map, workloads, city, node_detail,
                  attention_panel, sidebar, status_bar, help, picker,
                  theme, symbols). `cargo run` = this (default-members).
-  k8sciv-gui/    SPIKE: macroquad windowed client over the same core —
-                 see "GUI spike" in the decisions log.
+  k8sciv-gui/    macroquad windowed client over the same core (promoted
+                 from spike): net.rs (tokio thread publishing Models +
+                 ObservedWorld snapshots), draw.rs (terrain mosaic,
+                 settlements, minimap, camera), panels.rs (tooltip, city/
+                 node panels via the pure core builders, attention strip),
+                 theme.rs. See "GUI spike" + "GUI promotion" decisions.
 ```
 
 **Data flow:** watchers (kube 3.x reflectors) keep `ObservedWorld` stores
@@ -155,6 +159,18 @@ what makes the interesting logic unit-testable without a cluster.
   ASCII-only text (macroquad default font has no exotic glyphs — `ascii()`
   sanitizer). Next steps if promoted: Kenney CC0 tile sprites, hover
   tooltips, city/node detail panels, pair view.
+- **GUI promotion, round 1** (2026-06-12, "results are good, build on it"):
+  procedural art instead of sprite packs first (per-cell mosaic shading,
+  coast bevels, hut-tier settlements with Civ pop chips, warning banners,
+  drifting sea) — self-contained, no licensing, no asset pipeline; Kenney
+  CC0 tilesets remain the next rung. Interaction: hover tooltips,
+  right/middle-drag pan, wheel zoom anchored at the cursor, minimap
+  click-to-jump, lerped camera flights, zoom LOD for labels. Detail
+  panels run the pure `build_city`/`build_node_detail` against an
+  `ObservedWorld` clone published with each snapshot (stores are Arc
+  clones — cheap). The minimap yields its corner while a panel is open.
+  `--inspect <substr>` + `--screenshot` make panel states verifiable
+  headlessly. Still no GUI tests (render-only logic); pair view deferred.
 - **`Store::wait_until_ready` allows ONE concurrent waiter per store** (found
   2026-06-12): kube's readiness uses a `DelayedInit` over a futures oneshot
   receiver, which holds a single waker slot. Two tasks awaiting the same

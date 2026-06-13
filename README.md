@@ -73,19 +73,24 @@ the workload list gains a SYNC column (`=` in sync, `≠r` replica drift,
 and the attention queue merges both worlds with `H`/`W` tags plus a single
 aggregate drift concern.
 
-### GUI spike (windowed client)
+### GUI client (windowed)
 
-![GUI spike](docs/gui-spike.png)
+![GUI client](docs/gui-spike.png)
 
 ```sh
 make gui    # or: cargo run -p k8sciv-gui --release -- --context <ctx>
 ```
 
-The same `k8sciv-core` world model rendered as a real 2D game view
-(macroquad): smooth pan (WASD/arrows), wheel zoom, click-to-inspect,
-city circles sized by population with Civ-style name plates, and the
-attention strip. Spike quality — flat colors and shapes, no art assets
-yet; it exists to prove the core/frontend split and the windowed feel.
+The same `k8sciv-core` world rendered as a real strategy-game view
+(macroquad): hand-shaded terrain mosaic with beveled coasts and a
+drifting sea, settlements that grow huts and walls with population
+(Civ-style white pop chips, warning banners over troubled cities),
+namespace isles, hover tooltips, right-drag panning, wheel zoom around
+the cursor, minimap click-to-jump, smooth camera flights on `]`/`[` and
+`N`, and in-window detail panels: click a city for its city screen
+(pods, owned resources, recent events), click land for the node panel
+(conditions, request gauges, pods). Procedural art — no asset packs;
+sprite tilesets remain on the ladder.
 
 ### Performance rig
 
