@@ -77,18 +77,11 @@ pub fn severity_color(s: Severity) -> Color {
 pub fn ascii(s: &str) -> String {
     s.chars()
         .map(|c| match c {
-            '—' | '–' => '-',
-            '·' => '.',
-            '×' => 'x',
             '▸' => '>',
             '‼' => '!',
             '⊘' => 'o',
-            '…' => '~',
-            '≠' => '#',
-            '−' => '-',
-            '↔' => '/',
             '≣' => '=',
-            c if c.is_ascii() => c,
+            c if c.is_ascii() || "·—–…×≠↔−≈".contains(c) => c,
             _ => '?',
         })
         .collect()

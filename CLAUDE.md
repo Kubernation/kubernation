@@ -177,9 +177,25 @@ what makes the interesting logic unit-testable without a cluster.
   offset camera so every painter stays world-local. Sync chips ride
   beside city pop boxes; tooltips/panels are HOT/WARM-tagged; the net
   thread publishes both worlds + PairSync + the merged tagged attention
-  list in one snapshot. `F` fits the whole scene; pair screenshots
-  auto-fit. A warm connect failure degrades to single-world with a
-  status message instead of aborting.
+  list in one snapshot. `F` fits the whole scene; the camera also fits
+  once on first sync. A warm connect failure degrades to single-world
+  with a status message instead of aborting.
+- **GUI font + sprite tileset** (2026-06-12, "text could be better"):
+  macroquad's built-in font is a blurry ASCII bitmap, so `text.rs`
+  bundles Fira Sans (OFL) via `include_bytes!` and routes all labels
+  through `text`/`text_bold`/`text_size` helpers (font in a thread_local,
+  falls back to default if parsing fails). `sprites.rs` embeds a curated
+  Kenney "Medieval RTS" set (CC0) — tiled terrain textures health-tinted
+  (grass/grass2 healthy, sand tinted for cordon/pressure, stone for
+  NotReady), house→keep building sprites by population tier, tent/rock
+  for island structures — each with the old procedural shapes as a
+  fallback when sprites are absent. `--tileset <dir>` overrides any PNG
+  by name. Assets live in `crates/k8sciv-gui/assets/` with `CREDITS.md`;
+  both font and sprite bytes are compiled in (binary stays
+  self-contained). `ascii()` now only maps a handful of attention glyphs
+  (the bundled font covers Unicode punctuation). Sprites use
+  `FilterMode::Nearest` for crisp pixel edges. The TUI is untouched —
+  this is all `k8sciv-gui`.
 - **`Store::wait_until_ready` allows ONE concurrent waiter per store** (found
   2026-06-12): kube's readiness uses a `DelayedInit` over a futures oneshot
   receiver, which holds a single waker slot. Two tasks awaiting the same

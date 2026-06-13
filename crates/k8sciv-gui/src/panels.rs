@@ -12,6 +12,7 @@ use macroquad::prelude::*;
 
 use crate::draw::SceneWorld;
 use crate::net::Snapshot;
+use crate::text::{text, text_bold, text_size};
 use crate::theme::*;
 
 pub const STRIP_H: f32 = 64.0;
@@ -97,7 +98,7 @@ pub fn draw_tooltip(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot, mouse: 
     let fs = 14.0;
     let w = lines
         .iter()
-        .map(|(t, _)| measure_text(ascii(t), None, fs as u16, 1.0).width)
+        .map(|(t, _)| text_size(ascii(t), fs).width)
         .fold(0.0_f32, f32::max)
         + 16.0;
     let h = lines.len() as f32 * 17.0 + 10.0;
@@ -105,8 +106,14 @@ pub fn draw_tooltip(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot, mouse: 
     let y = (mouse.y + 18.0).min(screen_height() - STRIP_H - h - 8.0);
     draw_rectangle(x, y, w, h, PLATE);
     draw_rectangle_lines(x, y, w, h, 1.5, PARCHMENT);
-    for (i, (text, color)) in lines.iter().enumerate() {
-        draw_text(ascii(text), x + 8.0, y + 17.0 + i as f32 * 17.0, fs, *color);
+    for (i, (content, color)) in lines.iter().enumerate() {
+        text(
+            ascii(content),
+            x + 8.0,
+            y + 17.0 + i as f32 * 17.0,
+            fs,
+            *color,
+        );
     }
 }
 
@@ -150,12 +157,16 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
     draw_rectangle(f.x, f.y, f.w, f.h, PANEL);
     draw_rectangle_lines(f.x, f.y, f.w, f.h, 2.0, PARCHMENT);
     draw_rectangle(pl.close.x, pl.close.y, pl.close.w, pl.close.h, PLATE);
-    draw_text("x", pl.close.x + 6.0, pl.close.y + 15.0, 16.0, INK);
+    text("x", pl.close.x + 6.0, pl.close.y + 15.0, 16.0, INK);
 
     let paired = snap.warm.is_some();
     let mut y = f.y + 26.0;
-    let line = |text: &str, fs: f32, color: Color, y: &mut f32| {
-        draw_text(ascii(text), f.x + 14.0, *y, fs, color);
+    let line = |s: &str, fs: f32, color: Color, y: &mut f32| {
+        text(ascii(s), f.x + 14.0, *y, fs, color);
+        *y += fs * 1.25;
+    };
+    let bold_line = |s: &str, fs: f32, color: Color, y: &mut f32| {
+        text_bold(ascii(s), f.x + 14.0, *y, fs, color);
         *y += fs * 1.25;
     };
 
@@ -164,7 +175,7 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
     };
     if paired {
         let (tag, color) = cluster_tag(id);
-        draw_text(tag, f.x + f.w - 70.0, f.y + 20.0, 16.0, color);
+        text(tag, f.x + f.w - 70.0, f.y + 20.0, 16.0, color);
     }
     let Some(observed) = observed_for(snap, id) else {
         line("world detached", 16.0, DIM, &mut y);
@@ -181,7 +192,7 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
                 line("workload is no longer observed", 16.0, DIM, &mut y);
                 return;
             };
-            line(&city.r.name, 22.0, INK, &mut y);
+            bold_line(&city.r.name, 22.0, INK, &mut y);
             line(
                 &format!("{} {}/{}", city.r.kind, city.r.namespace, city.r.name),
                 14.0,
@@ -245,7 +256,7 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
                 } else {
                     format!("  {}", p.reason)
                 };
-                draw_text(
+                text(
                     ascii(&format!(
                         "{}{} . r{} . {}",
                         truncate_str(&p.name, 30),
@@ -275,7 +286,7 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
 
             if !city.owned.is_empty() {
                 y += 8.0;
-                line("OWNED", 15.0, PARCHMENT, &mut y);
+                bold_line("OWNED", 15.0, PARCHMENT, &mut y);
                 for o in city.owned.iter().take(6) {
                     let note = if o.note.is_empty() {
                         String::new()
@@ -288,7 +299,7 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
 
             if !city.events.is_empty() {
                 y += 8.0;
-                line("RECENT EVENTS", 15.0, PARCHMENT, &mut y);
+                bold_line("RECENT EVENTS", 15.0, PARCHMENT, &mut y);
                 for e in city.events.iter().rev().take(5) {
                     let color = if e.warning { WARN } else { DIM };
                     line(
@@ -311,7 +322,7 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
                 return;
             };
             let t = &detail.tile;
-            line(&t.name, 22.0, INK, &mut y);
+            bold_line(&t.name, 22.0, INK, &mut y);
             line(&format!("province of {}", t.zone), 14.0, PARCHMENT, &mut y);
             y += 4.0;
             let health = match t.health {
@@ -332,10 +343,10 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
                 } else {
                     Color::new(0.35, 0.60, 0.30, 1.0)
                 };
-                draw_text(label, f.x + 14.0, y, 13.0, DIM);
+                text(label, f.x + 14.0, y, 13.0, DIM);
                 draw_rectangle(f.x + 50.0, y - 10.0, bw, 10.0, darker(PANEL, 0.7));
                 draw_rectangle(f.x + 50.0, y - 10.0, fill, 10.0, color);
-                draw_text(
+                text(
                     format!("{:>3.0}%", ratio * 100.0),
                     f.x + 58.0 + bw,
                     y,
@@ -360,7 +371,7 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
                 .min(22);
             for p in detail.pods.iter().take(max_pods) {
                 draw_circle(f.x + 20.0, y - 4.0, 4.0, pod_color(p.state));
-                draw_text(
+                text(
                     ascii(&format!("{}/{}", p.namespace, truncate_str(&p.name, 34))),
                     f.x + 30.0,
                     y,
@@ -401,7 +412,7 @@ pub fn draw_attention_strip(attention: &[Concern], paired: bool, concern_idx: us
     draw_rectangle(0.0, base, screen_width(), STRIP_H, PANEL);
     draw_rectangle(0.0, base, screen_width(), 2.0, PARCHMENT);
     if attention.is_empty() {
-        draw_text("all quiet - no concerns", 16.0, base + 26.0, 18.0, DIM);
+        text("all quiet - no concerns", 16.0, base + 26.0, 18.0, DIM);
         return;
     }
     for (i, c) in attention.iter().take(3).enumerate() {
@@ -418,7 +429,7 @@ pub fn draw_attention_strip(attention: &[Concern], paired: bool, concern_idx: us
         } else {
             ""
         };
-        draw_text(
+        text(
             ascii(&format!("{marker}{tag}{} - {}", c.title, c.detail)),
             16.0,
             base + 20.0 + i as f32 * 19.0,
@@ -427,7 +438,7 @@ pub fn draw_attention_strip(attention: &[Concern], paired: bool, concern_idx: us
         );
     }
     if attention.len() > 3 {
-        draw_text(
+        text(
             format!("+{}", attention.len() - 3),
             screen_width() - 50.0,
             base + 20.0,

@@ -13,6 +13,8 @@
 mod draw;
 mod net;
 mod panels;
+mod sprites;
+mod text;
 mod theme;
 
 use std::path::PathBuf;
@@ -26,6 +28,7 @@ use k8sciv_core::state::attention::Target;
 use k8sciv_core::state::world::Region;
 use macroquad::prelude::*;
 use panels::{Panel, draw_attention_strip, draw_panel, draw_tooltip, panel_layout};
+use text::{text, text_bold, text_size};
 use theme::*;
 
 #[derive(Debug, Parser)]
@@ -43,6 +46,10 @@ struct Args {
     /// Project a CRD's instances onto the map (repeatable)
     #[arg(long = "project", value_name = "CRD")]
     project: Vec<String>,
+    /// Directory of replacement sprite PNGs (grass.png, house.png, …)
+    #[arg(long)]
+    tileset: Option<PathBuf>,
+
     /// Render until synced, save a PNG, exit (development verification)
     #[arg(long)]
     screenshot: Option<PathBuf>,
@@ -65,6 +72,8 @@ fn window_conf() -> Conf {
 #[macroquad::main(window_conf)]
 async fn main() {
     let args = Args::parse();
+    text::init();
+    sprites::init(args.tileset.as_deref());
     let shot = args.screenshot.clone();
     let inspect = args.inspect.clone();
     let want_warm = args.warm.is_some();
@@ -85,6 +94,7 @@ async fn main() {
     let mut concern_idx: usize = 0;
     let mut city_idx: usize = 0;
     let mut frames_synced: u32 = 0;
+    let mut did_initial_fit = false;
     let mut inspected = false;
     let mut drag_anchor: Option<Vec2> = None;
 
@@ -150,9 +160,11 @@ async fn main() {
             if is_key_pressed(KeyCode::F) {
                 cam.fit(bounds);
             }
-            // Pair screenshots frame the whole scene unless inspecting.
-            if shot.is_some() && inspect.is_none() && want_warm && frames_synced == 1 {
+            // Frame the whole world on first sync (skip when --inspect is
+            // about to fly the camera to a specific city).
+            if !did_initial_fit && inspect.is_none() {
                 cam.fit(bounds);
+                did_initial_fit = true;
             }
 
             if is_key_pressed(KeyCode::RightBracket) || is_key_pressed(KeyCode::LeftBracket) {
@@ -239,8 +251,8 @@ async fn main() {
         clear_background(OCEAN);
         match snap.as_ref() {
             None => {
-                draw_text(ascii(&status), 40.0, 60.0, 30.0, PARCHMENT);
-                draw_text(
+                text(ascii(&status), 40.0, 60.0, 30.0, PARCHMENT);
+                text(
                     "the world is unexplored - fog of war",
                     40.0,
                     100.0,
@@ -294,16 +306,16 @@ async fn main() {
         // Top chrome.
         draw_rectangle(0.0, 0.0, screen_width(), panels::CHROME_H - 2.0, PANEL);
         draw_rectangle(0.0, panels::CHROME_H - 2.0, screen_width(), 2.0, PARCHMENT);
-        draw_text(
-            ascii(&format!("K8SCIV - {status}")),
+        text_bold(
+            ascii(&format!("K8SCIV — {status}")),
             12.0,
             21.0,
             20.0,
             PARCHMENT,
         );
         let help = "right-drag/WASD pan . wheel zoom . F fit . hover info . click inspect . ]/[ cities . N next concern . Q quit";
-        let hm = measure_text(help, None, 14, 1.0);
-        draw_text(help, screen_width() - hm.width - 12.0, 21.0, 14.0, DIM);
+        let hm = text_size(help, 14.0);
+        text(help, screen_width() - hm.width - 12.0, 21.0, 14.0, DIM);
 
         if let Some(path) = &shot
             && frames_synced > 45

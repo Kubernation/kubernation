@@ -8,12 +8,16 @@
 
 use k8sciv_core::events::ClusterId;
 use k8sciv_core::state::attention::Severity;
+use k8sciv_core::state::model::NodeHealth;
 use k8sciv_core::state::pair::PairSync;
 use k8sciv_core::state::world::{City, Island, Province, WorldModel};
 use macroquad::prelude::*;
 
 use crate::net::Snapshot;
+use crate::sprites::{self, sprite_at, tile_region};
+use crate::text::{text, text_bold, text_size};
 use crate::theme::*;
+use k8sciv_core::util::fnv1a64;
 
 // World cells assume terminal-ish aspect; keep that proportion in pixels.
 pub const CELL_W: f32 = 13.0;
@@ -167,20 +171,47 @@ pub fn lod(zoom: f32) -> Lod {
     }
 }
 
-/// The open sea fills the screen behind every world.
+/// The open sea fills the screen behind every world: world-aligned water
+/// tiles so panning feels physical, darkened to sit behind the chrome.
 pub fn draw_sea(cam: &Camera) {
-    let (cw, ch) = cam.cell_px();
-    let t = get_time() as f32;
-    let x0 = (cam.pos.x / cw).floor() as i32;
-    let y0 = (cam.pos.y / ch).floor() as i32;
-    let cols = (screen_width() / cw) as i32 + 2;
-    let rows = (screen_height() / ch) as i32 + 2;
-    for wy in y0..y0 + rows {
-        for wx in x0..x0 + cols {
-            if (wx * 7 + wy * 13).rem_euclid(29) == 0 {
-                let drift = (t * 0.7 + wy as f32 * 0.6).sin() * 3.0 * cam.zoom;
-                let p = cam.to_screen(wx as f32, wy as f32);
-                draw_rectangle(p.x + drift, p.y + ch * 0.45, cw * 0.55, 2.0, WAVE);
+    let drew = sprites::with(|s| {
+        let tile = 64.0 * cam.zoom;
+        let tint = Color::new(0.34, 0.46, 0.66, 1.0);
+        let ox = -cam.pos.x.rem_euclid(tile) - tile;
+        let oy = -cam.pos.y.rem_euclid(tile) - tile;
+        let mut y = oy;
+        while y < screen_height() + tile {
+            let mut x = ox;
+            while x < screen_width() + tile {
+                draw_texture_ex(
+                    &s.water,
+                    x,
+                    y,
+                    tint,
+                    DrawTextureParams {
+                        dest_size: Some(vec2(tile, tile)),
+                        ..Default::default()
+                    },
+                );
+                x += tile;
+            }
+            y += tile;
+        }
+    });
+    if drew.is_none() {
+        let (cw, ch) = cam.cell_px();
+        let t = get_time() as f32;
+        let x0 = (cam.pos.x / cw).floor() as i32;
+        let y0 = (cam.pos.y / ch).floor() as i32;
+        let cols = (screen_width() / cw) as i32 + 2;
+        let rows = (screen_height() / ch) as i32 + 2;
+        for wy in y0..y0 + rows {
+            for wx in x0..x0 + cols {
+                if (wx * 7 + wy * 13).rem_euclid(29) == 0 {
+                    let drift = (t * 0.7 + wy as f32 * 0.6).sin() * 3.0 * cam.zoom;
+                    let p = cam.to_screen(wx as f32, wy as f32);
+                    draw_rectangle(p.x + drift, p.y + ch * 0.45, cw * 0.55, 2.0, WAVE);
+                }
             }
         }
     }
@@ -207,9 +238,9 @@ pub fn draw_world(
             ClusterId::Hot => Color::new(0.95, 0.65, 0.35, 1.0),
             ClusterId::Warm => Color::new(0.55, 0.78, 0.92, 1.0),
         };
-        draw_text(tag, p.x, p.y - fs, fs, color);
-        let tm = measure_text(tag, None, fs as u16, 1.0);
-        draw_text(
+        text_bold(tag, p.x, p.y - fs, fs, color);
+        let tm = text_size(tag, fs);
+        text(
             ascii(label),
             p.x + tm.width + 10.0,
             p.y - fs,
@@ -227,7 +258,7 @@ pub fn draw_world(
     for cont in &world.continents {
         if detail.province_labels {
             let p = cam.to_screen(cont.x as f32 + 1.0, cont.y as f32 - 1.0);
-            draw_text(
+            text(
                 ascii(&format!(
                     "{}  ({} provinces)",
                     cont.zone,
@@ -283,21 +314,58 @@ fn draw_province(
         return;
     }
 
-    // Terrain mosaic: per-cell shade variation, clipped to the viewport.
-    let cx0 = (prov.x as i32).max(vx0);
-    let cx1 = ((prov.x + prov.w) as i32).min(vx0 + vcols);
-    let cy0 = (prov.y as i32).max(vy0);
-    let cy1 = ((prov.y + prov.h) as i32).min(vy0 + vrows);
-    for wy in cy0..cy1 {
-        for wx in cx0..cx1 {
-            let p = cam.to_screen(wx as f32, wy as f32);
-            draw_rectangle(
-                p.x,
-                p.y,
-                cw + 0.5,
-                ch + 0.5,
-                terrain_cell(prov.tile.health, wx as u16, wy as u16),
-            );
+    // Terrain: tiled ground textures keyed to health (light sprites tint
+    // well, so drought/wasteland are tinted sand/stone). Falls back to the
+    // procedural cell mosaic without sprites.
+    let ground = Rect::new(tl.x, tl.y, w, h);
+    let textured = sprites::with(|s| {
+        let tile = 64.0 * cam.zoom;
+        match prov.tile.health {
+            NodeHealth::Healthy => {
+                let tex = if fnv1a64(&prov.tile.name).is_multiple_of(2) {
+                    &s.grass
+                } else {
+                    &s.grass2
+                };
+                tile_region(tex, ground, WHITE, tile);
+            }
+            NodeHealth::Cordoned => {
+                tile_region(&s.sand, ground, Color::new(0.93, 0.86, 0.52, 1.0), tile)
+            }
+            NodeHealth::Pressure => {
+                tile_region(&s.sand, ground, Color::new(1.0, 0.64, 0.38, 1.0), tile)
+            }
+            NodeHealth::NotReady => {
+                tile_region(&s.stone, ground, Color::new(0.95, 0.48, 0.42, 1.0), tile)
+            }
+        }
+        // A little life on healthy land.
+        if prov.tile.health == NodeHealth::Healthy {
+            for i in 0..3u64 {
+                let hx = fnv1a64(&format!("{}t{i}", prov.tile.name));
+                let cx = 2 + (hx % (prov.w as u64 - 4)) as u16;
+                let cy = 1 + ((hx >> 8) % (prov.h as u64 - 1).max(1)) as u16;
+                let c = cam.to_screen(prov.x as f32 + cx as f32, prov.y as f32 + cy as f32 + 0.5);
+                sprite_at(&s.tree, c, 20.0 * cam.zoom, WHITE);
+            }
+        }
+    });
+    if textured.is_none() {
+        let cx0 = (prov.x as i32).max(vx0);
+        let cx1 = ((prov.x + prov.w) as i32).min(vx0 + vcols);
+        let cy0 = (prov.y as i32).max(vy0);
+        let cy1 = ((prov.y + prov.h) as i32).min(vy0 + vrows);
+        for wy in cy0..cy1 {
+            for wx in cx0..cx1 {
+                let p = cam.to_screen(wx as f32, wy as f32);
+                draw_rectangle(
+                    p.x,
+                    p.y,
+                    cw + 0.5,
+                    ch + 0.5,
+                    terrain_cell(prov.tile.health, wx as u16, wy as u16),
+                );
+            }
         }
     }
 
@@ -320,14 +388,14 @@ fn draw_province(
     }
 
     if detail.province_labels {
-        draw_text(
+        text(
             ascii(&prov.tile.name),
             tl.x + 7.0,
             tl.y + 15.0 * cam.zoom.max(0.7),
             16.0 * cam.zoom.max(0.7),
             INK,
         );
-        draw_text(
+        text(
             format!("{} pods", prov.tile.pods.len()),
             tl.x + 7.0,
             tl.y + 30.0 * cam.zoom.max(0.7),
@@ -363,34 +431,76 @@ fn draw_city(city: &City, cam: &Camera, detail: &Lod, pair: Option<&PairSync>) {
         draw_circle_lines(c.x, c.y, plate_r + 2.0, 2.5 * z, lighter(SAND_DARK, 1.1));
     }
 
-    // Huts.
-    let hut = |x: f32, y: f32, s: f32| {
-        let hw = 11.0 * z * s;
-        let hh = 7.5 * z * s;
-        draw_rectangle(x - hw / 2.0, y - hh / 2.0, hw, hh, HOUSE);
-        draw_triangle(
-            vec2(x - hw / 2.0 - 1.5 * z, y - hh / 2.0),
-            vec2(x + hw / 2.0 + 1.5 * z, y - hh / 2.0),
-            vec2(x, y - hh / 2.0 - 6.0 * z * s),
-            ROOF,
-        );
-    };
-    match tier {
-        0 => {
-            let hw = 10.0 * z;
-            draw_rectangle(c.x - hw / 2.0, c.y - 4.0 * z, hw, 7.0 * z, DIM);
-        }
-        1 => hut(c.x, c.y, 1.0),
+    // Buildings: Kenney sprites by population tier, with shape fallbacks.
+    let sprited = sprites::with(|s| match tier {
+        0 => sprite_at(&s.house, c, 18.0 * z, Color::new(0.5, 0.5, 0.5, 0.95)),
+        1 => sprite_at(&s.house, c, 22.0 * z, WHITE),
         2 => {
-            hut(c.x - 8.0 * z, c.y + 2.0 * z, 0.9);
-            hut(c.x + 8.0 * z, c.y + 2.0 * z, 0.9);
-            hut(c.x, c.y - 5.0 * z, 1.0);
+            sprite_at(
+                &s.house2,
+                vec2(c.x - 11.0 * z, c.y + 3.0 * z),
+                18.0 * z,
+                WHITE,
+            );
+            sprite_at(
+                &s.house,
+                vec2(c.x + 11.0 * z, c.y + 3.0 * z),
+                18.0 * z,
+                WHITE,
+            );
+            sprite_at(&s.longhouse, vec2(c.x, c.y - 5.0 * z), 22.0 * z, WHITE);
         }
         _ => {
-            hut(c.x - 10.0 * z, c.y + 3.0 * z, 0.9);
-            hut(c.x + 10.0 * z, c.y + 3.0 * z, 0.9);
-            hut(c.x, c.y - 6.0 * z, 1.1);
-            hut(c.x, c.y + 5.0 * z, 0.8);
+            sprite_at(
+                &s.house2,
+                vec2(c.x - 13.0 * z, c.y + 4.0 * z),
+                17.0 * z,
+                WHITE,
+            );
+            sprite_at(
+                &s.house,
+                vec2(c.x + 13.0 * z, c.y + 4.0 * z),
+                17.0 * z,
+                WHITE,
+            );
+            sprite_at(
+                &s.longhouse,
+                vec2(c.x + 1.0 * z, c.y + 8.0 * z),
+                16.0 * z,
+                WHITE,
+            );
+            sprite_at(&s.keep, vec2(c.x, c.y - 6.0 * z), 28.0 * z, WHITE);
+        }
+    });
+    if sprited.is_none() {
+        let hut = |x: f32, y: f32, s: f32| {
+            let hw = 11.0 * z * s;
+            let hh = 7.5 * z * s;
+            draw_rectangle(x - hw / 2.0, y - hh / 2.0, hw, hh, HOUSE);
+            draw_triangle(
+                vec2(x - hw / 2.0 - 1.5 * z, y - hh / 2.0),
+                vec2(x + hw / 2.0 + 1.5 * z, y - hh / 2.0),
+                vec2(x, y - hh / 2.0 - 6.0 * z * s),
+                ROOF,
+            );
+        };
+        match tier {
+            0 => {
+                let hw = 10.0 * z;
+                draw_rectangle(c.x - hw / 2.0, c.y - 4.0 * z, hw, 7.0 * z, DIM);
+            }
+            1 => hut(c.x, c.y, 1.0),
+            2 => {
+                hut(c.x - 8.0 * z, c.y + 2.0 * z, 0.9);
+                hut(c.x + 8.0 * z, c.y + 2.0 * z, 0.9);
+                hut(c.x, c.y - 5.0 * z, 1.0);
+            }
+            _ => {
+                hut(c.x - 10.0 * z, c.y + 3.0 * z, 0.9);
+                hut(c.x + 10.0 * z, c.y + 3.0 * z, 0.9);
+                hut(c.x, c.y - 6.0 * z, 1.1);
+                hut(c.x, c.y + 5.0 * z, 0.8);
+            }
         }
     }
 
@@ -419,33 +529,33 @@ fn draw_city(city: &City, cam: &Camera, detail: &Lod, pair: Option<&PairSync>) {
     };
     let pop = city.ready.to_string();
     let fs = (14.0 * z).max(10.0);
-    let m = measure_text(&pop, None, fs as u16, 1.0);
+    let m = text_size(&pop, fs);
     let bw = m.width + 6.0;
     let bh = fs + 2.0;
     let bx = c.x - plate_r - bw + 4.0;
     let by = c.y - plate_r - bh + 2.0;
     draw_rectangle(bx, by, bw, bh, box_col);
     draw_rectangle_lines(bx, by, bw, bh, 1.0, PLATE);
-    draw_text(&pop, bx + 3.0, by + bh - 4.0, fs, num_col);
+    text(&pop, bx + 3.0, by + bh - 4.0, fs, num_col);
 
     // Sync chip beside the pop box, when a warm twin exists.
     if let Some(p) = pair
         && let Some(st) = p.state(&city.r)
     {
         let badge = ascii(&st.badge());
-        let cm = measure_text(&badge, None, fs as u16, 1.0);
+        let cm = text_size(&badge, fs);
         let chip_w = cm.width + 6.0;
         let chip_x = bx - chip_w - 3.0;
         draw_rectangle(chip_x, by, chip_w, bh, PLATE);
         draw_rectangle_lines(chip_x, by, chip_w, bh, 1.0, sync_color(st));
-        draw_text(&badge, chip_x + 3.0, by + bh - 4.0, fs, sync_color(st));
+        text(&badge, chip_x + 3.0, by + bh - 4.0, fs, sync_color(st));
     }
 
     // Name plate.
     if detail.name_plates {
         let label = ascii(&city.r.name);
         let fs = (15.0 * z).max(11.0);
-        let tm = measure_text(&label, None, fs as u16, 1.0);
+        let tm = text_size(&label, fs);
         let lx = c.x - tm.width / 2.0;
         let ly = c.y + plate_r + fs * 0.95;
         draw_rectangle(
@@ -455,7 +565,7 @@ fn draw_city(city: &City, cam: &Camera, detail: &Lod, pair: Option<&PairSync>) {
             tm.height + 5.0,
             PLATE,
         );
-        draw_text(&label, lx, ly, fs, INK);
+        text(&label, lx, ly, fs, INK);
     }
 }
 
@@ -480,7 +590,7 @@ fn draw_island(isl: &Island, cam: &Camera, detail: &Lod) {
     draw_rectangle(tl.x, tl.y + h - 2.0, w, 2.0, darker(SAND, 0.62));
 
     if detail.structures_labels {
-        draw_text(
+        text(
             ascii(&format!("isle of {}", isl.label)),
             tl.x + 6.0,
             tl.y + 15.0,
@@ -491,10 +601,25 @@ fn draw_island(isl: &Island, cam: &Camera, detail: &Lod) {
     for s in &isl.structures {
         let p = cam.to_screen(isl.x as f32 + 1.5, s.y as f32 + 0.5);
         let color = if s.glyph == '✦' { STRUCT } else { DIM };
-        draw_poly(p.x, p.y, 4, 6.0 * cam.zoom, 45.0, color);
-        draw_poly_lines(p.x, p.y, 4, 6.0 * cam.zoom, 45.0, 1.5, darker(color, 0.5));
+        let sprited = sprites::with(|spr| {
+            if s.glyph == '✦' {
+                // A gray boulder tints into a cyan-glowing resource.
+                sprite_at(
+                    &spr.rock,
+                    p,
+                    15.0 * cam.zoom,
+                    Color::new(0.55, 1.0, 1.05, 1.0),
+                );
+            } else {
+                sprite_at(&spr.tent, p, 17.0 * cam.zoom, WHITE);
+            }
+        });
+        if sprited.is_none() {
+            draw_poly(p.x, p.y, 4, 6.0 * cam.zoom, 45.0, color);
+            draw_poly_lines(p.x, p.y, 4, 6.0 * cam.zoom, 45.0, 1.5, darker(color, 0.5));
+        }
         if detail.structures_labels {
-            draw_text(
+            text(
                 ascii(&format!("{}/{}", s.kind, s.name)),
                 p.x + 11.0,
                 p.y + 5.0,
@@ -505,7 +630,7 @@ fn draw_island(isl: &Island, cam: &Camera, detail: &Lod) {
     }
     if isl.more > 0 {
         let p = cam.to_screen(isl.x as f32 + 2.0, (isl.y + isl.h - 1) as f32 + 0.5);
-        draw_text(
+        text(
             format!("+{} more", isl.more),
             p.x,
             p.y,
