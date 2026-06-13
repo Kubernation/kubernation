@@ -85,9 +85,22 @@ pub fn ascii(s: &str) -> String {
             '⊘' => 'o',
             '…' => '~',
             '≠' => '#',
+            '−' => '-',
+            '↔' => '/',
             '≣' => '=',
             c if c.is_ascii() => c,
             _ => '?',
         })
         .collect()
+}
+
+/// Chip color for a pair sync state.
+pub fn sync_color(state: &k8sciv_core::state::pair::SyncState) -> Color {
+    use k8sciv_core::state::pair::SyncState;
+    match state {
+        SyncState::InSync => Color::new(0.50, 0.65, 0.45, 1.0),
+        SyncState::Drift { .. } => WARN,
+        SyncState::OnlyHot => CRIT,
+        SyncState::OnlyWarm => STRUCT,
+    }
 }

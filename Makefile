@@ -77,9 +77,13 @@ perf-test:
 perf-down:
 	kwokctl delete cluster --name $(PERF_CLUSTER)
 
-## gui: run the windowed client spike against the dev cluster
+## gui: run the windowed client against the dev cluster
 gui:
 	cargo run --release -p k8sciv-gui -- --context $(KCTX) --project gizmos.example.com
+
+## gui-pair: windowed client observing hot + warm archipelagos
+gui-pair:
+	cargo run --release -p k8sciv-gui -- --context $(KCTX) --warm $(WARM_KCTX) --project gizmos.example.com
 
 ## lint: formatting + clippy, the same gate as CI
 lint:

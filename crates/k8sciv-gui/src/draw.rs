@@ -1,16 +1,72 @@
 //! The world painter: hand-shaded terrain mosaic, beveled coasts, animated
 //! sea, settlement sprites with Civ-style population boxes, islands, and
 //! the minimap. All geometry comes from `k8sciv_core::state::world`.
+//!
+//! A paired session is a *scene* of two worlds on one sea: the warm
+//! archipelago sits east of the hot one. Each world is drawn with the
+//! camera shifted by its offset, so every painter stays world-local.
 
+use k8sciv_core::events::ClusterId;
 use k8sciv_core::state::attention::Severity;
+use k8sciv_core::state::pair::PairSync;
 use k8sciv_core::state::world::{City, Island, Province, WorldModel};
 use macroquad::prelude::*;
 
+use crate::net::Snapshot;
 use crate::theme::*;
 
 // World cells assume terminal-ish aspect; keep that proportion in pixels.
 pub const CELL_W: f32 = 13.0;
 pub const CELL_H: f32 = 19.0;
+/// Ocean strait between the hot and warm archipelagos, in cells.
+pub const WORLD_GAP: u16 = 8;
+
+// --- scene ----------------------------------------------------------------
+
+pub struct SceneWorld<'a> {
+    pub id: ClusterId,
+    pub off: u16,
+    pub world: &'a WorldModel,
+    pub label: String,
+}
+
+pub fn scene(snap: &Snapshot) -> Vec<SceneWorld<'_>> {
+    let mut worlds = vec![SceneWorld {
+        id: ClusterId::Hot,
+        off: 0,
+        world: &snap.hot.models.world,
+        label: snap.hot.observed.meta.context.clone(),
+    }];
+    if let Some(w) = &snap.warm {
+        worlds.push(SceneWorld {
+            id: ClusterId::Warm,
+            off: snap.hot.models.world.width + WORLD_GAP,
+            world: &w.models.world,
+            label: w.observed.meta.context.clone(),
+        });
+    }
+    worlds
+}
+
+pub fn scene_size(worlds: &[SceneWorld]) -> (u16, u16) {
+    let w = worlds.last().map(|s| s.off + s.world.width).unwrap_or(1);
+    let h = worlds.iter().map(|s| s.world.height).max().unwrap_or(1);
+    (w.max(1), h.max(1))
+}
+
+/// Which world a scene cell falls in, with the world-local cell.
+pub fn locate<'a, 'b>(
+    worlds: &'b [SceneWorld<'a>],
+    cell: (u16, u16),
+) -> Option<(&'b SceneWorld<'a>, (u16, u16))> {
+    worlds
+        .iter()
+        .rev()
+        .find(|s| cell.0 >= s.off && cell.0 < s.off + s.world.width)
+        .map(|s| (s, (cell.0 - s.off, cell.1)))
+}
+
+// --- camera ----------------------------------------------------------------
 
 pub struct Camera {
     pub pos: Vec2,
@@ -33,14 +89,24 @@ impl Camera {
         let (cw, ch) = self.cell_px();
         vec2(wx * cw - self.pos.x, wy * ch - self.pos.y)
     }
-    pub fn cell_at(&self, screen: Vec2, world: &WorldModel) -> Option<(u16, u16)> {
+    /// A copy whose origin is shifted east by `off` world cells — drawing a
+    /// world through it lands the world at its scene offset.
+    pub fn shifted(&self, off: u16) -> Camera {
+        let (cw, _) = self.cell_px();
+        Camera {
+            pos: self.pos - vec2(off as f32 * cw, 0.0),
+            zoom: self.zoom,
+            target: None,
+        }
+    }
+    pub fn cell_at(&self, screen: Vec2, bounds: (u16, u16)) -> Option<(u16, u16)> {
         let (cw, ch) = self.cell_px();
         let wx = (screen.x + self.pos.x) / cw;
         let wy = (screen.y + self.pos.y) / ch;
-        (wx >= 0.0 && wy >= 0.0 && wx < world.width as f32 && wy < world.height as f32)
+        (wx >= 0.0 && wy >= 0.0 && wx < bounds.0 as f32 && wy < bounds.1 as f32)
             .then_some((wx as u16, wy as u16))
     }
-    /// Glide toward a world cell over the next ~20 frames.
+    /// Glide toward a scene cell over the next ~20 frames.
     pub fn fly_to(&mut self, cell: (u16, u16)) {
         let (cw, ch) = self.cell_px();
         self.target = Some(vec2(
@@ -54,6 +120,20 @@ impl Camera {
             self.pos = t;
         }
     }
+    /// Zoom and position so the whole scene is on screen.
+    pub fn fit(&mut self, bounds: (u16, u16)) {
+        let margin = 60.0;
+        let zx = (screen_width() - margin) / (bounds.0 as f32 * CELL_W);
+        let zy = (screen_height() - margin * 2.0) / (bounds.1 as f32 * CELL_H);
+        self.zoom = zx.min(zy).clamp(0.30, 1.5);
+        let (cw, ch) = self.cell_px();
+        self.pos = vec2(
+            (bounds.0 as f32 * cw - screen_width()) / 2.0,
+            (bounds.1 as f32 * ch - screen_height()) / 2.0 - 10.0,
+        );
+        self.target = None;
+    }
+
     /// Per-frame: advance the flight, cancel it on manual pan.
     pub fn tick(&mut self, manual_pan: bool) {
         if manual_pan {
@@ -87,14 +167,12 @@ pub fn lod(zoom: f32) -> Lod {
     }
 }
 
-pub fn draw_world(world: &WorldModel, cam: &Camera, selected: Option<(u16, u16)>) {
+/// The open sea fills the screen behind every world.
+pub fn draw_sea(cam: &Camera) {
     let (cw, ch) = cam.cell_px();
     let t = get_time() as f32;
-    let detail = lod(cam.zoom);
-
-    // --- open sea: drifting wave dashes -------------------------------
-    let x0 = (cam.pos.x / cw).floor().max(0.0) as i32;
-    let y0 = (cam.pos.y / ch).floor().max(0.0) as i32;
+    let x0 = (cam.pos.x / cw).floor() as i32;
+    let y0 = (cam.pos.y / ch).floor() as i32;
     let cols = (screen_width() / cw) as i32 + 2;
     let rows = (screen_height() / ch) as i32 + 2;
     for wy in y0..y0 + rows {
@@ -106,6 +184,45 @@ pub fn draw_world(world: &WorldModel, cam: &Camera, selected: Option<(u16, u16)>
             }
         }
     }
+}
+
+/// One world, drawn through an offset camera. `banner` names the
+/// archipelago in pair mode; `pair` adds sync chips to cities.
+pub fn draw_world(
+    world: &WorldModel,
+    cam: &Camera,
+    banner: Option<(&str, ClusterId)>,
+    pair: Option<&PairSync>,
+) {
+    let detail = lod(cam.zoom);
+
+    if let Some((label, id)) = banner {
+        let p = cam.to_screen(1.0, 0.0);
+        let fs = 26.0 * cam.zoom.max(0.7);
+        let tag = match id {
+            ClusterId::Hot => "HOT",
+            ClusterId::Warm => "WARM",
+        };
+        let color = match id {
+            ClusterId::Hot => Color::new(0.95, 0.65, 0.35, 1.0),
+            ClusterId::Warm => Color::new(0.55, 0.78, 0.92, 1.0),
+        };
+        draw_text(tag, p.x, p.y - fs, fs, color);
+        let tm = measure_text(tag, None, fs as u16, 1.0);
+        draw_text(
+            ascii(label),
+            p.x + tm.width + 10.0,
+            p.y - fs,
+            fs * 0.7,
+            PARCHMENT,
+        );
+    }
+
+    let (cw, ch) = cam.cell_px();
+    let x0 = (cam.pos.x / cw).floor().max(0.0) as i32;
+    let y0 = (cam.pos.y / ch).floor().max(0.0) as i32;
+    let cols = (screen_width() / cw) as i32 + 2;
+    let rows = (screen_height() / ch) as i32 + 2;
 
     for cont in &world.continents {
         if detail.province_labels {
@@ -123,33 +240,36 @@ pub fn draw_world(world: &WorldModel, cam: &Camera, selected: Option<(u16, u16)>
             );
         }
         for prov in &cont.provinces {
-            draw_province(prov, cam, &detail, x0, y0, cols, rows);
+            draw_province(prov, cam, &detail, pair, x0, y0, cols, rows);
         }
     }
 
     for isl in &world.islands {
         draw_island(isl, cam, &detail);
     }
-
-    // --- selection ring -------------------------------------------------
-    if let Some(sel) = selected {
-        let p = cam.to_screen(sel.0 as f32, sel.1 as f32);
-        let pulse = 2.0 + (t * 5.0).sin() * 1.2;
-        draw_rectangle_lines(
-            p.x - pulse,
-            p.y - pulse,
-            cw + pulse * 2.0,
-            ch + pulse * 2.0,
-            2.5,
-            INK,
-        );
-    }
 }
 
+pub fn draw_selection(cam: &Camera, sel: (u16, u16)) {
+    let (cw, ch) = cam.cell_px();
+    let t = get_time() as f32;
+    let p = cam.to_screen(sel.0 as f32, sel.1 as f32);
+    let pulse = 2.0 + (t * 5.0).sin() * 1.2;
+    draw_rectangle_lines(
+        p.x - pulse,
+        p.y - pulse,
+        cw + pulse * 2.0,
+        ch + pulse * 2.0,
+        2.5,
+        INK,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
 fn draw_province(
     prov: &Province,
     cam: &Camera,
     detail: &Lod,
+    pair: Option<&PairSync>,
     vx0: i32,
     vy0: i32,
     vcols: i32,
@@ -217,14 +337,14 @@ fn draw_province(
     }
 
     for city in &prov.cities {
-        draw_city(city, cam, detail);
+        draw_city(city, cam, detail, pair);
     }
 }
 
 /// A settlement, Civ-style: huts that grow with population, a white pop
 /// box, walls once it's a real city, a flag and tint when it needs the
-/// operator. The circle-click affordance survives underneath.
-fn draw_city(city: &City, cam: &Camera, detail: &Lod) {
+/// operator — and a sync chip when a warm twin exists.
+fn draw_city(city: &City, cam: &Camera, detail: &Lod, pair: Option<&PairSync>) {
     let z = cam.zoom;
     let c = cam.to_screen(city.x as f32 + 0.5, city.y as f32 + 0.8);
     let tier = match city.ready {
@@ -257,7 +377,6 @@ fn draw_city(city: &City, cam: &Camera, detail: &Lod) {
     };
     match tier {
         0 => {
-            // An emptied settlement: a single grey ruin.
             let hw = 10.0 * z;
             draw_rectangle(c.x - hw / 2.0, c.y - 4.0 * z, hw, 7.0 * z, DIM);
         }
@@ -309,6 +428,19 @@ fn draw_city(city: &City, cam: &Camera, detail: &Lod) {
     draw_rectangle_lines(bx, by, bw, bh, 1.0, PLATE);
     draw_text(&pop, bx + 3.0, by + bh - 4.0, fs, num_col);
 
+    // Sync chip beside the pop box, when a warm twin exists.
+    if let Some(p) = pair
+        && let Some(st) = p.state(&city.r)
+    {
+        let badge = ascii(&st.badge());
+        let cm = measure_text(&badge, None, fs as u16, 1.0);
+        let chip_w = cm.width + 6.0;
+        let chip_x = bx - chip_w - 3.0;
+        draw_rectangle(chip_x, by, chip_w, bh, PLATE);
+        draw_rectangle_lines(chip_x, by, chip_w, bh, 1.0, sync_color(st));
+        draw_text(&badge, chip_x + 3.0, by + bh - 4.0, fs, sync_color(st));
+    }
+
     // Name plate.
     if detail.name_plates {
         let label = ascii(&city.r.name);
@@ -336,7 +468,6 @@ fn draw_island(isl: &Island, cam: &Camera, detail: &Lod) {
         return;
     }
     draw_rectangle(tl.x, tl.y, w, h, SAND);
-    // Stippled dunes.
     for wy in isl.y..isl.y + isl.h {
         for wx in isl.x..isl.x + isl.w {
             if (wx as u32 * 13 + wy as u32 * 7).is_multiple_of(5) {
@@ -394,55 +525,58 @@ pub struct MinimapLayout {
 }
 
 impl MinimapLayout {
-    pub fn world_cell(&self, screen: Vec2, world: &WorldModel) -> Option<(u16, u16)> {
+    pub fn world_cell(&self, screen: Vec2, bounds: (u16, u16)) -> Option<(u16, u16)> {
         if !self.inner.contains(screen) {
             return None;
         }
         let wx = ((screen.x - self.inner.x) / self.scale_x) as u16;
         let wy = ((screen.y - self.inner.y) / self.scale_y) as u16;
-        Some((wx.min(world.width - 1), wy.min(world.height - 1)))
+        Some((wx.min(bounds.0 - 1), wy.min(bounds.1 - 1)))
     }
 }
 
-pub fn minimap_layout(world: &WorldModel) -> MinimapLayout {
-    let scale = 150.0 / world.width.max(1) as f32;
-    let mw = world.width as f32 * scale;
-    let mh = (world.height as f32 * scale * (CELL_H / CELL_W)).min(190.0);
+pub fn minimap_layout(bounds: (u16, u16)) -> MinimapLayout {
+    let scale = (220.0 / bounds.0.max(1) as f32).min(3.0);
+    let mw = bounds.0 as f32 * scale;
+    let mh = (bounds.1 as f32 * scale * (CELL_H / CELL_W)).min(190.0);
     let x0 = screen_width() - mw - 14.0;
     let y0 = 44.0;
     MinimapLayout {
         frame: Rect::new(x0 - 4.0, y0 - 4.0, mw + 8.0, mh + 8.0),
         inner: Rect::new(x0, y0, mw, mh),
         scale_x: scale,
-        scale_y: mh / world.height.max(1) as f32,
+        scale_y: mh / bounds.1.max(1) as f32,
     }
 }
 
-pub fn draw_minimap(world: &WorldModel, cam: &Camera, ml: &MinimapLayout) {
+pub fn draw_minimap(worlds: &[SceneWorld], cam: &Camera, ml: &MinimapLayout) {
     draw_rectangle(ml.frame.x, ml.frame.y, ml.frame.w, ml.frame.h, PANEL);
     draw_rectangle_lines(
         ml.frame.x, ml.frame.y, ml.frame.w, ml.frame.h, 2.0, PARCHMENT,
     );
     draw_rectangle(ml.inner.x, ml.inner.y, ml.inner.w, ml.inner.h, OCEAN);
-    for cont in &world.continents {
-        for p in &cont.provinces {
+    for sw in worlds {
+        let ox = sw.off as f32 * ml.scale_x;
+        for cont in &sw.world.continents {
+            for p in &cont.provinces {
+                draw_rectangle(
+                    ml.inner.x + ox + p.x as f32 * ml.scale_x,
+                    ml.inner.y + p.y as f32 * ml.scale_y,
+                    p.w as f32 * ml.scale_x,
+                    p.h as f32 * ml.scale_y,
+                    terrain(p.tile.health),
+                );
+            }
+        }
+        for isl in &sw.world.islands {
             draw_rectangle(
-                ml.inner.x + p.x as f32 * ml.scale_x,
-                ml.inner.y + p.y as f32 * ml.scale_y,
-                p.w as f32 * ml.scale_x,
-                p.h as f32 * ml.scale_y,
-                terrain(p.tile.health),
+                ml.inner.x + ox + isl.x as f32 * ml.scale_x,
+                ml.inner.y + isl.y as f32 * ml.scale_y,
+                isl.w as f32 * ml.scale_x,
+                isl.h as f32 * ml.scale_y,
+                SAND,
             );
         }
-    }
-    for isl in &world.islands {
-        draw_rectangle(
-            ml.inner.x + isl.x as f32 * ml.scale_x,
-            ml.inner.y + isl.y as f32 * ml.scale_y,
-            isl.w as f32 * ml.scale_x,
-            isl.h as f32 * ml.scale_y,
-            SAND,
-        );
     }
     let (cw, ch) = cam.cell_px();
     let vx = (cam.pos.x / cw).max(0.0) * ml.scale_x;

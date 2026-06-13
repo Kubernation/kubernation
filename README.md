@@ -92,6 +92,18 @@ the cursor, minimap click-to-jump, smooth camera flights on `]`/`[` and
 (conditions, request gauges, pods). Procedural art — no asset packs;
 sprite tilesets remain on the ladder.
 
+With `--warm` (`make gui-pair`) the standby cluster rises as a **second
+archipelago** east of the hot one — one sea, free panning between them,
+`F` fits both on screen:
+
+![GUI pair](docs/gui-pair.png)
+
+Every city carries a sync chip beside its population box (`=` in sync,
+`#r`/`#i` drift, `-w` missing on warm), tooltips and panels are tagged
+HOT/WARM, the city panel gains a pair line, and the attention strip
+merges both worlds with `[H]`/`[W]` tags plus the single aggregate
+drift concern.
+
 ### Performance rig
 
 ```sh

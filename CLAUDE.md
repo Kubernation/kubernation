@@ -170,7 +170,16 @@ what makes the interesting logic unit-testable without a cluster.
   `ObservedWorld` clone published with each snapshot (stores are Arc
   clones — cheap). The minimap yields its corner while a panel is open.
   `--inspect <substr>` + `--screenshot` make panel states verifiable
-  headlessly. Still no GUI tests (render-only logic); pair view deferred.
+  headlessly. Still no GUI tests (render-only logic).
+- **GUI pair** (2026-06-12): `--warm` renders the standby as a second
+  archipelago east of the hot one on a single sea — free panning replaces
+  split-screen; `Camera::shifted(off)` draws each world through an
+  offset camera so every painter stays world-local. Sync chips ride
+  beside city pop boxes; tooltips/panels are HOT/WARM-tagged; the net
+  thread publishes both worlds + PairSync + the merged tagged attention
+  list in one snapshot. `F` fits the whole scene; pair screenshots
+  auto-fit. A warm connect failure degrades to single-world with a
+  status message instead of aborting.
 - **`Store::wait_until_ready` allows ONE concurrent waiter per store** (found
   2026-06-12): kube's readiness uses a `DelayedInit` over a futures oneshot
   receiver, which holds a single waker slot. Two tasks awaiting the same

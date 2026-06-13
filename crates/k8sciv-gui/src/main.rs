@@ -1,9 +1,10 @@
 //! K8sCiv GUI: the observed world rendered as a windowed strategy map —
 //! the same `k8sciv-core` models as the TUI, painted with macroquad.
+//! With `--warm`, the standby cluster appears as a second archipelago
+//! east of the hot one, with sync chips on every city.
 //!
-//!   make gui
-//!   cargo run -p k8sciv-gui --release -- --context kind-k8sciv \
-//!       --project gizmos.example.com
+//!   make gui            # hot only
+//!   make gui-pair       # hot + warm
 //!
 //! Controls: WASD/arrows or right-drag pan · wheel zoom · hover for
 //! tooltips · click to inspect (city screen / node panel) · ]/[ sail
@@ -17,7 +18,10 @@ mod theme;
 use std::path::PathBuf;
 
 use clap::Parser;
-use draw::{Camera, draw_minimap, draw_world, minimap_layout};
+use draw::{
+    Camera, SceneWorld, draw_minimap, draw_sea, draw_selection, draw_world, locate, minimap_layout,
+    scene, scene_size,
+};
 use k8sciv_core::state::attention::Target;
 use k8sciv_core::state::world::Region;
 use macroquad::prelude::*;
@@ -30,6 +34,9 @@ struct Args {
     /// Kubeconfig context (defaults to current-context)
     #[arg(long)]
     context: Option<String>,
+    /// Warm-standby context: a second archipelago with sync chips
+    #[arg(long)]
+    warm: Option<String>,
     /// Path to kubeconfig
     #[arg(long)]
     kubeconfig: Option<PathBuf>,
@@ -60,11 +67,13 @@ async fn main() {
     let args = Args::parse();
     let shot = args.screenshot.clone();
     let inspect = args.inspect.clone();
+    let want_warm = args.warm.is_some();
     let net = net::Net::new();
     net::spawn(
         net::NetArgs {
             context: args.context.clone(),
             kubeconfig: args.kubeconfig.clone(),
+            warm: args.warm.clone(),
             projections: args.project.clone(),
         },
         net.clone(),
@@ -113,7 +122,6 @@ async fn main() {
             cam.pos.y += pan;
             manual_pan = true;
         }
-        // Right- or middle-drag pans like grabbing the map.
         if is_mouse_button_down(MouseButton::Right) || is_mouse_button_down(MouseButton::Middle) {
             if let Some(anchor) = drag_anchor {
                 let d = anchor - mouse;
@@ -130,75 +138,98 @@ async fn main() {
         if wheel.abs() > 0.0 {
             let factor = if wheel > 0.0 { 1.1 } else { 1.0 / 1.1 };
             let before = (mouse + cam.pos) / cam.zoom;
-            cam.zoom = (cam.zoom * factor).clamp(0.45, 3.0);
+            cam.zoom = (cam.zoom * factor).clamp(0.30, 3.0);
             cam.pos = before * cam.zoom - mouse;
         }
         cam.tick(manual_pan);
 
         if let Some(s) = snap.as_ref() {
-            let world = &s.models.world;
+            let worlds = scene(s);
+            let bounds = scene_size(&worlds);
+
+            if is_key_pressed(KeyCode::F) {
+                cam.fit(bounds);
+            }
+            // Pair screenshots frame the whole scene unless inspecting.
+            if shot.is_some() && inspect.is_none() && want_warm && frames_synced == 1 {
+                cam.fit(bounds);
+            }
 
             if is_key_pressed(KeyCode::RightBracket) || is_key_pressed(KeyCode::LeftBracket) {
-                let cities: Vec<_> = world.cities().collect();
+                // All cities across the scene, in archipelago order.
+                let cities: Vec<(u16, u16)> = worlds
+                    .iter()
+                    .flat_map(|sw| sw.world.cities().map(move |c| (c.x + sw.off, c.y)))
+                    .collect();
                 if !cities.is_empty() {
                     if is_key_pressed(KeyCode::RightBracket) {
                         city_idx = (city_idx + 1) % cities.len();
                     } else {
                         city_idx = (city_idx + cities.len() - 1) % cities.len();
                     }
-                    let c = cities[city_idx];
-                    selected = Some((c.x, c.y));
-                    cam.fly_to((c.x, c.y));
+                    selected = Some(cities[city_idx]);
+                    cam.fly_to(cities[city_idx]);
                 }
             }
-            if is_key_pressed(KeyCode::N) && !s.models.attention.is_empty() {
-                concern_idx = (concern_idx + 1) % s.models.attention.len();
-                let concern = &s.models.attention[concern_idx];
-                let pos = match &concern.target {
-                    Target::Workload(r) => world.city_pos(r).or_else(|| world.structure_pos(r)),
-                    Target::Node(name) => world.province_pos(name),
-                    Target::WorkloadList => None,
-                };
-                if let Some(p) = pos {
-                    selected = Some(p);
-                    cam.fly_to(p);
-                    panel = match &concern.target {
-                        Target::Workload(r) => Some(Panel::City(r.clone())),
-                        Target::Node(name) => Some(Panel::Node(name.clone())),
+            if is_key_pressed(KeyCode::N) && !s.attention.is_empty() {
+                concern_idx = (concern_idx + 1) % s.attention.len();
+                let concern = &s.attention[concern_idx];
+                if let Some(sw) = worlds.iter().find(|w| w.id == concern.cluster) {
+                    let local = match &concern.target {
+                        Target::Workload(r) => {
+                            sw.world.city_pos(r).or_else(|| sw.world.structure_pos(r))
+                        }
+                        Target::Node(name) => sw.world.province_pos(name),
                         Target::WorkloadList => None,
                     };
+                    if let Some(p) = local {
+                        let global = (p.0 + sw.off, p.1);
+                        selected = Some(global);
+                        cam.fly_to(global);
+                        panel = match &concern.target {
+                            Target::Workload(r) => Some(Panel::City(sw.id, r.clone())),
+                            Target::Node(name) => Some(Panel::Node(sw.id, name.clone())),
+                            Target::WorkloadList => None,
+                        };
+                    }
                 }
             }
             if is_key_pressed(KeyCode::Enter)
                 && let Some(sel) = selected
             {
-                panel = panel_for(world, sel);
+                panel = panel_for(&worlds, sel);
             }
 
             if is_mouse_button_pressed(MouseButton::Left) {
                 let pl = panel_layout();
-                let ml = minimap_layout(world);
+                let ml = minimap_layout(bounds);
                 let over_panel = panel.is_some() && pl.frame.contains(mouse);
                 if panel.is_some() && pl.close.contains(mouse) {
                     panel = None;
                 } else if panel.is_none()
-                    && let Some(cell) = ml.world_cell(mouse, world)
+                    && let Some(cell) = ml.world_cell(mouse, bounds)
                 {
                     cam.fly_to(cell);
                 } else if !over_panel && mouse.y > panels::CHROME_H {
-                    selected = cam.cell_at(mouse, world);
+                    selected = cam.cell_at(mouse, bounds);
                     if let Some(sel) = selected {
-                        panel = panel_for(world, sel);
+                        panel = panel_for(&worlds, sel);
                     }
                 }
             }
 
             // Development verification: select and open something specific.
             if !inspected && let Some(needle) = &inspect {
-                if let Some(c) = world.cities().find(|c| c.r.name.contains(needle.as_str())) {
-                    selected = Some((c.x, c.y));
-                    cam.jump_to((c.x, c.y));
-                    panel = Some(Panel::City(c.r.clone()));
+                'outer: for sw in &worlds {
+                    for c in sw.world.cities() {
+                        if c.r.name.contains(needle.as_str()) {
+                            let global = (c.x + sw.off, c.y);
+                            selected = Some(global);
+                            cam.jump_to(global);
+                            panel = Some(Panel::City(sw.id, c.r.clone()));
+                            break 'outer;
+                        }
+                    }
                 }
                 inspected = true;
             }
@@ -218,31 +249,45 @@ async fn main() {
                 );
             }
             Some(s) => {
-                frames_synced += 1;
-                let world = &s.models.world;
-                draw_world(world, &cam, selected);
+                let worlds = scene(s);
+                let bounds = scene_size(&worlds);
+                let paired = s.warm.is_some();
+                if !want_warm || paired {
+                    frames_synced += 1;
+                }
+
+                draw_sea(&cam);
+                for sw in &worlds {
+                    let wc = cam.shifted(sw.off);
+                    let banner = paired.then_some((sw.label.as_str(), sw.id));
+                    draw_world(sw.world, &wc, banner, s.pair.as_deref());
+                }
+                if let Some(sel) = selected {
+                    draw_selection(&cam, sel);
+                }
 
                 // Hover tooltip (suppressed while dragging / over chrome).
                 let pl = panel_layout();
                 let over_panel = panel.is_some() && pl.frame.contains(mouse);
-                let ml = minimap_layout(world);
+                let ml = minimap_layout(bounds);
                 let over_minimap = panel.is_none() && ml.frame.contains(mouse);
                 if drag_anchor.is_none()
                     && !over_panel
                     && !over_minimap
                     && mouse.y > panels::CHROME_H
                     && mouse.y < screen_height() - panels::STRIP_H
-                    && let Some(cell) = cam.cell_at(mouse, world)
+                    && let Some(cell) = cam.cell_at(mouse, bounds)
+                    && let Some((sw, local)) = locate(&worlds, cell)
                 {
-                    draw_tooltip(world, cell, mouse);
+                    draw_tooltip(sw, local, s, mouse);
                 }
 
                 if let Some(p) = &panel {
-                    draw_panel(p, &s.observed, &s.models, &pl);
+                    draw_panel(p, s, &pl);
                 } else {
-                    draw_minimap(world, &cam, &ml);
+                    draw_minimap(&worlds, &cam, &ml);
                 }
-                draw_attention_strip(&s.models, concern_idx);
+                draw_attention_strip(&s.attention, paired, concern_idx);
             }
         }
 
@@ -256,7 +301,7 @@ async fn main() {
             20.0,
             PARCHMENT,
         );
-        let help = "right-drag/WASD pan . wheel zoom . hover info . click inspect . ]/[ cities . N next concern . Q quit";
+        let help = "right-drag/WASD pan . wheel zoom . F fit . hover info . click inspect . ]/[ cities . N next concern . Q quit";
         let hm = measure_text(help, None, 14, 1.0);
         draw_text(help, screen_width() - hm.width - 12.0, 21.0, 14.0, DIM);
 
@@ -271,11 +316,12 @@ async fn main() {
     }
 }
 
-fn panel_for(world: &k8sciv_core::state::world::WorldModel, sel: (u16, u16)) -> Option<Panel> {
-    match world.region_at(sel.0, sel.1) {
-        Region::City(_, c) => Some(Panel::City(c.r.clone())),
-        Region::Province(p) => Some(Panel::Node(p.tile.name.clone())),
-        Region::Structure(_, s) => s.workload.clone().map(Panel::City),
+fn panel_for(worlds: &[SceneWorld], sel: (u16, u16)) -> Option<Panel> {
+    let (sw, local) = locate(worlds, sel)?;
+    match sw.world.region_at(local.0, local.1) {
+        Region::City(_, c) => Some(Panel::City(sw.id, c.r.clone())),
+        Region::Province(p) => Some(Panel::Node(sw.id, p.tile.name.clone())),
+        Region::Structure(_, s) => s.workload.clone().map(|r| Panel::City(sw.id, r)),
         _ => None,
     }
 }
