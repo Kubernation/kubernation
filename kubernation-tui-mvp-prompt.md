@@ -1,8 +1,8 @@
-# Project: Civilization-Inspired Kubernetes TUI — MVP
+# Project: 4X-Inspired Kubernetes TUI — MVP
 
 ## Context
 
-You are implementing the MVP of a terminal user interface for observing and managing Kubernetes clusters. The conceptual foundation is the user-interface grammar of early Sid Meier's Civilization (Civ 1/2): a spatial, tile-based main view with overlays, a "city screen" for detailed entity management, an attention queue that surfaces what needs the operator's focus, and (in later phases) a planning-turn intervention model.
+You are implementing the MVP of a terminal user interface for observing and managing Kubernetes clusters. The conceptual foundation is the user-interface grammar of early 4X strategy games: a spatial, tile-based main view with overlays, a "city screen" for detailed entity management, an attention queue that surfaces what needs the operator's focus, and (in later phases) a planning-turn intervention model.
 
 This is **not** a retro skin on k9s. It's a genuinely different operator UX that treats Kubernetes objects as having spatial structure, that surfaces problems to the operator instead of requiring them to go looking, and that frames intervention as deliberate staged changes rather than imperative edits.
 
@@ -41,12 +41,12 @@ Build a working terminal application that does the following.
 
 - Triggered by selecting a Deployment, StatefulSet, or DaemonSet from a workload list, or by drilling in from a node tile.
 - Shows: desired/ready/available replicas, current rollout status, pod list with individual status, recent events, owned resources (ConfigMaps, Secrets, PVCs, Services).
-- This is the equivalent of Civ's city screen — one workload, full context, no mode switching.
+- This is the equivalent of 4X's city screen — one workload, full context, no mode switching.
 
 ### 3. Attention Queue
 
 - A persistent panel (always visible or summonable) listing current operational concerns in priority order: failing pods, stuck rollouts, pending PVCs, nodes under pressure, recent warning events, workloads with replica gaps.
-- Hotkey to cycle to the "next concern" (the analog of Civ's "next unit needing orders").
+- Hotkey to cycle to the "next concern" (the analog of 4X's "next unit needing orders").
 - Each entry is selectable and opens the relevant detail view.
 
 ### 4. Live Updates
@@ -137,6 +137,6 @@ When this is done:
 - **Use the `kind` integration target as your dev loop.** Do not develop against a remote cluster.
 - **Commit in working states** with descriptive messages. The user reviews commits.
 - **When making architectural decisions** that aren't fully specified here, document them in `CLAUDE.md` and proceed. Don't ask for clarification on every choice; do ask when the choice would significantly change the shape of future work.
-- **Suggest a project name** if you have a good one. Civilization-flavored, aviation-flavored (the user maintains a TowerOps tooling family that includes VOR, Waypoint, Radar, GPS), or k8s-flavored options are all welcome.
+- **Suggest a project name** if you have a good one. 4X-flavored, aviation-flavored (the user maintains a TowerOps tooling family that includes VOR, Waypoint, Radar, GPS), or k8s-flavored options are all welcome.
 
 When you're done, provide a brief tour: what was built, what was deferred, what surprised you, and what the next phase should focus on.

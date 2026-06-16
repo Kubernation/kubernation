@@ -3,7 +3,7 @@
 //! at a time; it draws a dimmed scrim, a parchment-framed panel with a title
 //! bar + icon, a button/tab row, and hands back a clipped body rect the
 //! caller fills (culling + scrolling its own content, since macroquad has no
-//! easy scissor). Mirrors the Civ II window structure (titlebar / body /
+//! easy scissor). Mirrors the 4X window structure (titlebar / body /
 //! buttons) in the Kubernation parchment palette.
 
 use kubernation_core::state::planned::Intervention;
@@ -72,7 +72,7 @@ pub fn draw_window(title: &str, size: Vec2, buttons: &[&str], active: usize) -> 
     draw_icon(vec2(x + 8.0, y + 6.0), 18.0);
     text_bold(title, x + 34.0, y + 21.0, 18.0, PARCHMENT);
 
-    // Close box (Esc also closes; this mirrors Civ II's window button).
+    // Close box (Esc also closes; this mirrors 4X's window button).
     let close = Rect::new(x + w - 26.0, y + 5.0, 20.0, 20.0);
     let close_bg = if close.contains(mp) {
         lighter(PLATE, 1.9)

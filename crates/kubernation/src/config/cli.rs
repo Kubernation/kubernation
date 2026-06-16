@@ -4,7 +4,14 @@ use clap::Parser;
 
 /// Kubernation — the cluster as a living map. Observe-only MVP.
 #[derive(Debug, Parser)]
-#[command(name = "kubernation", version, about)]
+#[command(
+    name = "kubernation",
+    version,
+    about,
+    after_help = "Kubernation is an independent, unaffiliated homage — not associated with, \
+endorsed by, or sponsored by Take-Two Interactive Software, Inc., Firaxis Games, or the \
+Civilization franchise. Sid Meier's Civilization and Civ are trademarks of Take-Two Interactive."
+)]
 pub struct Args {
     /// Path to kubeconfig (defaults to $KUBECONFIG, then ~/.kube/config)
     #[arg(long)]

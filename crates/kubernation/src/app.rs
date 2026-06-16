@@ -598,7 +598,7 @@ impl App {
 
             match self.screens.last().copied().unwrap_or(Screen::Map) {
                 Screen::Map => {
-                    // Civ-style sidebar (WORLD/STATUS/ORDERS) when there's
+                    // 4X-style sidebar (WORLD/STATUS/ORDERS) when there's
                     // room; otherwise the floating world overlay serves.
                     let paired = self.warm.is_some();
                     let min_w = if paired { 150 } else { 110 };

@@ -1,5 +1,5 @@
 //! The node drill-down — a province window, sibling to the city window.
-//! A node reframed as Civ terrain (observe-only):
+//! A node reframed as 4X terrain (observe-only):
 //!
 //!   title bar  →  node name (+ HOT/WARM)
 //!   status band→  zone, health, cpu/mem gauges (live usage or pressure)

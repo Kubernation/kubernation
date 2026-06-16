@@ -1,7 +1,7 @@
 //! Color discipline: color encodes meaning, never decoration — and in the
-//! default "civ" palette, *terrain*. Healthy infrastructure reads as living
+//! default "atlas" palette, *terrain*. Healthy infrastructure reads as living
 //! land (greens, parchment chrome, blue ocean on the world panel) the way a
-//! healthy Civ empire does, while saturated red/yellow stay reserved for
+//! thriving map does, while saturated red/yellow stay reserved for
 //! things that need the operator's attention: trouble must pop against
 //! terrain, never compete with it. `color = "plain"` keeps the old
 //! restrained palette; `mono` carries the same meanings with modifiers only.
@@ -27,13 +27,13 @@ impl Theme {
         }
     }
 
-    fn civ(&self) -> bool {
+    fn atlas(&self) -> bool {
         !self.mono && !self.plain
     }
 
-    /// Panel borders — parchment, like Civ's window chrome.
+    /// Panel borders — aged-parchment window chrome.
     pub fn chrome(&self) -> Style {
-        if self.civ() {
+        if self.atlas() {
             Style::new().fg(Color::Yellow).add_modifier(Modifier::DIM)
         } else if self.mono {
             Style::new().add_modifier(Modifier::DIM)
@@ -44,7 +44,7 @@ impl Theme {
 
     /// Panel titles — gold on the parchment chrome.
     pub fn title(&self) -> Style {
-        if self.civ() {
+        if self.atlas() {
             Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
         } else {
             Style::new().add_modifier(Modifier::BOLD)
@@ -53,7 +53,7 @@ impl Theme {
 
     /// Node names on tiles — white city labels, exactly like the board.
     pub fn tile_name(&self) -> Style {
-        if self.civ() {
+        if self.atlas() {
             Style::new().fg(Color::White)
         } else {
             Style::new()
@@ -103,9 +103,11 @@ impl Theme {
             };
         }
         match s {
-            // Running is still the absence of *alarm*: on the civ palette a
+            // Running is still the absence of *alarm*: on the atlas palette a
             // healthy pod is muted terrain green, never saturated.
-            PodState::Ok if self.civ() => Style::new().fg(Color::Green).add_modifier(Modifier::DIM),
+            PodState::Ok if self.atlas() => {
+                Style::new().fg(Color::Green).add_modifier(Modifier::DIM)
+            }
             PodState::Ok => Style::new(),
             PodState::Starting => Style::new().fg(Color::Cyan),
             PodState::Pending => Style::new().fg(Color::DarkGray),
@@ -127,7 +129,7 @@ impl Theme {
         }
         match h {
             // Healthy land is green; trouble keeps the reserved colors.
-            NodeHealth::Healthy if self.civ() => Style::new().fg(Color::Green),
+            NodeHealth::Healthy if self.atlas() => Style::new().fg(Color::Green),
             NodeHealth::Healthy => Style::new(),
             NodeHealth::Cordoned => Style::new().fg(Color::Yellow),
             NodeHealth::Pressure => Style::new().fg(Color::LightRed),
@@ -136,7 +138,7 @@ impl Theme {
     }
 
     /// Request-pressure gauge buckets; thresholds in `state::model`.
-    /// Calm gauges on the civ palette are food-storage green.
+    /// Calm gauges on the atlas palette are food-storage green.
     pub fn ratio(&self, r: f64) -> Style {
         use kubernation_core::state::model::{PRESSURE_ELEVATED, PRESSURE_HIGH};
         if self.mono {
@@ -150,7 +152,7 @@ impl Theme {
             Style::new().fg(Color::Red)
         } else if r >= PRESSURE_ELEVATED {
             Style::new().fg(Color::Yellow)
-        } else if self.civ() {
+        } else if self.atlas() {
             Style::new().fg(Color::Green).add_modifier(Modifier::DIM)
         } else {
             Style::new().fg(Color::DarkGray)
@@ -165,7 +167,7 @@ impl Theme {
     pub fn zone(&self) -> Style {
         if self.mono {
             Style::new().add_modifier(Modifier::BOLD)
-        } else if self.civ() {
+        } else if self.atlas() {
             Style::new().fg(Color::Green).add_modifier(Modifier::BOLD)
         } else {
             Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD)
@@ -176,7 +178,7 @@ impl Theme {
 
     /// Open-sea wave marks on the main board.
     pub fn sea(&self) -> Style {
-        if self.civ() {
+        if self.atlas() {
             Style::new().fg(Color::Blue)
         } else {
             self.dim()
@@ -188,7 +190,7 @@ impl Theme {
     /// city badges still outrank them.
     pub fn terrain(&self, h: NodeHealth) -> Style {
         let base = match h {
-            NodeHealth::Healthy if self.civ() => Style::new().fg(Color::Green),
+            NodeHealth::Healthy if self.atlas() => Style::new().fg(Color::Green),
             NodeHealth::Healthy => self.dim(),
             NodeHealth::Cordoned => Style::new().fg(Color::Yellow),
             NodeHealth::Pressure => Style::new().fg(Color::LightRed),
@@ -211,7 +213,7 @@ impl Theme {
 
     /// A healthy city's badge — settlements are white like their labels.
     pub fn city(&self) -> Style {
-        if self.civ() {
+        if self.atlas() {
             Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
         } else {
             Style::new().add_modifier(Modifier::BOLD)
@@ -220,7 +222,7 @@ impl Theme {
 
     /// Island sand.
     pub fn shore(&self) -> Style {
-        if self.civ() {
+        if self.atlas() {
             Style::new().fg(Color::Yellow).add_modifier(Modifier::DIM)
         } else {
             self.dim()
@@ -240,7 +242,7 @@ impl Theme {
 
     /// Ocean fill behind the world panel cells.
     pub fn ocean(&self) -> Style {
-        if self.civ() {
+        if self.atlas() {
             Style::new().fg(Color::LightBlue).bg(Color::Blue)
         } else {
             Style::new()
@@ -250,21 +252,21 @@ impl Theme {
     /// A world-panel node cell, colored by the node's worst state.
     pub fn land(&self, h: NodeHealth) -> Style {
         let base = match h {
-            NodeHealth::Healthy if self.civ() => Style::new().fg(Color::LightGreen),
+            NodeHealth::Healthy if self.atlas() => Style::new().fg(Color::LightGreen),
             NodeHealth::Healthy => self.dim(),
             other => self.node(other),
         };
-        if self.civ() {
+        if self.atlas() {
             base.bg(Color::Blue)
         } else {
             base
         }
     }
 
-    /// Glyph + style for a world-panel cell. Civ palette: solid green land
+    /// Glyph + style for a world-panel cell. Atlas palette: solid green land
     /// on ocean; plain palette keeps the quiet dot field.
     pub fn land_cell(&self, h: NodeHealth) -> (&'static str, Style) {
-        if self.civ() {
+        if self.atlas() {
             ("▪", self.land(h))
         } else {
             match h {
@@ -276,7 +278,7 @@ impl Theme {
 
     /// The viewport rectangle on the world panel.
     pub fn viewport(&self) -> Style {
-        if self.civ() {
+        if self.atlas() {
             Style::new()
                 .fg(Color::White)
                 .bg(Color::Blue)
@@ -340,18 +342,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn civ_palette_keeps_alarm_colors_reserved() {
-        let civ = Theme::new(ColorMode::Auto);
+    fn atlas_palette_keeps_alarm_colors_reserved() {
+        let atlas = Theme::new(ColorMode::Auto);
         // Healthy terrain is green, not the reserved colors.
-        assert_eq!(civ.node(NodeHealth::Healthy).fg, Some(Color::Green));
+        assert_eq!(atlas.node(NodeHealth::Healthy).fg, Some(Color::Green));
         // Trouble is identical across palettes.
         let plain = Theme::new(ColorMode::Plain);
         assert_eq!(
-            civ.severity(Severity::Critical),
+            atlas.severity(Severity::Critical),
             plain.severity(Severity::Critical)
         );
         assert_eq!(
-            civ.node(NodeHealth::NotReady),
+            atlas.node(NodeHealth::NotReady),
             plain.node(NodeHealth::NotReady)
         );
         // Plain keeps the old restraint: healthy carries no color at all.

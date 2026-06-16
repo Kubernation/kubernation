@@ -1,6 +1,6 @@
 [package]
 name = "kubernation-gui"
-description = "Kubernation GUI spike: a windowed Civ-style map client over kubernation-core"
+description = "Kubernation GUI spike: a windowed 4X-style map client over kubernation-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -88,7 +88,7 @@ geography rather than a grid (the rectangular model underneath stays the
 canonical coordinate system; the GUI just paints organic shores over it).
 **Kenney CC0 sprite terrain** (tiled grass/sand/stone keyed to node
 health, trees on healthy land); **building sprites** that grow from a
-single house to a walled keep with population, with Civ-style white pop
+single house to a walled keep with population, with white population
 chips and warning banners over troubled cities; namespace isles with
 structure sprites, hover tooltips, right-drag panning, wheel zoom around
 the cursor, minimap click-to-jump, smooth camera flights on `]`/`[` and
@@ -99,7 +99,7 @@ seconds):
 
 ![GUI logs](docs/gui-logs.png)
 
-Clicking a city opens a **Civ II-style city window** — the city screen
+Clicking a city opens a **4X-style city window** — the city screen
 reframed for Kubernetes: replicas/updated gauges, a pod **census** grid +
 clickable pod list, **improvements** (Services / Ingress / PVCs / config),
 and a **chronicle** of recent events.
@@ -242,7 +242,7 @@ metrics-server (`make metrics-up`) and the gauges switch automatically to
 `cpu use`, the GUI panel says `live usage`. No metrics-server, no problem:
 it falls back to requests on its own.
 
-On terminals ≥110 columns the map gains the Civ sidebar: **WORLD** (the
+On terminals ≥110 columns the map gains the world sidebar: **WORLD** (the
 chart: green land on blue ocean, `┌┐└┘` framing your viewport), **STATUS**
 (provinces/cities/pods/concerns — your people and gold), and **ORDERS**
 (whatever the cursor stands on — city, province, structure, or open sea).
@@ -259,7 +259,7 @@ connect and watches its instances live; they appear as `✦` structures on
 their namespace's island. CRDs absent on a cluster are skipped quietly —
 a hot/warm pair may project asymmetrically.
 
-The default palette is **civ**: parchment chrome, green terrain, white
+The default palette is **atlas**: parchment chrome, green terrain, white
 city labels, blue ocean — with red and yellow strictly reserved for things
 needing attention. Prefer the old restrained look? `color = "plain"` in
 `~/.config/kubernation/config.toml`; `color = "mono"` for no color at all.
@@ -280,7 +280,7 @@ Optional file at `~/.config/kubernation/config.toml`:
 
 ```toml
 tick_ms = 250              # world-change coalescing cadence
-color = "auto"             # "auto" (civ) | "plain" | "mono"
+color = "auto"             # "auto" (atlas) | "plain" | "mono"
 attention_expanded = false # start with the panel expanded
 ```
 
@@ -292,9 +292,17 @@ the TUI.
 
 Observe-only, with many post-MVP features built: hot/warm cluster pairs,
 metrics-server live usage, the minimap, pod log tailing, the connectivity /
-storage / batch map layers, the in-app Almanac, the Civ-II city + province
+storage / batch map layers, the in-app Almanac, the city + province
 drill-down windows, and the **planning turn** — staging interventions and
 previewing their diff (preview-only; nothing is applied). Deferred, by
 design: *applying* staged changes to the cluster (dry-run + confirm + RBAC),
 external managed services, chaos layers, and the planning turn in the TUI.
 See CLAUDE.md for the full list and the reasoning.
+
+## Trademark
+
+*Kubernation is an independent, unaffiliated homage. It is not associated
+with, endorsed by, or sponsored by Take-Two Interactive Software, Inc.,
+Firaxis Games, or the Civilization franchise. Sid Meier's Civilization and
+Civ are trademarks of Take-Two Interactive, referenced here only to describe
+this project's design inspiration.*

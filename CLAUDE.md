@@ -1,12 +1,12 @@
 # Kubernation
 
-A Civilization-inspired Kubernetes TUI. The cluster is a living **world**
+A 4X-inspired Kubernetes TUI. The cluster is a living **world**
 the operator explores: zones are continents, nodes are provinces of
 health-textured terrain, workloads are cities sited where their pods run
 (population badge + name label), DaemonSets are roads, and abstract things
 — custom-resource instances, zero-pod workloads — live on namespace
 islands in the southern sea. An attention queue surfaces what needs focus
-and parks the explorer's cursor on it — Civ's "next unit needing orders",
+and parks the explorer's cursor on it — 4X's "next unit needing orders",
 not a wall of dashboards.
 **Observe-only.** No mutation paths exist anywhere in the codebase. The
 **planning turn** (preview-only) stages interventions and previews their
@@ -67,8 +67,8 @@ crates/
                  settlements, minimap, camera), panels.rs (hover tooltip,
                  attention strip, context picker, shared helpers),
                  window.rs (reusable modal chrome for drill-downs),
-                 almanac.rs (the in-app reference / Civilopedia),
-                 city.rs / node.rs (the Civ-II city + province drill-down
+                 almanac.rs (the in-app reference / field guide),
+                 city.rs / node.rs (the 4X city + province drill-down
                  windows, on window.rs), plan.rs (the End-of-Turn review),
                  theme.rs. See "GUI spike" + "GUI promotion" decisions.
 ```
@@ -171,20 +171,20 @@ what makes the interesting logic unit-testable without a cluster.
   CronJob in samples (docs/gui-batch.png). Deferred: Job-object attention
   (Job *pod* failures already route to the node), Job/CronJob city screens.
 - **GUI window system + Almanac** (2026-06-16, user request after pasting
-  Civ II's Civilopedia + city screens): the GUI had only bespoke overlays
+  a 4X game's reference + city screens): the GUI had only bespoke overlays
   (tooltip, side panel, log overlay, picker) — no shared modal. `window.rs`
   is a reusable centered modal (dimmed scrim, parchment frame, titlebar +
   icon, a clipped body the caller fills, a button/tab row; Esc / close-box /
-  click-outside dismiss), mirroring Civ II's window *structure* in the
+  click-outside dismiss), mirroring 4X's window *structure* in the
   Kubernation palette. macroquad has no easy scissor, so the body is culled +
   scrolled by the caller (per-line visibility test), like `draw_logs`.
-  `almanac.rs` is the first consumer — our **Civilopedia**: pages Legend /
+  `almanac.rs` is the first consumer — our **field guide**: pages Legend /
   World / Controls / Reading, opened with `?`/`F1` or the top-bar `?` button
   (`--almanac` dev flag for headless shots). The Legend draws the **actual
   marks** (reuses `draw_harbor/gate/granary/job/cronjob`, now `pub(crate)`,
   + `pod_color`) beside each definition, so it can't drift from the map.
   The TUI's `?` help gained a matching compact MAP LEGEND section.
-  docs/gui-almanac.png. **Polish** (2026-06-16): Civilopedia cross-refs —
+  docs/gui-almanac.png. **Polish** (2026-06-16): field-guide cross-refs —
   each Legend entry whose mark has a live example (resolved from the hot
   world via `locate()`, derived from the `Mark`) lights up with a `>` chevron
   + hover highlight; clicking it returns `AlmanacAction::Locate(cell)` and
@@ -192,15 +192,15 @@ what makes the interesting logic unit-testable without a cluster.
   Keyboard `1`-`4` jump to tabs and `←`/`→` cycle them; `window.rs` buttons +
   close box highlight on hover.
 - **GUI city drill-down** (2026-06-16, the window system's first rich
-  consumer): clicking a city opens a centered **Civ-II-style city window**
-  (`city.rs`) instead of the old right-side panel — the Civ II city screen
+  consumer): clicking a city opens a centered **4X-style city window**
+  (`city.rs`) instead of the old right-side panel — the 4X city screen
   reframed for K8s (observe-only, so no Buy/Change): title bar `kind ns/name`
   (+HOT/WARM) → a **status band** with replicas + updated **gauge bars**,
   rollout, strategy/age, attention flag, pair-sync → **CITIZENS** (a pod
-  census grid à la Civ II's food store + a clickable pod list that tails
+  census grid à la 4X's food store + a clickable pod list that tails
   logs) → **IMPROVEMENTS** (owned svc/ingress/pvc/cm/secret) → **CHRONICLE**
   (recent events). Built on `build_city` + `window::draw_window`; fixed size
-  with caps + "+N more" (Civ II's panels don't scroll). It's a **modal**:
+  with caps + "+N more" (4X's panels don't scroll). It's a **modal**:
   suspends map nav/zoom/tooltip while open, a `panel_just_opened` guard keeps
   the opening click from dismissing it, Esc / close-box / click-outside
   dismiss, and the pod→log overlay draws on top. `--inspect <city> --tail`
@@ -278,15 +278,15 @@ what makes the interesting logic unit-testable without a cluster.
   frame borrows the margin rows above/below so the corners can't collide.
   It bails out silently rather than smothering the board when zones are too
   numerous to fit (~60+ zones — horizontal compression is a future step).
-- **Civ sidebar** (2026-06-12, visual pivot at user request): on the map
-  screen, ≥110 cols (≥150 paired) adds a right sidebar shaped like Civ 2's:
+- **world sidebar** (2026-06-12, visual pivot at user request): on the map
+  screen, ≥110 cols (≥150 paired) adds a right sidebar shaped like 4X's:
   WORLD (the minimap, permanent home), STATUS (context/platform, node/pod
-  counts, concern rollup, overlay), ORDERS (the selected tile — Civ's
+  counts, concern rollup, overlay), ORDERS (the selected tile — 4X's
   "Moving Unit" box: health, zone, conditions, pressure, pod census).
   Below the threshold the floating WORLD overlay takes back over
   (`MapView::external_minimap` suppresses it when the sidebar is up). The
   sidebar always shows the *focused* world. K8s terms are never renamed to
-  Civ terms — the grammar is Civ, the nouns stay kubectl-greppable.
+  4X terms — the grammar is 4X, the nouns stay kubectl-greppable.
 - **The world projection** (2026-06-12, "lean into the game metaphor"):
   the zone-column tile grid was replaced by a 2D world. Cities = workloads
   (Deploy/STS), sited on the province hosting the plurality of their pods
@@ -311,7 +311,7 @@ what makes the interesting logic unit-testable without a cluster.
   so frontends subscribe their own way. crates/kubernation-gui is a macroquad
   windowed client: tokio on a net thread publishing `Arc<Models>`
   snapshots, terrain-colored provinces, city circles sized by population
-  with Civ-style name plates, namespace islands, pan/wheel-zoom camera,
+  with 4X-style name plates, namespace islands, pan/wheel-zoom camera,
   click-to-inspect ORDERS, attention strip, `--screenshot` for headless
   verification (docs/gui-spike.png). SPIKE quality: no tests, flat colors,
   ASCII-only text (macroquad default font has no exotic glyphs — `ascii()`
@@ -319,7 +319,7 @@ what makes the interesting logic unit-testable without a cluster.
   tooltips, city/node detail panels, pair view.
 - **GUI promotion, round 1** (2026-06-12, "results are good, build on it"):
   procedural art instead of sprite packs first (per-cell mosaic shading,
-  coast bevels, hut-tier settlements with Civ pop chips, warning banners,
+  coast bevels, hut-tier settlements with 4X pop chips, warning banners,
   drifting sea) — self-contained, no licensing, no asset pipeline; Kenney
   CC0 tilesets remain the next rung. Interaction: hover tooltips,
   right/middle-drag pan, wheel zoom anchored at the cursor, minimap
@@ -390,7 +390,7 @@ what makes the interesting logic unit-testable without a cluster.
   drop (background **selection**). Regional = sprites + chips, names
   **abbreviated**; sparse worlds (≤`DENSE_CITIES`=12 cities) label every
   city, dense worlds select (troubled or ready≥4) — clutter-driven, not a
-  fixed rule. Local = everything, full names. Civ-II aesthetic is
+  fixed rule. Local = everything, full names. 4X aesthetic is
   preserved (same sprites/parchment); only the *density* changes with
   scale. Pop-chip prefers upper-left, names prefer the right. Dev flags
   `--zoom <f>` and `--inspect <node>` added for headless tier verification.
@@ -404,8 +404,8 @@ what makes the interesting logic unit-testable without a cluster.
   left/below fallbacks, so settlements stacked in a province's vertical
   column fan their names out instead of piling up; pop chips flip
   upper-left→upper-right→lower to dodge the province label; island
-  structure labels de-conflict too. The user waived strict Civ
-  name-below placement ("the Civ convention is satisfied by the shape,
+  structure labels de-conflict too. The user waived strict 4X
+  name-below placement ("the 4X convention is satisfied by the shape,
   colors, minimap and behaviors") for legibility. Names sit east of
   buildings (which are placed in the western half), so they stay on land.
 - **`Store::wait_until_ready` allows ONE concurrent waiter per store** (found
@@ -417,6 +417,22 @@ what makes the interesting logic unit-testable without a cluster.
   everything else (TUI and `--smoke` alike) listens for
   `WorldDelta::Ready` on the event channel. Don't add new
   `wait_until_ready` call sites.
+- **Rename: codename → product, de-trademarked** (2026-06-16, two-job
+  "Kubernation Rename Guide"): Job 1 mechanically replaced the original
+  project codename in every identifier (crate names, binary, kind cluster +
+  context, config/log paths under `~/.config/kubernation` &
+  `~/.local/state/kubernation`, sample namespace) — whole-token only,
+  **never** a blind substitution on a bare genre word (which would have
+  eaten the homage and the Freeciv credit). Job 2, by hand, neutralized the
+  remaining standalone game-name labels to generic 4X / terrain terms,
+  renamed the default `Theme` palette method to `atlas()` (the
+  `ColorMode::Auto` config string is unchanged — `color = "auto"`), and gave
+  the in-app reference the nickname "field guide". Trademark posture: exactly
+  **one** nominative attribution homage survives (the README intro), plus a
+  §Trademark disclaimer mirrored one-line in `--help` (`clap` `after_help`);
+  the Freeciv tileset credit stays. Verification: the codename and
+  old-nickname greps come back empty; the bare-word and franchise-name greps
+  return only the deliberate disclaimer (plus the single homage).
 
 ## The pair (hot/warm)
 
@@ -458,7 +474,7 @@ what makes the interesting logic unit-testable without a cluster.
 | `◆`   | pod succeeded (completed)     |
 | `‼ ! ·` | critical / warning / info   |
 | `▓░`  | gauge filled / empty          |
-| `▪` (civ) / `·` (plain) | world-panel node cell, colored by worst state |
+| `▪` (atlas) / `·` (plain) | world-panel node cell, colored by worst state |
 | `┌┐└┘` | world-panel viewport frame (reversed cell = cursor) |
 | `▒`   | fog of war (world not yet synced)  |
 | `Ψ`   | Service harbor (on the city's east coast, cyan) |
@@ -472,13 +488,13 @@ Zone headers carry a `▪N` rollup (colored by the zone's worst node) when
 any node in the zone is degraded.
 
 **Color discipline:** color encodes meaning, never decoration — and in the
-default **civ palette** (2026-06-12, user call), *terrain*: parchment-gold
+default **atlas palette** (2026-06-12, user call), *terrain*: parchment-gold
 panel chrome, green for healthy land (tiles, zone headers, calm gauges,
 muted-green running pods), white city-name labels, and a blue-ocean WORLD
 panel with light-green land cells. Saturated red / bold yellow remain
 reserved for attention — trouble pops against terrain, never competes with
-it (pinned by a theme test). `color = "plain"` restores the pre-civ
-restrained palette (healthy = no color at all); `color = "mono"` carries
+it (pinned by a theme test). `color = "plain"` restores the restrained
+palette (healthy = no color at all); `color = "mono"` carries
 all meanings via bold/dim/reverse only. All colors are named ANSI — safe
 on 256-color terminals.
 

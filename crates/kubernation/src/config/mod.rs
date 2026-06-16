@@ -7,11 +7,11 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ColorMode {
-    /// The Civ palette: parchment chrome, green terrain, blue ocean. Named
+    /// The atlas palette: parchment chrome, green terrain, blue ocean. Named
     /// ANSI colors only — safe on 256-color and truecolor terminals alike.
     #[default]
     Auto,
-    /// The pre-civ restrained palette: healthy state carries no color.
+    /// The restrained palette: healthy state carries no color.
     Plain,
     /// No color at all; meaning carried by modifiers (bold/reverse/dim).
     Mono,

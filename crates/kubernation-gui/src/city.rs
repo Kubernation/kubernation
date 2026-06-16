@@ -1,5 +1,5 @@
-//! The city drill-down — a workload rendered as a centered Civ II-style city
-//! window on the shared window system. The Civ II city screen reframed for
+//! The city drill-down — a workload rendered as a centered 4X-style city
+//! window on the shared window system. The 4X city screen reframed for
 //! Kubernetes (observe-only, so no Buy/Change):
 //!
 //!   title bar   →  deploy ns/name (+ HOT/WARM)
@@ -8,7 +8,7 @@
 //!   improvements→  owned resources (svc / ingress / pvc / cm / secret)
 //!   chronicle   →  recent events
 //!
-//! Fixed size with caps + "+N more" (Civ II's panels don't scroll).
+//! Fixed size with caps + "+N more" (4X's panels don't scroll).
 
 use macroquad::prelude::*;
 
@@ -226,7 +226,7 @@ pub fn draw_city(
         PARCHMENT,
     );
     ly += 22.0;
-    // Census grid (Civ II's food-storage grid; one chip per pod).
+    // Census grid (4X's food-storage grid; one chip per pod).
     let chip = 11.0;
     let cols = ((left_w + 3.0) / (chip + 3.0)).floor().max(1.0) as usize;
     let census_cap = cols * 4;

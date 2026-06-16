@@ -57,7 +57,8 @@ async fn main() -> Result<()> {
     };
     let hot_proj =
         kubernation_core::k8s::client::resolve_projections(&hot_cluster.client, &wanted).await;
-    let hot = kubernation_core::k8s::watch::spawn(&hot_cluster, ClusterId::Hot, sink.clone(), &hot_proj);
+    let hot =
+        kubernation_core::k8s::watch::spawn(&hot_cluster, ClusterId::Hot, sink.clone(), &hot_proj);
     let warm = match &warm_cluster {
         Some(c) => {
             let proj = kubernation_core::k8s::client::resolve_projections(&c.client, &wanted).await;

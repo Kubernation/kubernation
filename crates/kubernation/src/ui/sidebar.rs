@@ -1,7 +1,7 @@
-//! The Civ-style right sidebar on the map screen: WORLD (the chart),
+//! The 4X-style right sidebar on the map screen: WORLD (the chart),
 //! STATUS (people/gold ≈ nodes/pods/concerns), and ORDERS — whatever the
 //! explorer's cursor is standing on (city, province, structure, or open
-//! sea), Civ's "Moving Unit" box. Shows the focused world; auto-hidden on
+//! sea), 4X's "Moving Unit" box. Shows the focused world; auto-hidden on
 //! narrow terminals, where the floating chart takes back over.
 
 use ratatui::Frame;

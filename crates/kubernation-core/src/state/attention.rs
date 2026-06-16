@@ -1,6 +1,6 @@
 //! The attention queue: pure detectors over the observed world, aggregated
 //! per workload/node so the operator sees "city in trouble", not a hundred
-//! identical pod alarms. This is Civ's "next unit needs orders" loop.
+//! identical pod alarms. This is 4X's "next unit needs orders" loop.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 

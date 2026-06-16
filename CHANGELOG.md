@@ -17,6 +17,10 @@ _Nothing yet._
   identifier — crate names (`kubernation-core` / `kubernation` /
   `kubernation-gui`), the `kubernation` binary, the kind cluster, kubeconfig
   context, config/log paths, and the sample namespace.
+- Neutralized the trademark surface: internal game-name labels and the
+  default palette were renamed to generic terms (4X / `atlas`); a single
+  nominative attribution homage is kept, and a trademark disclaimer was added
+  to the README and `--help`.
 
 ## [0.2.0] — 2026-06-16
 
@@ -35,8 +39,8 @@ no mutation paths exist.
   them.
 - **Batch layer** — Jobs as `◈` expeditions and CronJobs as `◷` schedules on
   the namespace islands.
-- **GUI window system** + the **Almanac** (in-app Civilopedia; its legend
-  cross-references live map examples) and Civ-II-style **city** and
+- **GUI window system** + the **Almanac** (in-app field guide; its legend
+  cross-references live map examples) and 4X-style **city** and
   **province** drill-down windows.
 - **The planning turn (preview-only)** — stage scale/cordon interventions
   from the drill-downs and review their from→to diff at "End of Turn".

@@ -1,5 +1,5 @@
 //! The world painter: hand-shaded terrain mosaic, beveled coasts, animated
-//! sea, settlement sprites with Civ-style population boxes, islands, and
+//! sea, settlement sprites with 4X-style population boxes, islands, and
 //! the minimap. All geometry comes from `kubernation_core::state::world`.
 //!
 //! A paired session is a *scene* of two worlds on one sea: the warm
@@ -751,7 +751,7 @@ fn draw_province_aggregate(prov: &Province, cam: &Camera, coast: &Coast) {
     }
 }
 
-/// A settlement, Civ-style: huts that grow with population, a white pop
+/// A settlement, 4X-style: huts that grow with population, a white pop
 /// box, walls once it's a real city, a flag and tint when it needs the
 /// operator — and a sync chip when a warm twin exists.
 fn draw_city(
@@ -878,7 +878,7 @@ fn draw_city(
         );
     }
 
-    // Population box (Civ's white number chip), de-conflicted around the
+    // Population box (4X's white number chip), de-conflicted around the
     // building so stacked settlements don't pile their chips together.
     let (box_col, num_col) = match city.severity {
         Some(Severity::Critical) => (CRIT, INK),

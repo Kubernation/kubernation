@@ -1,6 +1,6 @@
 [package]
 name = "kubernation"
-description = "Kubernation — a Civilization-inspired Kubernetes TUI: the cluster as a living world"
+description = "Kubernation — a 4X-inspired Kubernetes TUI: the cluster as a living world"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

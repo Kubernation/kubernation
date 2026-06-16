@@ -1,4 +1,4 @@
-//! The city screen: one workload, full context, no mode switching. The Civ
+//! The city screen: one workload, full context, no mode switching. The 4X
 //! analog is exact — population (replicas), production (rollout), buildings
 //! (owned resources), recent history (events).
 
