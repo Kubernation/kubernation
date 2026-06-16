@@ -156,18 +156,47 @@ impl Camera {
     }
 }
 
+/// Cartographic scale tiers (after Monmonier's generalization-by-scale):
+/// what the map shows thins out as you zoom away. World scale generalizes
+/// settlements into per-province aggregates; Regional selects which labels
+/// survive; Local shows everything.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Scale {
+    World,
+    Regional,
+    Local,
+}
+
 /// Zoom-driven level of detail.
 pub struct Lod {
+    pub scale: Scale,
     pub province_labels: bool,
     pub name_plates: bool,
     pub structures_labels: bool,
+    /// Whether the focused world is sparse enough to label every city at
+    /// regional scale; dense worlds fall back to selection (troubled or
+    /// populous only). Set per-world in `draw_world`.
+    pub name_all: bool,
 }
 
+/// Above this many cities a world is "dense" and regional labels are
+/// selected rather than shown wholesale.
+const DENSE_CITIES: usize = 12;
+
 pub fn lod(zoom: f32) -> Lod {
+    let scale = if zoom >= 0.9 {
+        Scale::Local
+    } else if zoom >= 0.5 {
+        Scale::Regional
+    } else {
+        Scale::World
+    };
     Lod {
+        scale,
         province_labels: zoom >= 0.75,
         name_plates: zoom >= 0.55,
         structures_labels: zoom >= 0.65,
+        name_all: true,
     }
 }
 
@@ -338,7 +367,8 @@ pub fn draw_world(
     banner: Option<(&str, ClusterId)>,
     pair: Option<&PairSync>,
 ) {
-    let detail = lod(cam.zoom);
+    let mut detail = lod(cam.zoom);
+    detail.name_all = world.cities().take(DENSE_CITIES + 1).count() <= DENSE_CITIES;
 
     if let Some((label, id)) = banner {
         let p = cam.to_screen(1.0, 0.0);
@@ -455,8 +485,9 @@ fn draw_province(
             }
         }
         // A little life on healthy land — each tree placed inside its
-        // row's land span so it never lands in the carved sea.
-        if prov.tile.health == NodeHealth::Healthy {
+        // row's land span so it never lands in the carved sea. Trees are
+        // background detail: dropped at world scale (Monmonier selection).
+        if prov.tile.health == NodeHealth::Healthy && detail.scale != Scale::World {
             for i in 0..3u64 {
                 let hx = fnv1a64(&format!("{}t{i}", prov.tile.name));
                 let cy = 1 + ((hx >> 8) % (prov.h as u64 - 1).max(1)) as u16;
@@ -544,7 +575,8 @@ fn draw_province(
 
     // Daemonset roads: a worn track laid on the province's widest land
     // row, anchored to that row's shore so it never spills into the sea.
-    if prov.infra > 0 {
+    // Roads are background detail — dropped at world scale.
+    if prov.infra > 0 && detail.scale != Scale::World {
         let road_row = (prov.y..prov.y + prov.h)
             .max_by(|a, b| {
                 coast
@@ -589,8 +621,76 @@ fn draw_province(
         );
     }
 
-    for city in &prov.cities {
-        draw_city(city, cam, detail, pair);
+    // Settlements: individually at regional/local scale, or generalized
+    // into one per-province aggregate badge at world scale.
+    if detail.scale == Scale::World {
+        draw_province_aggregate(prov, cam, coast);
+    } else {
+        for city in &prov.cities {
+            draw_city(city, cam, detail, pair);
+        }
+    }
+}
+
+/// World-scale generalization: instead of every settlement, one badge per
+/// province carrying its city count and the worst concern among them
+/// (Monmonier aggregation). Placed on the province's widest land row so it
+/// sits firmly inland.
+fn draw_province_aggregate(prov: &Province, cam: &Camera, coast: &Coast) {
+    if prov.cities.is_empty() {
+        return;
+    }
+    let count = prov.cities.len();
+    let worst = prov.cities.iter().filter_map(|c| c.severity).max();
+    let row = (prov.y..prov.y + prov.h)
+        .max_by(|a, b| {
+            coast
+                .land_span(*a as i32, prov.w as f32)
+                .1
+                .total_cmp(&coast.land_span(*b as i32, prov.w as f32).1)
+        })
+        .unwrap_or(prov.y);
+    let (li, lw) = coast.land_span(row as i32, prov.w as f32);
+    let center = cam.to_screen(prov.x as f32 + li + lw / 2.0, row as f32 + 0.5);
+    let z = cam.zoom.max(0.55);
+
+    // A town icon stands for "settlements here", the same house sprite the
+    // local scale uses; tinted by the worst concern so trouble still reads.
+    let tint = match worst {
+        Some(Severity::Critical) => Color::new(1.0, 0.55, 0.5, 1.0),
+        Some(Severity::Warning) => Color::new(1.0, 0.9, 0.55, 1.0),
+        _ => WHITE,
+    };
+    let drew = sprites::with(|s| sprite_at(&s.house, center, 20.0 * z, tint));
+    if drew.is_none() {
+        draw_rectangle(
+            center.x - 6.0 * z,
+            center.y - 5.0 * z,
+            12.0 * z,
+            10.0 * z,
+            HOUSE,
+        );
+    }
+
+    // Count chip riding the upper-left, colored by the worst concern.
+    let (fill, ink) = match worst {
+        Some(Severity::Critical) => (CRIT, INK),
+        Some(Severity::Warning) => (WARN, PLATE),
+        _ => (INK, PLATE),
+    };
+    let label = count.to_string();
+    let fs = (14.0 * z).max(11.0);
+    let m = text_size(&label, fs);
+    let bw = m.width + 8.0;
+    let bh = fs + 4.0;
+    let bx = center.x - 11.0 * z - bw;
+    let by = center.y - 9.0 * z - bh;
+    draw_rectangle(bx, by, bw, bh, fill);
+    draw_rectangle_lines(bx, by, bw, bh, 1.0, PLATE);
+    text(&label, bx + 4.0, by + bh - 4.0, fs, ink);
+    if let Some(sev) = worst {
+        let flag = if sev == Severity::Critical { "!!" } else { "!" };
+        text_bold(flag, bx - fs * 0.7, by + bh - 4.0, fs, severity_color(sev));
     }
 }
 
@@ -736,9 +836,17 @@ fn draw_city(city: &City, cam: &Camera, detail: &Lod, pair: Option<&PairSync>) {
         text(&badge, chip_x + 3.0, by + bh - 4.0, fs, sync_color(st));
     }
 
-    // Name plate.
-    if detail.name_plates {
-        let label = ascii(&city.r.name);
+    // Name plate. At regional scale only the noteworthy keep their labels
+    // (Monmonier selection — troubled or populous cities), abbreviated to
+    // cut clutter; at local scale every settlement is named in full.
+    let named = detail.name_plates
+        && (detail.scale == Scale::Local
+            || detail.name_all
+            || city.severity.is_some()
+            || city.ready >= 4);
+    if named {
+        let full = detail.scale == Scale::Local;
+        let label = ascii(&abbrev(&city.r.name, if full { 64 } else { 11 }));
         let fs = (15.0 * z).max(11.0);
         let tm = text_size(&label, fs);
         let lx = c.x - tm.width / 2.0;
@@ -751,6 +859,17 @@ fn draw_city(city: &City, cam: &Camera, detail: &Lod, pair: Option<&PairSync>) {
             PLATE,
         );
         text(&label, lx, ly, fs, INK);
+    }
+}
+
+/// Truncate to `max` characters with an ellipsis, on a char boundary.
+fn abbrev(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        s.to_string()
+    } else {
+        let cut: String = chars[..max.saturating_sub(1)].iter().collect();
+        format!("{cut}…")
     }
 }
 
@@ -782,6 +901,28 @@ fn draw_island(isl: &Island, cam: &Camera, detail: &Lod) {
             14.0 * cam.zoom.max(0.85),
             darker(SAND, 0.35),
         );
+    }
+    // World scale: generalize the isle's structures into one count badge.
+    if detail.scale == Scale::World {
+        let total = isl.structures.len() + isl.more;
+        if total > 0 {
+            let center = cam.to_screen(isl.x as f32 + isl.w as f32 / 2.0, isl.y as f32 + 1.0);
+            let label = total.to_string();
+            let fs = (13.0 * cam.zoom).max(11.0);
+            let m = text_size(&label, fs);
+            let bw = m.width + 8.0;
+            let bh = fs + 4.0;
+            draw_rectangle(center.x - bw / 2.0, center.y, bw, bh, STRUCT);
+            draw_rectangle_lines(center.x - bw / 2.0, center.y, bw, bh, 1.0, PLATE);
+            text(
+                &label,
+                center.x - bw / 2.0 + 4.0,
+                center.y + bh - 4.0,
+                fs,
+                PLATE,
+            );
+        }
+        return;
     }
     for s in &isl.structures {
         let p = cam.to_screen(isl.x as f32 + 1.5, s.y as f32 + 0.5);

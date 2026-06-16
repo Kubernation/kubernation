@@ -60,6 +60,9 @@ struct Args {
     /// Open the context picker on sync (development verification)
     #[arg(long)]
     pick: bool,
+    /// Override the initial zoom after fit (development verification)
+    #[arg(long)]
+    zoom: Option<f32>,
 }
 
 fn window_conf() -> Conf {
@@ -206,6 +209,14 @@ async fn main() {
             // clears the snapshot). Skipped when --inspect will fly us in.
             if !had_snap && inspect.is_none() {
                 cam.fit(bounds);
+                if let Some(z) = args.zoom {
+                    cam.zoom = z.clamp(0.3, 3.0);
+                    let (cw, ch) = cam.cell_px();
+                    cam.pos = vec2(
+                        (bounds.0 as f32 * cw - screen_width()) / 2.0,
+                        (bounds.1 as f32 * ch - screen_height()) / 2.0 - 10.0,
+                    );
+                }
                 if args.pick && !contexts.is_empty() {
                     picker = true;
                     picker_idx = contexts.iter().position(|c| *c == current_ctx).unwrap_or(0);

@@ -221,6 +221,22 @@ what makes the interesting logic unit-testable without a cluster.
   fixed at launch. Camera refits on the None→Some snapshot transition
   (covers initial sync, reconnect, and post-switch). `--pick` opens the
   picker on sync for headless screenshot verification.
+- **GUI cartographic scale tiers** (2026-06-16, informed by AIM's Monmonier
+  *How to Lie with Maps* ch3 + Brewer *Designing Better Maps* ch1/7/10 —
+  see [[aim-cartography-refs]]): `lod(zoom)` returns a `Scale`
+  (Local ≥0.9 / Regional ≥0.5 / World <0.5) and the GUI generalizes
+  resource presentation per Monmonier's point operators. World scale =
+  **aggregation**: each province collapses its settlements into one badge
+  (house sprite + city count + worst-concern `!`/`!!` flag) on the widest
+  land row; islands show a structure count; trees/roads/per-city sprites
+  drop (background **selection**). Regional = sprites + chips, names
+  **abbreviated**; sparse worlds (≤`DENSE_CITIES`=12 cities) label every
+  city, dense worlds select (troubled or ready≥4) — clutter-driven, not a
+  fixed rule. Local = everything, full names. Civ-II aesthetic is
+  preserved (same sprites/parchment); only the *density* changes with
+  scale. Pop-chip stays upper-left (Civ convention) rather than Brewer's
+  upper-right — deliberate. Dev flags `--zoom <f>` and `--inspect <node>`
+  added for headless tier verification.
 - **`Store::wait_until_ready` allows ONE concurrent waiter per store** (found
   2026-06-12): kube's readiness uses a `DelayedInit` over a futures oneshot
   receiver, which holds a single waker slot. Two tasks awaiting the same
