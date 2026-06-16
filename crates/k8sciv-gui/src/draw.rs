@@ -1038,6 +1038,35 @@ fn draw_granary(c: Vec2, z: f32, col: Color) {
     );
 }
 
+/// A pennant on a pole — a Job expedition.
+fn draw_job(c: Vec2, z: f32, col: Color) {
+    let u = (6.0 * z).clamp(4.0, 16.0);
+    let th = (z * 1.4).clamp(1.0, 2.5);
+    draw_line(
+        c.x - u * 0.4,
+        c.y - u * 0.8,
+        c.x - u * 0.4,
+        c.y + u * 0.8,
+        th,
+        col,
+    );
+    draw_triangle(
+        vec2(c.x - u * 0.4, c.y - u * 0.8),
+        vec2(c.x + u * 0.7, c.y - u * 0.35),
+        vec2(c.x - u * 0.4, c.y + u * 0.1),
+        col,
+    );
+}
+
+/// A clock face — a CronJob's recurring schedule.
+fn draw_cronjob(c: Vec2, z: f32, col: Color) {
+    let r = (5.0 * z).clamp(3.5, 13.0);
+    let th = (z * 1.4).clamp(1.0, 2.5);
+    draw_circle_lines(c.x, c.y, r, th, col);
+    draw_line(c.x, c.y, c.x, c.y - r * 0.7, th, col);
+    draw_line(c.x, c.y, c.x + r * 0.5, c.y, th, col);
+}
+
 fn draw_island(isl: &Island, cam: &Camera, detail: &Lod, occupied: &mut Vec<Rect>) {
     let (cw, ch) = cam.cell_px();
     let tl = cam.to_screen(isl.x as f32, isl.y as f32);
@@ -1089,28 +1118,43 @@ fn draw_island(isl: &Island, cam: &Camera, detail: &Lod, occupied: &mut Vec<Rect
         }
         return;
     }
+    let z = cam.zoom;
     for s in &isl.structures {
         let p = cam.to_screen(isl.x as f32 + 1.5, s.y as f32 + 0.5);
-        let color = if s.glyph == '✦' { STRUCT } else { DIM };
-        let sprited = sprites::with(|spr| {
-            if s.glyph == '✦' {
+        let color = if s.alert {
+            WARN
+        } else if s.glyph == '◌' {
+            DIM
+        } else {
+            STRUCT
+        };
+        match s.glyph {
+            '✦' => {
                 // A gray boulder tints into a cyan-glowing resource.
-                sprite_at(
-                    &spr.rock,
-                    p,
-                    15.0 * cam.zoom,
-                    Color::new(0.55, 1.0, 1.05, 1.0),
-                );
-            } else {
-                sprite_at(&spr.tent, p, 17.0 * cam.zoom, WHITE);
+                let sprited = sprites::with(|spr| {
+                    sprite_at(&spr.rock, p, 15.0 * z, Color::new(0.55, 1.0, 1.05, 1.0));
+                });
+                if sprited.is_none() {
+                    draw_poly(p.x, p.y, 4, 6.0 * z, 45.0, color);
+                    draw_poly_lines(p.x, p.y, 4, 6.0 * z, 45.0, 1.5, darker(color, 0.5));
+                }
             }
-        });
-        if sprited.is_none() {
-            draw_poly(p.x, p.y, 4, 6.0 * cam.zoom, 45.0, color);
-            draw_poly_lines(p.x, p.y, 4, 6.0 * cam.zoom, 45.0, 1.5, darker(color, 0.5));
+            '◌' => {
+                let sprited = sprites::with(|spr| sprite_at(&spr.tent, p, 17.0 * z, WHITE));
+                if sprited.is_none() {
+                    draw_poly(p.x, p.y, 3, 6.0 * z, 0.0, color);
+                }
+            }
+            '◈' => draw_job(p, z, color),     // Job expedition
+            '◷' => draw_cronjob(p, z, color), // CronJob schedule
+            _ => draw_poly(p.x, p.y, 4, 6.0 * z, 45.0, color),
         }
         if detail.structures_labels {
-            let label = ascii(&format!("{}/{}", s.kind, s.name));
+            let mut text_label = format!("{}/{}", s.kind, s.name);
+            if !s.detail.is_empty() {
+                text_label.push_str(&format!(" {}", s.detail));
+            }
+            let label = ascii(&text_label);
             let fs = 13.0 * cam.zoom.max(0.8);
             let tm = text_size(&label, fs);
             let r = place(
@@ -1121,7 +1165,8 @@ fn draw_island(isl: &Island, cam: &Camera, detail: &Lod, occupied: &mut Vec<Rect
                     Rect::new(p.x + 10.0, p.y - tm.height - 6.0, tm.width, tm.height),
                 ],
             );
-            text(&label, r.x, r.y + tm.height - 2.0, fs, darker(SAND, 0.3));
+            let lc = if s.alert { WARN } else { darker(SAND, 0.3) };
+            text(&label, r.x, r.y + tm.height - 2.0, fs, lc);
         }
     }
     if isl.more > 0 {

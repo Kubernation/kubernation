@@ -12,7 +12,9 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 
 use super::attention::{self, Concern, Severity, Target};
 use super::observed::{ObservedWorld, RecentEvent};
-use super::world::{CoastKind, ExposureEntry, StorageEntry, WorldModel, build_world};
+use super::world::{
+    BatchEntry, BatchKind, CoastKind, ExposureEntry, StorageEntry, WorldModel, build_world,
+};
 use crate::k8s::metrics::NodeUsage;
 use crate::k8s::quantity;
 use crate::util::fnv1a64;
@@ -896,6 +898,88 @@ pub fn build_exposure(world: &ObservedWorld) -> Vec<ExposureEntry> {
     out
 }
 
+/// Batch workloads as expedition entries for the islands. A Job's detail
+/// summarises completion/active/failed; a CronJob shows its schedule (and
+/// running count). CronJob-spawned Jobs are folded into their CronJob rather
+/// than listed individually, so job history doesn't flood the island.
+pub fn build_batch(world: &ObservedWorld) -> Vec<BatchEntry> {
+    let mut out: Vec<BatchEntry> = Vec::new();
+    for j in world.jobs.state() {
+        let (Some(ns), Some(name)) = (j.metadata.namespace.clone(), j.metadata.name.clone()) else {
+            continue;
+        };
+        let owned_by_cron = j
+            .metadata
+            .owner_references
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .any(|o| o.kind == "CronJob");
+        if owned_by_cron {
+            continue;
+        }
+        let st = j.status.as_ref();
+        let completions = j
+            .spec
+            .as_ref()
+            .and_then(|s| s.completions)
+            .unwrap_or(1)
+            .max(1);
+        let succeeded = st.and_then(|s| s.succeeded).unwrap_or(0);
+        let active = st.and_then(|s| s.active).unwrap_or(0);
+        let failed = st.and_then(|s| s.failed).unwrap_or(0);
+        let (detail, alert) = if succeeded >= completions {
+            (format!("{succeeded}/{completions} ✓"), false)
+        } else if active > 0 {
+            (format!("{active} active"), false)
+        } else if failed > 0 {
+            (format!("{failed} failed ✗"), true)
+        } else {
+            ("pending".to_string(), false)
+        };
+        out.push(BatchEntry {
+            kind: BatchKind::Job,
+            namespace: ns,
+            name,
+            detail,
+            alert,
+        });
+    }
+    for c in world.cronjobs.state() {
+        let (Some(ns), Some(name)) = (c.metadata.namespace.clone(), c.metadata.name.clone()) else {
+            continue;
+        };
+        let spec = c.spec.as_ref();
+        let schedule = spec.map(|s| s.schedule.clone()).unwrap_or_default();
+        let suspended = spec.and_then(|s| s.suspend).unwrap_or(false);
+        let active = c
+            .status
+            .as_ref()
+            .and_then(|s| s.active.as_ref())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let mut detail = if suspended {
+            format!("{schedule} (suspended)")
+        } else {
+            schedule
+        };
+        if active > 0 {
+            detail = format!("{detail} . {active} active");
+        }
+        out.push(BatchEntry {
+            kind: BatchKind::CronJob,
+            namespace: ns,
+            name,
+            detail,
+            alert: false,
+        });
+    }
+    out.sort_by(|a, b| {
+        (a.kind.label(), &a.namespace, &a.name).cmp(&(b.kind.label(), &b.namespace, &b.name))
+    });
+    out
+}
+
 /// Per-workload persistent storage: how many PVCs it mounts and how many
 /// are not yet Bound. Feeds the granary mark beside each city. Pod volumes
 /// plus, for StatefulSets, the volumeClaimTemplate-derived claims (which can
@@ -1347,6 +1431,7 @@ impl Models {
             &world.custom_entries(),
             &build_exposure(world),
             &build_storage(world),
+            &build_batch(world),
         );
         Models {
             map,

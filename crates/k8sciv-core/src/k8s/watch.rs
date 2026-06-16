@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
+use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::core::v1::{Event, Node, PersistentVolumeClaim, Pod, Service};
 use k8s_openapi::api::networking::v1::Ingress;
 use kube::api::Api;
@@ -112,6 +113,23 @@ pub fn spawn(
         sink.clone(),
         WorldDelta::Workloads,
     ));
+    // Batch workloads share the Workloads dirty-bit.
+    let (jobs, w) = reflector::store::<Job>();
+    tasks.push(spawn_reflector(
+        Api::all(c.clone()),
+        w,
+        id,
+        sink.clone(),
+        WorldDelta::Workloads,
+    ));
+    let (cronjobs, w) = reflector::store::<CronJob>();
+    tasks.push(spawn_reflector(
+        Api::all(c.clone()),
+        w,
+        id,
+        sink.clone(),
+        WorldDelta::Workloads,
+    ));
     let (pvcs, w) = reflector::store::<PersistentVolumeClaim>();
     tasks.push(spawn_reflector(
         Api::all(c.clone()),
@@ -181,6 +199,8 @@ pub fn spawn(
         replicasets,
         statefulsets,
         daemonsets,
+        jobs,
+        cronjobs,
         pvcs,
         services,
         ingresses,

@@ -110,6 +110,12 @@ mounts PVCs — cyan when every claim is Bound, yellow when one is pending:
 
 ![GUI storage](docs/gui-storage.png)
 
+Batch work lands on the **namespace islands**: Jobs as expeditions (a
+pennant + completion status, yellow when failed), CronJobs as clocks showing
+their schedule — beside the custom-resource structures:
+
+![GUI batch](docs/gui-batch.png)
+
 Press **`c`** to switch the hot
 cluster from a context picker — no restart. Text is **Fira Sans**
 (bundled OFL); both font and sprites are embedded so the binary is
@@ -172,6 +178,8 @@ tick (250ms default), so a noisy cluster can never make typing lag.
                  ~              ,◍3  ,    ,    , ∏Ψ
        ~                  ~   ,  web    ,    ,    ,   (gate · harbor)
   ≈ k8sciv-demo ≈  ·   ~
+   ◷ CronJob/nightly 0 2 * * *
+   ◈ Job/migrate 1/1 ✓
    ✦ gizmo/alpha-frob…          ~
  · ✦ gizmo/beta-frobn…
 ```
@@ -186,10 +194,11 @@ A city's network exposure is moored off its **east coast**: Services are
 `Ψ` **harbors**, Ingresses are `∏` **gates** (the shoreline is the network
 boundary). Persistent storage sits inland: a `⊞` **granary** west of any
 city that mounts PVCs (yellow if a claim is unbound). Anything with no place
-on the land — projected custom resources (`✦`) and zero-pod workloads
-(`◌`) — lives on **namespace islands** in the southern sea. Walk anywhere
-with `h/j/k/l`; `]`/`[` sail city to city; `Enter` opens whatever you stand
-on.
+on the land lives on **namespace islands** in the southern sea: projected
+custom resources (`✦`), zero-pod workloads (`◌`), and batch work — Jobs as
+`◈` **expeditions** (with completion status) and CronJobs as `◷` schedules.
+Walk anywhere with `h/j/k/l`; `]`/`[` sail city to city; `Enter` opens
+whatever you stand on.
 
 Pods keep their glyphs in city and node screens: `●` ready · `◐` starting
 · `○` pending · `◌` terminating · `✗` failing · `◆` succeeded. The cpu/mem

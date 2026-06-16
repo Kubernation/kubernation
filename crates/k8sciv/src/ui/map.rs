@@ -421,11 +421,16 @@ fn draw_island(
     }
     for s in &isl.structures {
         if let Some((sx, sy)) = project(area, cam, isl.x + 2, s.y) {
-            let label = format!("{} {}/{}", s.glyph, s.kind, s.name);
-            let style = if s.glyph == '✦' {
-                theme.structure()
-            } else {
+            let mut label = format!("{} {}/{}", s.glyph, s.kind, s.name);
+            if !s.detail.is_empty() {
+                label.push_str(&format!(" {}", s.detail));
+            }
+            let style = if s.alert {
+                theme.severity(k8sciv_core::state::attention::Severity::Warning)
+            } else if s.glyph == '◌' {
                 theme.dim()
+            } else {
+                theme.structure()
             };
             let width = (area.right() - sx).min(isl.w - 3) as usize;
             buf.set_stringn(sx, sy, truncate(&label, width), width, style);

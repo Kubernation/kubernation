@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
+use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::core::v1::{Event, Node, PersistentVolumeClaim, Pod, Service};
 use k8s_openapi::api::networking::v1::Ingress;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
@@ -21,6 +22,9 @@ pub struct ObservedWorld {
     pub replicasets: Store<ReplicaSet>,
     pub statefulsets: Store<StatefulSet>,
     pub daemonsets: Store<DaemonSet>,
+    /// Batch workloads — projected as expedition structures on islands.
+    pub jobs: Store<Job>,
+    pub cronjobs: Store<CronJob>,
     pub pvcs: Store<PersistentVolumeClaim>,
     pub services: Store<Service>,
     /// Ingresses — the cluster's external gates, projected beside the

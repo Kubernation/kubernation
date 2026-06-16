@@ -8,6 +8,9 @@ use k8s_openapi::api::apps::v1::{
     DaemonSet, DaemonSetStatus, Deployment, DeploymentSpec, DeploymentStatus, ReplicaSet,
     StatefulSet, StatefulSetSpec, StatefulSetStatus,
 };
+use k8s_openapi::api::batch::v1::{
+    CronJob, CronJobSpec, CronJobStatus, Job, JobSpec, JobStatus, JobTemplateSpec,
+};
 use k8s_openapi::api::core::v1::{
     Container, ContainerState, ContainerStateWaiting, ContainerStatus, Node, NodeCondition,
     NodeSpec, NodeStatus, NodeSystemInfo, PersistentVolumeClaim, PersistentVolumeClaimStatus,
@@ -35,6 +38,8 @@ pub struct Seeds {
     pub replicasets: Writer<ReplicaSet>,
     pub statefulsets: Writer<StatefulSet>,
     pub daemonsets: Writer<DaemonSet>,
+    pub jobs: Writer<Job>,
+    pub cronjobs: Writer<CronJob>,
     pub pvcs: Writer<PersistentVolumeClaim>,
     pub services: Writer<Service>,
     pub ingresses: Writer<Ingress>,
@@ -58,6 +63,8 @@ impl Seeds {
     seed_fn!(pvc, pvcs, PersistentVolumeClaim);
     seed_fn!(service, services, Service);
     seed_fn!(ingress, ingresses, Ingress);
+    seed_fn!(job, jobs, Job);
+    seed_fn!(cronjob, cronjobs, CronJob);
 }
 
 pub fn world() -> (ObservedWorld, Seeds) {
@@ -67,6 +74,8 @@ pub fn world() -> (ObservedWorld, Seeds) {
     let (replicasets, replicasets_w) = reflector::store();
     let (statefulsets, statefulsets_w) = reflector::store();
     let (daemonsets, daemonsets_w) = reflector::store();
+    let (jobs, jobs_w) = reflector::store();
+    let (cronjobs, cronjobs_w) = reflector::store();
     let (pvcs, pvcs_w) = reflector::store();
     let (services, services_w) = reflector::store();
     let (ingresses, ingresses_w) = reflector::store();
@@ -83,6 +92,8 @@ pub fn world() -> (ObservedWorld, Seeds) {
         replicasets,
         statefulsets,
         daemonsets,
+        jobs,
+        cronjobs,
         pvcs,
         services,
         ingresses,
@@ -97,6 +108,8 @@ pub fn world() -> (ObservedWorld, Seeds) {
         replicasets: replicasets_w,
         statefulsets: statefulsets_w,
         daemonsets: daemonsets_w,
+        jobs: jobs_w,
+        cronjobs: cronjobs_w,
         pvcs: pvcs_w,
         services: services_w,
         ingresses: ingresses_w,
@@ -406,6 +419,49 @@ pub fn service(ns: &str, name: &str, selector: &[(&str, &str)]) -> Service {
             ..Default::default()
         }),
         ..Default::default()
+    }
+}
+
+pub fn job(
+    ns: &str,
+    name: &str,
+    completions: i32,
+    succeeded: i32,
+    active: i32,
+    failed: i32,
+) -> Job {
+    Job {
+        metadata: meta(Some(ns), name),
+        spec: Some(JobSpec {
+            completions: Some(completions),
+            template: template(name),
+            ..Default::default()
+        }),
+        status: Some(JobStatus {
+            succeeded: Some(succeeded),
+            active: Some(active),
+            failed: Some(failed),
+            ..Default::default()
+        }),
+    }
+}
+
+pub fn cronjob(ns: &str, name: &str, schedule: &str, suspend: bool) -> CronJob {
+    CronJob {
+        metadata: meta(Some(ns), name),
+        spec: Some(CronJobSpec {
+            schedule: schedule.into(),
+            suspend: Some(suspend),
+            job_template: JobTemplateSpec {
+                spec: Some(JobSpec {
+                    template: template(name),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        status: Some(CronJobStatus::default()),
     }
 }
 

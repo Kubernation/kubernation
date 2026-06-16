@@ -145,6 +145,21 @@ what makes the interesting logic unit-testable without a cluster.
   Demo: db's `data-db-*` (docs/gui-storage.png). **Unmounted PVCs**
   (standalone `stuck-pvc`) have no city, so they stay in attention only —
   surfacing them on the map (island granaries) is deferred.
+- **Batch layer** (2026-06-16, third slice of "more kinds on the map"; user
+  chose island-structures over first-class cities): Jobs become `◈`
+  expeditions and CronJobs `◷` schedules **on their namespace island**,
+  beside the CRD `✦` structures — transient/scheduled work reads as abstract
+  geography, not permanent settlements. `Structure` gained `detail` (status /
+  schedule suffix) and `alert` (a failed Job → warning colour); `build_batch`
+  (pure, model.rs) summarises each Job (`S/C ✓` · `N active` · `N failed ✗`)
+  and CronJob (its schedule + running count), **folding CronJob-spawned Jobs
+  into their CronJob** so job history doesn't flood the island. `BatchEntry`
+  feeds `build_world` like `CustomEntry`. Frontends render the detail + alert
+  colour (GUI: pennant for Job, clock for CronJob; `ascii()` gained `✓`/`✗`).
+  TUI islands are narrow (22 cells) so long CronJob schedules truncate — the
+  GUI's wider labels show them in full. Demo: `migrate` Job + daily `nightly`
+  CronJob in samples (docs/gui-batch.png). Deferred: Job-object attention
+  (Job *pod* failures already route to the node), Job/CronJob city screens.
 - **Stable layout:** nodes sort within a zone by FNV-1a-64(name) — pinned by
   test so layouts never reshuffle across runs or Rust upgrades. Zones sort
   by name; `unzoned` sinks to the end.
@@ -152,11 +167,12 @@ what makes the interesting logic unit-testable without a cluster.
   `failure-domain.beta.kubernetes.io/zone` fallback. kind has no zone labels,
   so `hack/kind-config.yaml` bakes z-a/z-b/z-c onto the workers.
 - **Watched resources:** Node, Pod, Deployment, ReplicaSet (ownership chain +
-  rollout), StatefulSet, DaemonSet, PVC, Service, Ingress, Event. **Secrets
-  and ConfigMaps are never watched** — the city screen derives their *names*
-  from pod-template references, so we observe dependency shape without
-  reading contents (least privilege). Ingress shares the `Services` dirty-bit
-  (both feed the connectivity projection; see "Connectivity layer").
+  rollout), StatefulSet, DaemonSet, Job, CronJob, PVC, Service, Ingress,
+  Event. **Secrets and ConfigMaps are never watched** — the city screen
+  derives their *names* from pod-template references, so we observe
+  dependency shape without reading contents (least privilege). Ingress
+  shares the `Services` dirty-bit and Job/CronJob the `Workloads` dirty-bit
+  (the deltas are payload-free; rebuilds are wholesale).
 - **Events:** no reflector store; a bounded ring (500) deduped by
   (kind, ns, name, reason). Attention considers Warning events from the last
   15 minutes, skipping objects already covered by a stronger concern.
@@ -372,6 +388,8 @@ what makes the interesting logic unit-testable without a cluster.
 | `Ψ`   | Service harbor (on the city's east coast, cyan) |
 | `∏`   | Ingress gate (on the city's east coast, cyan) |
 | `⊞`   | PVC granary (inland/west of the city; cyan bound, yellow pending) |
+| `◈`   | Job expedition (namespace island; yellow when failed) |
+| `◷`   | CronJob (namespace island; detail = schedule) |
 
 Health precedence on a tile: NotReady > Cordoned > Pressure > Healthy.
 Zone headers carry a `▪N` rollup (colored by the zone's worst node) when
@@ -450,9 +468,9 @@ never blocks input.
 ## Deferred (deliberately)
 
 mutations & the planning-turn diff UI · external services / chaos layers ·
-more map kinds beyond the connectivity + storage slices (Jobs/CronJobs as
-expeditions) + connectivity attention + unmounted-PVC island granaries ·
-Job/CronJob city screens · namespace filtering · mouse
+connectivity attention (orphan ingress / harbor with no city) + unmounted-PVC
+island granaries + Job-object attention (failed-Job concern) · Job/CronJob
+city screens · namespace filtering · mouse
 support · pod-level live metrics (node-level done) · minimap horizontal
 compression for very wide zone counts (~60+) · zoom levels (compact 1-line
 tiles for very large boards) · pair: per-container image diffs, env/config

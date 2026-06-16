@@ -115,16 +115,56 @@ pub struct StorageEntry {
     pub pending: usize,
 }
 
-/// Something standing on an island: a custom-resource instance (`✦`) or an
-/// encampment for a workload that currently has no pods on any land (`◌`).
+/// Something standing on an island: a custom-resource instance (`✦`), an
+/// encampment for a workload with no pods on any land (`◌`), or a batch
+/// expedition — a Job (`◈`) or CronJob (`◷`).
 #[derive(Debug, Clone)]
 pub struct Structure {
     pub glyph: char,
     pub kind: String,
     pub name: String,
+    /// Status / schedule suffix (e.g. "3/3 ✓", "1 active", a cron schedule).
+    /// Empty for customs and encampments.
+    pub detail: String,
+    /// Trouble (a failed Job) — frontends paint it in the warning colour.
+    pub alert: bool,
     /// Set when the structure has a city screen behind it.
     pub workload: Option<WorkloadRef>,
     pub y: u16,
+}
+
+/// A batch workload to project as an expedition structure on its namespace
+/// island.
+#[derive(Debug, Clone)]
+pub struct BatchEntry {
+    pub kind: BatchKind,
+    pub namespace: String,
+    pub name: String,
+    /// Status (Job) or schedule (CronJob), shown after the name.
+    pub detail: String,
+    pub alert: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchKind {
+    Job,
+    CronJob,
+}
+
+impl BatchKind {
+    /// The island glyph (TUI-safe, single-width).
+    pub fn glyph(self) -> char {
+        match self {
+            BatchKind::Job => '◈',
+            BatchKind::CronJob => '◷',
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            BatchKind::Job => "Job",
+            BatchKind::CronJob => "CronJob",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -306,6 +346,7 @@ pub fn build_world(
     customs: &[CustomEntry],
     exposure: &[ExposureEntry],
     storage: &[StorageEntry],
+    batch: &[BatchEntry],
 ) -> WorldModel {
     // Connectivity grouped by the city it exposes.
     let mut exp_by: HashMap<&WorkloadRef, Vec<&ExposureEntry>> = HashMap::new();
@@ -459,6 +500,8 @@ pub fn build_world(
             glyph: '✦',
             kind: c.kind.clone(),
             name: c.name.clone(),
+            detail: String::new(),
+            alert: false,
             workload: None,
             y: 0,
         });
@@ -472,10 +515,27 @@ pub fn build_world(
                     glyph: '◌',
                     kind: w.r.kind.to_string(),
                     name: w.r.name.clone(),
+                    detail: String::new(),
+                    alert: false,
                     workload: Some(w.r.clone()),
                     y: 0,
                 });
         }
+    }
+    // Batch expeditions: Jobs (◈) and CronJobs (◷) on their namespace island.
+    for b in batch {
+        by_island
+            .entry(b.namespace.clone())
+            .or_default()
+            .push(Structure {
+                glyph: b.kind.glyph(),
+                kind: b.kind.label().to_string(),
+                name: b.name.clone(),
+                detail: b.detail.clone(),
+                alert: b.alert,
+                workload: None,
+                y: 0,
+            });
     }
     let mut islands = Vec::new();
     let island_y = max_bottom + 2;
@@ -678,6 +738,42 @@ mod tests {
     }
 
     #[test]
+    fn batch_workloads_become_island_expeditions() {
+        let m = world_with(|s| {
+            s.job(fx::job("demo", "migrate", 3, 3, 0, 0)); // completed
+            s.job(fx::job("demo", "backup", 1, 0, 0, 2)); // failed
+            s.cronjob(fx::cronjob("demo", "nightly", "0 2 * * *", false));
+        });
+        let island = m
+            .world
+            .islands
+            .iter()
+            .find(|i| i.label == "demo")
+            .expect("demo island");
+        let job = island
+            .structures
+            .iter()
+            .find(|s| s.name == "migrate")
+            .expect("migrate job");
+        assert_eq!(job.glyph, '◈');
+        assert!(job.detail.contains("3/3"), "detail: {}", job.detail);
+        assert!(!job.alert);
+        let failed = island
+            .structures
+            .iter()
+            .find(|s| s.name == "backup")
+            .expect("backup job");
+        assert!(failed.alert, "a failed job raises alert");
+        let cron = island
+            .structures
+            .iter()
+            .find(|s| s.name == "nightly")
+            .expect("nightly cronjob");
+        assert_eq!(cron.glyph, '◷');
+        assert!(cron.detail.contains("0 2 * * *"), "detail: {}", cron.detail);
+    }
+
+    #[test]
     fn placeless_things_live_on_namespace_islands() {
         let m = world_with(|s| {
             // A workload with desired replicas but no pods anywhere.
@@ -695,6 +791,7 @@ mod tests {
             &m.workloads,
             &m.workload_severity,
             &customs,
+            &[],
             &[],
             &[],
         );

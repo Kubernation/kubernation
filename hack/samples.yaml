@@ -168,6 +168,50 @@ spec:
     requests:
       storage: 1Gi
 ---
+# A one-shot Job that completes — an expedition (◈) on the demo island.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  namespace: k8sciv-demo
+spec:
+  completions: 1
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: busybox:1.36
+          command: ["sh", "-c", "echo migrating; sleep 2"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+---
+# A scheduled CronJob (◷) — a recurring caravan. Daily, so it won't spawn
+# jobs during a demo; its schedule shows on the island.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightly
+  namespace: k8sciv-demo
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: report
+              image: busybox:1.36
+              command: ["sh", "-c", "echo nightly report"]
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+---
 # Custom resources: projected onto the world map as island structures.
 apiVersion: example.com/v1
 kind: Gizmo
