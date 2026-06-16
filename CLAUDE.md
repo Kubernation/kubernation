@@ -62,6 +62,7 @@ crates/
                  node panels via the pure core builders, attention strip),
                  window.rs (reusable modal chrome for drill-downs),
                  almanac.rs (the in-app reference / Civilopedia),
+                 city.rs (the Civ-II city drill-down window),
                  theme.rs. See "GUI spike" + "GUI promotion" decisions.
 ```
 
@@ -175,11 +176,24 @@ what makes the interesting logic unit-testable without a cluster.
   (`--almanac` dev flag for headless shots). The Legend draws the **actual
   marks** (reuses `draw_harbor/gate/granary/job/cronjob`, now `pub(crate)`,
   + `pod_color`) beside each definition, so it can't drift from the map.
-  The TUI's `?` help gained a matching compact MAP LEGEND section. Cities
-  staying a right-side panel for now; the **next step** is moving city/node
-  detail into the window system as rich Civ-II-style drill-downs (citizens,
-  food/trade/science bars, improvements, units, production) — the system was
-  built to host them. docs/gui-almanac.png.
+  The TUI's `?` help gained a matching compact MAP LEGEND section.
+  docs/gui-almanac.png.
+- **GUI city drill-down** (2026-06-16, the window system's first rich
+  consumer): clicking a city opens a centered **Civ-II-style city window**
+  (`city.rs`) instead of the old right-side panel — the Civ II city screen
+  reframed for K8s (observe-only, so no Buy/Change): title bar `kind ns/name`
+  (+HOT/WARM) → a **status band** with replicas + updated **gauge bars**,
+  rollout, strategy/age, attention flag, pair-sync → **CITIZENS** (a pod
+  census grid à la Civ II's food store + a clickable pod list that tails
+  logs) → **IMPROVEMENTS** (owned svc/ingress/pvc/cm/secret) → **CHRONICLE**
+  (recent events). Built on `build_city` + `window::draw_window`; fixed size
+  with caps + "+N more" (Civ II's panels don't scroll). It's a **modal**:
+  suspends map nav/zoom/tooltip while open, a `panel_just_opened` guard keeps
+  the opening click from dismissing it, Esc / close-box / click-outside
+  dismiss, and the pod→log overlay draws on top. **Nodes keep the right-side
+  panel** (`panels::draw_panel`); windowizing them the same way is the
+  obvious follow-up. `--inspect <city> --tail` opens the first pod's log
+  headlessly. docs/gui-city.png.
 - **Stable layout:** nodes sort within a zone by FNV-1a-64(name) — pinned by
   test so layouts never reshuffle across runs or Rust upgrades. Zones sort
   by name; `unzoned` sinks to the end.

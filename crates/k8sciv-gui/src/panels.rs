@@ -164,7 +164,7 @@ pub fn panel_layout() -> PanelLayout {
     }
 }
 
-fn observed_for(
+pub(crate) fn observed_for(
     snap: &Snapshot,
     id: ClusterId,
 ) -> Option<&k8sciv_core::state::observed::ObservedWorld> {
@@ -523,7 +523,7 @@ pub fn draw_logs(tail: &LogTail) {
     }
 }
 
-fn truncate_str(s: &str, max: usize) -> String {
+pub(crate) fn truncate_str(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {

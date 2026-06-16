@@ -12,6 +12,7 @@
 //! reference) · Esc close · Q quit.
 
 mod almanac;
+mod city;
 mod draw;
 mod net;
 mod panels;
@@ -143,6 +144,11 @@ async fn main() {
             .as_ref()
             .map(|s| s.hot.observed.meta.context.clone())
             .unwrap_or_default();
+        // A city drill-down is a modal: it suspends map nav like the picker.
+        let city_modal = matches!(&panel, Some(Panel::City(_, _)));
+        // Track a panel opened by *this frame's* click so the city window
+        // doesn't read that same click as a click-outside dismiss.
+        let mut panel_just_opened = false;
 
         // ---- input ------------------------------------------------------
         if is_key_pressed(KeyCode::Q) {
@@ -204,7 +210,7 @@ async fn main() {
         }
 
         let mut manual_pan = false;
-        if !picker && almanac.is_none() {
+        if !picker && almanac.is_none() && !city_modal {
             let pan = 14.0;
             if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) {
                 cam.pos.x -= pan;
@@ -270,7 +276,7 @@ async fn main() {
                     almanac = Some(Almanac::new());
                 }
             }
-            if picker || almanac.is_some() {
+            if picker || almanac.is_some() || city_modal {
                 // A modal is open: world navigation is suspended this frame.
             } else {
                 if is_key_pressed(KeyCode::F) {
@@ -351,6 +357,7 @@ async fn main() {
                         selected = cam.cell_at(mouse, bounds);
                         if let Some(sel) = selected {
                             panel = panel_for(&worlds, sel);
+                            panel_just_opened = panel.is_some();
                         }
                     }
                 }
@@ -423,6 +430,7 @@ async fn main() {
                 let over_minimap = panel.is_none() && ml.frame.contains(mouse);
                 if !picker
                     && almanac.is_none()
+                    && !city_modal
                     && drag_anchor.is_none()
                     && !over_panel
                     && !over_minimap
@@ -434,27 +442,41 @@ async fn main() {
                     draw_tooltip(sw, local, s, mouse);
                 }
 
-                if let Some(p) = &panel {
-                    pod_hits = draw_panel(p, s, &pl);
-                    // Headless verification: open the first pod's log tail
-                    // once the panel's rows are known.
-                    if auto_tail && !log_open && !pod_hits.is_empty() {
-                        let h = &pod_hits[0];
-                        net.request_logs(LogReq {
-                            cluster: panel_cluster(p),
-                            namespace: h.namespace.clone(),
-                            pod: h.pod.clone(),
-                        });
-                        log_open = true;
-                        auto_tail = false;
+                match &panel {
+                    // Cities open the centered Civ-II drill-down window.
+                    Some(Panel::City(cid, cr)) => {
+                        pod_hits.clear();
+                        let click =
+                            is_mouse_button_pressed(MouseButton::Left) && !panel_just_opened;
+                        let act =
+                            city::draw_city(*cid, cr, s, mouse, click, auto_tail && !log_open);
+                        if let Some((ns, pod)) = act.log {
+                            net.request_logs(LogReq {
+                                cluster: *cid,
+                                namespace: ns,
+                                pod,
+                            });
+                            log_open = true;
+                            auto_tail = false;
+                        }
+                        if act.close {
+                            panel = None;
+                            log_open = false;
+                            net.clear_logs();
+                        }
                     }
-                } else {
-                    pod_hits.clear();
-                    if log_open {
-                        log_open = false;
-                        net.clear_logs();
+                    // Nodes keep the right-hand side panel.
+                    Some(p @ Panel::Node(..)) => {
+                        pod_hits = draw_panel(p, s, &pl);
                     }
-                    draw_minimap(&worlds, &cam, &ml);
+                    None => {
+                        pod_hits.clear();
+                        if log_open {
+                            log_open = false;
+                            net.clear_logs();
+                        }
+                        draw_minimap(&worlds, &cam, &ml);
+                    }
                 }
                 if log_open {
                     draw_logs(&net.log_tail());
