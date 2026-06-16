@@ -20,26 +20,26 @@ This is not a retro skin on k9s. It is a different operator model:
   model: staged diffs committed deliberately, like ending a turn.
 
 ```text
- K8SCIV ▏kind-k8sciv ▏kind ▏https://127.0.0.1:50970/ ▏4n·25p                     overlay PRESSURE ▏? help
+ KUBERNATION ▏kind-kubernation ▏kind ▏https://127.0.0.1:50970/ ▏4n·25p                     overlay PRESSURE ▏? help
 ~≈ z-a · 1 ≈                   ≈ z-b · 1 ≈                  ≈ z-c · 1 ≈        ┌ WORLD ────────────┐
- ▣ k8sciv-worker ●5 ≣3      ~  ▣ k8sciv-worker2 ●6 ≣3       ▣ k8sciv-worker3   │ ┌              ┐  │
+ ▣ kubernation-worker ●5 ≣3      ~  ▣ kubernation-worker2 ●6 ≣3       ▣ kubernation-worker3   │ ┌              ┐  │
  ,    ,    ,    ,    ,         ,   ◍0‼   ,    ,    ,    ~   ,    ,    ,    ,   │  ▪ ▪ ▪ ▪          │
     ,    ,    ,    ,    ,  ~      ,crashy   ,    ,          ,    ,   ◍2   ,    │ └              ┘  │
                  ~              ,◍3  ,    ,    ,            ,  coredns  ,      ├ STATUS ───────────┤
        ~                  ~   ,  web    ,    ,    ,    ~    ,    ,    ,    ,   │ 4 provinces 6 cities
                 ~                ◍2   ,    ,    ,           ~                  │ 25 pods  ‼1 !1 ·1
       ~                  ~     , db ,    ,    ,    ,                  ~        ├ ORDERS ───────────┤
-  ≈ k8sciv-demo ≈  ·          ~                  ~                  ~          │ ◍ crashy
+  ≈ kubernation-demo ≈  ·          ~                  ~                  ~          │ ◍ crashy
    ✦ gizmo/alpha-frob…                  ~                  ~                   │ pop 0 of 2 desired
  · ✦ gizmo/beta-frobn…     ~                  ~                  ~             │ ‼ needs attention
 ┌ ATTENTION (3) ───────────────────────────────────────────────────────────────────────────────────┐
-│▸‼ deploy k8sciv-demo/crashy — CrashLoopBackOff ×2     0/2 ready · rollout Progressing (0/2)      │
-│ ! pvc k8sciv-demo/stuck-pvc — Pending                 storageClass does-not-exist                │
+│▸‼ deploy kubernation-demo/crashy — CrashLoopBackOff ×2     0/2 ready · rollout Progressing (0/2)      │
+│ ! pvc kubernation-demo/stuck-pvc — Pending                 storageClass does-not-exist                │
 └──────────────────────────────────────────────── n cycles · Tab focuses · a collapses ────────────┘
 ```
 
 *(Real capture from `make dev` — crashy's city flies a `‼` flag with
-population 0, the `✦` structures on the isle of k8sciv-demo are live
+population 0, the `✦` structures on the isle of kubernation-demo are live
 custom resources, and `≣3` marks three daemonset roads per province.)*
 
 ## Quick start
@@ -66,7 +66,7 @@ make warm-up warm-drift   # second kind cluster + deliberate drift
 make pair                 # both worlds side by side
 ```
 
-Or against real clusters: `k8sciv --context prod --warm prod-standby`.
+Or against real clusters: `kubernation --context prod --warm prod-standby`.
 The map splits into two continents (`h`/`l` past the edge crosses over),
 the workload list gains a SYNC column (`=` in sync, `≠r` replica drift,
 `≠i` image drift, `−w` missing on warm), the city screen gets a pair line,
@@ -78,10 +78,10 @@ aggregate drift concern.
 ![GUI client](docs/gui-world.png)
 
 ```sh
-make gui    # or: cargo run -p k8sciv-gui --release -- --context <ctx>
+make gui    # or: cargo run -p kubernation-gui --release -- --context <ctx>
 ```
 
-The same `k8sciv-core` world rendered as a real strategy-game view
+The same `kubernation-core` world rendered as a real strategy-game view
 (macroquad). Zones are **continents with irregular, noise-carved
 coastlines** — bays, capes, sand beaches — so a cluster reads as
 geography rather than a grid (the rectangular model underneath stays the
@@ -205,12 +205,12 @@ tick (250ms default), so a noisy cluster can never make typing lag.
 
 ```
 ≈ z-a · 1 ≈                    ≈ z-b · 1 ≈
- ▣ k8sciv-worker ●5 ≣3      ~  ▣ k8sciv-worker2 ●6 ≣3
+ ▣ kubernation-worker ●5 ≣3      ~  ▣ kubernation-worker2 ●6 ≣3
  ,    ,    ,    ,    ,         ,   ◍0‼   ,    ,    ,
     ,    ,    ,    ,    ,  ~      ,crashy   ,    ,
                  ~              ,◍3  ,    ,    , ∏Ψ
        ~                  ~   ,  web    ,    ,    ,   (gate · harbor)
-  ≈ k8sciv-demo ≈  ·   ~
+  ≈ kubernation-demo ≈  ·   ~
    ◷ CronJob/nightly 0 2 * * *
    ◈ Job/migrate 1/1 ✓
    ✦ gizmo/alpha-frob…          ~
@@ -251,7 +251,7 @@ Narrower terminals get a floating WORLD chart instead.
 ### Projecting custom resources
 
 ```sh
-k8sciv --context prod --project certificates.cert-manager.io --project gizmos.example.com
+kubernation --context prod --project certificates.cert-manager.io --project gizmos.example.com
 ```
 
 Each `--project` (or config `projections = [...]`) resolves the CRD at
@@ -262,7 +262,7 @@ a hot/warm pair may project asymmetrically.
 The default palette is **civ**: parchment chrome, green terrain, white
 city labels, blue ocean — with red and yellow strictly reserved for things
 needing attention. Prefer the old restrained look? `color = "plain"` in
-`~/.config/k8sciv/config.toml`; `color = "mono"` for no color at all.
+`~/.config/kubernation/config.toml`; `color = "mono"` for no color at all.
 
 ## The conceptual model
 
@@ -271,12 +271,12 @@ agency: provisioning is the continent (out of scope), runtime is terrain
 (node detail), orchestration is the game board (the map), app definition is
 what your cities produce (the city screen), observability is a property of
 every view, platforms are the politics of the world (status bar). The full
-design brief is in [k8s-civ-tui-mvp-prompt.md](k8s-civ-tui-mvp-prompt.md);
+design brief is in [kubernation-tui-mvp-prompt.md](kubernation-tui-mvp-prompt.md);
 architecture and decisions live in [CLAUDE.md](CLAUDE.md).
 
 ## Configuration
 
-Optional file at `~/.config/k8sciv/config.toml`:
+Optional file at `~/.config/kubernation/config.toml`:
 
 ```toml
 tick_ms = 250              # world-change coalescing cadence
@@ -285,7 +285,7 @@ attention_expanded = false # start with the panel expanded
 ```
 
 CLI: `--context`, `--kubeconfig`, `--log-level`, `--smoke`. Diagnostics go
-to `~/.local/state/k8sciv/k8sciv.log` — never stderr, which would corrupt
+to `~/.local/state/kubernation/kubernation.log` — never stderr, which would corrupt
 the TUI.
 
 ## Status

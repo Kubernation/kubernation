@@ -10,6 +10,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 _Nothing yet._
 
+## [0.3.0] — 2026-06-16
+
+### Changed
+- Completed the **Kubernation** rename: the codename is gone from every
+  identifier — crate names (`kubernation-core` / `kubernation` /
+  `kubernation-gui`), the `kubernation` binary, the kind cluster, kubeconfig
+  context, config/log paths, and the sample namespace.
+
 ## [0.2.0] — 2026-06-16
 
 The first managed version: everything built on the 0.1.0 core MVP, and the
@@ -36,8 +44,7 @@ no mutation paths exist.
 - GUI cartographic **scale tiers** and **label de-confliction**.
 
 ### Changed
-- Branded the app **Kubernation** (display name; the crate, binary,
-  kind-cluster, context, and config identifiers remain `k8sciv`).
+- Branded the app **Kubernation** (display name).
 
 ## [0.1.0]
 

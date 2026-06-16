@@ -4,7 +4,7 @@
 # almost nothing — this is the rig for the responsiveness criterion.
 set -euo pipefail
 
-CTX="${1:-kwok-k8sciv-perf}"
+CTX="${1:-kwok-kubernation-perf}"
 NODES="${NODES:-100}"
 DEPLOYS="${DEPLOYS:-20}"
 REPLICAS="${REPLICAS:-50}"

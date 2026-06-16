@@ -1,8 +1,8 @@
-CLUSTER ?= k8sciv
+CLUSTER ?= kubernation
 KCTX    := kind-$(CLUSTER)
-PERF_CLUSTER ?= k8sciv-perf
+PERF_CLUSTER ?= kubernation-perf
 PERF_KCTX    := kwok-$(PERF_CLUSTER)
-WARM_CLUSTER ?= k8sciv-warm
+WARM_CLUSTER ?= kubernation-warm
 WARM_KCTX    := kind-$(WARM_CLUSTER)
 
 .PHONY: dev kind-up samples run smoke kind-down lint test \
@@ -34,7 +34,7 @@ smoke:
 
 ## metrics-up: install metrics-server on the dev cluster (kind needs
 ## --kubelet-insecure-tls); gauges switch from scheduling pressure to live
-## usage within ~30s. Absent it, K8sCiv falls back automatically.
+## usage within ~30s. Absent it, Kubernation falls back automatically.
 metrics-up:
 	kubectl --context $(KCTX) apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 	kubectl --context $(KCTX) patch -n kube-system deployment metrics-server --type=json \
@@ -56,9 +56,9 @@ warm-up:
 
 ## warm-drift: make the warm cluster drift (replica, image, missing workload)
 warm-drift:
-	kubectl --context $(WARM_KCTX) -n k8sciv-demo scale deploy/web --replicas=1
-	kubectl --context $(WARM_KCTX) -n k8sciv-demo delete deploy crashy --ignore-not-found
-	kubectl --context $(WARM_KCTX) -n k8sciv-demo set image daemonset/agent sleeper=busybox:1.37
+	kubectl --context $(WARM_KCTX) -n kubernation-demo scale deploy/web --replicas=1
+	kubectl --context $(WARM_KCTX) -n kubernation-demo delete deploy crashy --ignore-not-found
+	kubectl --context $(WARM_KCTX) -n kubernation-demo set image daemonset/agent sleeper=busybox:1.37
 
 ## pair: run the TUI observing hot + warm side by side
 pair:
@@ -88,11 +88,11 @@ perf-down:
 
 ## gui: run the windowed client against the dev cluster
 gui:
-	cargo run --release -p k8sciv-gui -- --context $(KCTX) --project gizmos.example.com
+	cargo run --release -p kubernation-gui -- --context $(KCTX) --project gizmos.example.com
 
 ## gui-pair: windowed client observing hot + warm archipelagos
 gui-pair:
-	cargo run --release -p k8sciv-gui -- --context $(KCTX) --warm $(WARM_KCTX) --project gizmos.example.com
+	cargo run --release -p kubernation-gui -- --context $(KCTX) --warm $(WARM_KCTX) --project gizmos.example.com
 
 ## lint: formatting + clippy, the same gate as CI
 lint:

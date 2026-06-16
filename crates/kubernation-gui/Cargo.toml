@@ -1,0 +1,13 @@
+[package]
+name = "kubernation-gui"
+description = "Kubernation GUI spike: a windowed Civ-style map client over kubernation-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kubernation-core = { path = "../kubernation-core" }
+macroquad = "0.4"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+clap = { version = "4", features = ["derive"] }

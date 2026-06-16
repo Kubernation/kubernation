@@ -1,9 +1,5 @@
 # Kubernation
 
-The app is branded **Kubernation** (display name, 2026-06-16). The crate,
-binary, kind-cluster, context, and config-path identifiers stay `k8sciv`
-(an identifier migration is a separate task, not titling).
-
 A Civilization-inspired Kubernetes TUI. The cluster is a living **world**
 the operator explores: zones are continents, nodes are provinces of
 health-textured terrain, workloads are cities sited where their pods run
@@ -17,14 +13,14 @@ not a wall of dashboards.
 diff against the observed world, but *applying* is not built — staging never
 writes to the cluster, so the guarantee holds.
 
-The full product brief lives in `k8s-civ-tui-mvp-prompt.md`. Read it before
+The full product brief lives in `kubernation-tui-mvp-prompt.md`. Read it before
 proposing scope changes.
 
 ## Conceptual model (the short version)
 
 CNCF landscape layers reframed as concentric zones of operator agency:
 
-| Layer          | In K8sCiv                                                |
+| Layer          | In Kubernation                                                |
 | -------------- | -------------------------------------------------------- |
 | Provisioning   | the continent — out of scope for MVP                      |
 | Runtime        | terrain attributes per node (shown in node detail)        |
@@ -42,7 +38,7 @@ barbarian raids, and the planning-turn staged-diff intervention model.
 
 ```
 crates/
-  k8sciv-core/   NO UI DEPS — everything frontends share:
+  kubernation-core/   NO UI DEPS — everything frontends share:
     events.rs    ClusterId / WorldDelta vocabulary
     k8s/         DATA LAYER: client+platform detect, quantity parsing,
                  reflector spawning (watch.rs; spawn() takes a DeltaSink
@@ -61,11 +57,11 @@ crates/
                  attention.rs PURE detectors → severity-ordered concerns
                  fixtures.rs  synthetic worlds (feature = "fixtures")
     util.rs      fnv1a64 stable hash, age/bytes formatting
-  k8sciv/        THE TUI (the product): main/app/events/logging/config
+  kubernation/        THE TUI (the product): main/app/events/logging/config
                  + ui/ components (map, workloads, city, node_detail,
                  attention_panel, sidebar, status_bar, help, picker,
                  theme, symbols). `cargo run` = this (default-members).
-  k8sciv-gui/    macroquad windowed client over the same core (promoted
+  kubernation-gui/    macroquad windowed client over the same core (promoted
                  from spike): net.rs (tokio thread publishing Models +
                  ObservedWorld snapshots), draw.rs (terrain mosaic,
                  settlements, minimap, camera), panels.rs (hover tooltip,
@@ -180,7 +176,7 @@ what makes the interesting logic unit-testable without a cluster.
   is a reusable centered modal (dimmed scrim, parchment frame, titlebar +
   icon, a clipped body the caller fills, a button/tab row; Esc / close-box /
   click-outside dismiss), mirroring Civ II's window *structure* in the
-  K8sCiv palette. macroquad has no easy scissor, so the body is culled +
+  Kubernation palette. macroquad has no easy scissor, so the body is culled +
   scrolled by the caller (per-line visibility test), like `draw_logs`.
   `almanac.rs` is the first consumer — our **Civilopedia**: pages Legend /
   World / Controls / Reading, opened with `?`/`F1` or the top-bar `?` button
@@ -310,9 +306,9 @@ what makes the interesting logic unit-testable without a cluster.
   asymmetrically. Demo: `gizmos.example.com` in hack/samples-crd.yaml
   (applied before samples.yaml so the kind is established).
 - **Workspace split + GUI spike** (2026-06-12, "spike" decision after the
-  renderer-options review): k8sciv-core holds the data layer and pure
+  renderer-options review): kubernation-core holds the data layer and pure
   models; `watch::spawn` takes a `DeltaSink` closure (not a TUI channel)
-  so frontends subscribe their own way. crates/k8sciv-gui is a macroquad
+  so frontends subscribe their own way. crates/kubernation-gui is a macroquad
   windowed client: tokio on a net thread publishing `Arc<Models>`
   snapshots, terrain-colored provinces, city circles sized by population
   with Civ-style name plates, namespace islands, pan/wheel-zoom camera,
@@ -352,12 +348,12 @@ what makes the interesting logic unit-testable without a cluster.
   NotReady), house→keep building sprites by population tier, tent/rock
   for island structures — each with the old procedural shapes as a
   fallback when sprites are absent. `--tileset <dir>` overrides any PNG
-  by name. Assets live in `crates/k8sciv-gui/assets/` with `CREDITS.md`;
+  by name. Assets live in `crates/kubernation-gui/assets/` with `CREDITS.md`;
   both font and sprite bytes are compiled in (binary stays
   self-contained). `ascii()` now only maps a handful of attention glyphs
   (the bundled font covers Unicode punctuation). Sprites use
   `FilterMode::Nearest` for crisp pixel edges. The TUI is untouched —
-  this is all `k8sciv-gui`.
+  this is all `kubernation-gui`.
 - **GUI irregular coastlines** (2026-06-12, "more natural geographic
   shapes"): a *render-only* change in `draw.rs` — the core world model
   stays a rectangular grid (canonical coords both frontends share, and
@@ -511,15 +507,15 @@ make perf-test  # release-mode rebuild+frame budget test (<100ms asserted)
 make perf-down
 ```
 
-Develop against kind only (`hack/kind-config.yaml`, cluster `k8sciv`,
-context `kind-k8sciv`). `hack/samples.yaml` provides: healthy `web`
+Develop against kind only (`hack/kind-config.yaml`, cluster `kubernation`,
+context `kind-kubernation`). `hack/samples.yaml` provides: healthy `web`
 (+Service), crash-looping `crashy`, StatefulSet `db` (+PVCs), DaemonSet
 `agent`, `stuck-pvc` which never binds (keeps one Warning in the queue),
 and two `Gizmo` customs (CRD in hack/samples-crd.yaml) for projection.
 `make run`/`make pair` pass `--project gizmos.example.com`.
 
-Logs: `~/.local/state/k8sciv/k8sciv.log` (`--log-level`, `RUST_LOG`).
-Config: `~/.config/k8sciv/config.toml` (`tick_ms`, `color`,
+Logs: `~/.local/state/kubernation/kubernation.log` (`--log-level`, `RUST_LOG`).
+Config: `~/.config/kubernation/config.toml` (`tick_ms`, `color`,
 `attention_expanded`) — all optional.
 
 ## Conventions

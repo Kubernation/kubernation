@@ -4,13 +4,13 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: k8sciv-demo
+  name: kubernation-demo
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: web
-  namespace: k8sciv-demo
+  namespace: kubernation-demo
 spec:
   replicas: 3
   selector:
@@ -33,7 +33,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: web
-  namespace: k8sciv-demo
+  namespace: kubernation-demo
 spec:
   selector:
     app: web
@@ -45,10 +45,10 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: web
-  namespace: k8sciv-demo
+  namespace: kubernation-demo
 spec:
   rules:
-    - host: web.k8sciv.example
+    - host: web.kubernation.example
       http:
         paths:
           - path: /
@@ -64,7 +64,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: crashy
-  namespace: k8sciv-demo
+  namespace: kubernation-demo
 spec:
   replicas: 2
   selector:
@@ -88,7 +88,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: db
-  namespace: k8sciv-demo
+  namespace: kubernation-demo
 spec:
   serviceName: db
   replicas: 2
@@ -123,7 +123,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: db
-  namespace: k8sciv-demo
+  namespace: kubernation-demo
 spec:
   clusterIP: None
   selector:
@@ -135,7 +135,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: agent
-  namespace: k8sciv-demo
+  namespace: kubernation-demo
 spec:
   selector:
     matchLabels:
@@ -160,7 +160,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: stuck-pvc
-  namespace: k8sciv-demo
+  namespace: kubernation-demo
 spec:
   storageClassName: does-not-exist
   accessModes: ["ReadWriteOnce"]
@@ -173,7 +173,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: migrate
-  namespace: k8sciv-demo
+  namespace: kubernation-demo
 spec:
   completions: 1
   backoffLimit: 1
@@ -195,7 +195,7 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: nightly
-  namespace: k8sciv-demo
+  namespace: kubernation-demo
 spec:
   schedule: "0 2 * * *"
   jobTemplate:
@@ -217,7 +217,7 @@ apiVersion: example.com/v1
 kind: Gizmo
 metadata:
   name: alpha-frobnicator
-  namespace: k8sciv-demo
+  namespace: kubernation-demo
 spec:
   power: 7
 ---
@@ -225,6 +225,6 @@ apiVersion: example.com/v1
 kind: Gizmo
 metadata:
   name: beta-frobnicator
-  namespace: k8sciv-demo
+  namespace: kubernation-demo
 spec:
   power: 3

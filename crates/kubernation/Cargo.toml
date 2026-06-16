@@ -1,0 +1,22 @@
+[package]
+name = "kubernation"
+description = "Kubernation — a Civilization-inspired Kubernetes TUI: the cluster as a living world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kubernation-core = { path = "../kubernation-core" }
+ratatui = "0.30"
+ratatui-crossterm = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+color-eyre = "0.6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+kubernation-core = { path = "../kubernation-core", features = ["fixtures"] }

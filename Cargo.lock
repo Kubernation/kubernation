@@ -1281,45 +1281,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "k8sciv"
-version = "0.2.0"
-dependencies = [
- "clap",
- "color-eyre",
- "k8sciv-core",
- "ratatui",
- "ratatui-crossterm",
- "serde",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "k8sciv-core"
-version = "0.2.0"
-dependencies = [
- "color-eyre",
- "futures",
- "k8s-openapi",
- "kube",
- "serde",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "k8sciv-gui"
-version = "0.2.0"
-dependencies = [
- "clap",
- "k8sciv-core",
- "macroquad",
- "tokio",
-]
-
-[[package]]
 name = "kasuari"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1420,6 +1381,45 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "kubernation"
+version = "0.3.0"
+dependencies = [
+ "clap",
+ "color-eyre",
+ "kubernation-core",
+ "ratatui",
+ "ratatui-crossterm",
+ "serde",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "kubernation-core"
+version = "0.3.0"
+dependencies = [
+ "color-eyre",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "kubernation-gui"
+version = "0.3.0"
+dependencies = [
+ "clap",
+ "kubernation-core",
+ "macroquad",
+ "tokio",
 ]
 
 [[package]]
