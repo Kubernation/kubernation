@@ -206,7 +206,12 @@ what makes the interesting logic unit-testable without a cluster.
   carved: shore margins are overdrawn with the sea texture, a sand beach
   + dark waterline drawn at the boundary. Displacement only *insets*, so
   rectangular hit-testing still lands on real provinces. Single-node
-  zones just wobble; tall zones (kwok) read as genuine landmasses.
+  zones just wobble; tall zones (kwok) read as genuine landmasses. The
+  per-row inset is capped around every city (`Coast::max_l/max_r`, a
+  `CITY_MARGIN` keep-out covering the building + pop chip) so the shore
+  bulges out to keep settlements on dry land rather than carving them
+  into the sea. The minimap carves the same `Coast` row by row
+  (`land_span`) so its silhouette matches the explored coastline.
 - **GUI context switching** (2026-06-12): `c` opens a modal context
   picker (j/k/click, current dotted); selecting calls `Net::request_switch`,
   a `Mutex<Option<String>>` the net thread drains each tick — it connects

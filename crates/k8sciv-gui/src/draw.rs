@@ -202,22 +202,60 @@ fn vnoise(seed: u64, t: f32, period: f32) -> f32 {
 }
 
 /// Per-continent coastline: how far the land insets from its footprint on
-/// each side, for any absolute world row.
+/// each side, for any absolute world row. The noise wobble is clamped per
+/// row so the shore never carves across a city — wherever a resource sits,
+/// the land bulges out to keep it firmly inland.
 pub struct Coast {
     seed_l: u64,
     seed_r: u64,
     y0: i32,
     h: i32,
+    /// Per-row ceiling on the west / east inset (cells), so cities stay on
+    /// land. Large where no city constrains the row.
+    max_l: Vec<f32>,
+    max_r: Vec<f32>,
 }
+
+/// Cells of clearance kept seaward of a settlement (its building footprint
+/// plus the population chip riding off the upper-left).
+const CITY_MARGIN: i32 = 4;
 
 impl Coast {
     pub fn new(cont: &Continent) -> Self {
-        let h: u16 = cont.provinces.iter().map(|p| p.h).sum();
+        let h = cont
+            .provinces
+            .iter()
+            .map(|p| p.h as i32)
+            .sum::<i32>()
+            .max(1);
+        let w = cont.w as i32;
+        let big = MAX_INSET + 100.0;
+        let mut max_l = vec![big; h as usize];
+        let mut max_r = vec![big; h as usize];
+        // Pull the shore back around every city (and the rows its sprite +
+        // name plate touch) so it can never end up in the water.
+        for p in &cont.provinces {
+            for c in &p.cities {
+                let lx = c.x as i32 - cont.x as i32;
+                let ly = c.y as i32 - cont.y as i32;
+                let l_cap = (lx - CITY_MARGIN).max(0) as f32;
+                let r_cap = (w - 1 - (lx + CITY_MARGIN)).max(0) as f32;
+                for ry in (ly - 1)..=(ly + 2) {
+                    if (0..h).contains(&ry) {
+                        let i = ry as usize;
+                        max_l[i] = max_l[i].min(l_cap);
+                        max_r[i] = max_r[i].min(r_cap);
+                    }
+                }
+            }
+        }
         Coast {
             seed_l: fnv1a64(&format!("{}~west", cont.zone)),
             seed_r: fnv1a64(&format!("{}~east", cont.zone)),
             y0: cont.y as i32,
-            h: (h as i32).max(1),
+            h,
+            max_l,
+            max_r,
         }
     }
 
@@ -233,7 +271,16 @@ impl Coast {
         let taper = (cap - end.min(cap)).max(0) as f32 * 2.4;
         l += taper;
         r += taper;
+        // Keep every settlement on dry land.
+        l = l.min(self.max_l[ry as usize]).max(0.0);
+        r = r.min(self.max_r[ry as usize]).max(0.0);
         (l, r)
+    }
+
+    /// Land span (start, width) in cells for `abs_row`, for the minimap.
+    pub fn land_span(&self, abs_row: i32, w: f32) -> (f32, f32) {
+        let (li, ri) = self.insets(abs_row);
+        (li, (w - li - ri).max(0.0))
     }
 }
 
@@ -798,14 +845,23 @@ pub fn draw_minimap(worlds: &[SceneWorld], cam: &Camera, ml: &MinimapLayout) {
     for sw in worlds {
         let ox = sw.off as f32 * ml.scale_x;
         for cont in &sw.world.continents {
+            // Carve the same noise coastline as the main map, row by row,
+            // so the chart silhouette matches the land you're exploring.
+            let coast = Coast::new(cont);
             for p in &cont.provinces {
-                draw_rectangle(
-                    ml.inner.x + ox + p.x as f32 * ml.scale_x,
-                    ml.inner.y + p.y as f32 * ml.scale_y,
-                    p.w as f32 * ml.scale_x,
-                    p.h as f32 * ml.scale_y,
-                    terrain(p.tile.health),
-                );
+                for row in p.y..p.y + p.h {
+                    let (li, lw) = coast.land_span(row as i32, p.w as f32);
+                    if lw <= 0.0 {
+                        continue;
+                    }
+                    draw_rectangle(
+                        ml.inner.x + ox + (p.x as f32 + li) * ml.scale_x,
+                        ml.inner.y + row as f32 * ml.scale_y,
+                        lw * ml.scale_x,
+                        ml.scale_y + 0.6,
+                        terrain(p.tile.health),
+                    );
+                }
             }
         }
         for isl in &sw.world.islands {
