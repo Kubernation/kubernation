@@ -20,15 +20,7 @@ use crate::net::Snapshot;
 use crate::panels::{observed_for, pod_color, truncate_str};
 use crate::text::{text, text_bold, text_size};
 use crate::theme::*;
-use crate::window::draw_window;
-
-/// What a frame's interaction on the city window asks the caller to do.
-#[derive(Default)]
-pub struct CityAction {
-    pub close: bool,
-    /// A pod whose logs to tail: (namespace, pod).
-    pub log: Option<(String, String)>,
-}
+use crate::window::{WinAction, draw_window};
 
 const W: f32 = 920.0;
 const H: f32 = 600.0;
@@ -42,8 +34,8 @@ pub fn draw_city(
     mouse: Vec2,
     click: bool,
     auto_log: bool,
-) -> CityAction {
-    let mut act = CityAction::default();
+) -> WinAction {
+    let mut act = WinAction::default();
     let tag = match (snap.warm.is_some(), id) {
         (true, ClusterId::Hot) => " — HOT",
         (true, ClusterId::Warm) => " — WARM",

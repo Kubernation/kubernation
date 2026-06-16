@@ -33,6 +33,15 @@ impl WinLayout {
     }
 }
 
+/// What a frame's interaction on a drill-down window asks the caller to do.
+/// Shared by the city and node windows.
+#[derive(Default)]
+pub struct WinAction {
+    pub close: bool,
+    /// A pod whose logs to tail: (namespace, pod).
+    pub log: Option<(String, String)>,
+}
+
 /// Draw the scrim, frame, title bar (with icon), and bottom button row;
 /// return the hit regions. `active` highlights that button as the current
 /// tab (pass `usize::MAX` for none).

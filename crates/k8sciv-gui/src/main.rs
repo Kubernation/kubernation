@@ -7,7 +7,7 @@
 //!   make gui-pair       # hot + warm
 //!
 //! Controls: WASD/arrows or right-drag pan · wheel zoom · hover for
-//! tooltips · click to inspect (city screen / node panel) · ]/[ sail
+//! tooltips · click to inspect (city / province window) · ]/[ sail
 //! between cities · N fly to the next concern · ?/F1 Almanac (in-app
 //! reference) · Esc close · Q quit.
 
@@ -15,6 +15,7 @@ mod almanac;
 mod city;
 mod draw;
 mod net;
+mod node;
 mod panels;
 mod sprites;
 mod text;
@@ -29,14 +30,11 @@ use draw::{
     Camera, SceneWorld, draw_minimap, draw_sea, draw_selection, draw_world, locate, minimap_layout,
     scene, scene_size,
 };
-use k8sciv_core::events::ClusterId;
 use k8sciv_core::state::attention::Target;
 use k8sciv_core::state::world::Region;
 use macroquad::prelude::*;
 use net::LogReq;
-use panels::{
-    Panel, PodRowHit, draw_attention_strip, draw_logs, draw_panel, draw_tooltip, panel_layout,
-};
+use panels::{Panel, draw_attention_strip, draw_logs, draw_tooltip};
 use text::{text, text_bold, text_size};
 use theme::*;
 
@@ -120,9 +118,7 @@ async fn main() {
     let mut drag_anchor: Option<Vec2> = None;
     let mut picker = false;
     let mut picker_idx = 0usize;
-    // Log tailing: clickable pod rows captured during panel draw, the open
-    // overlay, and a headless auto-open after --inspect for verification.
-    let mut pod_hits: Vec<PodRowHit> = Vec::new();
+    // Log tailing: the open overlay + a headless auto-open after --inspect.
     let mut log_open = false;
     let mut auto_tail = args.tail;
     // The Almanac (in-app reference) — a modal window; None = closed.
@@ -144,10 +140,11 @@ async fn main() {
             .as_ref()
             .map(|s| s.hot.observed.meta.context.clone())
             .unwrap_or_default();
-        // A city drill-down is a modal: it suspends map nav like the picker.
-        let city_modal = matches!(&panel, Some(Panel::City(_, _)));
-        // Track a panel opened by *this frame's* click so the city window
-        // doesn't read that same click as a click-outside dismiss.
+        // Every drill-down (city or node) is a centered modal window: it
+        // suspends map nav like the picker.
+        let panel_modal = panel.is_some();
+        // Track a panel opened by *this frame's* click so the window doesn't
+        // read that same click as a click-outside dismiss.
         let mut panel_just_opened = false;
 
         // ---- input ------------------------------------------------------
@@ -210,7 +207,7 @@ async fn main() {
         }
 
         let mut manual_pan = false;
-        if !picker && almanac.is_none() && !city_modal {
+        if !picker && almanac.is_none() && !panel_modal {
             let pan = 14.0;
             if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) {
                 cam.pos.x -= pan;
@@ -276,7 +273,7 @@ async fn main() {
                     almanac = Some(Almanac::new());
                 }
             }
-            if picker || almanac.is_some() || city_modal {
+            if picker || almanac.is_some() || panel_modal {
                 // A modal is open: world navigation is suspended this frame.
             } else {
                 if is_key_pressed(KeyCode::F) {
@@ -332,28 +329,14 @@ async fn main() {
                     panel = panel_for(&worlds, sel);
                 }
 
+                // No modal is open here (the whole block is suspended when one
+                // is), so a left click is either a minimap jump or a
+                // map-cell inspect that opens a drill-down window.
                 if is_mouse_button_pressed(MouseButton::Left) {
-                    let pl = panel_layout();
                     let ml = minimap_layout(bounds);
-                    let over_panel = panel.is_some() && pl.frame.contains(mouse);
-                    if log_open {
-                        // The log overlay swallows clicks; Esc closes it.
-                    } else if panel.is_some() && pl.close.contains(mouse) {
-                        panel = None;
-                    } else if let Some(hit) = pod_hits.iter().find(|h| h.rect.contains(mouse)) {
-                        if let Some(p) = &panel {
-                            net.request_logs(LogReq {
-                                cluster: panel_cluster(p),
-                                namespace: hit.namespace.clone(),
-                                pod: hit.pod.clone(),
-                            });
-                            log_open = true;
-                        }
-                    } else if panel.is_none()
-                        && let Some(cell) = ml.world_cell(mouse, bounds)
-                    {
+                    if let Some(cell) = ml.world_cell(mouse, bounds) {
                         cam.fly_to(cell);
-                    } else if !over_panel && mouse.y > panels::CHROME_H {
+                    } else if mouse.y > panels::CHROME_H {
                         selected = cam.cell_at(mouse, bounds);
                         if let Some(sel) = selected {
                             panel = panel_for(&worlds, sel);
@@ -423,16 +406,13 @@ async fn main() {
                     draw_selection(&cam, sel);
                 }
 
-                // Hover tooltip (suppressed while dragging / over chrome).
-                let pl = panel_layout();
-                let over_panel = panel.is_some() && pl.frame.contains(mouse);
+                // Hover tooltip (suppressed under a modal / while dragging).
                 let ml = minimap_layout(bounds);
                 let over_minimap = panel.is_none() && ml.frame.contains(mouse);
                 if !picker
                     && almanac.is_none()
-                    && !city_modal
+                    && !panel_modal
                     && drag_anchor.is_none()
-                    && !over_panel
                     && !over_minimap
                     && mouse.y > panels::CHROME_H
                     && mouse.y < screen_height() - panels::STRIP_H
@@ -442,12 +422,13 @@ async fn main() {
                     draw_tooltip(sw, local, s, mouse);
                 }
 
+                // Drill-down windows are modals (the log overlay, when open,
+                // sits on top and swallows clicks via `!log_open`).
+                let click =
+                    is_mouse_button_pressed(MouseButton::Left) && !panel_just_opened && !log_open;
+                let mut close_panel = false;
                 match &panel {
-                    // Cities open the centered Civ-II drill-down window.
                     Some(Panel::City(cid, cr)) => {
-                        pod_hits.clear();
-                        let click =
-                            is_mouse_button_pressed(MouseButton::Left) && !panel_just_opened;
                         let act =
                             city::draw_city(*cid, cr, s, mouse, click, auto_tail && !log_open);
                         if let Some((ns, pod)) = act.log {
@@ -459,24 +440,34 @@ async fn main() {
                             log_open = true;
                             auto_tail = false;
                         }
-                        if act.close {
-                            panel = None;
-                            log_open = false;
-                            net.clear_logs();
-                        }
+                        close_panel = act.close;
                     }
-                    // Nodes keep the right-hand side panel.
-                    Some(p @ Panel::Node(..)) => {
-                        pod_hits = draw_panel(p, s, &pl);
+                    Some(Panel::Node(nid, nname)) => {
+                        let act =
+                            node::draw_node(*nid, nname, s, mouse, click, auto_tail && !log_open);
+                        if let Some((ns, pod)) = act.log {
+                            net.request_logs(LogReq {
+                                cluster: *nid,
+                                namespace: ns,
+                                pod,
+                            });
+                            log_open = true;
+                            auto_tail = false;
+                        }
+                        close_panel = act.close;
                     }
                     None => {
-                        pod_hits.clear();
                         if log_open {
                             log_open = false;
                             net.clear_logs();
                         }
                         draw_minimap(&worlds, &cam, &ml);
                     }
+                }
+                if close_panel {
+                    panel = None;
+                    log_open = false;
+                    net.clear_logs();
                 }
                 if log_open {
                     draw_logs(&net.log_tail());
@@ -570,11 +561,5 @@ fn panel_for(worlds: &[SceneWorld], sel: (u16, u16)) -> Option<Panel> {
         Region::Province(p) => Some(Panel::Node(sw.id, p.tile.name.clone())),
         Region::Structure(_, s) => s.workload.clone().map(|r| Panel::City(sw.id, r)),
         _ => None,
-    }
-}
-
-fn panel_cluster(panel: &Panel) -> ClusterId {
-    match panel {
-        Panel::City(id, _) | Panel::Node(id, _) => *id,
     }
 }

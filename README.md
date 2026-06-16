@@ -92,8 +92,8 @@ single house to a walled keep with population, with Civ-style white pop
 chips and warning banners over troubled cities; namespace isles with
 structure sprites, hover tooltips, right-drag panning, wheel zoom around
 the cursor, minimap click-to-jump, smooth camera flights on `]`/`[` and
-`N`, and detail drill-downs: click a city for its **city window** (below),
-click land for the node panel (conditions, request gauges, pods). **Click
+`N`, and detail drill-downs: click a city for its **city window**, click
+land for its **province window** — both centered modals (below). **Click
 any pod row** to tail its logs in a live overlay (refreshed every couple of
 seconds):
 
@@ -102,9 +102,15 @@ seconds):
 Clicking a city opens a **Civ II-style city window** — the city screen
 reframed for Kubernetes: replicas/updated gauges, a pod **census** grid +
 clickable pod list, **improvements** (Services / Ingress / PVCs / config),
-and a **chronicle** of recent events. (Nodes still use the side panel.)
+and a **chronicle** of recent events.
 
 ![GUI city](docs/gui-city.png)
+
+Clicking land opens the matching **province (node) window**: zone & health,
+cpu/mem gauges, the **garrison** of pods stationed there, the node's
+**terrain** (runtime / kubelet / OS / arch), and its **conditions**.
+
+![GUI node](docs/gui-node.png)
 
 A city's network exposure is moored off its east coast — Service **harbors**
 (anchors) and Ingress **gates** (arches), each on the latitude of the city

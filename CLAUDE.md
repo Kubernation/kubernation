@@ -58,12 +58,13 @@ crates/
   k8sciv-gui/    macroquad windowed client over the same core (promoted
                  from spike): net.rs (tokio thread publishing Models +
                  ObservedWorld snapshots), draw.rs (terrain mosaic,
-                 settlements, minimap, camera), panels.rs (tooltip, city/
-                 node panels via the pure core builders, attention strip),
+                 settlements, minimap, camera), panels.rs (hover tooltip,
+                 attention strip, context picker, shared helpers),
                  window.rs (reusable modal chrome for drill-downs),
                  almanac.rs (the in-app reference / Civilopedia),
-                 city.rs (the Civ-II city drill-down window),
-                 theme.rs. See "GUI spike" + "GUI promotion" decisions.
+                 city.rs / node.rs (the Civ-II city + province drill-down
+                 windows, on window.rs), theme.rs. See "GUI spike" + "GUI
+                 promotion" decisions.
 ```
 
 **Data flow:** watchers (kube 3.x reflectors) keep `ObservedWorld` stores
@@ -190,10 +191,21 @@ what makes the interesting logic unit-testable without a cluster.
   with caps + "+N more" (Civ II's panels don't scroll). It's a **modal**:
   suspends map nav/zoom/tooltip while open, a `panel_just_opened` guard keeps
   the opening click from dismissing it, Esc / close-box / click-outside
-  dismiss, and the pod→log overlay draws on top. **Nodes keep the right-side
-  panel** (`panels::draw_panel`); windowizing them the same way is the
-  obvious follow-up. `--inspect <city> --tail` opens the first pod's log
-  headlessly. docs/gui-city.png.
+  dismiss, and the pod→log overlay draws on top. `--inspect <city> --tail`
+  opens the first pod's log headlessly. docs/gui-city.png.
+- **GUI node "province" window** (2026-06-16, "windowize them"): nodes moved
+  off the right-side panel onto the same window system (`node.rs`), so
+  **every drill-down is now a centered modal** — the old side-panel machinery
+  (`draw_panel`, `panel_layout`, `PanelLayout`, `PodRowHit`, `panel_cluster`)
+  was deleted, and `WinAction` (close + log) moved to `window.rs` shared by
+  both windows. A node reframed as terrain: title `node-name` → status band
+  (zone, health, abnormal-condition flags, cpu/mem ratio gauges with the
+  live-usage/pressure source) → **GARRISON** (pods stationed here, census grid
+  + clickable list that tails logs) → **TERRAIN** (runtime/kubelet/os/arch/
+  kernel/provider/ip from `build_node_detail`) → **CONDITIONS** (node
+  conditions). `main.rs` collapsed: any open panel is a modal, so the
+  click handler simplified to "minimap-jump or open a window", and the City/
+  Node arms share the `WinAction` close/log plumbing. docs/gui-node.png.
 - **Stable layout:** nodes sort within a zone by FNV-1a-64(name) — pinned by
   test so layouts never reshuffle across runs or Rust upgrades. Zones sort
   by name; `unzoned` sinks to the end.
