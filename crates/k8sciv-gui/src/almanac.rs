@@ -8,8 +8,10 @@ use macroquad::prelude::*;
 
 use k8sciv_core::state::attention::Severity;
 use k8sciv_core::state::model::{NodeHealth, PodState};
+use k8sciv_core::state::world::{CoastKind, WorldModel};
 
 use crate::draw::{draw_cronjob, draw_gate, draw_granary, draw_harbor, draw_job};
+use crate::net::Snapshot;
 use crate::panels::pod_color;
 use crate::text::{text, text_bold, text_size};
 use crate::theme::*;
@@ -36,6 +38,76 @@ pub enum AlmanacAction {
     None,
     Close,
     Page(Page),
+    /// Fly to (and select) a live example on the map, then close.
+    Locate((u16, u16)),
+}
+
+/// A live map feature a legend entry can jump to — the Civilopedia cross-ref.
+#[derive(Clone, Copy)]
+enum Locator {
+    City,
+    Node,
+    Road,
+    Harbor,
+    Gate,
+    Granary,
+    Custom,
+    Encampment,
+    Job,
+    CronJob,
+}
+
+/// Which live feature (if any) a legend mark points at.
+fn mark_locator(m: Mark) -> Option<Locator> {
+    Some(match m {
+        Mark::City => Locator::City,
+        Mark::Road => Locator::Road,
+        Mark::Terrain(_) => Locator::Node,
+        Mark::Harbor => Locator::Harbor,
+        Mark::Gate => Locator::Gate,
+        Mark::Granary => Locator::Granary,
+        Mark::Custom => Locator::Custom,
+        Mark::Camp => Locator::Encampment,
+        Mark::Job => Locator::Job,
+        Mark::CronJob => Locator::CronJob,
+        Mark::Pod(_) | Mark::Sev(_) | Mark::Gauge => return None,
+    })
+}
+
+/// The hot world's first live instance of `loc`, as a scene cell (hot is at
+/// offset 0, so a hot-world cell is already a scene cell).
+fn locate(w: &WorldModel, loc: Locator) -> Option<(u16, u16)> {
+    let structure = |glyph: char| {
+        w.islands.iter().find_map(|isl| {
+            isl.structures
+                .iter()
+                .find(|s| s.glyph == glyph)
+                .map(|s| (isl.x + 1, s.y))
+        })
+    };
+    let provinces = || w.continents.iter().flat_map(|c| &c.provinces);
+    match loc {
+        Locator::City => w.cities().next().map(|c| (c.x, c.y)),
+        Locator::Granary => w.cities().find(|c| c.storage.is_some()).map(|c| (c.x, c.y)),
+        Locator::Node => provinces().next().map(|p| (p.x + 2, p.y)),
+        Locator::Road => provinces().find(|p| p.infra > 0).map(|p| (p.x + 2, p.y)),
+        Locator::Harbor => w
+            .continents
+            .iter()
+            .flat_map(|c| &c.coast)
+            .find(|m| m.kind == CoastKind::Harbor)
+            .map(|m| (m.x, m.y)),
+        Locator::Gate => w
+            .continents
+            .iter()
+            .flat_map(|c| &c.coast)
+            .find(|m| m.kind == CoastKind::Gate)
+            .map(|m| (m.x, m.y)),
+        Locator::Custom => structure('✦'),
+        Locator::Encampment => structure('◌'),
+        Locator::Job => structure('◈'),
+        Locator::CronJob => structure('◷'),
+    }
 }
 
 /// A drawn legend mark — the same shapes the map uses.
@@ -73,13 +145,28 @@ impl Almanac {
         self.scroll = 0.0;
     }
 
+    /// Jump to a page by tab index (keyboard 1-4); out-of-range is ignored.
+    pub fn go_idx(&mut self, i: usize) {
+        if let Some(p) = Page::ALL.get(i) {
+            self.go(*p);
+        }
+    }
+
+    /// Step to the previous/next page (keyboard left/right).
+    pub fn cycle(&mut self, delta: i32) {
+        let n = Page::ALL.len() as i32;
+        let i = (self.page.idx() as i32 + delta).rem_euclid(n);
+        self.go(Page::ALL[i as usize]);
+    }
+
     /// Wheel scroll (positive = up).
     pub fn scroll_by(&mut self, dy: f32) {
         self.scroll = (self.scroll - dy * 36.0).clamp(0.0, self.max_scroll);
     }
 
-    /// Draw the window + current page; resolve clicks into an action.
-    pub fn draw(&mut self, mouse: Vec2, click: bool) -> AlmanacAction {
+    /// Draw the window + current page; resolve clicks into an action. `snap`
+    /// lets the Legend light up entries that have a live example to fly to.
+    pub fn draw(&mut self, snap: Option<&Snapshot>, mouse: Vec2, click: bool) -> AlmanacAction {
         let labels = ["Legend", "World", "Controls", "Reading", "Close"];
         let win = draw_window(
             "Almanac — reading the world",
@@ -91,6 +178,10 @@ impl Almanac {
         let mut cx = Ctx {
             body: win.body,
             y: win.body.y - self.scroll,
+            world: snap.map(|s| &s.hot.models.world),
+            mouse,
+            click,
+            pending: None,
         };
         match self.page {
             Page::Legend => page_legend(&mut cx),
@@ -98,6 +189,7 @@ impl Almanac {
             Page::Controls => page_controls(&mut cx),
             Page::Reading => page_reading(&mut cx),
         }
+        let pending = cx.pending;
         let content_h = cx.y - (win.body.y - self.scroll);
         self.max_scroll = (content_h - win.body.h).max(0.0);
         self.scroll = self.scroll.min(self.max_scroll);
@@ -113,6 +205,10 @@ impl Almanac {
             draw_rectangle(b.x + b.w + 2.0, ty, 3.0, thumb_h, PARCHMENT);
         }
 
+        // A click on a lit legend entry flies to its live example.
+        if let Some(cell) = pending {
+            return AlmanacAction::Locate(cell);
+        }
         if click {
             if win.close.contains(mouse) {
                 return AlmanacAction::Close;
@@ -134,14 +230,20 @@ impl Almanac {
 
 // --- content rendering -----------------------------------------------------
 
-struct Ctx {
+struct Ctx<'a> {
     body: Rect,
     y: f32,
+    /// The hot world, for resolving live examples (None until first sync).
+    world: Option<&'a WorldModel>,
+    mouse: Vec2,
+    click: bool,
+    /// Set when a lit legend entry is clicked: the cell to fly to.
+    pending: Option<(u16, u16)>,
 }
 
 const LINE: f32 = 19.0;
 
-impl Ctx {
+impl Ctx<'_> {
     fn visible(&self, top: f32, h: f32) -> bool {
         top + h >= self.body.y && top <= self.body.y + self.body.h
     }
@@ -162,19 +264,46 @@ impl Ctx {
         self.y += 18.0;
     }
 
-    /// A legend row: the mark, a bold name, and a wrapped description.
+    /// A legend row: the mark, a bold name, and a wrapped description. If the
+    /// mark points at a live map feature, the row lights up (a `›` chevron +
+    /// hover highlight) and a click flies the camera to an example of it.
     fn entry(&mut self, m: Mark, name: &str, desc: &str) {
         let text_x = self.body.x + 40.0;
-        let wrap_w = self.body.w - 44.0;
+        let wrap_w = self.body.w - 64.0;
         let lines = wrap(desc, wrap_w, 14.0);
         let block_h = LINE * lines.len().max(1) as f32 + 6.0;
         let top = self.y;
+        let target = mark_locator(m).and_then(|l| self.world.and_then(|w| locate(w, l)));
+        let fully = top >= self.body.y && top + block_h <= self.body.y + self.body.h;
+        let row = Rect::new(self.body.x, top, self.body.w, block_h);
+        let hot = target.is_some() && fully && row.contains(self.mouse);
         if self.visible(top, block_h) {
+            if hot {
+                draw_rectangle(
+                    row.x - 6.0,
+                    row.y,
+                    row.w + 10.0,
+                    row.h,
+                    Color::new(1.0, 1.0, 1.0, 0.07),
+                );
+            }
             draw_mark(m, vec2(self.body.x + 16.0, top + block_h / 2.0 - 4.0));
             text_bold(name, text_x, top + 13.0, 15.0, INK);
             for (i, l) in lines.iter().enumerate() {
                 text(l, text_x, top + 13.0 + (i as f32 + 1.0) * LINE, 14.0, DIM);
             }
+            if target.is_some() {
+                // A chevron marks a live, clickable cross-reference.
+                let col = if hot {
+                    PARCHMENT
+                } else {
+                    darker(PARCHMENT, 0.7)
+                };
+                text(">", self.body.x + self.body.w - 16.0, top + 13.0, 16.0, col);
+            }
+        }
+        if hot && self.click {
+            self.pending = target;
         }
         // name line + desc lines.
         self.y += LINE + LINE * lines.len() as f32 + 6.0;
@@ -228,6 +357,7 @@ fn wrap(s: &str, max_w: f32, size: f32) -> Vec<String> {
 }
 
 fn page_legend(cx: &mut Ctx) {
+    cx.para("Entries marked  >  have a live example — click to fly there.");
     cx.heading("Land & settlements");
     cx.entry(
         Mark::City,

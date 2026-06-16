@@ -178,7 +178,13 @@ what makes the interesting logic unit-testable without a cluster.
   marks** (reuses `draw_harbor/gate/granary/job/cronjob`, now `pub(crate)`,
   + `pod_color`) beside each definition, so it can't drift from the map.
   The TUI's `?` help gained a matching compact MAP LEGEND section.
-  docs/gui-almanac.png.
+  docs/gui-almanac.png. **Polish** (2026-06-16): Civilopedia cross-refs —
+  each Legend entry whose mark has a live example (resolved from the hot
+  world via `locate()`, derived from the `Mark`) lights up with a `>` chevron
+  + hover highlight; clicking it returns `AlmanacAction::Locate(cell)` and
+  the main loop flies the camera there, selects it, and closes the Almanac.
+  Keyboard `1`-`4` jump to tabs and `←`/`→` cycle them; `window.rs` buttons +
+  close box highlight on hover.
 - **GUI city drill-down** (2026-06-16, the window system's first rich
   consumer): clicking a city opens a centered **Civ-II-style city window**
   (`city.rs`) instead of the old right-side panel — the Civ II city screen

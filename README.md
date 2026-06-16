@@ -132,7 +132,9 @@ their schedule — beside the custom-resource structures:
 Press **`?`** (or `F1`, or the top-bar `?`) for the **Almanac** — an in-app
 reference, drawn on a reusable popup-window system, that documents the map's
 whole visual vocabulary with the *actual marks* beside each definition, plus
-the world metaphor, controls, and how to read state:
+the world metaphor, controls, and how to read state. Legend entries that
+have a live example light up with a `>` — click one to fly the camera
+straight to it (`1`-`4` / `←→` switch pages):
 
 ![GUI Almanac](docs/gui-almanac.png)
 

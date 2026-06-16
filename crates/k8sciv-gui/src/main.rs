@@ -198,11 +198,28 @@ async fn main() {
             }
         }
 
-        // The Almanac swallows the wheel (scroll its content, not zoom).
+        // The Almanac swallows the wheel (scroll its content, not zoom) and
+        // takes 1-4 / ←→ to switch pages.
         if let Some(a) = almanac.as_mut() {
             let (_, wheel) = mouse_wheel();
             if wheel.abs() > 0.0 {
                 a.scroll_by(wheel);
+            }
+            for (k, i) in [
+                (KeyCode::Key1, 0),
+                (KeyCode::Key2, 1),
+                (KeyCode::Key3, 2),
+                (KeyCode::Key4, 3),
+            ] {
+                if is_key_pressed(k) {
+                    a.go_idx(i);
+                }
+            }
+            if is_key_pressed(KeyCode::Left) {
+                a.cycle(-1);
+            }
+            if is_key_pressed(KeyCode::Right) {
+                a.cycle(1);
             }
         }
 
@@ -524,13 +541,21 @@ async fn main() {
         // (but not the click that opened it this frame).
         if almanac.is_some() {
             let click = is_mouse_button_pressed(MouseButton::Left) && !almanac_just_opened;
-            let action = almanac.as_mut().map(|a| a.draw(mouse, click));
+            let action = almanac
+                .as_mut()
+                .map(|a| a.draw(snap.as_deref(), mouse, click));
             match action {
                 Some(AlmanacAction::Close) => almanac = None,
                 Some(AlmanacAction::Page(p)) => {
                     if let Some(a) = almanac.as_mut() {
                         a.go(p);
                     }
+                }
+                // Cross-reference: fly to a live example, then close.
+                Some(AlmanacAction::Locate(cell)) => {
+                    cam.fly_to(cell);
+                    selected = Some(cell);
+                    almanac = None;
                 }
                 _ => {}
             }

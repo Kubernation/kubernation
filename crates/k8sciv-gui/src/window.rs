@@ -58,6 +58,7 @@ pub fn draw_window(title: &str, size: Vec2, buttons: &[&str], active: usize) -> 
     let x = ((screen_width() - w) / 2.0).floor();
     let y = ((screen_height() - h) / 2.0).floor();
     let frame = Rect::new(x, y, w, h);
+    let mp = Vec2::from(mouse_position());
 
     draw_rectangle(x, y, w, h, PANEL);
     draw_rectangle_lines(x, y, w, h, 2.0, PARCHMENT);
@@ -70,7 +71,12 @@ pub fn draw_window(title: &str, size: Vec2, buttons: &[&str], active: usize) -> 
 
     // Close box (Esc also closes; this mirrors Civ II's window button).
     let close = Rect::new(x + w - 26.0, y + 5.0, 20.0, 20.0);
-    draw_rectangle(close.x, close.y, close.w, close.h, PLATE);
+    let close_bg = if close.contains(mp) {
+        lighter(PLATE, 1.9)
+    } else {
+        PLATE
+    };
+    draw_rectangle(close.x, close.y, close.w, close.h, close_bg);
     draw_rectangle_lines(close.x, close.y, close.w, close.h, 1.0, PARCHMENT);
     text("x", close.x + 6.0, close.y + 15.0, 16.0, INK);
 
@@ -84,7 +90,14 @@ pub fn draw_window(title: &str, size: Vec2, buttons: &[&str], active: usize) -> 
             let bx = x + PAD + i as f32 * (bw + 8.0);
             let r = Rect::new(bx, row_y, bw, BTN_H);
             let on = i == active;
-            draw_rectangle(r.x, r.y, r.w, r.h, if on { PARCHMENT } else { PLATE });
+            let bg = if on {
+                PARCHMENT
+            } else if r.contains(mp) {
+                lighter(PLATE, 1.7)
+            } else {
+                PLATE
+            };
+            draw_rectangle(r.x, r.y, r.w, r.h, bg);
             draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, PARCHMENT);
             let tc = if on { PANEL } else { INK };
             let tm = text_size(ascii(label), 14.0);
