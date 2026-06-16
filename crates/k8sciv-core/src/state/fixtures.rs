@@ -10,8 +10,9 @@ use k8s_openapi::api::apps::v1::{
 };
 use k8s_openapi::api::core::v1::{
     Container, ContainerState, ContainerStateWaiting, ContainerStatus, Node, NodeCondition,
-    NodeSpec, NodeStatus, NodeSystemInfo, PersistentVolumeClaim, PersistentVolumeClaimStatus, Pod,
-    PodCondition, PodSpec, PodStatus, PodTemplateSpec, ResourceRequirements, Service, ServiceSpec,
+    NodeSpec, NodeStatus, NodeSystemInfo, PersistentVolumeClaim, PersistentVolumeClaimStatus,
+    PersistentVolumeClaimVolumeSource, Pod, PodCondition, PodSpec, PodStatus, PodTemplateSpec,
+    ResourceRequirements, Service, ServiceSpec, Volume,
 };
 use k8s_openapi::api::networking::v1::{
     HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressBackend, IngressRule,
@@ -360,6 +361,24 @@ pub fn daemonset(ns: &str, name: &str, desired: i32, ready: i32) -> DaemonSet {
         }),
         ..Default::default()
     }
+}
+
+/// Attach a PVC volume to a pod, so storage resolution sees the claim.
+pub fn pod_with_pvc(mut pod: Pod, claim: &str) -> Pod {
+    let vol = Volume {
+        name: format!("vol-{claim}"),
+        persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+            claim_name: claim.into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    pod.spec
+        .get_or_insert_with(Default::default)
+        .volumes
+        .get_or_insert_with(Vec::new)
+        .push(vol);
+    pod
 }
 
 pub fn pvc(ns: &str, name: &str, phase: &str) -> PersistentVolumeClaim {

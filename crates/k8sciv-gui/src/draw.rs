@@ -852,6 +852,15 @@ fn draw_city(
         }
     }
 
+    // Persistent storage: a granary inland (west) of the city, cyan when all
+    // claims are Bound and warning-yellow when any is still pending.
+    if detail.scale != Scale::World
+        && let Some(st) = city.storage
+    {
+        let col = if st.pending > 0 { WARN } else { STRUCT };
+        draw_granary(vec2(c.x - plate_r - 7.0 * z, c.y), z, col);
+    }
+
     // Attention: tint + a waving banner.
     if let Some(sev) = city.severity {
         let col = severity_color(sev);
@@ -1007,6 +1016,25 @@ fn draw_gate(c: Vec2, z: f32) {
         c.y - u,
         th,
         STRUCT,
+    );
+}
+
+/// A small silo — the persistent-storage granary mark. `col` carries the
+/// binding state: cyan when all claims are Bound, yellow when any pends.
+fn draw_granary(c: Vec2, z: f32, col: Color) {
+    let u = (4.0 * z).clamp(2.5, 12.0);
+    let th = (z * 1.4).clamp(1.0, 2.5);
+    draw_circle(c.x, c.y, u * 1.5, Color::new(0.04, 0.06, 0.10, 0.5));
+    draw_rectangle_lines(c.x - u * 0.8, c.y - u * 0.7, u * 1.6, u * 1.5, th, col);
+    draw_line(c.x - u * 0.8, c.y - u * 0.7, c.x, c.y - u * 1.3, th, col);
+    draw_line(c.x + u * 0.8, c.y - u * 0.7, c.x, c.y - u * 1.3, th, col);
+    draw_line(
+        c.x - u * 0.8,
+        c.y + u * 0.2,
+        c.x + u * 0.8,
+        c.y + u * 0.2,
+        th,
+        col,
     );
 }
 

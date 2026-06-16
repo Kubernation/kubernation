@@ -130,6 +130,21 @@ what makes the interesting logic unit-testable without a cluster.
   Ingress for `web` (docs/gui-connectivity.png). Deferred to later slices:
   PVCs as granaries, Jobs/CronJobs, and connectivity attention (orphan
   ingress / harbor with no city).
+- **Storage layer** (2026-06-16, second slice of "more kinds on the map"):
+  PVCs become `⊞` granaries sited **inland of (west of) the city that mounts
+  them** — cities took the western half, harbors the east coast, so storage
+  fills the interior. `build_storage` (pure, model.rs) tallies per workload
+  the PVCs it mounts (pod volumes ∪ StatefulSet volumeClaimTemplate-derived
+  claims, the same union `build_city` shows) and how many are not Bound;
+  `build_world` hangs the tally on `City.storage` (`CityStorage{claims,
+  pending}`). One granary per city regardless of replica count (a StatefulSet
+  with N PVCs is still one granary), cyan when all Bound and warning-yellow
+  when any pends. Render-only, like the coast marks; dropped at world scale.
+  GUI city tooltip gains an "N PVCs · M pending" line; the city screen
+  already lists `pvc/` rows. `pvc_phase` helper shared with `build_city`.
+  Demo: db's `data-db-*` (docs/gui-storage.png). **Unmounted PVCs**
+  (standalone `stuck-pvc`) have no city, so they stay in attention only —
+  surfacing them on the map (island granaries) is deferred.
 - **Stable layout:** nodes sort within a zone by FNV-1a-64(name) — pinned by
   test so layouts never reshuffle across runs or Rust upgrades. Zones sort
   by name; `unzoned` sinks to the end.
@@ -356,6 +371,7 @@ what makes the interesting logic unit-testable without a cluster.
 | `▒`   | fog of war (world not yet synced)  |
 | `Ψ`   | Service harbor (on the city's east coast, cyan) |
 | `∏`   | Ingress gate (on the city's east coast, cyan) |
+| `⊞`   | PVC granary (inland/west of the city; cyan bound, yellow pending) |
 
 Health precedence on a tile: NotReady > Cordoned > Pressure > Healthy.
 Zone headers carry a `▪N` rollup (colored by the zone's worst node) when
@@ -434,9 +450,9 @@ never blocks input.
 ## Deferred (deliberately)
 
 mutations & the planning-turn diff UI · external services / chaos layers ·
-more map kinds beyond the connectivity slice (PVCs as granaries,
-Jobs/CronJobs as expeditions) + connectivity attention · Job/CronJob city
-screens · namespace filtering · mouse
+more map kinds beyond the connectivity + storage slices (Jobs/CronJobs as
+expeditions) + connectivity attention + unmounted-PVC island granaries ·
+Job/CronJob city screens · namespace filtering · mouse
 support · pod-level live metrics (node-level done) · minimap horizontal
 compression for very wide zone counts (~60+) · zoom levels (compact 1-line
 tiles for very large boards) · pair: per-container image diffs, env/config

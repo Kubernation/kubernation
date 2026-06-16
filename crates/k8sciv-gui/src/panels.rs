@@ -72,6 +72,17 @@ pub fn draw_tooltip(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot, mouse: 
                 if let Some(sev) = c.severity {
                     lines.push(("needs attention".into(), severity_color(sev)));
                 }
+                if let Some(store) = c.storage {
+                    let (txt, col) = if store.pending > 0 {
+                        (
+                            format!("{} PVCs . {} pending", store.claims, store.pending),
+                            WARN,
+                        )
+                    } else {
+                        (format!("{} PVCs", store.claims), STRUCT)
+                    };
+                    lines.push((txt, col));
+                }
                 if let Some(pair) = &snap.pair
                     && let Some(st) = pair.state(&c.r)
                 {

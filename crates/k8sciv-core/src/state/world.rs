@@ -31,9 +31,20 @@ pub struct City {
     pub ready: i32,
     pub desired: i32,
     pub severity: Option<Severity>,
+    /// Persistent storage the workload mounts, shown as a granary inland of
+    /// the city. `None` when it mounts no PVCs.
+    pub storage: Option<CityStorage>,
     /// Absolute world cell of the city glyph (label sits on the row below).
     pub x: u16,
     pub y: u16,
+}
+
+/// A city's persistent storage at a glance: how many PVCs it mounts and how
+/// many of those are not yet Bound (a pending granary flags trouble).
+#[derive(Debug, Clone, Copy)]
+pub struct CityStorage {
+    pub claims: usize,
+    pub pending: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +104,15 @@ pub struct ExposureEntry {
     pub kind: CoastKind,
     pub name: String,
     pub detail: String,
+}
+
+/// Per-workload storage tally — the input `build_world` hangs on a city as
+/// its `CityStorage` granary.
+#[derive(Debug, Clone)]
+pub struct StorageEntry {
+    pub workload: WorkloadRef,
+    pub claims: usize,
+    pub pending: usize,
 }
 
 /// Something standing on an island: a custom-resource instance (`✦`) or an
@@ -285,11 +305,23 @@ pub fn build_world(
     severity: &HashMap<WorkloadRef, Severity>,
     customs: &[CustomEntry],
     exposure: &[ExposureEntry],
+    storage: &[StorageEntry],
 ) -> WorldModel {
     // Connectivity grouped by the city it exposes.
     let mut exp_by: HashMap<&WorkloadRef, Vec<&ExposureEntry>> = HashMap::new();
     for e in exposure {
         exp_by.entry(&e.workload).or_default().push(e);
+    }
+    // Storage tally per city.
+    let mut storage_by: HashMap<&WorkloadRef, CityStorage> = HashMap::new();
+    for e in storage {
+        storage_by.insert(
+            &e.workload,
+            CityStorage {
+                claims: e.claims,
+                pending: e.pending,
+            },
+        );
     }
 
     // --- Site each city: the province hosting the plurality of its pods.
@@ -350,6 +382,7 @@ pub fn build_world(
                     ready,
                     desired,
                     severity: severity.get(r).copied(),
+                    storage: storage_by.get(*r).copied(),
                     x: 0,
                     y: 0,
                 });
@@ -529,6 +562,7 @@ mod tests {
         let city = w.cities().next().unwrap();
         assert_eq!(city.r.name, "web");
         assert_eq!((city.ready, city.desired), (3, 3));
+        assert!(city.storage.is_none(), "web mounts no PVCs → no granary");
         // Plurality is on n-alpha (zone z-a, first continent).
         let (x, _) = w.city_pos(&city.r).unwrap();
         let cont = &w.continents[0];
@@ -586,6 +620,24 @@ mod tests {
     }
 
     #[test]
+    fn mounted_pvcs_give_a_city_a_granary() {
+        let m = world_with(|s| {
+            s.deployment(fx::deployment("demo", "web", 1, 1));
+            s.replicaset(fx::replicaset("demo", "web-abc", "web"));
+            let mut pod =
+                fx::pod_with_pvc(fx::pod("demo", "web-abc-1", Some("n-alpha")), "web-data");
+            pod = fx::pod_with_pvc(pod, "web-cache");
+            s.pod(fx::pod_owned(pod, "ReplicaSet", "web-abc"));
+            s.pvc(fx::pvc("demo", "web-data", "Bound"));
+            s.pvc(fx::pvc("demo", "web-cache", "Pending"));
+        });
+        let city = m.world.cities().next().expect("web city");
+        let st = city.storage.expect("web mounts PVCs → a granary");
+        assert_eq!(st.claims, 2);
+        assert_eq!(st.pending, 1, "web-cache is unbound");
+    }
+
+    #[test]
     fn services_and_ingresses_moor_on_the_city_coast() {
         let m = world_with(|s| {
             s.deployment(fx::deployment("demo", "web", 2, 2));
@@ -638,7 +690,14 @@ mod tests {
             namespace: Some("demo".into()),
             name: "frobnicator".into(),
         }];
-        let w = build_world(&m.map, &m.workloads, &m.workload_severity, &customs, &[]);
+        let w = build_world(
+            &m.map,
+            &m.workloads,
+            &m.workload_severity,
+            &customs,
+            &[],
+            &[],
+        );
         let island = w
             .islands
             .iter()

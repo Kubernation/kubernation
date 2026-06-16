@@ -12,7 +12,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 
 use super::attention::{self, Concern, Severity, Target};
 use super::observed::{ObservedWorld, RecentEvent};
-use super::world::{CoastKind, ExposureEntry, WorldModel, build_world};
+use super::world::{CoastKind, ExposureEntry, StorageEntry, WorldModel, build_world};
 use crate::k8s::metrics::NodeUsage;
 use crate::k8s::quantity;
 use crate::util::fnv1a64;
@@ -896,6 +896,94 @@ pub fn build_exposure(world: &ObservedWorld) -> Vec<ExposureEntry> {
     out
 }
 
+/// Per-workload persistent storage: how many PVCs it mounts and how many
+/// are not yet Bound. Feeds the granary mark beside each city. Pod volumes
+/// plus, for StatefulSets, the volumeClaimTemplate-derived claims (which can
+/// exist before/after their pods) — the same union `build_city` shows.
+pub fn build_storage(world: &ObservedWorld) -> Vec<StorageEntry> {
+    let idx = OwnerIndex::build(world);
+    let mut claims: HashMap<WorkloadRef, BTreeSet<String>> = HashMap::new();
+    for p in world.pods.state() {
+        let Some(r) = idx.workload_of(&p) else {
+            continue;
+        };
+        for v in p
+            .spec
+            .as_ref()
+            .and_then(|s| s.volumes.as_deref())
+            .unwrap_or(&[])
+        {
+            if let Some(c) = v.persistent_volume_claim.as_ref() {
+                claims
+                    .entry(r.clone())
+                    .or_default()
+                    .insert(c.claim_name.clone());
+            }
+        }
+    }
+    for s in world.statefulsets.state() {
+        let (Some(ns), Some(name)) = (s.metadata.namespace.clone(), s.metadata.name.clone()) else {
+            continue;
+        };
+        let r = WorkloadRef {
+            kind: WorkloadKind::StatefulSet,
+            namespace: ns.clone(),
+            name: name.clone(),
+        };
+        for t in s
+            .spec
+            .as_ref()
+            .and_then(|sp| sp.volume_claim_templates.as_deref())
+            .unwrap_or(&[])
+        {
+            let prefix = format!("{}-{}-", t.metadata.name.clone().unwrap_or_default(), name);
+            for pvc in world.pvcs.state() {
+                if pvc.metadata.namespace.as_deref() == Some(&ns)
+                    && pvc
+                        .metadata
+                        .name
+                        .as_deref()
+                        .is_some_and(|n| n.starts_with(&prefix))
+                {
+                    claims
+                        .entry(r.clone())
+                        .or_default()
+                        .insert(pvc.metadata.name.clone().unwrap_or_default());
+                }
+            }
+        }
+    }
+    let mut out: Vec<StorageEntry> = claims
+        .into_iter()
+        .map(|(r, names)| {
+            let pending = names
+                .iter()
+                .filter(|n| pvc_phase(world, &r.namespace, n).as_deref() != Some("Bound"))
+                .count();
+            StorageEntry {
+                workload: r,
+                claims: names.len(),
+                pending,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| a.workload.cmp(&b.workload));
+    out
+}
+
+/// The `status.phase` of a PVC by namespace+name, if observed.
+fn pvc_phase(world: &ObservedWorld, namespace: &str, name: &str) -> Option<String> {
+    world
+        .pvcs
+        .state()
+        .into_iter()
+        .find(|p| {
+            p.metadata.namespace.as_deref() == Some(namespace)
+                && p.metadata.name.as_deref() == Some(name)
+        })
+        .and_then(|p| p.status.as_ref().and_then(|s| s.phase.clone()))
+}
+
 pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
     let idx = OwnerIndex::build(world);
 
@@ -1073,16 +1161,7 @@ pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
         }
     }
     for name in &pvc_names {
-        let phase = world
-            .pvcs
-            .state()
-            .into_iter()
-            .find(|p| {
-                p.metadata.namespace.as_deref() == Some(&r.namespace)
-                    && p.metadata.name.as_deref() == Some(name)
-            })
-            .and_then(|p| p.status.as_ref().and_then(|s| s.phase.clone()))
-            .unwrap_or_else(|| "?".into());
+        let phase = pvc_phase(world, &r.namespace, name).unwrap_or_else(|| "?".into());
         owned.push(OwnedRes {
             kind: "pvc",
             name: name.clone(),
@@ -1267,6 +1346,7 @@ impl Models {
             &workload_severity,
             &world.custom_entries(),
             &build_exposure(world),
+            &build_storage(world),
         );
         Models {
             map,

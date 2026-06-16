@@ -105,6 +105,11 @@ it serves; hover for the route, click to open the city:
 
 ![GUI connectivity](docs/gui-connectivity.png)
 
+Persistent storage shows as a **granary** (silo) inland of any city that
+mounts PVCs — cyan when every claim is Bound, yellow when one is pending:
+
+![GUI storage](docs/gui-storage.png)
+
 Press **`c`** to switch the hot
 cluster from a context picker — no restart. Text is **Fira Sans**
 (bundled OFL); both font and sprites are embedded so the binary is
@@ -179,10 +184,12 @@ sited on the province hosting most of their pods, so a city *migrates
 when its pods do*. DaemonSets pave `≣` roads instead of building cities.
 A city's network exposure is moored off its **east coast**: Services are
 `Ψ` **harbors**, Ingresses are `∏` **gates** (the shoreline is the network
-boundary). Anything with no place on the land — projected custom resources
-(`✦`) and zero-pod workloads (`◌`) — lives on **namespace islands** in the
-southern sea. Walk anywhere with `h/j/k/l`; `]`/`[` sail city to city;
-`Enter` opens whatever you stand on.
+boundary). Persistent storage sits inland: a `⊞` **granary** west of any
+city that mounts PVCs (yellow if a claim is unbound). Anything with no place
+on the land — projected custom resources (`✦`) and zero-pod workloads
+(`◌`) — lives on **namespace islands** in the southern sea. Walk anywhere
+with `h/j/k/l`; `]`/`[` sail city to city; `Enter` opens whatever you stand
+on.
 
 Pods keep their glyphs in city and node screens: `●` ready · `◐` starting
 · `○` pending · `◌` terminating · `✗` failing · `◆` succeeded. The cpu/mem

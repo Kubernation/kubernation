@@ -21,6 +21,8 @@ pub const INFRA: char = '≣';
 /// Connectivity moored on the coast: Service harbor / Ingress gate.
 pub const HARBOR: char = 'Ψ';
 pub const GATE: char = '∏';
+/// Persistent storage a city mounts, sited inland of it.
+pub const GRANARY: char = '⊞';
 
 /// Minimap inputs: cursor province cell and visible-province viewport.
 pub type ChartState = (Option<(usize, usize)>, (usize, usize, usize, usize));
@@ -363,6 +365,18 @@ fn draw_city(buf: &mut Buffer, area: Rect, cam: (u16, u16), c: &City, ctx: &Rend
         };
         let width = (area.right() - sx).min(14) as usize;
         buf.set_stringn(sx, sy, truncate(&c.r.name, 14), width, name_style);
+    }
+    // Persistent storage: a granary inland (west) of the city, yellow when
+    // any claim is unbound.
+    if let Some(st) = c.storage
+        && let Some((sx, sy)) = project(area, cam, c.x.saturating_sub(2), c.y)
+    {
+        let style = if st.pending > 0 {
+            theme.severity(k8sciv_core::state::attention::Severity::Warning)
+        } else {
+            theme.structure()
+        };
+        buf.set_string(sx, sy, GRANARY.to_string(), style);
     }
 }
 
