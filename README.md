@@ -138,6 +138,17 @@ straight to it (`1`-`4` / `←→` switch pages):
 
 ![GUI Almanac](docs/gui-almanac.png)
 
+**The planning turn.** Intervention is framed as deliberate *staged* changes,
+not imperative edits. Set replicas from a city window (`plan replicas [−] N
+[+]`) or cordon a node from its province window; the change is staged, not
+applied. Press **`t`** (or the chrome **End Turn (N)**) for the End-of-Turn
+review — a from→to diff of everything staged, with per-row unstage and
+Discard. **It is preview-only:** Commit is shown but disabled and *nothing is
+written to the cluster* — Kubernation keeps its observe-only guarantee while
+you rehearse the turn.
+
+![GUI planning turn](docs/gui-plan.png)
+
 Press **`c`** to switch the hot
 cluster from a context picker — no restart. Text is **Fira Sans**
 (bundled OFL); both font and sprites are embedded so the binary is
@@ -279,8 +290,11 @@ the TUI.
 
 ## Status
 
-Observe-only MVP, with several post-MVP features built: hot/warm cluster
-pairs, metrics-server live usage, the minimap, and pod log tailing (`l` on
-a city or node; click a pod row in the GUI). Deferred, by design: mutations
-and the planning-turn diff UI, external managed services, chaos layers, and
-Job/CronJob city screens. See CLAUDE.md for the full list and the reasoning.
+Observe-only, with many post-MVP features built: hot/warm cluster pairs,
+metrics-server live usage, the minimap, pod log tailing, the connectivity /
+storage / batch map layers, the in-app Almanac, the Civ-II city + province
+drill-down windows, and the **planning turn** — staging interventions and
+previewing their diff (preview-only; nothing is applied). Deferred, by
+design: *applying* staged changes to the cluster (dry-run + confirm + RBAC),
+external managed services, chaos layers, and the planning turn in the TUI.
+See CLAUDE.md for the full list and the reasoning.

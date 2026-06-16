@@ -17,6 +17,7 @@ mod draw;
 mod net;
 mod node;
 mod panels;
+mod plan;
 mod sprites;
 mod text;
 mod theme;
@@ -76,6 +77,10 @@ struct Args {
     /// Open the Almanac (in-app reference) on sync (development verification)
     #[arg(long)]
     almanac: bool,
+    /// Stage a demo scale + cordon and open the End-of-Turn review on sync
+    /// (development verification)
+    #[arg(long)]
+    plan: bool,
 }
 
 fn window_conf() -> Conf {
@@ -123,6 +128,10 @@ async fn main() {
     let mut auto_tail = args.tail;
     // The Almanac (in-app reference) — a modal window; None = closed.
     let mut almanac: Option<Almanac> = None;
+    // The planning turn: staged interventions (preview-only) + the open
+    // End-of-Turn review modal.
+    let mut planned = k8sciv_core::state::planned::PlannedWorld::default();
+    let mut plan_open = false;
 
     loop {
         let snap = net.snapshot();
@@ -146,6 +155,7 @@ async fn main() {
         // Track a panel opened by *this frame's* click so the window doesn't
         // read that same click as a click-outside dismiss.
         let mut panel_just_opened = false;
+        let mut plan_just_opened = false;
 
         // ---- input ------------------------------------------------------
         if is_key_pressed(KeyCode::Q) {
@@ -162,9 +172,21 @@ async fn main() {
                 almanac_just_opened = true;
             }
         }
+        // `t` opens the End-of-Turn review (planning turn) from the map.
+        if is_key_pressed(KeyCode::T)
+            && snap.is_some()
+            && panel.is_none()
+            && almanac.is_none()
+            && !picker
+        {
+            plan_open = !plan_open;
+            plan_just_opened = plan_open;
+        }
         if is_key_pressed(KeyCode::Escape) {
             if almanac.is_some() {
                 almanac = None;
+            } else if plan_open {
+                plan_open = false;
             } else if picker {
                 picker = false;
             } else if log_open {
@@ -224,7 +246,7 @@ async fn main() {
         }
 
         let mut manual_pan = false;
-        if !picker && almanac.is_none() && !panel_modal {
+        if !picker && almanac.is_none() && !panel_modal && !plan_open {
             let pan = 14.0;
             if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) {
                 cam.pos.x -= pan;
@@ -289,8 +311,18 @@ async fn main() {
                 if args.almanac {
                     almanac = Some(Almanac::new());
                 }
+                if args.plan {
+                    let w = &s.hot.models.world;
+                    if let Some(c) = w.cities().next() {
+                        planned.stage_scale(c.r.clone(), c.desired + 2);
+                    }
+                    if let Some(p) = w.continents.iter().flat_map(|c| &c.provinces).next() {
+                        planned.stage_cordon(p.tile.name.clone(), true);
+                    }
+                    plan_open = true;
+                }
             }
-            if picker || almanac.is_some() || panel_modal {
+            if picker || almanac.is_some() || panel_modal || plan_open {
                 // A modal is open: world navigation is suspended this frame.
             } else {
                 if is_key_pressed(KeyCode::F) {
@@ -429,6 +461,7 @@ async fn main() {
                 if !picker
                     && almanac.is_none()
                     && !panel_modal
+                    && !plan_open
                     && drag_anchor.is_none()
                     && !over_minimap
                     && mouse.y > panels::CHROME_H
@@ -439,46 +472,83 @@ async fn main() {
                     draw_tooltip(sw, local, s, mouse);
                 }
 
-                // Drill-down windows are modals (the log overlay, when open,
-                // sits on top and swallows clicks via `!log_open`).
+                // The End-of-Turn review takes over the center when open;
+                // otherwise the drill-down windows / minimap show. Drill-downs
+                // are modals (the log overlay, when open, sits on top and
+                // swallows clicks via `!log_open`).
                 let click =
                     is_mouse_button_pressed(MouseButton::Left) && !panel_just_opened && !log_open;
                 let mut close_panel = false;
-                match &panel {
-                    Some(Panel::City(cid, cr)) => {
-                        let act =
-                            city::draw_city(*cid, cr, s, mouse, click, auto_tail && !log_open);
-                        if let Some((ns, pod)) = act.log {
-                            net.request_logs(LogReq {
-                                cluster: *cid,
-                                namespace: ns,
-                                pod,
-                            });
-                            log_open = true;
-                            auto_tail = false;
-                        }
-                        close_panel = act.close;
+                if plan_open {
+                    let pclick = is_mouse_button_pressed(MouseButton::Left) && !plan_just_opened;
+                    let act = plan::draw_plan(&planned, Some(s), mouse, pclick);
+                    if let Some(i) = act.unstage {
+                        planned.unstage(i);
                     }
-                    Some(Panel::Node(nid, nname)) => {
-                        let act =
-                            node::draw_node(*nid, nname, s, mouse, click, auto_tail && !log_open);
-                        if let Some((ns, pod)) = act.log {
-                            net.request_logs(LogReq {
-                                cluster: *nid,
-                                namespace: ns,
-                                pod,
-                            });
-                            log_open = true;
-                            auto_tail = false;
-                        }
-                        close_panel = act.close;
+                    if act.discard {
+                        planned.clear();
+                        plan_open = false;
                     }
-                    None => {
-                        if log_open {
-                            log_open = false;
-                            net.clear_logs();
+                    if act.close {
+                        plan_open = false;
+                    }
+                } else {
+                    match &panel {
+                        Some(Panel::City(cid, cr)) => {
+                            let act = city::draw_city(
+                                *cid,
+                                cr,
+                                s,
+                                &planned,
+                                mouse,
+                                click,
+                                auto_tail && !log_open,
+                            );
+                            if let Some(iv) = act.stage {
+                                planned.stage(iv);
+                            }
+                            if let Some((ns, pod)) = act.log {
+                                net.request_logs(LogReq {
+                                    cluster: *cid,
+                                    namespace: ns,
+                                    pod,
+                                });
+                                log_open = true;
+                                auto_tail = false;
+                            }
+                            close_panel = act.close;
                         }
-                        draw_minimap(&worlds, &cam, &ml);
+                        Some(Panel::Node(nid, nname)) => {
+                            let act = node::draw_node(
+                                *nid,
+                                nname,
+                                s,
+                                &planned,
+                                mouse,
+                                click,
+                                auto_tail && !log_open,
+                            );
+                            if let Some(iv) = act.stage {
+                                planned.stage(iv);
+                            }
+                            if let Some((ns, pod)) = act.log {
+                                net.request_logs(LogReq {
+                                    cluster: *nid,
+                                    namespace: ns,
+                                    pod,
+                                });
+                                log_open = true;
+                                auto_tail = false;
+                            }
+                            close_panel = act.close;
+                        }
+                        None => {
+                            if log_open {
+                                log_open = false;
+                                net.clear_logs();
+                            }
+                            draw_minimap(&worlds, &cam, &ml);
+                        }
                     }
                 }
                 if close_panel {
@@ -517,9 +587,36 @@ async fn main() {
             almanac = Some(Almanac::new());
             almanac_just_opened = true;
         }
-        let help = "drag/WASD pan . wheel zoom . F fit . click inspect . ]/[ cities . N concern . C context . ? almanac";
+        // End-Turn button + staged-change count (planning turn), left of `?`.
+        let mut chrome_right = help_btn.x - 10.0;
+        if !planned.is_empty() {
+            let label = format!("End Turn ({})", planned.len());
+            let tw = text_size(&label, 14.0).width;
+            let tb = Rect::new(help_btn.x - tw - 24.0, 5.0, tw + 14.0, 22.0);
+            let bg = if tb.contains(mouse) {
+                lighter(PLATE, 1.7)
+            } else {
+                PLATE
+            };
+            draw_rectangle(tb.x, tb.y, tb.w, tb.h, bg);
+            draw_rectangle_lines(tb.x, tb.y, tb.w, tb.h, 1.0, WARN);
+            text(&label, tb.x + 7.0, 21.0, 14.0, WARN);
+            if is_mouse_button_pressed(MouseButton::Left)
+                && tb.contains(mouse)
+                && panel.is_none()
+                && almanac.is_none()
+                && !picker
+                && !plan_open
+            {
+                // Opens next frame (this draw already ran), so the opening
+                // click can't reach the review as a click-outside dismiss.
+                plan_open = true;
+            }
+            chrome_right = tb.x - 10.0;
+        }
+        let help = "drag/WASD pan . wheel zoom . F fit . click inspect . ]/[ cities . N concern . C context . t end-turn . ? almanac";
         let hm = text_size(help, 14.0);
-        text(help, help_btn.x - hm.width - 10.0, 21.0, 14.0, DIM);
+        text(help, chrome_right - hm.width, 21.0, 14.0, DIM);
 
         // Context picker, drawn on top of everything.
         if picker {

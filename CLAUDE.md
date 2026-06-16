@@ -12,7 +12,10 @@ health-textured terrain, workloads are cities sited where their pods run
 islands in the southern sea. An attention queue surfaces what needs focus
 and parks the explorer's cursor on it — Civ's "next unit needing orders",
 not a wall of dashboards.
-**Observe-only.** No mutation paths exist anywhere in the codebase.
+**Observe-only.** No mutation paths exist anywhere in the codebase. The
+**planning turn** (preview-only) stages interventions and previews their
+diff against the observed world, but *applying* is not built — staging never
+writes to the cluster, so the guarantee holds.
 
 The full product brief lives in `k8s-civ-tui-mvp-prompt.md`. Read it before
 proposing scope changes.
@@ -50,7 +53,10 @@ crates/
                               + dynamic custom-resource stores)
                  world.rs     PURE world geometry: continents/provinces/
                               cities/islands, placement, hit-testing
-                 planned.rs   PlannedWorld stub (future planning turn)
+                 planned.rs   the planning turn: PlannedWorld (staged
+                              Intervention intents) + plan_diff (pure
+                              from→to diff vs observed). Preview-only — no
+                              apply path.
                  model.rs     PURE derivations: map/workloads/city/node
                  attention.rs PURE detectors → severity-ordered concerns
                  fixtures.rs  synthetic worlds (feature = "fixtures")
@@ -67,8 +73,8 @@ crates/
                  window.rs (reusable modal chrome for drill-downs),
                  almanac.rs (the in-app reference / Civilopedia),
                  city.rs / node.rs (the Civ-II city + province drill-down
-                 windows, on window.rs), theme.rs. See "GUI spike" + "GUI
-                 promotion" decisions.
+                 windows, on window.rs), plan.rs (the End-of-Turn review),
+                 theme.rs. See "GUI spike" + "GUI promotion" decisions.
 ```
 
 **Data flow:** watchers (kube 3.x reflectors) keep `ObservedWorld` stores
@@ -216,6 +222,24 @@ what makes the interesting logic unit-testable without a cluster.
   conditions). `main.rs` collapsed: any open panel is a modal, so the
   click handler simplified to "minimap-jump or open a window", and the City/
   Node arms share the `WinAction` close/log plumbing. docs/gui-node.png.
+- **Planning turn** (2026-06-16, preview-only, GUI first, user's "time for
+  the planning turn"): the project's first write-*intent* — but still no
+  writes. `state/planned.rs` is now real: `Intervention`
+  (Scale{workload,replicas}, Cordon{node,on}), `PlannedWorld` (staged
+  intents, latest-wins per target; stage/unstage/clear/scaled/cordoned), and
+  pure `plan_diff(observed, planned) -> Vec<PlanChange>` (from→to, `noop`
+  when staged==current). `PlannedWorld` is GUI-loop UI state (hot cluster
+  only); the diff is computed against the snapshot's observed world.
+  **Staging UX:** the city window grew a replicas stepper (`plan replicas
+  [−] N [+]`, staged delta in yellow), the province window a `[cordon]`/
+  `[uncordon]` toggle — both return `WinAction.stage: Option<Intervention>`.
+  **`t`** (or the chrome "End Turn (N)" button) opens `plan.rs`, the
+  End-of-Turn review: the diff with per-row unstage `[x]`, **Discard all**,
+  and a **disabled Commit** ("preview only — nothing is applied"). Modal like
+  the others (suspends nav; Esc / close / click-outside). **No kube client
+  writes exist** — applying staged intents is the next, explicitly-gated
+  slice (server-side dry-run + confirm + RBAC). `--plan` dev flag stages a
+  demo scale+cordon and opens the review for headless shots (docs/gui-plan.png).
 - **Stable layout:** nodes sort within a zone by FNV-1a-64(name) — pinned by
   test so layouts never reshuffle across runs or Rust upgrades. Zones sort
   by name; `unzoned` sinks to the end.
@@ -523,7 +547,10 @@ never blocks input.
 
 ## Deferred (deliberately)
 
-mutations & the planning-turn diff UI · external services / chaos layers ·
+applying staged interventions to the cluster (the planning-turn staging +
+diff UI is built, preview-only; apply needs dry-run + confirm + RBAC) ·
+more interventions (image set, restart/delete, delete) · planning turn in
+the TUI · external services / chaos layers ·
 connectivity attention (orphan ingress / harbor with no city) + unmounted-PVC
 island granaries + Job-object attention (failed-Job concern) · Job/CronJob
 city screens · namespace filtering · mouse

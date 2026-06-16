@@ -6,6 +6,7 @@
 //! easy scissor). Mirrors the Civ II window structure (titlebar / body /
 //! buttons) in the K8sCiv parchment palette.
 
+use k8sciv_core::state::planned::Intervention;
 use macroquad::prelude::*;
 
 use crate::text::{text, text_bold, text_size};
@@ -40,6 +41,8 @@ pub struct WinAction {
     pub close: bool,
     /// A pod whose logs to tail: (namespace, pod).
     pub log: Option<(String, String)>,
+    /// An intervention the operator staged from this window (planning turn).
+    pub stage: Option<Intervention>,
 }
 
 /// Draw the scrim, frame, title bar (with icon), and bottom button row;

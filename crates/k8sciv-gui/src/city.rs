@@ -14,6 +14,7 @@ use macroquad::prelude::*;
 
 use k8sciv_core::events::ClusterId;
 use k8sciv_core::state::model::{WorkloadRef, build_city};
+use k8sciv_core::state::planned::{Intervention, PlannedWorld};
 use k8sciv_core::util::format_age_opt;
 
 use crate::net::Snapshot;
@@ -27,10 +28,12 @@ const H: f32 = 600.0;
 
 /// Draw the city window for `r` and resolve this frame's clicks. `auto_log`
 /// (headless verification) opens the first pod's logs without a click.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_city(
     id: ClusterId,
     r: &WorkloadRef,
     snap: &Snapshot,
+    planned: &PlannedWorld,
     mouse: Vec2,
     click: bool,
     auto_log: bool,
@@ -90,6 +93,60 @@ pub fn draw_city(
     );
     text(nums, b.x + gw * 2.0 + 90.0, y + 14.0, 14.0, gap);
     y += 38.0;
+
+    // PLAN: stage a replica change. Preview-only — staging records intent and
+    // shows the diff; nothing is written to the cluster here.
+    {
+        let desired = city.desired;
+        let staged = planned.scaled(r);
+        let shown = staged.unwrap_or(desired);
+        text("plan", b.x, y + 13.0, 14.0, PARCHMENT);
+        text("replicas", b.x + 44.0, y + 13.0, 13.0, DIM);
+        let minus = Rect::new(b.x + 122.0, y, 20.0, 18.0);
+        let plus = Rect::new(b.x + 186.0, y, 20.0, 18.0);
+        for (rct, sym) in [(minus, "-"), (plus, "+")] {
+            let bg = if rct.contains(mouse) {
+                lighter(PLATE, 1.7)
+            } else {
+                PLATE
+            };
+            draw_rectangle(rct.x, rct.y, rct.w, rct.h, bg);
+            draw_rectangle_lines(rct.x, rct.y, rct.w, rct.h, 1.0, PARCHMENT);
+            text(sym, rct.x + 6.0, rct.y + 14.0, 16.0, INK);
+        }
+        let num_col = if staged.is_some_and(|s| s != desired) {
+            WARN
+        } else {
+            INK
+        };
+        let ns = shown.to_string();
+        let nm = text_size(&ns, 16.0);
+        let cxn = (minus.x + minus.w + plus.x) / 2.0;
+        text(&ns, cxn - nm.width / 2.0, y + 14.0, 16.0, num_col);
+        if staged.is_some_and(|s| s != desired) {
+            text(
+                format!("staged  {desired} -> {shown}"),
+                plus.x + 34.0,
+                y + 13.0,
+                13.0,
+                WARN,
+            );
+        }
+        if click {
+            if minus.contains(mouse) {
+                act.stage = Some(Intervention::Scale {
+                    workload: r.clone(),
+                    replicas: (shown - 1).max(0),
+                });
+            } else if plus.contains(mouse) {
+                act.stage = Some(Intervention::Scale {
+                    workload: r.clone(),
+                    replicas: shown + 1,
+                });
+            }
+        }
+        y += 24.0;
+    }
 
     let mut rollout = format!("rollout {}", city.status);
     if !city.note.is_empty() {

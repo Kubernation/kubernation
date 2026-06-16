@@ -11,6 +11,7 @@ use macroquad::prelude::*;
 
 use k8sciv_core::events::ClusterId;
 use k8sciv_core::state::model::{MetricSource, NodeHealth, PodState, build_node_detail};
+use k8sciv_core::state::planned::{Intervention, PlannedWorld};
 
 use crate::net::Snapshot;
 use crate::panels::{observed_for, pod_color, truncate_str};
@@ -22,10 +23,12 @@ const W: f32 = 900.0;
 const H: f32 = 580.0;
 
 /// Draw the province (node) window and resolve this frame's clicks.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_node(
     id: ClusterId,
     name: &str,
     snap: &Snapshot,
+    planned: &PlannedWorld,
     mouse: Vec2,
     click: bool,
     auto_log: bool,
@@ -101,6 +104,42 @@ pub fn draw_node(
         PARCHMENT,
     );
     y += 22.0;
+
+    // PLAN: stage cordon / uncordon. Preview-only — records intent, no writes.
+    {
+        let observed_cordon = t.cordoned;
+        let staged = planned.cordoned(name);
+        let effective = staged.unwrap_or(observed_cordon);
+        text("plan", b.x, y + 13.0, 14.0, PARCHMENT);
+        let label = if effective { "uncordon" } else { "cordon" };
+        let btn = Rect::new(b.x + 44.0, y, 90.0, 18.0);
+        let bg = if btn.contains(mouse) {
+            lighter(PLATE, 1.7)
+        } else {
+            PLATE
+        };
+        draw_rectangle(btn.x, btn.y, btn.w, btn.h, bg);
+        draw_rectangle_lines(btn.x, btn.y, btn.w, btn.h, 1.0, PARCHMENT);
+        text(label, btn.x + 8.0, y + 14.0, 13.0, INK);
+        if staged.is_some_and(|s| s != observed_cordon) {
+            let word = if effective { "cordoned" } else { "schedulable" };
+            text(
+                format!("staged -> {word}"),
+                btn.x + 104.0,
+                y + 13.0,
+                13.0,
+                WARN,
+            );
+        }
+        if click && btn.contains(mouse) {
+            act.stage = Some(Intervention::Cordon {
+                node: name.to_string(),
+                on: !effective,
+            });
+        }
+        y += 24.0;
+    }
+
     draw_line(b.x, y, b.x + b.w, y, 1.0, darker(PARCHMENT, 0.5));
     y += 8.0;
 
