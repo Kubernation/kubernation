@@ -285,7 +285,8 @@ async fn main() {
                     }
                 }
 
-                // Development verification: select and open something specific.
+                // Development verification: select and open something
+                // specific — a city by name, else a province (node).
                 if !inspected && let Some(needle) = &inspect {
                     'outer: for sw in &worlds {
                         for c in sw.world.cities() {
@@ -295,6 +296,17 @@ async fn main() {
                                 cam.jump_to(global);
                                 panel = Some(Panel::City(sw.id, c.r.clone()));
                                 break 'outer;
+                            }
+                        }
+                        for cont in &sw.world.continents {
+                            for p in &cont.provinces {
+                                if p.tile.name.contains(needle.as_str()) {
+                                    let global = (p.x + sw.off + 2, p.y + 1);
+                                    selected = Some(global);
+                                    cam.jump_to(global);
+                                    panel = Some(Panel::Node(sw.id, p.tile.name.clone()));
+                                    break 'outer;
+                                }
                             }
                         }
                     }

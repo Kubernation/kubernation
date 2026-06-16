@@ -454,14 +454,18 @@ fn draw_province(
                 tile_region(&s.stone, ground, Color::new(0.95, 0.48, 0.42, 1.0), tile)
             }
         }
-        // A little life on healthy land.
+        // A little life on healthy land — each tree placed inside its
+        // row's land span so it never lands in the carved sea.
         if prov.tile.health == NodeHealth::Healthy {
             for i in 0..3u64 {
                 let hx = fnv1a64(&format!("{}t{i}", prov.tile.name));
-                // Keep trees clear of the carved shore.
-                let cx = 5 + (hx % (prov.w as u64 - 10)) as u16;
                 let cy = 1 + ((hx >> 8) % (prov.h as u64 - 1).max(1)) as u16;
-                let c = cam.to_screen(prov.x as f32 + cx as f32, prov.y as f32 + cy as f32 + 0.5);
+                let (li, lw) = coast.land_span((prov.y + cy) as i32, prov.w as f32);
+                if lw < 4.0 {
+                    continue;
+                }
+                let cx = li + 1.5 + (hx % (lw as u64 - 2).max(1)) as f32;
+                let c = cam.to_screen(prov.x as f32 + cx, prov.y as f32 + cy as f32 + 0.5);
                 sprite_at(&s.tree, c, 20.0 * cam.zoom, WHITE);
             }
         }
@@ -538,28 +542,47 @@ fn draw_province(
         }
     }
 
-    // Daemonset roads: a worn track along the southern edge.
-    for i in 0..prov.infra.min(10) {
-        draw_rectangle(
-            tl.x + 8.0 + i as f32 * 14.0 * cam.zoom,
-            tl.y + h - 7.0,
-            10.0 * cam.zoom,
-            3.0,
-            ROAD,
-        );
+    // Daemonset roads: a worn track laid on the province's widest land
+    // row, anchored to that row's shore so it never spills into the sea.
+    if prov.infra > 0 {
+        let road_row = (prov.y..prov.y + prov.h)
+            .max_by(|a, b| {
+                coast
+                    .land_span(*a as i32, prov.w as f32)
+                    .1
+                    .total_cmp(&coast.land_span(*b as i32, prov.w as f32).1)
+            })
+            .unwrap_or(prov.y);
+        let (li, lw) = coast.land_span(road_row as i32, prov.w as f32);
+        let land_left = cam.to_screen(prov.x as f32 + li, road_row as f32).x;
+        let road_y = cam.to_screen(prov.x as f32, road_row as f32).y + ch - 7.0;
+        let seg = 14.0 * cam.zoom;
+        let fit = ((lw * cw - 8.0) / seg).floor().max(0.0) as usize;
+        for i in 0..prov.infra.min(10).min(fit) {
+            draw_rectangle(
+                land_left + 6.0 + i as f32 * seg,
+                road_y,
+                10.0 * cam.zoom,
+                3.0,
+                ROAD,
+            );
+        }
     }
 
     if detail.province_labels {
+        // Inset the label to the top row's shore so it sits on land.
+        let (top_li, _) = coast.land_span(prov.y as i32, prov.w as f32);
+        let label_x = tl.x + top_li * cw + 6.0;
         text(
             ascii(&prov.tile.name),
-            tl.x + 7.0,
+            label_x,
             tl.y + 15.0 * cam.zoom.max(0.7),
             16.0 * cam.zoom.max(0.7),
             INK,
         );
         text(
             format!("{} pods", prov.tile.pods.len()),
-            tl.x + 7.0,
+            label_x,
             tl.y + 30.0 * cam.zoom.max(0.7),
             13.0 * cam.zoom.max(0.7),
             Color::new(0.88, 0.90, 0.82, 0.75),
