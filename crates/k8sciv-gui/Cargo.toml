@@ -4,6 +4,7 @@ description = "K8sCiv GUI spike: a windowed Civ-style map client over k8sciv-cor
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 k8sciv-core = { path = "../k8sciv-core" }

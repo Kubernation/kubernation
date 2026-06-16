@@ -4,6 +4,7 @@ description = "K8sCiv — a Civilization-inspired Kubernetes TUI: the cluster as
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 k8sciv-core = { path = "../k8sciv-core" }

@@ -567,7 +567,10 @@ async fn main() {
         draw_rectangle(0.0, 0.0, screen_width(), panels::CHROME_H - 2.0, PANEL);
         draw_rectangle(0.0, panels::CHROME_H - 2.0, screen_width(), 2.0, PARCHMENT);
         text_bold(
-            ascii(&format!("KUBERNATION — {status}")),
+            ascii(&format!(
+                "KUBERNATION v{} — {status}",
+                env!("CARGO_PKG_VERSION")
+            )),
             12.0,
             21.0,
             20.0,

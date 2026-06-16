@@ -31,11 +31,12 @@ pub fn render(
     let buf = f.buffer_mut();
     buf.set_string(area.x, area.y, " ".repeat(area.width as usize), style);
 
+    let ver = env!("CARGO_PKG_VERSION");
     let mut left = match warm {
         None => {
             let meta = &hot.world.meta;
             format!(
-                " KUBERNATION ▏{} ▏{} ▏{} ▏{}",
+                " KUBERNATION v{ver} ▏{} ▏{} ▏{} ▏{}",
                 truncate(&meta.context, 28),
                 meta.platform.label(),
                 truncate(&meta.server, 34),
@@ -43,7 +44,7 @@ pub fn render(
             )
         }
         Some(w) => format!(
-            " KUBERNATION ▏H {} {} ▏W {} {}",
+            " KUBERNATION v{ver} ▏H {} {} ▏W {} {}",
             truncate(&hot.world.meta.context, 24),
             counts(hot),
             truncate(&w.world.meta.context, 24),

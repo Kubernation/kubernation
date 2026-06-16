@@ -4,6 +4,7 @@ description = "K8sCiv core: observed-world data layer and pure world/attention m
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [features]
 # Synthetic-world builders for tests and frontend prototypes.

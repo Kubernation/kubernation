@@ -1282,7 +1282,7 @@ dependencies = [
 
 [[package]]
 name = "k8sciv"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "color-eyre",
@@ -1298,7 +1298,7 @@ dependencies = [
 
 [[package]]
 name = "k8sciv-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "color-eyre",
  "futures",
@@ -1311,7 +1311,7 @@ dependencies = [
 
 [[package]]
 name = "k8sciv-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "k8sciv-core",

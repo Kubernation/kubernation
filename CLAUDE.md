@@ -531,6 +531,15 @@ Config: `~/.config/k8sciv/config.toml` (`tick_ms`, `color`,
   content.
 - Commit in working states with descriptive messages; the user reviews
   commits.
+- **Versioning (semver):** one workspace version is the source of truth
+  (`[workspace.package] version` in the root `Cargo.toml`; every crate
+  inherits it via `version.workspace = true`). **Bump it in the same commit
+  as a user-facing change** — pre-1.0, so `minor` = new feature/behaviour,
+  `patch` = fix/docs/refactor, and (still pre-1.0) a breaking change also
+  bumps `minor`. The version is surfaced by `--version` on both binaries, the
+  TUI status bar, and the GUI chrome (`env!("CARGO_PKG_VERSION")`). Update
+  `CHANGELOG.md` under `[Unreleased]` as you go; a release rolls Unreleased
+  into a dated `[X.Y.Z]` section and is marked by a git tag `vX.Y.Z`.
 - Document non-obvious decisions in this file's Decisions log as you make
   them.
 
