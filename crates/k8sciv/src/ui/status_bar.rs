@@ -54,7 +54,12 @@ pub fn render(
         left.push_str(" ▏");
         left.push_str(&truncate(msg, 48));
     }
-    let right = format!("overlay {} ▏? help ", hot.overlay.label());
+    let gauges = if hot.models.map.metrics_live {
+        "live"
+    } else {
+        "req"
+    };
+    let right = format!("gauges {gauges} ▏overlay {} ▏? help ", hot.overlay.label());
 
     buf.set_stringn(area.x, area.y, &left, area.width as usize, style);
     let rw = right.chars().count() as u16;

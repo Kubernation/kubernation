@@ -79,6 +79,7 @@ pub fn world() -> (ObservedWorld, Seeds) {
         services,
         events: Arc::new(Mutex::new(VecDeque::new())),
         customs: Arc::new(Vec::new()),
+        metrics: crate::k8s::metrics::store(),
     };
     let seeds = Seeds {
         nodes: nodes_w,

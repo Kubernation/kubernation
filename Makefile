@@ -32,6 +32,15 @@ run:
 smoke:
 	cargo run -- --context $(KCTX) --smoke
 
+## metrics-up: install metrics-server on the dev cluster (kind needs
+## --kubelet-insecure-tls); gauges switch from scheduling pressure to live
+## usage within ~30s. Absent it, K8sCiv falls back automatically.
+metrics-up:
+	kubectl --context $(KCTX) apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+	kubectl --context $(KCTX) patch -n kube-system deployment metrics-server --type=json \
+		-p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+	kubectl --context $(KCTX) rollout status -n kube-system deployment/metrics-server --timeout=120s
+
 ## kind-down: delete the dev cluster
 kind-down:
 	kind delete cluster --name $(CLUSTER)

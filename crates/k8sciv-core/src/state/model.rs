@@ -12,6 +12,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use super::attention::{self, Concern, Severity, Target};
 use super::observed::{ObservedWorld, RecentEvent};
 use super::world::{WorldModel, build_world};
+use crate::k8s::metrics::NodeUsage;
 use crate::k8s::quantity;
 use crate::util::fnv1a64;
 
@@ -254,11 +255,23 @@ pub struct NodeTile {
     pub cordoned: bool,
     /// Abnormal condition short names: "Mem", "Disk", "PID", "Net".
     pub abnormal: Vec<&'static str>,
-    /// Scheduling pressure: sum of pod requests / allocatable (NOT live
-    /// usage — see CLAUDE.md "pressure semantics").
+    /// CPU/mem gauge ratios. Live usage ÷ allocatable when metrics-server
+    /// is present, else scheduling pressure (requests ÷ allocatable). The
+    /// `metric_source` says which.
     pub cpu_ratio: f64,
     pub mem_ratio: f64,
+    pub metric_source: MetricSource,
     pub pods: Vec<PodGlyph>,
+}
+
+/// What the node gauges are measuring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MetricSource {
+    /// Sum of pod requests ÷ allocatable (always available).
+    #[default]
+    Requests,
+    /// Live usage ÷ allocatable, from metrics-server.
+    Usage,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -272,6 +285,8 @@ pub struct MapModel {
     pub zones: Vec<ZoneColumn>,
     pub total_nodes: usize,
     pub total_pods: usize,
+    /// True when gauges reflect live metrics-server usage this build.
+    pub metrics_live: bool,
 }
 
 impl MapModel {}
@@ -338,7 +353,27 @@ pub fn node_request_ratios(node: &Node, pods: &[&Pod]) -> (f64, f64) {
     (ratio(cpu, alloc_cpu), ratio(mem, alloc_mem))
 }
 
-pub fn build_node_tile(node: &Node, pods_on_node: &[&Pod], idx: &OwnerIndex) -> NodeTile {
+/// Live usage ÷ allocatable for a node (cores and bytes already canonical).
+fn node_usage_ratios(node: &Node, usage: NodeUsage) -> (f64, f64) {
+    let alloc = node.status.as_ref().and_then(|s| s.allocatable.as_ref());
+    let alloc_cpu = alloc
+        .and_then(|a| a.get("cpu"))
+        .and_then(quantity::value)
+        .unwrap_or(0.0);
+    let alloc_mem = alloc
+        .and_then(|a| a.get("memory"))
+        .and_then(quantity::value)
+        .unwrap_or(0.0);
+    let ratio = |used: f64, alloc: f64| if alloc > 0.0 { used / alloc } else { 0.0 };
+    (ratio(usage.cpu, alloc_cpu), ratio(usage.mem, alloc_mem))
+}
+
+pub fn build_node_tile(
+    node: &Node,
+    pods_on_node: &[&Pod],
+    idx: &OwnerIndex,
+    usage: Option<NodeUsage>,
+) -> NodeTile {
     let ready = node_ready(node);
     let cordoned = node
         .spec
@@ -356,7 +391,16 @@ pub fn build_node_tile(node: &Node, pods_on_node: &[&Pod], idx: &OwnerIndex) -> 
             abnormal.push(short);
         }
     }
-    let (cpu_ratio, mem_ratio) = node_request_ratios(node, pods_on_node);
+    let (cpu_ratio, mem_ratio, metric_source) = match usage {
+        Some(u) => {
+            let (c, m) = node_usage_ratios(node, u);
+            (c, m, MetricSource::Usage)
+        }
+        None => {
+            let (c, m) = node_request_ratios(node, pods_on_node);
+            (c, m, MetricSource::Requests)
+        }
+    };
 
     let health = if !ready {
         NodeHealth::NotReady
@@ -388,6 +432,7 @@ pub fn build_node_tile(node: &Node, pods_on_node: &[&Pod], idx: &OwnerIndex) -> 
         abnormal,
         cpu_ratio,
         mem_ratio,
+        metric_source,
         pods,
     }
 }
@@ -409,7 +454,7 @@ pub fn build_map(world: &ObservedWorld) -> MapModel {
     for node in &nodes {
         let name = node.metadata.name.clone().unwrap_or_default();
         let on_node = by_node.get(&name).map(Vec::as_slice).unwrap_or(&[]);
-        let tile = build_node_tile(node, on_node, &idx);
+        let tile = build_node_tile(node, on_node, &idx, world.node_usage(&name));
         zones.entry(tile.zone.clone()).or_default().push(tile);
     }
     let mut zones: Vec<ZoneColumn> = zones
@@ -425,6 +470,7 @@ pub fn build_map(world: &ObservedWorld) -> MapModel {
     MapModel {
         total_nodes: nodes.len(),
         total_pods: pods.len(),
+        metrics_live: world.metrics_available(),
         zones,
     }
 }
@@ -942,7 +988,7 @@ pub fn build_node_detail(world: &ObservedWorld, name: &str) -> Option<NodeDetail
         .filter(|p| p.spec.as_ref().and_then(|s| s.node_name.as_deref()) == Some(name))
         .collect();
     let idx = OwnerIndex::build(world);
-    let tile = build_node_tile(&node, &on_node, &idx);
+    let tile = build_node_tile(&node, &on_node, &idx, world.node_usage(name));
 
     let mut info = Vec::new();
     if let Some(ni) = node.status.as_ref().and_then(|s| s.node_info.as_ref()) {
@@ -1114,7 +1160,7 @@ mod tests {
             fx::pod_requests(fx::pod("d", "p3", Some("n1")), "4", "8Gi"),
             "Succeeded",
         );
-        let tile = build_node_tile(&n, &[&p1, &p2, &done], &OwnerIndex::default());
+        let tile = build_node_tile(&n, &[&p1, &p2, &done], &OwnerIndex::default(), None);
         assert!(
             (tile.cpu_ratio - 0.5).abs() < 1e-9,
             "cpu {}",
@@ -1127,13 +1173,39 @@ mod tests {
         );
         assert_eq!(tile.pods.len(), 3); // glyphs still show all pods
         assert_eq!(tile.health, NodeHealth::Healthy);
+        assert_eq!(tile.metric_source, MetricSource::Requests);
+    }
+
+    #[test]
+    fn live_usage_overrides_request_pressure() {
+        // Fixture node: 4 cores / 8Gi allocatable.
+        let n = fx::node("n1", None);
+        let usage = NodeUsage {
+            cpu: 1.0,                            // 1 of 4 cores
+            mem: 2.0 * 1024.0 * 1024.0 * 1024.0, // 2 of 8 GiB
+        };
+        let tile = build_node_tile(&n, &[], &OwnerIndex::default(), Some(usage));
+        assert_eq!(tile.metric_source, MetricSource::Usage);
+        assert!(
+            (tile.cpu_ratio - 0.25).abs() < 1e-9,
+            "cpu {}",
+            tile.cpu_ratio
+        );
+        assert!(
+            (tile.mem_ratio - 0.25).abs() < 1e-9,
+            "mem {}",
+            tile.mem_ratio
+        );
+        // No usage → request-based pressure and source Requests.
+        let bare = build_node_tile(&n, &[], &OwnerIndex::default(), None);
+        assert_eq!(bare.metric_source, MetricSource::Requests);
     }
 
     #[test]
     fn node_health_precedence() {
         let not_ready = fx::node_with_condition(fx::node("n1", None), "Ready", "False");
         assert_eq!(
-            build_node_tile(&not_ready, &[], &OwnerIndex::default()).health,
+            build_node_tile(&not_ready, &[], &OwnerIndex::default(), None).health,
             NodeHealth::NotReady
         );
 
@@ -1144,17 +1216,17 @@ mod tests {
             "False",
         ));
         assert_eq!(
-            build_node_tile(&both, &[], &OwnerIndex::default()).health,
+            build_node_tile(&both, &[], &OwnerIndex::default(), None).health,
             NodeHealth::NotReady
         );
 
         let cordoned = fx::cordoned(fx::node("n3", None));
-        let t = build_node_tile(&cordoned, &[], &OwnerIndex::default());
+        let t = build_node_tile(&cordoned, &[], &OwnerIndex::default(), None);
         assert_eq!(t.health, NodeHealth::Cordoned);
         assert!(t.cordoned);
 
         let pressured = fx::node_with_condition(fx::node("n4", None), "MemoryPressure", "True");
-        let t = build_node_tile(&pressured, &[], &OwnerIndex::default());
+        let t = build_node_tile(&pressured, &[], &OwnerIndex::default(), None);
         assert_eq!(t.health, NodeHealth::Pressure);
         assert_eq!(t.abnormal, vec!["Mem"]);
     }

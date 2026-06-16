@@ -128,14 +128,19 @@ async fn smoke(
 
     let summarize = |label: &str, h: &WorldHandle, m: &Models| {
         println!(
-            "{label}context={} platform={} nodes={} pods={} workloads={} customs={} concerns={}",
+            "{label}context={} platform={} nodes={} pods={} workloads={} customs={} concerns={} gauges={}",
             h.world.meta.context,
             h.world.meta.platform.label(),
             m.map.total_nodes,
             m.map.total_pods,
             m.workloads.len(),
             h.world.custom_entries().len(),
-            m.attention.len()
+            m.attention.len(),
+            if m.map.metrics_live {
+                "live"
+            } else {
+                "requests"
+            }
         );
     };
 

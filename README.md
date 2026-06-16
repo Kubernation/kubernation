@@ -171,9 +171,13 @@ sea. Walk anywhere with `h/j/k/l`; `]`/`[` sail city to city; `Enter`
 opens whatever you stand on.
 
 Pods keep their glyphs in city and node screens: `●` ready · `◐` starting
-· `○` pending · `◌` terminating · `✗` failing · `◆` succeeded. Pressure
-gauges show **scheduling pressure** (requests ÷ allocatable), not live
-usage; calm is green, elevated (≥70%) yellow, high (≥90%) red.
+· `○` pending · `◌` terminating · `✗` failing · `◆` succeeded. The cpu/mem
+gauges show **scheduling pressure** (requests ÷ allocatable) by default;
+calm is green, elevated (≥70%) yellow, high (≥90%) red. Install
+metrics-server (`make metrics-up`) and the gauges switch automatically to
+**live usage** — the status bar reads `gauges live`, node detail shows
+`cpu use`, the GUI panel says `live usage`. No metrics-server, no problem:
+it falls back to requests on its own.
 
 On terminals ≥110 columns the map gains the Civ sidebar: **WORLD** (the
 chart: green land on blue ocean, `┌┐└┘` framing your viewport), **STATUS**

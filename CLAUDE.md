@@ -75,11 +75,23 @@ what makes the interesting logic unit-testable without a cluster.
 ## Decisions log
 
 - **Pressure = requests ÷ allocatable** (user's call, 2026-06-12): the map's
-  cpu/mem gauges show *scheduling pressure* from pod requests, not live
-  usage. Always computable from core API objects; kind needs no
-  metrics-server. Buckets: <0.7 calm, 0.7–0.9 elevated (yellow), ≥0.9 high
-  (red) — shared constants in `state/model.rs`. metrics-server actuals are a
-  planned upgrade behind the same gauge interface.
+  cpu/mem gauges show *scheduling pressure* from pod requests by default —
+  always computable from core API objects; kind needs no metrics-server.
+  Buckets: <0.7 calm, 0.7–0.9 elevated (yellow), ≥0.9 high (red) — shared
+  constants in `state/model.rs`.
+- **Live metrics** (2026-06-16): when metrics-server is present the gauges
+  switch to *live usage ÷ allocatable* automatically. `k8s/metrics.rs`
+  polls `metrics.k8s.io/v1beta1` NodeMetrics (a `DynamicObject` LIST every
+  15s — the metrics API has no watch) into `ObservedWorld.metrics`
+  (`Arc<Mutex>`, like the events ring); `WorldDelta::Metrics` nudges a
+  rebuild. `build_node_tile` reads usage when available, else requests, and
+  tags `NodeTile.metric_source` (Usage|Requests); `MapModel.metrics_live`
+  drives the source label ("gauges live"/node detail "cpu use" / GUI "live
+  usage"). First poll failure flips `available=false` and it keeps polling,
+  so a later `make metrics-up` is picked up without restart. Node health
+  now reflects live usage when present (≥0.9 = Pressure). Pod-level metrics
+  are a possible later add; gauges are node-level. `make metrics-up`
+  installs metrics-server on kind (needs `--kubelet-insecure-tls`).
 - **Stable layout:** nodes sort within a zone by FNV-1a-64(name) — pinned by
   test so layouts never reshuffle across runs or Rust upgrades. Zones sort
   by name; `unzoned` sinks to the end.
@@ -379,9 +391,9 @@ never blocks input.
 
 ## Deferred (deliberately)
 
-Metrics-server live usage · mutations & the planning-turn diff UI ·
-external services / chaos layers · logs & live tail · Job/CronJob city
-screens · namespace filtering · mouse support · minimap horizontal
+mutations & the planning-turn diff UI · external services / chaos layers ·
+logs & live tail · Job/CronJob city screens · namespace filtering · mouse
+support · pod-level live metrics (node-level done) · minimap horizontal
 compression for very wide zone counts (~60+) · zoom levels (compact 1-line
 tiles for very large boards) · pair: per-container image diffs, env/config
 drift, unified single-board mode ("one continent, sync ghosts").

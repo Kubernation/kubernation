@@ -11,7 +11,7 @@ use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent};
 use super::symbols::{bar, node_glyph, pod_glyph};
 use super::{Action, Component, RenderCtx};
 use k8sciv_core::state::attention::Severity;
-use k8sciv_core::state::model::{NodeDetailModel, build_node_detail};
+use k8sciv_core::state::model::{MetricSource, NodeDetailModel, build_node_detail};
 use k8sciv_core::util::{format_age_opt, human_bytes};
 
 #[derive(Default)]
@@ -124,11 +124,17 @@ impl Component for NodeDetailView {
 
         let cpu_used = t.cpu_ratio * m.cpu_alloc;
         let mem_used = t.mem_ratio * m.mem_alloc;
+        // Gauges measure live usage when metrics-server is present, else
+        // scheduling pressure from requests.
+        let tag = match t.metric_source {
+            MetricSource::Usage => "use",
+            MetricSource::Requests => "req",
+        };
         let gauges = Line::from(vec![
-            Span::raw("cpu req "),
+            Span::raw(format!("cpu {tag} ")),
             Span::styled(bar(t.cpu_ratio, 14), theme.ratio(t.cpu_ratio)),
             Span::raw(format!(
-                " {cpu_used:.1}/{:.0} cores   mem req ",
+                " {cpu_used:.1}/{:.0} cores   mem {tag} ",
                 m.cpu_alloc
             )),
             Span::styled(bar(t.mem_ratio, 14), theme.ratio(t.mem_ratio)),

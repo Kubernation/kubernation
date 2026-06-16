@@ -5,7 +5,9 @@
 
 use k8sciv_core::events::ClusterId;
 use k8sciv_core::state::attention::Concern;
-use k8sciv_core::state::model::{NodeHealth, PodState, WorkloadRef, build_city, build_node_detail};
+use k8sciv_core::state::model::{
+    MetricSource, NodeHealth, PodState, WorkloadRef, build_city, build_node_detail,
+};
 use k8sciv_core::state::world::Region;
 use k8sciv_core::util::format_age_opt;
 use macroquad::prelude::*;
@@ -333,6 +335,13 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
             };
             line(health.0, 15.0, health.1, &mut y);
 
+            // Gauges are live usage with metrics-server, else scheduling
+            // pressure from requests.
+            let src = match t.metric_source {
+                MetricSource::Usage => "live usage",
+                MetricSource::Requests => "scheduling pressure",
+            };
+            line(src, 12.0, DIM, &mut y);
             for (label, ratio) in [("cpu", t.cpu_ratio), ("mem", t.mem_ratio)] {
                 let bw = 200.0;
                 let fill = (ratio as f32).clamp(0.0, 1.0) * bw;

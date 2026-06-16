@@ -27,6 +27,9 @@ pub struct ObservedWorld {
     /// Dynamic custom-resource projections (configured via `projections` /
     /// `--project`): kind label + reflector store per projected CRD.
     pub customs: Arc<Vec<CustomWatch>>,
+    /// Live node usage polled from metrics-server, when present. Gauges use
+    /// it over request-based pressure whenever `available`.
+    pub metrics: crate::k8s::metrics::MetricsStore,
 }
 
 /// One projected custom-resource type.
@@ -51,6 +54,21 @@ impl ObservedWorld {
         }
         out.sort_by(|a, b| (&a.kind, &a.namespace, &a.name).cmp(&(&b.kind, &b.namespace, &b.name)));
         out
+    }
+
+    /// Live usage for a node, if metrics-server is available and reporting
+    /// it. `None` means fall back to scheduling pressure.
+    pub fn node_usage(&self, name: &str) -> Option<crate::k8s::metrics::NodeUsage> {
+        let g = self.metrics.lock().ok()?;
+        if !g.available {
+            return None;
+        }
+        g.nodes.get(name).copied()
+    }
+
+    /// Whether live metrics are currently driving the gauges.
+    pub fn metrics_available(&self) -> bool {
+        self.metrics.lock().map(|g| g.available).unwrap_or(false)
     }
 
     /// Snapshot of the recent-events ring, oldest first.

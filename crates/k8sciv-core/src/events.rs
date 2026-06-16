@@ -30,6 +30,8 @@ pub enum WorldDelta {
     Events,
     /// Projected custom-resource instances changed.
     Custom,
+    /// Live node usage from metrics-server was refreshed.
+    Metrics,
     /// Node and pod stores have completed their initial list.
     Ready,
 }

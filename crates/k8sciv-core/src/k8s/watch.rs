@@ -136,6 +136,17 @@ pub fn spawn(
         sink.clone(),
     ));
 
+    // Live node usage: polled (the metrics API has no watch). Stays
+    // unavailable until metrics-server answers, so this is harmless on a
+    // bare cluster.
+    let metrics = super::metrics::store();
+    tasks.push(super::metrics::spawn(
+        c.clone(),
+        id,
+        metrics.clone(),
+        sink.clone(),
+    ));
+
     // Tell the frontend when the core stores have finished their initial
     // list.
     {
@@ -152,6 +163,7 @@ pub fn spawn(
     let world = ObservedWorld {
         meta: cluster.meta.clone(),
         customs: Arc::new(customs),
+        metrics,
         nodes,
         pods,
         deployments,
