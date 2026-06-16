@@ -59,6 +59,18 @@ impl Component for NodeDetailView {
                     return Some(Action::OpenWorkload(owner));
                 }
             }
+            KeyCode::Char('l') => {
+                if let Some(p) = self
+                    .pods
+                    .selected()
+                    .and_then(|i| self.model.as_ref()?.pods.get(i))
+                {
+                    return Some(Action::OpenLogs {
+                        namespace: p.namespace.clone(),
+                        pod: p.name.clone(),
+                    });
+                }
+            }
             _ => {}
         }
         None

@@ -15,11 +15,27 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use k8sciv_core::events::{ClusterId, WorldDelta};
-use k8sciv_core::k8s::{client, watch};
+use k8sciv_core::k8s::{client, logs, watch};
 use k8sciv_core::state::attention::Concern;
 use k8sciv_core::state::model::Models;
 use k8sciv_core::state::observed::ObservedWorld;
 use k8sciv_core::state::pair::PairSync;
+
+/// Which pod's logs the UI wants tailed.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LogReq {
+    pub cluster: ClusterId,
+    pub namespace: String,
+    pub pod: String,
+}
+
+/// The latest tail for the requested pod.
+#[derive(Default, Clone)]
+pub struct LogTail {
+    pub target: Option<LogReq>,
+    pub text: String,
+    pub error: Option<String>,
+}
 
 pub struct WorldSnap {
     pub models: Arc<Models>,
@@ -40,6 +56,10 @@ pub struct Net {
     pub status: Mutex<String>,
     /// A pending hot-context switch requested by the UI.
     switch: Mutex<Option<String>>,
+    /// The pod whose logs to tail (None = log panel closed).
+    log_req: Mutex<Option<LogReq>>,
+    /// The latest fetched tail.
+    log_tail: Mutex<LogTail>,
 }
 
 impl Net {
@@ -48,7 +68,23 @@ impl Net {
             snapshot: Mutex::new(None),
             status: Mutex::new("starting…".into()),
             switch: Mutex::new(None),
+            log_req: Mutex::new(None),
+            log_tail: Mutex::new(LogTail::default()),
         })
+    }
+
+    /// Tail this pod's logs (re-fetched on a poll until cleared).
+    pub fn request_logs(&self, req: LogReq) {
+        *self.log_req.lock().unwrap() = Some(req);
+        *self.log_tail.lock().unwrap() = LogTail::default();
+    }
+
+    pub fn clear_logs(&self) {
+        *self.log_req.lock().unwrap() = None;
+    }
+
+    pub fn log_tail(&self) -> LogTail {
+        self.log_tail.lock().unwrap().clone()
     }
 
     pub fn snapshot(&self) -> Option<Arc<Snapshot>> {
@@ -140,7 +176,13 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 None => None,
             };
 
+            // Clients kept for on-demand log tails (hot follows switches).
+            let mut hot_client = hot_cluster.client.clone();
+            let warm_client = warm_cluster.as_ref().map(|c| c.client.clone());
+
             let mut tick = tokio::time::interval(Duration::from_millis(250));
+            let mut ticks: u64 = 0;
+            let mut last_log: Option<LogReq> = None;
             loop {
                 // Hot-context switch: connect the new cluster, then drop the
                 // old handle (its informers abort) by reassigning. Snapshot
@@ -153,6 +195,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             let proj =
                                 client::resolve_projections(&c.client, &args.projections).await;
                             ready_hot.store(false, Ordering::Relaxed);
+                            hot_client = c.client.clone();
                             hot_handle = watch::spawn(&c, ClusterId::Hot, sink.clone(), &proj);
                             label = make_label(&c.meta.context, c.meta.platform.label());
                             *net.status.lock().unwrap() = format!("{label} · exploring…");
@@ -165,6 +208,37 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 }
 
                 tick.tick().await;
+                ticks += 1;
+
+                // Live log tail: fetch on first request and then every ~2s.
+                let req = net.log_req.lock().unwrap().clone();
+                if let Some(r) = req.clone()
+                    && (req != last_log || ticks.is_multiple_of(8))
+                {
+                    let client = match r.cluster {
+                        ClusterId::Warm => {
+                            warm_client.clone().unwrap_or_else(|| hot_client.clone())
+                        }
+                        ClusterId::Hot => hot_client.clone(),
+                    };
+                    let container =
+                        logs::first_container(client.clone(), &r.namespace, &r.pod).await;
+                    let res = logs::tail(client, &r.namespace, &r.pod, container).await;
+                    // Only store if still the requested target.
+                    if net.log_req.lock().unwrap().as_ref() == Some(&r) {
+                        let mut g = net.log_tail.lock().unwrap();
+                        g.target = Some(r.clone());
+                        match res {
+                            Ok(t) => {
+                                g.text = t;
+                                g.error = None;
+                            }
+                            Err(e) => g.error = Some(e),
+                        }
+                    }
+                }
+                last_log = req;
+
                 if !ready_hot.load(Ordering::Relaxed) || !dirty.swap(false, Ordering::Relaxed) {
                     continue;
                 }

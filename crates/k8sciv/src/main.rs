@@ -79,9 +79,19 @@ async fn main() -> Result<()> {
     // like a normal CLI instead of corrupting an alternate screen.
     let terminal = ratatui::init();
     events::spawn_input_thread(tx.clone());
-    let result = App::new(cfg, args.kubeconfig.clone(), wanted, hot, warm, tx, rx)
-        .run(terminal)
-        .await;
+    let result = App::new(
+        cfg,
+        args.kubeconfig.clone(),
+        wanted,
+        hot,
+        warm,
+        hot_cluster,
+        warm_cluster,
+        tx,
+        rx,
+    )
+    .run(terminal)
+    .await;
     ratatui::restore();
     if result.is_err() {
         eprintln!("diagnostic log: {}", log_path.display());

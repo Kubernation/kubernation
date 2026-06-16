@@ -12,6 +12,12 @@ pub enum AppEvent {
     Term(TermEvent),
     /// A slice of one observed world changed (payload-free, coalescable).
     World(ClusterId, WorldDelta),
+    /// A pod-log fetch finished. `gen` lets the app drop stale results
+    /// (after the user moved to a different pod).
+    Logs {
+        generation: u64,
+        result: Result<String, String>,
+    },
 }
 
 /// Terminal input arrives on a dedicated OS thread feeding the async loop.

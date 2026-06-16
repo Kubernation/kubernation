@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use color_eyre::Result;
 use ratatui::DefaultTerminal;
@@ -15,12 +15,14 @@ use crate::events::{AppEvent, ClusterId, WorldDelta};
 use crate::ui::attention_panel::AttentionPanel;
 use crate::ui::city::CityView;
 use crate::ui::context_picker::ContextPicker;
+use crate::ui::logs::LogsView;
 use crate::ui::map::MapView;
 use crate::ui::node_detail::NodeDetailView;
 use crate::ui::theme::Theme;
 use crate::ui::workloads::WorkloadListView;
 use crate::ui::{Action, Component, Edge, OverlayMode, RenderCtx, help, sidebar, status_bar};
-use k8sciv_core::k8s::{client, watch, watch::WorldHandle};
+use k8sciv_core::k8s::client::Cluster;
+use k8sciv_core::k8s::{client, logs, watch, watch::WorldHandle};
 use k8sciv_core::state::attention::Concern;
 use k8sciv_core::state::model::Models;
 use k8sciv_core::state::pair::PairSync;
@@ -32,6 +34,7 @@ enum Screen {
     Workloads,
     City,
     Node,
+    Logs,
 }
 
 /// Builds a `RenderCtx` for one world out of disjoint field borrows, so a
@@ -76,6 +79,9 @@ pub struct App {
     rx: Receiver<AppEvent>,
     hot: WorldHandle,
     warm: Option<WorldHandle>,
+    /// Clusters kept past spawn so the log view can fetch on demand.
+    hot_cluster: Cluster,
+    warm_cluster: Option<Cluster>,
     models_hot: Models,
     models_warm: Option<Models>,
     pair: Option<PairSync>,
@@ -93,6 +99,9 @@ pub struct App {
     city_cluster: ClusterId,
     node: NodeDetailView,
     node_cluster: ClusterId,
+    logs: LogsView,
+    log_gen: u64,
+    last_log_fetch: Instant,
     attention_panel: AttentionPanel,
     picker: ContextPicker,
     help_open: bool,
@@ -113,6 +122,8 @@ impl App {
         projections: Vec<String>,
         hot: WorldHandle,
         warm: Option<WorldHandle>,
+        hot_cluster: Cluster,
+        warm_cluster: Option<Cluster>,
         tx: Sender<AppEvent>,
         rx: Receiver<AppEvent>,
     ) -> Self {
@@ -128,6 +139,8 @@ impl App {
             rx,
             hot,
             warm,
+            hot_cluster,
+            warm_cluster,
             models_hot: Models::default(),
             models_warm,
             pair: None,
@@ -142,6 +155,9 @@ impl App {
             city_cluster: ClusterId::Hot,
             node: NodeDetailView::default(),
             node_cluster: ClusterId::Hot,
+            logs: LogsView::default(),
+            log_gen: 0,
+            last_log_fetch: Instant::now(),
             attention_panel,
             picker: ContextPicker::default(),
             help_open: false,
@@ -170,6 +186,12 @@ impl App {
                     if self.dirty {
                         self.rebuild();
                         needs_draw = true;
+                    }
+                    // Live tail: re-fetch the open log every ~2s.
+                    if self.screens.last() == Some(&Screen::Logs)
+                        && self.last_log_fetch.elapsed() >= Duration::from_secs(2)
+                    {
+                        self.fetch_logs();
                     }
                 }
             }
@@ -203,6 +225,12 @@ impl App {
                 self.dirty = true;
                 false
             }
+            // Drop stale tails from a previous open (generation token).
+            AppEvent::Logs { generation, result } if generation == self.log_gen => {
+                self.logs.set_result(result);
+                true
+            }
+            AppEvent::Logs { .. } => false,
             AppEvent::Term(TermEvent::Key(key)) if key.kind != KeyEventKind::Release => {
                 self.on_key(key).await;
                 true
@@ -290,6 +318,7 @@ impl App {
         let id = match screen {
             Screen::City => self.city_cluster,
             Screen::Node => self.node_cluster,
+            Screen::Logs => self.logs.cluster,
             _ => self.focus,
         };
         // Never hand out Warm when no warm world exists.
@@ -387,6 +416,10 @@ impl App {
                         let ctx = ctx!(self, source);
                         self.node.handle_key(key, &ctx)
                     }
+                    Screen::Logs => {
+                        let ctx = ctx!(self, source);
+                        self.logs.handle_key(key, &ctx)
+                    }
                 };
                 if let Some(a) = action {
                     let source = if screen == Screen::Map {
@@ -457,6 +490,11 @@ impl App {
                 self.focus = source;
                 self.push_screen(Screen::City);
             }
+            Action::OpenLogs { namespace, pod } => {
+                self.logs.open(source, namespace, pod);
+                self.push_screen(Screen::Logs);
+                self.fetch_logs();
+            }
             Action::SwitchContext(name) => self.switch_context(name).await,
             Action::EdgeReached(edge) => {
                 if self.warm.is_some() {
@@ -491,6 +529,7 @@ impl App {
                     }
                 };
                 self.hot = watch::spawn(&cluster, ClusterId::Hot, sink, &proj);
+                self.hot_cluster = cluster; // logs fetch from the new client
                 self.ready_hot = false;
                 self.dirty = true;
                 self.models_hot = Models::default();
@@ -505,6 +544,30 @@ impl App {
                 self.flash = Some(format!("switch failed: {err}"));
             }
         }
+    }
+
+    /// Kick off an async tail of the currently-open log target. Tagged with
+    /// a generation so a stale result (after the user moves on) is dropped.
+    fn fetch_logs(&mut self) {
+        self.log_gen += 1;
+        self.last_log_fetch = Instant::now();
+        let generation = self.log_gen;
+        let client = match self.logs.cluster {
+            ClusterId::Warm => self
+                .warm_cluster
+                .as_ref()
+                .map(|c| c.client.clone())
+                .unwrap_or_else(|| self.hot_cluster.client.clone()),
+            ClusterId::Hot => self.hot_cluster.client.clone(),
+        };
+        let ns = self.logs.namespace.clone();
+        let pod = self.logs.pod.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let container = logs::first_container(client.clone(), &ns, &pod).await;
+            let result = logs::tail(client, &ns, &pod, container).await;
+            let _ = tx.send(AppEvent::Logs { generation, result }).await;
+        });
     }
 
     fn draw(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -603,6 +666,10 @@ impl App {
                 Screen::Node => {
                     let ctx = ctx!(self, self.view_cluster(Screen::Node));
                     self.node.render(f, main_a, &ctx);
+                }
+                Screen::Logs => {
+                    let ctx = ctx!(self, self.view_cluster(Screen::Logs));
+                    self.logs.render(f, main_a, &ctx);
                 }
             }
 

@@ -3,8 +3,9 @@
 
 /// Which member of the cluster set an event came from. Single-cluster
 /// sessions only ever see `Hot`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum ClusterId {
+    #[default]
     Hot,
     Warm,
 }

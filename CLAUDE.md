@@ -39,7 +39,9 @@ crates/
     events.rs    ClusterId / WorldDelta vocabulary
     k8s/         DATA LAYER: client+platform detect, quantity parsing,
                  reflector spawning (watch.rs; spawn() takes a DeltaSink
-                 closure so any frontend can subscribe)
+                 closure so any frontend can subscribe); metrics.rs (poll
+                 metrics.k8s.io) and logs.rs (on-demand pod log tail) sit
+                 beside the reflectors — both are fetch-not-watch
     state/       observed.rs  ObservedWorld (reflector stores + event ring
                               + dynamic custom-resource stores)
                  world.rs     PURE world geometry: continents/provinces/
@@ -92,6 +94,23 @@ what makes the interesting logic unit-testable without a cluster.
   now reflects live usage when present (≥0.9 = Pressure). Pod-level metrics
   are a possible later add; gauges are node-level. `make metrics-up`
   installs metrics-server on kind (needs `--kubelet-insecure-tls`).
+- **Logs & live tail** (2026-06-16): `k8s/logs.rs` is *fetch-not-watch* — a
+  one-shot `Api::<Pod>::logs` tail of the last 500 lines (`first_container`
+  resolves the container so multi-container pods work without guessing).
+  Frontends *poll* it every ~2s for a live tail rather than holding a kube
+  log stream (simpler, survives reconnects, no stream lifecycle). Each
+  frontend owns its fetching since the pure core has no client: the **TUI**
+  keeps the `Cluster`s past spawn, `Action::OpenLogs` pushes a `Screen::Logs`
+  (`ui/logs.rs`: follow/scroll, j/k, g/G/f), and a `log_gen` token drops
+  stale `AppEvent::Logs` after the user moves on; the **GUI** net thread
+  holds the clients + a `log_req` slot, fetches on request-change or every 8
+  ticks, and stores into `log_tail` only if still the requested target.
+  `l` on the city/node screen tails the *selected* pod (TUI); clicking a pod
+  row in an open panel does the same (GUI — `draw_panel` returns `PodRowHit`
+  rects, `draw_logs` paints the overlay). `ClusterId` gained `Default`
+  (`#[default] Hot`) for `LogsView::default()` — the orphan rule blocks
+  `impl Default` in the TUI crate. Dev flag `--tail` (with `--inspect`)
+  auto-opens the first pod's logs for headless screenshots (docs/gui-logs.png).
 - **Stable layout:** nodes sort within a zone by FNV-1a-64(name) — pinned by
   test so layouts never reshuffle across runs or Rust upgrades. Zones sort
   by name; `unzoned` sinks to the end.
@@ -335,7 +354,8 @@ on 256-color terminals.
 
 `h/j/k/l`+arrows explore · `]`/`[` next/prev city · `PgUp/PgDn` page,
 `Ctrl+u/d` half page, `Home/End` west/east continent · `Enter` opens the
-region under the cursor · `Esc` back · `m` map ·
+region under the cursor · `l` tail the selected pod's logs (city/node) ·
+`Esc` back · `m` map ·
 `w` workloads · `n` next concern · `a` attention panel · `Tab` focus panel ·
 `c` context picker · `1/2/3` overlays (pressure/replicas/namespace) ·
 `?` keymap · `q`/Ctrl-C quit. Keep `help.rs` in sync with any change.
@@ -392,8 +412,10 @@ never blocks input.
 ## Deferred (deliberately)
 
 mutations & the planning-turn diff UI · external services / chaos layers ·
-logs & live tail · Job/CronJob city screens · namespace filtering · mouse
+Job/CronJob city screens · namespace filtering · mouse
 support · pod-level live metrics (node-level done) · minimap horizontal
 compression for very wide zone counts (~60+) · zoom levels (compact 1-line
 tiles for very large boards) · pair: per-container image diffs, env/config
-drift, unified single-board mode ("one continent, sync ghosts").
+drift, unified single-board mode ("one continent, sync ghosts") · logs:
+the kube log *stream* (we poll the tail), `--previous`, multi-container
+picker, grep/filter.

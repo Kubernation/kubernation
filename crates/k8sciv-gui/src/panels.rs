@@ -13,7 +13,7 @@ use k8sciv_core::util::format_age_opt;
 use macroquad::prelude::*;
 
 use crate::draw::SceneWorld;
-use crate::net::Snapshot;
+use crate::net::{LogTail, Snapshot};
 use crate::text::{text, text_bold, text_size};
 use crate::theme::*;
 
@@ -152,9 +152,18 @@ fn observed_for(
     }
 }
 
+/// A clickable pod row in an open panel — opens that pod's log tail.
+pub struct PodRowHit {
+    pub rect: Rect,
+    pub namespace: String,
+    pub pod: String,
+}
+
 /// Draw the open panel. Content is rebuilt from the observed world every
 /// frame — the builders are pure and microsecond-cheap at this scale.
-pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
+/// Returns the clickable pod rows (for log tailing).
+pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) -> Vec<PodRowHit> {
+    let mut hits: Vec<PodRowHit> = Vec::new();
     let f = pl.frame;
     draw_rectangle(f.x, f.y, f.w, f.h, PANEL);
     draw_rectangle_lines(f.x, f.y, f.w, f.h, 2.0, PARCHMENT);
@@ -181,7 +190,7 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
     }
     let Some(observed) = observed_for(snap, id) else {
         line("world detached", 16.0, DIM, &mut y);
-        return;
+        return hits;
     };
     let models = match id {
         ClusterId::Hot => &snap.hot.models,
@@ -192,7 +201,7 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
         Panel::City(_, r) => {
             let Some(city) = build_city(observed, r) else {
                 line("workload is no longer observed", 16.0, DIM, &mut y);
-                return;
+                return hits;
             };
             bold_line(&city.r.name, 22.0, INK, &mut y);
             line(
@@ -243,7 +252,7 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
 
             y += 8.0;
             line(
-                &format!("PODS ({})", city.pods.len()),
+                &format!("PODS ({})  · click a row to tail logs", city.pods.len()),
                 15.0,
                 PARCHMENT,
                 &mut y,
@@ -275,6 +284,11 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
                         INK
                     },
                 );
+                hits.push(PodRowHit {
+                    rect: Rect::new(f.x, y - 13.0, f.w, 18.0),
+                    namespace: city.r.namespace.clone(),
+                    pod: p.name.clone(),
+                });
                 y += 18.0;
             }
             if city.pods.len() > max_pods {
@@ -321,7 +335,7 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
         Panel::Node(_, name) => {
             let Some(detail) = build_node_detail(observed, name) else {
                 line("node is no longer observed", 16.0, DIM, &mut y);
-                return;
+                return hits;
             };
             let t = &detail.tile;
             bold_line(&t.name, 22.0, INK, &mut y);
@@ -370,7 +384,7 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
 
             y += 8.0;
             line(
-                &format!("PODS ({})", detail.pods.len()),
+                &format!("PODS ({})  · click a row to tail logs", detail.pods.len()),
                 15.0,
                 PARCHMENT,
                 &mut y,
@@ -391,6 +405,11 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
                         INK
                     },
                 );
+                hits.push(PodRowHit {
+                    rect: Rect::new(f.x, y - 13.0, f.w, 18.0),
+                    namespace: p.namespace.clone(),
+                    pod: p.name.clone(),
+                });
                 y += 18.0;
             }
             if detail.pods.len() > max_pods {
@@ -402,6 +421,83 @@ pub fn draw_panel(panel: &Panel, snap: &Snapshot, pl: &PanelLayout) {
                 );
             }
         }
+    }
+    hits
+}
+
+// --- log tail overlay -----------------------------------------------------
+
+/// A centered scrollback panel showing the tail of one pod's logs. The net
+/// thread keeps `tail` fresh on a ~2s poll; this just paints the latest.
+pub fn draw_logs(tail: &LogTail) {
+    let w = (screen_width() * 0.72).min(940.0);
+    let h = (screen_height() - STRIP_H - CHROME_H - 40.0).max(200.0);
+    let x = (screen_width() - w) / 2.0;
+    let y = CHROME_H + 20.0;
+    draw_rectangle(x, y, w, h, Color::new(0.06, 0.07, 0.09, 0.97));
+    draw_rectangle_lines(x, y, w, h, 2.0, PARCHMENT);
+
+    let title = match &tail.target {
+        Some(t) => {
+            let tag = if t.cluster == ClusterId::Warm {
+                "WARM "
+            } else {
+                ""
+            };
+            format!("logs · {tag}{}/{}", t.namespace, t.pod)
+        }
+        None => "logs".into(),
+    };
+    text_bold(ascii(&title), x + 14.0, y + 22.0, 16.0, PARCHMENT);
+    text(
+        "Esc to close · last 500 lines · live",
+        x + 14.0,
+        y + 40.0,
+        12.0,
+        DIM,
+    );
+    draw_line(x, y + 48.0, x + w, y + 48.0, 1.0, darker(PARCHMENT, 0.5));
+
+    let body_top = y + 64.0;
+    let line_h = 15.0;
+    if let Some(err) = &tail.error {
+        text(
+            ascii(&format!("error: {err}")),
+            x + 14.0,
+            body_top,
+            14.0,
+            CRIT,
+        );
+        return;
+    }
+    if tail.text.is_empty() {
+        text("(waiting for log lines…)", x + 14.0, body_top, 14.0, DIM);
+        return;
+    }
+    // Show the tail end that fits — newest lines are most useful.
+    let rows = (((y + h - 12.0) - body_top) / line_h).floor().max(1.0) as usize;
+    let all: Vec<&str> = tail.text.lines().collect();
+    let start = all.len().saturating_sub(rows);
+    let mut ly = body_top;
+    for raw in &all[start..] {
+        let s = truncate_str(raw, 150);
+        text(
+            ascii(&s),
+            x + 14.0,
+            ly,
+            13.0,
+            Color::new(0.80, 0.84, 0.80, 1.0),
+        );
+        ly += line_h;
+    }
+    if start > 0 {
+        text(
+            ascii(&format!("… {start} earlier lines",)),
+            x + w - 170.0,
+            y + 40.0,
+            12.0,
+            DIM,
+        );
     }
 }
 

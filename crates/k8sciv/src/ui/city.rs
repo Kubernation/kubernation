@@ -59,6 +59,16 @@ impl Component for CityView {
                     return Some(Action::OpenNode(pod.node.clone()));
                 }
             }
+            KeyCode::Char('l') => {
+                if let Some(m) = self.model.as_ref()
+                    && let Some(pod) = self.pods.selected().and_then(|i| m.pods.get(i))
+                {
+                    return Some(Action::OpenLogs {
+                        namespace: m.r.namespace.clone(),
+                        pod: pod.name.clone(),
+                    });
+                }
+            }
             _ => {}
         }
         None

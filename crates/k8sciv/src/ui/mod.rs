@@ -2,6 +2,7 @@ pub mod attention_panel;
 pub mod city;
 pub mod context_picker;
 pub mod help;
+pub mod logs;
 pub mod map;
 pub mod node_detail;
 pub mod sidebar;
@@ -28,6 +29,11 @@ pub enum Action {
     OpenWorkloadList,
     OpenNode(String),
     OpenWorkload(WorkloadRef),
+    /// Tail a pod's logs (namespace, pod); cluster is the active view's.
+    OpenLogs {
+        namespace: String,
+        pod: String,
+    },
     SwitchContext(String),
     /// Cursor pushed against a map edge — in pair mode the app crosses to
     /// the other continent.

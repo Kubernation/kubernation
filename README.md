@@ -94,7 +94,12 @@ structure sprites, hover tooltips, right-drag panning, wheel zoom around
 the cursor, minimap click-to-jump, smooth camera flights on `]`/`[` and
 `N`, and in-window detail panels: click a city for its city screen (pods,
 owned resources, recent events), click land for the node panel
-(conditions, request gauges, pods). Press **`c`** to switch the hot
+(conditions, request gauges, pods). **Click any pod row** in an open panel
+to tail its logs in a live overlay (refreshed every couple of seconds):
+
+![GUI logs](docs/gui-logs.png)
+
+Press **`c`** to switch the hot
 cluster from a context picker — no restart. Text is **Fira Sans**
 (bundled OFL); both font and sprites are embedded so the binary is
 self-contained. Swap the look with `--tileset <dir>` (PNGs named `grass`,
@@ -136,6 +141,7 @@ tick (250ms default), so a noisy cluster can never make typing lag.
 | `]` / `[` | sail to next / previous city |
 | `PgUp/PgDn` · `Ctrl+u/d` · `Home/End` | page the map · half page · west/east continent |
 | `Enter` | open the thing under the cursor |
+| `l` | tail the selected pod's logs (city / node screen) |
 | `Esc` / `Backspace` | back |
 | `m` / `w` | map · workload list |
 | `n` | **next concern** — jump to the top problem's view |
@@ -227,7 +233,8 @@ the TUI.
 
 ## Status
 
-Observe-only MVP. Deferred, by design: mutations and the planning-turn diff
-UI, hot/warm cluster pairs, metrics-server live usage, minimap, external
-managed services, chaos layers, logs. See CLAUDE.md for the full list and
-the reasoning.
+Observe-only MVP, with several post-MVP features built: hot/warm cluster
+pairs, metrics-server live usage, the minimap, and pod log tailing (`l` on
+a city or node; click a pod row in the GUI). Deferred, by design: mutations
+and the planning-turn diff UI, external managed services, chaos layers, and
+Job/CronJob city screens. See CLAUDE.md for the full list and the reasoning.

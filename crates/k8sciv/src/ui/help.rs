@@ -16,6 +16,7 @@ const KEYMAP: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+u / Ctrl+d", "half page"),
             ("Home / End", "westmost / eastmost continent"),
             ("Enter", "open the thing under the cursor"),
+            ("l", "tail logs of the selected pod (city / node)"),
             ("Esc / Backspace", "back"),
         ],
     ),

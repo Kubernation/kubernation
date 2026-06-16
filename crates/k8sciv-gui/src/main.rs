@@ -24,10 +24,14 @@ use draw::{
     Camera, SceneWorld, draw_minimap, draw_sea, draw_selection, draw_world, locate, minimap_layout,
     scene, scene_size,
 };
+use k8sciv_core::events::ClusterId;
 use k8sciv_core::state::attention::Target;
 use k8sciv_core::state::world::Region;
 use macroquad::prelude::*;
-use panels::{Panel, draw_attention_strip, draw_panel, draw_tooltip, panel_layout};
+use net::LogReq;
+use panels::{
+    Panel, PodRowHit, draw_attention_strip, draw_logs, draw_panel, draw_tooltip, panel_layout,
+};
 use text::{text, text_bold, text_size};
 use theme::*;
 
@@ -63,6 +67,9 @@ struct Args {
     /// Override the initial zoom after fit (development verification)
     #[arg(long)]
     zoom: Option<f32>,
+    /// After --inspect opens a panel, tail its first pod's logs (verification)
+    #[arg(long)]
+    tail: bool,
 }
 
 fn window_conf() -> Conf {
@@ -105,6 +112,11 @@ async fn main() {
     let mut drag_anchor: Option<Vec2> = None;
     let mut picker = false;
     let mut picker_idx = 0usize;
+    // Log tailing: clickable pod rows captured during panel draw, the open
+    // overlay, and a headless auto-open after --inspect for verification.
+    let mut pod_hits: Vec<PodRowHit> = Vec::new();
+    let mut log_open = false;
+    let mut auto_tail = args.tail;
 
     loop {
         let snap = net.snapshot();
@@ -130,6 +142,9 @@ async fn main() {
         if is_key_pressed(KeyCode::Escape) {
             if picker {
                 picker = false;
+            } else if log_open {
+                log_open = false;
+                net.clear_logs();
             } else if panel.is_some() {
                 panel = None;
             } else {
@@ -282,8 +297,19 @@ async fn main() {
                     let pl = panel_layout();
                     let ml = minimap_layout(bounds);
                     let over_panel = panel.is_some() && pl.frame.contains(mouse);
-                    if panel.is_some() && pl.close.contains(mouse) {
+                    if log_open {
+                        // The log overlay swallows clicks; Esc closes it.
+                    } else if panel.is_some() && pl.close.contains(mouse) {
                         panel = None;
+                    } else if let Some(hit) = pod_hits.iter().find(|h| h.rect.contains(mouse)) {
+                        if let Some(p) = &panel {
+                            net.request_logs(LogReq {
+                                cluster: panel_cluster(p),
+                                namespace: hit.namespace.clone(),
+                                pod: hit.pod.clone(),
+                            });
+                            log_open = true;
+                        }
                     } else if panel.is_none()
                         && let Some(cell) = ml.world_cell(mouse, bounds)
                     {
@@ -375,9 +401,29 @@ async fn main() {
                 }
 
                 if let Some(p) = &panel {
-                    draw_panel(p, s, &pl);
+                    pod_hits = draw_panel(p, s, &pl);
+                    // Headless verification: open the first pod's log tail
+                    // once the panel's rows are known.
+                    if auto_tail && !log_open && !pod_hits.is_empty() {
+                        let h = &pod_hits[0];
+                        net.request_logs(LogReq {
+                            cluster: panel_cluster(p),
+                            namespace: h.namespace.clone(),
+                            pod: h.pod.clone(),
+                        });
+                        log_open = true;
+                        auto_tail = false;
+                    }
                 } else {
+                    pod_hits.clear();
+                    if log_open {
+                        log_open = false;
+                        net.clear_logs();
+                    }
                     draw_minimap(&worlds, &cam, &ml);
+                }
+                if log_open {
+                    draw_logs(&net.log_tail());
                 }
                 draw_attention_strip(&s.attention, paired, concern_idx);
             }
@@ -393,7 +439,7 @@ async fn main() {
             20.0,
             PARCHMENT,
         );
-        let help = "drag/WASD pan . wheel zoom . F fit . click inspect . ]/[ cities . N concern . C context . Q quit";
+        let help = "drag/WASD pan . wheel zoom . F fit . click inspect . click pod=logs . ]/[ cities . N concern . C context . Q quit";
         let hm = text_size(help, 14.0);
         text(help, screen_width() - hm.width - 12.0, 21.0, 14.0, DIM);
 
@@ -413,8 +459,11 @@ async fn main() {
             }
         }
 
+        // When tailing, wait long enough for the net thread's first fetch
+        // (first_container + tail, two API round-trips) to land.
+        let shot_at = if args.tail { 240 } else { 45 };
         if let Some(path) = &shot
-            && frames_synced > 45
+            && frames_synced > shot_at
         {
             get_screen_data().export_png(&path.to_string_lossy());
             break;
@@ -431,5 +480,11 @@ fn panel_for(worlds: &[SceneWorld], sel: (u16, u16)) -> Option<Panel> {
         Region::Province(p) => Some(Panel::Node(sw.id, p.tile.name.clone())),
         Region::Structure(_, s) => s.workload.clone().map(|r| Panel::City(sw.id, r)),
         _ => None,
+    }
+}
+
+fn panel_cluster(panel: &Panel) -> ClusterId {
+    match panel {
+        Panel::City(id, _) | Panel::Node(id, _) => *id,
     }
 }
