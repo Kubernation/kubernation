@@ -196,6 +196,26 @@ what makes the interesting logic unit-testable without a cluster.
   (the bundled font covers Unicode punctuation). Sprites use
   `FilterMode::Nearest` for crisp pixel edges. The TUI is untouched —
   this is all `k8sciv-gui`.
+- **GUI irregular coastlines** (2026-06-12, "more natural geographic
+  shapes"): a *render-only* change in `draw.rs` — the core world model
+  stays a rectangular grid (canonical coords both frontends share, and
+  terminals can't draw smooth coasts anyway). Each continent gets a
+  `Coast` whose east/west shores inset by smooth value noise (seeded by
+  zone name → deterministic, no shimmer) and whose N/S ends taper into
+  rounded capes for tall continents. The rectangular terrain fill is
+  carved: shore margins are overdrawn with the sea texture, a sand beach
+  + dark waterline drawn at the boundary. Displacement only *insets*, so
+  rectangular hit-testing still lands on real provinces. Single-node
+  zones just wobble; tall zones (kwok) read as genuine landmasses.
+- **GUI context switching** (2026-06-12): `c` opens a modal context
+  picker (j/k/click, current dotted); selecting calls `Net::request_switch`,
+  a `Mutex<Option<String>>` the net thread drains each tick — it connects
+  the new context, respawns the hot `WorldHandle` (old one drops →
+  informers abort), resets the ready flag, and clears the snapshot so the
+  UI shows fog until resync. Mirrors the TUI's hot-only switch; warm is
+  fixed at launch. Camera refits on the None→Some snapshot transition
+  (covers initial sync, reconnect, and post-switch). `--pick` opens the
+  picker on sync for headless screenshot verification.
 - **`Store::wait_until_ready` allows ONE concurrent waiter per store** (found
   2026-06-12): kube's readiness uses a `DelayedInit` over a futures oneshot
   receiver, which holds a single waker slot. Two tasks awaiting the same

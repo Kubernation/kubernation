@@ -75,25 +75,30 @@ aggregate drift concern.
 
 ### GUI client (windowed)
 
-![GUI client](docs/gui-spike.png)
+![GUI client](docs/gui-world.png)
 
 ```sh
 make gui    # or: cargo run -p k8sciv-gui --release -- --context <ctx>
 ```
 
 The same `k8sciv-core` world rendered as a real strategy-game view
-(macroquad): **Kenney CC0 sprite terrain** (tiled grass/sand/stone keyed
-to node health, trees on healthy land), **building sprites** that grow
-from a single house to a walled keep with population, with Civ-style
-white pop chips and warning banners over troubled cities; namespace
-isles with structure sprites, hover tooltips, right-drag panning, wheel
-zoom around the cursor, minimap click-to-jump, smooth camera flights on
-`]`/`[` and `N`, and in-window detail panels: click a city for its city
-screen (pods, owned resources, recent events), click land for the node
-panel (conditions, request gauges, pods). Text is **Fira Sans** (bundled
-OFL); both font and sprites are embedded so the binary is self-contained.
-Swap the look with `--tileset <dir>` (PNGs named `grass`, `house`,
-`keep`, … override the bundled set, Freeciv-style).
+(macroquad). Zones are **continents with irregular, noise-carved
+coastlines** — bays, capes, sand beaches — so a cluster reads as
+geography rather than a grid (the rectangular model underneath stays the
+canonical coordinate system; the GUI just paints organic shores over it).
+**Kenney CC0 sprite terrain** (tiled grass/sand/stone keyed to node
+health, trees on healthy land); **building sprites** that grow from a
+single house to a walled keep with population, with Civ-style white pop
+chips and warning banners over troubled cities; namespace isles with
+structure sprites, hover tooltips, right-drag panning, wheel zoom around
+the cursor, minimap click-to-jump, smooth camera flights on `]`/`[` and
+`N`, and in-window detail panels: click a city for its city screen (pods,
+owned resources, recent events), click land for the node panel
+(conditions, request gauges, pods). Press **`c`** to switch the hot
+cluster from a context picker — no restart. Text is **Fira Sans**
+(bundled OFL); both font and sprites are embedded so the binary is
+self-contained. Swap the look with `--tileset <dir>` (PNGs named `grass`,
+`house`, `keep`, … override the bundled set, Freeciv-style).
 
 With `--warm` (`make gui-pair`) the standby cluster rises as a **second
 archipelago** east of the hot one — one sea, free panning between them,

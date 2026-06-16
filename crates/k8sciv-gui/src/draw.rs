@@ -10,7 +10,7 @@ use k8sciv_core::events::ClusterId;
 use k8sciv_core::state::attention::Severity;
 use k8sciv_core::state::model::NodeHealth;
 use k8sciv_core::state::pair::PairSync;
-use k8sciv_core::state::world::{City, Island, Province, WorldModel};
+use k8sciv_core::state::world::{City, Continent, Island, Province, WorldModel};
 use macroquad::prelude::*;
 
 use crate::net::Snapshot;
@@ -171,6 +171,72 @@ pub fn lod(zoom: f32) -> Lod {
     }
 }
 
+// --- irregular coastlines -------------------------------------------------
+//
+// The core world model is a clean rectangular grid (the canonical
+// coordinate system both frontends share). The GUI paints organic
+// landmasses over it: each continent's east/west shores are displaced
+// inward by smooth value noise, and the north/south ends taper into
+// rounded capes — so a zone reads as geography, not a filing cabinet.
+// Deterministic (seeded by zone name) so coasts never shimmer frame to
+// frame, and the displacement only insets, so model hit-testing (which
+// stays rectangular) keeps landing on real provinces.
+
+const MAX_INSET: f32 = 5.0;
+const COAST_PERIOD: f32 = 5.0;
+
+fn hash01(seed: u64, n: i64) -> f32 {
+    (fnv1a64(&format!("{seed}:{n}")) % 10_000) as f32 / 10_000.0
+}
+
+/// Smooth value noise in [0,1] sampled along `t`, one control point every
+/// `period` units, smoothstep-interpolated.
+fn vnoise(seed: u64, t: f32, period: f32) -> f32 {
+    let x = t / period;
+    let i = x.floor();
+    let f = x - i;
+    let a = hash01(seed, i as i64);
+    let b = hash01(seed, i as i64 + 1);
+    let u = f * f * (3.0 - 2.0 * f);
+    a + (b - a) * u
+}
+
+/// Per-continent coastline: how far the land insets from its footprint on
+/// each side, for any absolute world row.
+pub struct Coast {
+    seed_l: u64,
+    seed_r: u64,
+    y0: i32,
+    h: i32,
+}
+
+impl Coast {
+    pub fn new(cont: &Continent) -> Self {
+        let h: u16 = cont.provinces.iter().map(|p| p.h).sum();
+        Coast {
+            seed_l: fnv1a64(&format!("{}~west", cont.zone)),
+            seed_r: fnv1a64(&format!("{}~east", cont.zone)),
+            y0: cont.y as i32,
+            h: (h as i32).max(1),
+        }
+    }
+
+    /// (left_inset, right_inset) in cells for `abs_row`.
+    fn insets(&self, abs_row: i32) -> (f32, f32) {
+        let ry = (abs_row - self.y0).clamp(0, self.h - 1);
+        let mut l = vnoise(self.seed_l, ry as f32, COAST_PERIOD) * MAX_INSET;
+        let mut r = vnoise(self.seed_r, ry as f32, COAST_PERIOD) * MAX_INSET;
+        // Round the north/south ends into capes (only for tall continents;
+        // a single-node island just gets the gentle wobble).
+        let cap = (self.h / 4).clamp(0, 3);
+        let end = ry.min(self.h - 1 - ry);
+        let taper = (cap - end.min(cap)).max(0) as f32 * 2.4;
+        l += taper;
+        r += taper;
+        (l, r)
+    }
+}
+
 /// The open sea fills the screen behind every world: world-aligned water
 /// tiles so panning feels physical, darkened to sit behind the chrome.
 pub fn draw_sea(cam: &Camera) {
@@ -270,8 +336,9 @@ pub fn draw_world(
                 PARCHMENT,
             );
         }
+        let coast = Coast::new(cont);
         for prov in &cont.provinces {
-            draw_province(prov, cam, &detail, pair, x0, y0, cols, rows);
+            draw_province(prov, cam, &detail, pair, &coast, x0, y0, cols, rows);
         }
     }
 
@@ -301,6 +368,7 @@ fn draw_province(
     cam: &Camera,
     detail: &Lod,
     pair: Option<&PairSync>,
+    coast: &Coast,
     vx0: i32,
     vy0: i32,
     vcols: i32,
@@ -343,7 +411,8 @@ fn draw_province(
         if prov.tile.health == NodeHealth::Healthy {
             for i in 0..3u64 {
                 let hx = fnv1a64(&format!("{}t{i}", prov.tile.name));
-                let cx = 2 + (hx % (prov.w as u64 - 4)) as u16;
+                // Keep trees clear of the carved shore.
+                let cx = 5 + (hx % (prov.w as u64 - 10)) as u16;
                 let cy = 1 + ((hx >> 8) % (prov.h as u64 - 1).max(1)) as u16;
                 let c = cam.to_screen(prov.x as f32 + cx as f32, prov.y as f32 + cy as f32 + 0.5);
                 sprite_at(&s.tree, c, 20.0 * cam.zoom, WHITE);
@@ -356,7 +425,13 @@ fn draw_province(
         let cy0 = (prov.y as i32).max(vy0);
         let cy1 = ((prov.y + prov.h) as i32).min(vy0 + vrows);
         for wy in cy0..cy1 {
+            let (li, ri) = coast.insets(wy);
             for wx in cx0..cx1 {
+                // Clip the procedural mosaic to the irregular shore.
+                let rel = (wx - prov.x as i32) as f32;
+                if rel < li || rel >= prov.w as f32 - ri {
+                    continue;
+                }
                 let p = cam.to_screen(wx as f32, wy as f32);
                 draw_rectangle(
                     p.x,
@@ -369,12 +444,52 @@ fn draw_province(
         }
     }
 
-    // Coast bevel: sunlit north-west shore, shaded south-east cliff.
-    let base = terrain(prov.tile.health);
-    draw_rectangle(tl.x, tl.y, w, 2.5, lighter(base, 1.45));
-    draw_rectangle(tl.x, tl.y, 2.5, h, lighter(base, 1.3));
-    draw_rectangle(tl.x, tl.y + h - 2.5, w, 2.5, darker(base, 0.55));
-    draw_rectangle(tl.x + w - 2.5, tl.y, 2.5, h, darker(base, 0.6));
+    // Carve the rectangular fill into an organic landmass: overdraw the
+    // shore margins with sea, lay a sand beach just inside the waterline,
+    // and ink a thin coast outline. Sea matches draw_sea so the carved
+    // cells melt into the surrounding ocean.
+    let sea_tint = Color::new(0.34, 0.46, 0.66, 1.0);
+    let coast_line = Color::new(0.10, 0.20, 0.34, 1.0);
+    let water = |r: Rect| {
+        let drew = sprites::with(|s| tile_region(&s.water, r, sea_tint, 64.0 * cam.zoom));
+        if drew.is_none() {
+            draw_rectangle(r.x, r.y, r.w, r.h, OCEAN);
+        }
+    };
+    let beach_w = (0.5 * cw).max(2.0);
+    let (north, south) = (coast.y0, coast.y0 + coast.h - 1);
+    for wy in prov.y..prov.y + prov.h {
+        if (wy as i32) < vy0 - 1 || (wy as i32) > vy0 + vrows {
+            continue;
+        }
+        let (li, ri) = coast.insets(wy as i32);
+        let row_y = cam.to_screen(prov.x as f32, wy as f32).y;
+        let left = cam.to_screen(prov.x as f32, wy as f32).x;
+        let right = cam.to_screen((prov.x + prov.w) as f32, wy as f32).x;
+        // Shore margins → sea.
+        if li > 0.02 {
+            water(Rect::new(left, row_y, li * cw + 0.5, ch + 0.5));
+        }
+        if ri > 0.02 {
+            water(Rect::new(right - ri * cw, row_y, ri * cw + 0.5, ch + 0.5));
+        }
+        // Beach + waterline.
+        let land_l = left + li * cw;
+        let land_r = right - ri * cw;
+        draw_rectangle(land_l, row_y, beach_w, ch + 0.5, SAND);
+        draw_rectangle(land_r - beach_w, row_y, beach_w, ch + 0.5, SAND);
+        draw_rectangle(land_l - 1.5, row_y, 1.5, ch + 0.5, coast_line);
+        draw_rectangle(land_r, row_y, 1.5, ch + 0.5, coast_line);
+        // Capped beaches on the north/south shores.
+        if wy as i32 == north || wy as i32 == south {
+            let edge_y = if wy as i32 == north {
+                row_y
+            } else {
+                row_y + ch - beach_w
+            };
+            draw_rectangle(land_l, edge_y, land_r - land_l, beach_w, SAND);
+        }
+    }
 
     // Daemonset roads: a worn track along the southern edge.
     for i in 0..prov.infra.min(10) {

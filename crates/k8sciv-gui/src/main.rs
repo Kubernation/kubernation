@@ -57,6 +57,9 @@ struct Args {
     /// its panel (development verification)
     #[arg(long)]
     inspect: Option<String>,
+    /// Open the context picker on sync (development verification)
+    #[arg(long)]
+    pick: bool,
 }
 
 fn window_conf() -> Conf {
@@ -94,62 +97,103 @@ async fn main() {
     let mut concern_idx: usize = 0;
     let mut city_idx: usize = 0;
     let mut frames_synced: u32 = 0;
-    let mut did_initial_fit = false;
+    let mut prev_had_snap = false;
     let mut inspected = false;
     let mut drag_anchor: Option<Vec2> = None;
+    let mut picker = false;
+    let mut picker_idx = 0usize;
 
     loop {
         let snap = net.snapshot();
         let status = net.status();
         let mouse = Vec2::from(mouse_position());
+        let had_snap = prev_had_snap;
+        prev_had_snap = snap.is_some();
+
+        // Context list for the picker (from the hot world's kubeconfig).
+        let contexts: Vec<String> = snap
+            .as_ref()
+            .map(|s| s.hot.observed.meta.all_contexts.clone())
+            .unwrap_or_default();
+        let current_ctx = snap
+            .as_ref()
+            .map(|s| s.hot.observed.meta.context.clone())
+            .unwrap_or_default();
 
         // ---- input ------------------------------------------------------
         if is_key_pressed(KeyCode::Q) {
             break;
         }
         if is_key_pressed(KeyCode::Escape) {
-            if panel.is_some() {
+            if picker {
+                picker = false;
+            } else if panel.is_some() {
                 panel = None;
             } else {
                 break;
             }
         }
-        let mut manual_pan = false;
-        let pan = 14.0;
-        if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) {
-            cam.pos.x -= pan;
-            manual_pan = true;
-        }
-        if is_key_down(KeyCode::D) || is_key_down(KeyCode::Right) {
-            cam.pos.x += pan;
-            manual_pan = true;
-        }
-        if is_key_down(KeyCode::W) || is_key_down(KeyCode::Up) {
-            cam.pos.y -= pan;
-            manual_pan = true;
-        }
-        if is_key_down(KeyCode::S) || is_key_down(KeyCode::Down) {
-            cam.pos.y += pan;
-            manual_pan = true;
-        }
-        if is_mouse_button_down(MouseButton::Right) || is_mouse_button_down(MouseButton::Middle) {
-            if let Some(anchor) = drag_anchor {
-                let d = anchor - mouse;
-                if d.length() > 0.0 {
-                    cam.pos += d;
-                    manual_pan = true;
+        // While the context picker is open it swallows navigation.
+        if picker {
+            let n = contexts.len();
+            if is_key_pressed(KeyCode::C) {
+                picker = false;
+            } else if n > 0 {
+                if is_key_pressed(KeyCode::J) || is_key_pressed(KeyCode::Down) {
+                    picker_idx = (picker_idx + 1) % n;
+                }
+                if is_key_pressed(KeyCode::K) || is_key_pressed(KeyCode::Up) {
+                    picker_idx = (picker_idx + n - 1) % n;
+                }
+                if is_key_pressed(KeyCode::Enter) && picker_idx < n {
+                    net.request_switch(contexts[picker_idx].clone());
+                    picker = false;
+                    selected = None;
+                    panel = None;
+                    concern_idx = 0;
                 }
             }
-            drag_anchor = Some(mouse);
-        } else {
-            drag_anchor = None;
         }
-        let (_, wheel) = mouse_wheel();
-        if wheel.abs() > 0.0 {
-            let factor = if wheel > 0.0 { 1.1 } else { 1.0 / 1.1 };
-            let before = (mouse + cam.pos) / cam.zoom;
-            cam.zoom = (cam.zoom * factor).clamp(0.30, 3.0);
-            cam.pos = before * cam.zoom - mouse;
+
+        let mut manual_pan = false;
+        if !picker {
+            let pan = 14.0;
+            if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) {
+                cam.pos.x -= pan;
+                manual_pan = true;
+            }
+            if is_key_down(KeyCode::D) || is_key_down(KeyCode::Right) {
+                cam.pos.x += pan;
+                manual_pan = true;
+            }
+            if is_key_down(KeyCode::W) || is_key_down(KeyCode::Up) {
+                cam.pos.y -= pan;
+                manual_pan = true;
+            }
+            if is_key_down(KeyCode::S) || is_key_down(KeyCode::Down) {
+                cam.pos.y += pan;
+                manual_pan = true;
+            }
+            if is_mouse_button_down(MouseButton::Right) || is_mouse_button_down(MouseButton::Middle)
+            {
+                if let Some(anchor) = drag_anchor {
+                    let d = anchor - mouse;
+                    if d.length() > 0.0 {
+                        cam.pos += d;
+                        manual_pan = true;
+                    }
+                }
+                drag_anchor = Some(mouse);
+            } else {
+                drag_anchor = None;
+            }
+            let (_, wheel) = mouse_wheel();
+            if wheel.abs() > 0.0 {
+                let factor = if wheel > 0.0 { 1.1 } else { 1.0 / 1.1 };
+                let before = (mouse + cam.pos) / cam.zoom;
+                cam.zoom = (cam.zoom * factor).clamp(0.30, 3.0);
+                cam.pos = before * cam.zoom - mouse;
+            }
         }
         cam.tick(manual_pan);
 
@@ -157,94 +201,106 @@ async fn main() {
             let worlds = scene(s);
             let bounds = scene_size(&worlds);
 
-            if is_key_pressed(KeyCode::F) {
+            // Frame the whole world whenever a snapshot first appears —
+            // initial sync, a reconnect, or after a context switch (which
+            // clears the snapshot). Skipped when --inspect will fly us in.
+            if !had_snap && inspect.is_none() {
                 cam.fit(bounds);
-            }
-            // Frame the whole world on first sync (skip when --inspect is
-            // about to fly the camera to a specific city).
-            if !did_initial_fit && inspect.is_none() {
-                cam.fit(bounds);
-                did_initial_fit = true;
-            }
-
-            if is_key_pressed(KeyCode::RightBracket) || is_key_pressed(KeyCode::LeftBracket) {
-                // All cities across the scene, in archipelago order.
-                let cities: Vec<(u16, u16)> = worlds
-                    .iter()
-                    .flat_map(|sw| sw.world.cities().map(move |c| (c.x + sw.off, c.y)))
-                    .collect();
-                if !cities.is_empty() {
-                    if is_key_pressed(KeyCode::RightBracket) {
-                        city_idx = (city_idx + 1) % cities.len();
-                    } else {
-                        city_idx = (city_idx + cities.len() - 1) % cities.len();
-                    }
-                    selected = Some(cities[city_idx]);
-                    cam.fly_to(cities[city_idx]);
+                if args.pick && !contexts.is_empty() {
+                    picker = true;
+                    picker_idx = contexts.iter().position(|c| *c == current_ctx).unwrap_or(0);
                 }
             }
-            if is_key_pressed(KeyCode::N) && !s.attention.is_empty() {
-                concern_idx = (concern_idx + 1) % s.attention.len();
-                let concern = &s.attention[concern_idx];
-                if let Some(sw) = worlds.iter().find(|w| w.id == concern.cluster) {
-                    let local = match &concern.target {
-                        Target::Workload(r) => {
-                            sw.world.city_pos(r).or_else(|| sw.world.structure_pos(r))
+            if picker {
+                // Picker open: world navigation is suspended this frame.
+            } else {
+                if is_key_pressed(KeyCode::F) {
+                    cam.fit(bounds);
+                }
+                if is_key_pressed(KeyCode::C) && !contexts.is_empty() {
+                    picker = true;
+                    picker_idx = contexts.iter().position(|c| *c == current_ctx).unwrap_or(0);
+                }
+
+                if is_key_pressed(KeyCode::RightBracket) || is_key_pressed(KeyCode::LeftBracket) {
+                    // All cities across the scene, in archipelago order.
+                    let cities: Vec<(u16, u16)> = worlds
+                        .iter()
+                        .flat_map(|sw| sw.world.cities().map(move |c| (c.x + sw.off, c.y)))
+                        .collect();
+                    if !cities.is_empty() {
+                        if is_key_pressed(KeyCode::RightBracket) {
+                            city_idx = (city_idx + 1) % cities.len();
+                        } else {
+                            city_idx = (city_idx + cities.len() - 1) % cities.len();
                         }
-                        Target::Node(name) => sw.world.province_pos(name),
-                        Target::WorkloadList => None,
-                    };
-                    if let Some(p) = local {
-                        let global = (p.0 + sw.off, p.1);
-                        selected = Some(global);
-                        cam.fly_to(global);
-                        panel = match &concern.target {
-                            Target::Workload(r) => Some(Panel::City(sw.id, r.clone())),
-                            Target::Node(name) => Some(Panel::Node(sw.id, name.clone())),
+                        selected = Some(cities[city_idx]);
+                        cam.fly_to(cities[city_idx]);
+                    }
+                }
+                if is_key_pressed(KeyCode::N) && !s.attention.is_empty() {
+                    concern_idx = (concern_idx + 1) % s.attention.len();
+                    let concern = &s.attention[concern_idx];
+                    if let Some(sw) = worlds.iter().find(|w| w.id == concern.cluster) {
+                        let local = match &concern.target {
+                            Target::Workload(r) => {
+                                sw.world.city_pos(r).or_else(|| sw.world.structure_pos(r))
+                            }
+                            Target::Node(name) => sw.world.province_pos(name),
                             Target::WorkloadList => None,
                         };
-                    }
-                }
-            }
-            if is_key_pressed(KeyCode::Enter)
-                && let Some(sel) = selected
-            {
-                panel = panel_for(&worlds, sel);
-            }
-
-            if is_mouse_button_pressed(MouseButton::Left) {
-                let pl = panel_layout();
-                let ml = minimap_layout(bounds);
-                let over_panel = panel.is_some() && pl.frame.contains(mouse);
-                if panel.is_some() && pl.close.contains(mouse) {
-                    panel = None;
-                } else if panel.is_none()
-                    && let Some(cell) = ml.world_cell(mouse, bounds)
-                {
-                    cam.fly_to(cell);
-                } else if !over_panel && mouse.y > panels::CHROME_H {
-                    selected = cam.cell_at(mouse, bounds);
-                    if let Some(sel) = selected {
-                        panel = panel_for(&worlds, sel);
-                    }
-                }
-            }
-
-            // Development verification: select and open something specific.
-            if !inspected && let Some(needle) = &inspect {
-                'outer: for sw in &worlds {
-                    for c in sw.world.cities() {
-                        if c.r.name.contains(needle.as_str()) {
-                            let global = (c.x + sw.off, c.y);
+                        if let Some(p) = local {
+                            let global = (p.0 + sw.off, p.1);
                             selected = Some(global);
-                            cam.jump_to(global);
-                            panel = Some(Panel::City(sw.id, c.r.clone()));
-                            break 'outer;
+                            cam.fly_to(global);
+                            panel = match &concern.target {
+                                Target::Workload(r) => Some(Panel::City(sw.id, r.clone())),
+                                Target::Node(name) => Some(Panel::Node(sw.id, name.clone())),
+                                Target::WorkloadList => None,
+                            };
                         }
                     }
                 }
-                inspected = true;
-            }
+                if is_key_pressed(KeyCode::Enter)
+                    && let Some(sel) = selected
+                {
+                    panel = panel_for(&worlds, sel);
+                }
+
+                if is_mouse_button_pressed(MouseButton::Left) {
+                    let pl = panel_layout();
+                    let ml = minimap_layout(bounds);
+                    let over_panel = panel.is_some() && pl.frame.contains(mouse);
+                    if panel.is_some() && pl.close.contains(mouse) {
+                        panel = None;
+                    } else if panel.is_none()
+                        && let Some(cell) = ml.world_cell(mouse, bounds)
+                    {
+                        cam.fly_to(cell);
+                    } else if !over_panel && mouse.y > panels::CHROME_H {
+                        selected = cam.cell_at(mouse, bounds);
+                        if let Some(sel) = selected {
+                            panel = panel_for(&worlds, sel);
+                        }
+                    }
+                }
+
+                // Development verification: select and open something specific.
+                if !inspected && let Some(needle) = &inspect {
+                    'outer: for sw in &worlds {
+                        for c in sw.world.cities() {
+                            if c.r.name.contains(needle.as_str()) {
+                                let global = (c.x + sw.off, c.y);
+                                selected = Some(global);
+                                cam.jump_to(global);
+                                panel = Some(Panel::City(sw.id, c.r.clone()));
+                                break 'outer;
+                            }
+                        }
+                    }
+                    inspected = true;
+                }
+            } // end world navigation (suspended while the picker is open)
         }
 
         // ---- draw ---------------------------------------------------------
@@ -283,7 +339,8 @@ async fn main() {
                 let over_panel = panel.is_some() && pl.frame.contains(mouse);
                 let ml = minimap_layout(bounds);
                 let over_minimap = panel.is_none() && ml.frame.contains(mouse);
-                if drag_anchor.is_none()
+                if !picker
+                    && drag_anchor.is_none()
                     && !over_panel
                     && !over_minimap
                     && mouse.y > panels::CHROME_H
@@ -313,9 +370,25 @@ async fn main() {
             20.0,
             PARCHMENT,
         );
-        let help = "right-drag/WASD pan . wheel zoom . F fit . hover info . click inspect . ]/[ cities . N next concern . Q quit";
+        let help = "drag/WASD pan . wheel zoom . F fit . click inspect . ]/[ cities . N concern . C context . Q quit";
         let hm = text_size(help, 14.0);
         text(help, screen_width() - hm.width - 12.0, 21.0, 14.0, DIM);
+
+        // Context picker, drawn on top of everything.
+        if picker {
+            let layout = panels::draw_picker(&contexts, &current_ctx, picker_idx);
+            if is_mouse_button_pressed(MouseButton::Left) {
+                for (i, r) in layout.rows.iter().enumerate() {
+                    if r.contains(mouse) && i < contexts.len() {
+                        net.request_switch(contexts[i].clone());
+                        picker = false;
+                        selected = None;
+                        panel = None;
+                        concern_idx = 0;
+                    }
+                }
+            }
+        }
 
         if let Some(path) = &shot
             && frames_synced > 45

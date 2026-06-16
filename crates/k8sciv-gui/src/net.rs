@@ -4,6 +4,10 @@
 //! clones) so detail panels can run the pure city/node builders on demand.
 //! With `--warm`, a second world is watched and compared — the GUI shows
 //! it as a second archipelago east of the hot one.
+//!
+//! The hot cluster is switchable at runtime: the render loop drops a
+//! requested context into `switch`; the net thread drops the old hot
+//! WorldHandle (its informers abort) and spawns a fresh one.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,6 +38,8 @@ pub struct Snapshot {
 pub struct Net {
     pub snapshot: Mutex<Option<Arc<Snapshot>>>,
     pub status: Mutex<String>,
+    /// A pending hot-context switch requested by the UI.
+    switch: Mutex<Option<String>>,
 }
 
 impl Net {
@@ -41,6 +47,7 @@ impl Net {
         Arc::new(Self {
             snapshot: Mutex::new(None),
             status: Mutex::new("starting…".into()),
+            switch: Mutex::new(None),
         })
     }
 
@@ -50,6 +57,11 @@ impl Net {
 
     pub fn status(&self) -> String {
         self.status.lock().unwrap().clone()
+    }
+
+    /// Ask the net thread to switch the hot cluster to `ctx`.
+    pub fn request_switch(&self, ctx: String) {
+        *self.switch.lock().unwrap() = Some(ctx);
     }
 }
 
@@ -87,17 +99,15 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         None
                     }
                 },
-
                 None => None,
             };
-            let label = match &warm_cluster {
-                Some(w) => format!("HOT {} / WARM {}", hot_cluster.meta.context, w.meta.context),
-                None => format!(
-                    "{} · {}",
-                    hot_cluster.meta.context,
-                    hot_cluster.meta.platform.label()
-                ),
+            let warm_ctx = warm_cluster.as_ref().map(|c| c.meta.context.clone());
+            let make_label = |hot_ctx: &str, platform: &str| match &warm_ctx {
+                Some(w) => format!("HOT {hot_ctx} / WARM {w}"),
+                None => format!("{hot_ctx} · {platform}"),
             };
+            let mut label =
+                make_label(&hot_cluster.meta.context, hot_cluster.meta.platform.label());
             *net.status.lock().unwrap() = format!("{label} · exploring…");
 
             let dirty = Arc::new(AtomicBool::new(false));
@@ -120,17 +130,40 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
 
             let hot_proj =
                 client::resolve_projections(&hot_cluster.client, &args.projections).await;
-            let hot_handle = watch::spawn(&hot_cluster, ClusterId::Hot, sink.clone(), &hot_proj);
+            let mut hot_handle =
+                watch::spawn(&hot_cluster, ClusterId::Hot, sink.clone(), &hot_proj);
             let warm_handle = match &warm_cluster {
                 Some(c) => {
                     let proj = client::resolve_projections(&c.client, &args.projections).await;
-                    Some(watch::spawn(c, ClusterId::Warm, sink, &proj))
+                    Some(watch::spawn(c, ClusterId::Warm, sink.clone(), &proj))
                 }
                 None => None,
             };
 
             let mut tick = tokio::time::interval(Duration::from_millis(250));
             loop {
+                // Hot-context switch: connect the new cluster, then drop the
+                // old handle (its informers abort) by reassigning. Snapshot
+                // is cleared so the UI shows fog until the new world syncs.
+                let requested = net.switch.lock().unwrap().take();
+                if let Some(ctx) = requested {
+                    *net.status.lock().unwrap() = format!("switching → {ctx} …");
+                    match client::connect(args.kubeconfig.as_deref(), Some(&ctx)).await {
+                        Ok(c) => {
+                            let proj =
+                                client::resolve_projections(&c.client, &args.projections).await;
+                            ready_hot.store(false, Ordering::Relaxed);
+                            hot_handle = watch::spawn(&c, ClusterId::Hot, sink.clone(), &proj);
+                            label = make_label(&c.meta.context, c.meta.platform.label());
+                            *net.status.lock().unwrap() = format!("{label} · exploring…");
+                            *net.snapshot.lock().unwrap() = None;
+                        }
+                        Err(err) => {
+                            *net.status.lock().unwrap() = format!("switch failed: {err}");
+                        }
+                    }
+                }
+
                 tick.tick().await;
                 if !ready_hot.load(Ordering::Relaxed) || !dirty.swap(false, Ordering::Relaxed) {
                     continue;

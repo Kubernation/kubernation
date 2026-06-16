@@ -447,3 +447,65 @@ pub fn draw_attention_strip(attention: &[Concern], paired: bool, concern_idx: us
         );
     }
 }
+
+// --- context picker -----------------------------------------------------
+
+pub struct PickerLayout {
+    pub rows: Vec<Rect>,
+}
+
+/// Modal list of kubeconfig contexts; the dot marks the active one, the
+/// highlight bar the keyboard cursor. Returns row rects for click hits.
+pub fn draw_picker(contexts: &[String], current: &str, idx: usize) -> PickerLayout {
+    draw_rectangle(
+        0.0,
+        0.0,
+        screen_width(),
+        screen_height(),
+        Color::new(0.0, 0.0, 0.0, 0.45),
+    );
+    let w = 480.0_f32;
+    let row_h = 26.0;
+    let h = 58.0 + contexts.len().max(1) as f32 * row_h;
+    let x = (screen_width() - w) / 2.0;
+    let y = (screen_height() - h) / 2.0;
+    draw_rectangle(x, y, w, h, PANEL);
+    draw_rectangle_lines(x, y, w, h, 2.0, PARCHMENT);
+    text_bold("SWITCH CONTEXT", x + 16.0, y + 26.0, 18.0, PARCHMENT);
+    text(
+        "enter switch . j/k move . c or esc cancel",
+        x + 16.0,
+        y + 45.0,
+        13.0,
+        DIM,
+    );
+    let mut rows = Vec::new();
+    let list_y = y + 58.0;
+    if contexts.is_empty() {
+        text(
+            "no contexts in kubeconfig",
+            x + 16.0,
+            list_y + 18.0,
+            14.0,
+            DIM,
+        );
+    }
+    for (i, ctx) in contexts.iter().enumerate() {
+        let ry = list_y + i as f32 * row_h;
+        let r = Rect::new(x + 8.0, ry, w - 16.0, row_h);
+        if i == idx {
+            draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.30, 0.26, 0.12, 0.95));
+        }
+        if ctx == current {
+            draw_circle(
+                r.x + 12.0,
+                ry + 13.0,
+                4.0,
+                Color::new(0.45, 0.78, 0.45, 1.0),
+            );
+        }
+        text(ascii(ctx), r.x + 26.0, ry + 18.0, 15.0, INK);
+        rows.push(r);
+    }
+    PickerLayout { rows }
+}
