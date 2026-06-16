@@ -7,11 +7,12 @@ use std::fmt;
 
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use k8s_openapi::api::core::v1::{Container, Node, Pod, PodTemplateSpec};
+use k8s_openapi::api::networking::v1::Ingress;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 
 use super::attention::{self, Concern, Severity, Target};
 use super::observed::{ObservedWorld, RecentEvent};
-use super::world::{WorldModel, build_world};
+use super::world::{CoastKind, ExposureEntry, WorldModel, build_world};
 use crate::k8s::metrics::NodeUsage;
 use crate::k8s::quantity;
 use crate::util::fnv1a64;
@@ -738,6 +739,163 @@ fn template_refs(t: Option<&PodTemplateSpec>) -> BTreeSet<(&'static str, String)
     out
 }
 
+/// The host of an Ingress's first rule, or `*` for a catch-all.
+fn ingress_host(ing: &Ingress) -> String {
+    ing.spec
+        .as_ref()
+        .and_then(|s| s.rules.as_ref())
+        .and_then(|r| r.first())
+        .and_then(|r| r.host.clone())
+        .unwrap_or_else(|| "*".into())
+}
+
+/// Every Service an Ingress backends to (default backend + every rule path).
+fn ingress_backends(ing: &Ingress) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let Some(spec) = ing.spec.as_ref() else {
+        return out;
+    };
+    if let Some(svc) = spec
+        .default_backend
+        .as_ref()
+        .and_then(|b| b.service.as_ref())
+    {
+        out.insert(svc.name.clone());
+    }
+    for rule in spec.rules.as_deref().unwrap_or(&[]) {
+        for path in rule
+            .http
+            .as_ref()
+            .map(|h| h.paths.as_slice())
+            .unwrap_or(&[])
+        {
+            if let Some(svc) = path.backend.service.as_ref() {
+                out.insert(svc.name.clone());
+            }
+        }
+    }
+    out
+}
+
+/// The connectivity layer: which Services front which workloads (harbors)
+/// and which Ingresses route to them (gates). Pure over `ObservedWorld`;
+/// feeds the coast markers in `build_world`. The reverse of `build_city`'s
+/// per-workload service match, computed once for the whole map.
+pub fn build_exposure(world: &ObservedWorld) -> Vec<ExposureEntry> {
+    // Each workload paired with its pod-template labels.
+    let mut wl: Vec<(WorkloadRef, BTreeMap<String, String>)> = Vec::new();
+    for d in world.deployments.state() {
+        if let (Some(ns), Some(name)) = (d.metadata.namespace.clone(), d.metadata.name.clone()) {
+            let labels = template_labels(d.spec.as_ref().map(|s| &s.template));
+            wl.push((
+                WorkloadRef {
+                    kind: WorkloadKind::Deployment,
+                    namespace: ns,
+                    name,
+                },
+                labels,
+            ));
+        }
+    }
+    for s in world.statefulsets.state() {
+        if let (Some(ns), Some(name)) = (s.metadata.namespace.clone(), s.metadata.name.clone()) {
+            let labels = template_labels(s.spec.as_ref().map(|s| &s.template));
+            wl.push((
+                WorkloadRef {
+                    kind: WorkloadKind::StatefulSet,
+                    namespace: ns,
+                    name,
+                },
+                labels,
+            ));
+        }
+    }
+    for ds in world.daemonsets.state() {
+        if let (Some(ns), Some(name)) = (ds.metadata.namespace.clone(), ds.metadata.name.clone()) {
+            let labels = template_labels(ds.spec.as_ref().map(|s| &s.template));
+            wl.push((
+                WorkloadRef {
+                    kind: WorkloadKind::DaemonSet,
+                    namespace: ns,
+                    name,
+                },
+                labels,
+            ));
+        }
+    }
+
+    let mut out: Vec<ExposureEntry> = Vec::new();
+    // Service harbors, plus a name→workloads index for ingress resolution.
+    let mut svc_targets: HashMap<(String, String), Vec<WorkloadRef>> = HashMap::new();
+    for svc in world.services.state() {
+        let Some(ns) = svc.metadata.namespace.clone() else {
+            continue;
+        };
+        let Some(name) = svc.metadata.name.clone() else {
+            continue;
+        };
+        let Some(sel) = svc.spec.as_ref().and_then(|s| s.selector.as_ref()) else {
+            continue;
+        };
+        if sel.is_empty() {
+            continue;
+        }
+        let type_ = svc
+            .spec
+            .as_ref()
+            .and_then(|s| s.type_.clone())
+            .unwrap_or_else(|| "ClusterIP".into());
+        for (wr, labels) in &wl {
+            if wr.namespace != ns {
+                continue;
+            }
+            if sel.iter().all(|(k, v)| labels.get(k) == Some(v)) {
+                out.push(ExposureEntry {
+                    workload: wr.clone(),
+                    kind: CoastKind::Harbor,
+                    name: name.clone(),
+                    detail: type_.clone(),
+                });
+                svc_targets
+                    .entry((ns.clone(), name.clone()))
+                    .or_default()
+                    .push(wr.clone());
+            }
+        }
+    }
+
+    // Ingress gates: resolve each backend service to the workloads it fronts.
+    for ing in world.ingresses.state() {
+        let Some(ns) = ing.metadata.namespace.clone() else {
+            continue;
+        };
+        let Some(name) = ing.metadata.name.clone() else {
+            continue;
+        };
+        let host = ingress_host(&ing);
+        for backend in ingress_backends(&ing) {
+            if let Some(targets) = svc_targets.get(&(ns.clone(), backend)) {
+                for wr in targets {
+                    out.push(ExposureEntry {
+                        workload: wr.clone(),
+                        kind: CoastKind::Gate,
+                        name: name.clone(),
+                        detail: host.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    // One marker per (workload, kind, name) — an ingress fanned across paths
+    // to the same service must not stack gates.
+    out.sort_by(|a, b| {
+        (&a.workload, a.kind as u8, &a.name).cmp(&(&b.workload, b.kind as u8, &b.name))
+    });
+    out.dedup_by(|a, b| a.workload == b.workload && a.kind == b.kind && a.name == b.name);
+    out
+}
+
 pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
     let idx = OwnerIndex::build(world);
 
@@ -845,6 +1003,7 @@ pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
     // Owned resources.
     let labels = template_labels(template.as_ref());
     let mut owned: Vec<OwnedRes> = Vec::new();
+    let mut my_services: BTreeSet<String> = BTreeSet::new();
     for svc in world.services.state() {
         if svc.metadata.namespace.as_deref() != Some(&r.namespace) {
             continue;
@@ -853,14 +1012,32 @@ pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
             continue;
         };
         if !sel.is_empty() && sel.iter().all(|(k, v)| labels.get(k) == Some(v)) {
+            let name = svc.metadata.name.clone().unwrap_or_default();
+            my_services.insert(name.clone());
             owned.push(OwnedRes {
                 kind: "svc",
-                name: svc.metadata.name.clone().unwrap_or_default(),
+                name,
                 note: svc
                     .spec
                     .as_ref()
                     .and_then(|s| s.type_.clone())
                     .unwrap_or_default(),
+            });
+        }
+    }
+    // Ingress gates routing to any of this city's services.
+    for ing in world.ingresses.state() {
+        if ing.metadata.namespace.as_deref() != Some(&r.namespace) {
+            continue;
+        }
+        if ingress_backends(&ing)
+            .iter()
+            .any(|b| my_services.contains(b))
+        {
+            owned.push(OwnedRes {
+                kind: "ing",
+                name: ing.metadata.name.clone().unwrap_or_default(),
+                note: ingress_host(&ing),
             });
         }
     }
@@ -1089,6 +1266,7 @@ impl Models {
             &workloads,
             &workload_severity,
             &world.custom_entries(),
+            &build_exposure(world),
         );
         Models {
             map,
@@ -1305,6 +1483,15 @@ mod tests {
         s.pod(fx::pod("demo", "other", Some("n1")));
         s.service(fx::service("demo", "web", &[("app", "web")]));
         s.service(fx::service("demo", "unrelated", &[("app", "nope")]));
+        // An ingress routing to web → a gate on its city screen; one routing
+        // to the unrelated service must not appear.
+        s.ingress(fx::ingress("demo", "web-ing", "web.example.com", "web"));
+        s.ingress(fx::ingress(
+            "demo",
+            "other-ing",
+            "other.example.com",
+            "unrelated",
+        ));
 
         let r = WorkloadRef {
             kind: WorkloadKind::Deployment,
@@ -1322,6 +1509,13 @@ mod tests {
             .map(|o| o.name.as_str())
             .collect();
         assert_eq!(svcs, ["web"]);
+        let ings: Vec<&str> = city
+            .owned
+            .iter()
+            .filter(|o| o.kind == "ing")
+            .map(|o| o.name.as_str())
+            .collect();
+        assert_eq!(ings, ["web-ing"], "only the web ingress is a gate here");
         assert_eq!(city.status, RolloutStatus::Complete);
     }
 

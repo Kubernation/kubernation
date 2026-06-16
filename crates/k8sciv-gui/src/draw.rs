@@ -10,7 +10,7 @@ use k8sciv_core::events::ClusterId;
 use k8sciv_core::state::attention::Severity;
 use k8sciv_core::state::model::NodeHealth;
 use k8sciv_core::state::pair::PairSync;
-use k8sciv_core::state::world::{City, Continent, Island, Province, WorldModel};
+use k8sciv_core::state::world::{City, CoastKind, Continent, Island, Province, WorldModel};
 use macroquad::prelude::*;
 
 use crate::net::Snapshot;
@@ -466,6 +466,7 @@ pub fn draw_world(
                 rows,
             );
         }
+        draw_coast(cont, cam, &detail);
     }
 
     for isl in &world.islands {
@@ -952,6 +953,61 @@ fn abbrev(s: &str, max: usize) -> String {
         let cut: String = chars[..max.saturating_sub(1)].iter().collect();
         format!("{cut}…")
     }
+}
+
+/// Connectivity moored off a continent's east coast: Service harbors and
+/// Ingress gates, each on its city's latitude. Dropped at world scale (the
+/// aggregate view); small line-marks at regional and local scale. Names are
+/// left to the hover tooltip and the city screen, so the coast stays clean.
+fn draw_coast(cont: &Continent, cam: &Camera, detail: &Lod) {
+    if detail.scale == Scale::World {
+        return;
+    }
+    let z = cam.zoom;
+    for m in &cont.coast {
+        let c = cam.to_screen(m.x as f32 + 0.5, m.y as f32 + 0.5);
+        match m.kind {
+            CoastKind::Harbor => draw_harbor(c, z),
+            CoastKind::Gate => draw_gate(c, z),
+        }
+    }
+}
+
+/// A small anchor — the Service harbor mark.
+fn draw_harbor(c: Vec2, z: f32) {
+    let u = (4.5 * z).clamp(3.0, 14.0);
+    let th = (z * 1.6).clamp(1.0, 3.0);
+    draw_circle(c.x, c.y, u * 1.4, Color::new(0.04, 0.06, 0.10, 0.55));
+    draw_circle_lines(c.x, c.y - u, u * 0.45, th, STRUCT);
+    draw_line(c.x, c.y - u * 0.6, c.x, c.y + u, th, STRUCT);
+    draw_line(
+        c.x - u * 0.55,
+        c.y - u * 0.3,
+        c.x + u * 0.55,
+        c.y - u * 0.3,
+        th,
+        STRUCT,
+    );
+    draw_line(c.x, c.y + u, c.x - u * 0.8, c.y + u * 0.35, th, STRUCT);
+    draw_line(c.x, c.y + u, c.x + u * 0.8, c.y + u * 0.35, th, STRUCT);
+}
+
+/// A small arch — the Ingress gate mark.
+fn draw_gate(c: Vec2, z: f32) {
+    let u = (4.5 * z).clamp(3.0, 14.0);
+    let th = (z * 1.6).clamp(1.0, 3.0);
+    let w = u * 0.8;
+    draw_circle(c.x, c.y, u * 1.4, Color::new(0.04, 0.06, 0.10, 0.55));
+    draw_line(c.x - w, c.y + u, c.x - w, c.y - u, th, STRUCT);
+    draw_line(c.x + w, c.y + u, c.x + w, c.y - u, th, STRUCT);
+    draw_line(
+        c.x - w - th * 0.5,
+        c.y - u,
+        c.x + w + th * 0.5,
+        c.y - u,
+        th,
+        STRUCT,
+    );
 }
 
 fn draw_island(isl: &Island, cam: &Camera, detail: &Lod, occupied: &mut Vec<Rect>) {

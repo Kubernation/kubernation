@@ -27,6 +27,8 @@ pub enum WorldDelta {
     Pods,
     Workloads,
     Storage,
+    /// The connectivity layer: Services and Ingresses (one dirty-bit; both
+    /// feed the harbor/gate projection).
     Services,
     Events,
     /// Projected custom-resource instances changed.

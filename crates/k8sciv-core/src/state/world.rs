@@ -55,6 +55,44 @@ pub struct Continent {
     pub y: u16,
     pub w: u16,
     pub provinces: Vec<Province>,
+    /// Connectivity markers moored on the east coast: Service harbors and
+    /// Ingress gates, each on the row of the city it serves.
+    pub coast: Vec<CoastMarker>,
+}
+
+/// Which connectivity kind a coast marker represents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoastKind {
+    /// A Service fronting the city — a `⚓` harbor.
+    Harbor,
+    /// An Ingress routing to the city from outside — a gate.
+    Gate,
+}
+
+/// A connectivity marker on a continent's east coast (in the ocean strip,
+/// on the latitude of the city it serves). Render-only — not a `Region`
+/// hit-test variant; the city screen carries the authoritative routing.
+#[derive(Debug, Clone)]
+pub struct CoastMarker {
+    pub kind: CoastKind,
+    /// Service or Ingress name.
+    pub name: String,
+    /// Service type, or the Ingress host.
+    pub detail: String,
+    /// The city this marker serves.
+    pub workload: WorkloadRef,
+    pub x: u16,
+    pub y: u16,
+}
+
+/// A connectivity object (Service or Ingress) tied to the workload it
+/// exposes — the input that `build_world` moors as a `CoastMarker`.
+#[derive(Debug, Clone)]
+pub struct ExposureEntry {
+    pub workload: WorkloadRef,
+    pub kind: CoastKind,
+    pub name: String,
+    pub detail: String,
 }
 
 /// Something standing on an island: a custom-resource instance (`✦`) or an
@@ -176,6 +214,20 @@ impl WorldModel {
             .map(|p| (p.x + 2, p.y))
     }
 
+    /// The connectivity marker at a world cell, if any — for the GUI hover
+    /// tooltip. Coast markers are render-only, so they live outside
+    /// `region_at`'s land/island sweep.
+    pub fn coast_at(&self, x: u16, y: u16) -> Option<(&Continent, &CoastMarker)> {
+        for cont in &self.continents {
+            for m in &cont.coast {
+                if m.x == x && m.y == y {
+                    return Some((cont, m));
+                }
+            }
+        }
+        None
+    }
+
     /// Island position of a workload's encampment (a city with no land).
     pub fn structure_pos(&self, r: &WorkloadRef) -> Option<(u16, u16)> {
         for isl in &self.islands {
@@ -223,12 +275,23 @@ fn city_dx(name: &str) -> u16 {
     2 + (fnv1a64(name) % (PATCH_W as u64 - 16)) as u16
 }
 
+/// Connectivity markers shown per city before the rest spill (they share
+/// the narrow ocean strip east of the continent).
+const COAST_CAP: usize = 3;
+
 pub fn build_world(
     map: &MapModel,
     workloads: &[WorkloadRow],
     severity: &HashMap<WorkloadRef, Severity>,
     customs: &[CustomEntry],
+    exposure: &[ExposureEntry],
 ) -> WorldModel {
+    // Connectivity grouped by the city it exposes.
+    let mut exp_by: HashMap<&WorkloadRef, Vec<&ExposureEntry>> = HashMap::new();
+    for e in exposure {
+        exp_by.entry(&e.workload).or_default().push(e);
+    }
+
     // --- Site each city: the province hosting the plurality of its pods.
     // Ties break on stable hash, so the city only migrates when its pods
     // genuinely move. DaemonSets become per-province infrastructure.
@@ -310,12 +373,46 @@ pub fn build_world(
             y += h;
         }
         max_bottom = max_bottom.max(y);
+
+        // Moor connectivity markers in the ocean strip east of this
+        // continent, each on its city's row. Gates sort ahead of harbors so
+        // external exposure is never the marker dropped to the cap.
+        let mut coast = Vec::new();
+        for p in &provinces {
+            for c in &p.cities {
+                let Some(entries) = exp_by.get(&c.r) else {
+                    continue;
+                };
+                let mut ordered = entries.clone();
+                ordered.sort_by(|a, b| {
+                    let rank = |k: CoastKind| match k {
+                        CoastKind::Gate => 0,
+                        CoastKind::Harbor => 1,
+                    };
+                    rank(a.kind)
+                        .cmp(&rank(b.kind))
+                        .then_with(|| a.name.cmp(&b.name))
+                });
+                for (i, e) in ordered.into_iter().take(COAST_CAP).enumerate() {
+                    coast.push(CoastMarker {
+                        kind: e.kind,
+                        name: e.name.clone(),
+                        detail: e.detail.clone(),
+                        workload: c.r.clone(),
+                        x: cx + PATCH_W + i as u16,
+                        y: c.y,
+                    });
+                }
+            }
+        }
+
         continents.push(Continent {
             zone: zone.name.clone(),
             x: cx,
             y: 1,
             w: PATCH_W,
             provinces,
+            coast,
         });
     }
 
@@ -372,11 +469,18 @@ pub fn build_world(
         ix += ISLAND_W + ISLAND_GAP;
     }
 
+    let coast_right = continents
+        .iter()
+        .flat_map(|c| c.coast.iter())
+        .map(|m| m.x + 1)
+        .max()
+        .unwrap_or(0);
     let width = continents
         .last()
         .map(|c| c.x + c.w)
         .unwrap_or(PATCH_W)
         .max(islands.last().map(|i| i.x + i.w).unwrap_or(0))
+        .max(coast_right)
         + 2;
     let height = if islands.is_empty() {
         max_bottom + 2
@@ -482,6 +586,46 @@ mod tests {
     }
 
     #[test]
+    fn services_and_ingresses_moor_on_the_city_coast() {
+        let m = world_with(|s| {
+            s.deployment(fx::deployment("demo", "web", 2, 2));
+            s.replicaset(fx::replicaset("demo", "web-abc", "web"));
+            s.pod(fx::pod_owned(
+                fx::pod("demo", "web-abc-1", Some("n-alpha")),
+                "ReplicaSet",
+                "web-abc",
+            ));
+            s.service(fx::service("demo", "web", &[("app", "web")]));
+            s.ingress(fx::ingress("demo", "web-ing", "web.example.com", "web"));
+        });
+        let w = &m.world;
+        let city = w.cities().next().expect("web city");
+        let cont = &w.continents[0];
+        assert_eq!(cont.zone, "z-a");
+        let on_row: Vec<&CoastMarker> = cont.coast.iter().filter(|m| m.y == city.y).collect();
+        assert!(
+            on_row
+                .iter()
+                .any(|m| m.kind == CoastKind::Harbor && m.name == "web"),
+            "missing Service harbor: {:?}",
+            cont.coast
+        );
+        assert!(
+            on_row
+                .iter()
+                .any(|m| m.kind == CoastKind::Gate && m.name == "web-ing"),
+            "missing Ingress gate: {:?}",
+            cont.coast
+        );
+        // Markers float in the ocean strip east of the land, on the city's
+        // latitude — and are discoverable by the hover hit-test.
+        for m in &on_row {
+            assert!(m.x >= cont.x + PATCH_W, "marker not offshore: {m:?}");
+            assert!(w.coast_at(m.x, m.y).is_some(), "coast_at misses {m:?}");
+        }
+    }
+
+    #[test]
     fn placeless_things_live_on_namespace_islands() {
         let m = world_with(|s| {
             // A workload with desired replicas but no pods anywhere.
@@ -494,7 +638,7 @@ mod tests {
             namespace: Some("demo".into()),
             name: "frobnicator".into(),
         }];
-        let w = build_world(&m.map, &m.workloads, &m.workload_severity, &customs);
+        let w = build_world(&m.map, &m.workloads, &m.workload_severity, &customs, &[]);
         let island = w
             .islands
             .iter()

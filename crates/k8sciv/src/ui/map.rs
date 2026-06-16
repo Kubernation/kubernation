@@ -13,11 +13,14 @@ use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::symbols::node_glyph;
 use super::{Action, Component, Edge, OverlayMode, RenderCtx};
 use k8sciv_core::state::model::NodeHealth;
-use k8sciv_core::state::world::{City, Province, Region, WorldModel};
+use k8sciv_core::state::world::{City, CoastKind, Continent, Province, Region, WorldModel};
 use k8sciv_core::util::truncate;
 
 pub const CITY: char = '◍';
 pub const INFRA: char = '≣';
+/// Connectivity moored on the coast: Service harbor / Ingress gate.
+pub const HARBOR: char = 'Ψ';
+pub const GATE: char = '∏';
 
 /// Minimap inputs: cursor province cell and visible-province viewport.
 pub type ChartState = (Option<(usize, usize)>, (usize, usize, usize, usize));
@@ -228,6 +231,7 @@ impl Component for MapView {
             for p in &cont.provinces {
                 draw_province(buf, area, (cam_x, cam_y), p, ctx);
             }
+            draw_coast(buf, area, (cam_x, cam_y), cont, ctx);
         }
 
         // --- Islands ---------------------------------------------------------
@@ -359,6 +363,20 @@ fn draw_city(buf: &mut Buffer, area: Rect, cam: (u16, u16), c: &City, ctx: &Rend
         };
         let width = (area.right() - sx).min(14) as usize;
         buf.set_stringn(sx, sy, truncate(&c.r.name, 14), width, name_style);
+    }
+}
+
+/// Service harbors and Ingress gates moored in the ocean strip east of a
+/// continent, each on the latitude of the city it serves.
+fn draw_coast(buf: &mut Buffer, area: Rect, cam: (u16, u16), cont: &Continent, ctx: &RenderCtx) {
+    for m in &cont.coast {
+        if let Some((sx, sy)) = project(area, cam, m.x, m.y) {
+            let g = match m.kind {
+                CoastKind::Harbor => HARBOR,
+                CoastKind::Gate => GATE,
+            };
+            buf.set_string(sx, sy, g.to_string(), ctx.theme.structure());
+        }
     }
 }
 

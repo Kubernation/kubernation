@@ -99,6 +99,12 @@ to tail its logs in a live overlay (refreshed every couple of seconds):
 
 ![GUI logs](docs/gui-logs.png)
 
+A city's network exposure is moored off its east coast — Service **harbors**
+(anchors) and Ingress **gates** (arches), each on the latitude of the city
+it serves; hover for the route, click to open the city:
+
+![GUI connectivity](docs/gui-connectivity.png)
+
 Press **`c`** to switch the hot
 cluster from a context picker — no restart. Text is **Fira Sans**
 (bundled OFL); both font and sprites are embedded so the binary is
@@ -158,8 +164,8 @@ tick (250ms default), so a noisy cluster can never make typing lag.
  ▣ k8sciv-worker ●5 ≣3      ~  ▣ k8sciv-worker2 ●6 ≣3
  ,    ,    ,    ,    ,         ,   ◍0‼   ,    ,    ,
     ,    ,    ,    ,    ,  ~      ,crashy   ,    ,
-                 ~              ,◍3  ,    ,    ,
-       ~                  ~   ,  web    ,    ,    ,
+                 ~              ,◍3  ,    ,    , ∏Ψ
+       ~                  ~   ,  web    ,    ,    ,   (gate · harbor)
   ≈ k8sciv-demo ≈  ·   ~
    ✦ gizmo/alpha-frob…          ~
  · ✦ gizmo/beta-frobn…
@@ -171,10 +177,12 @@ drought/pressure · `×` wasteland/NotReady). Workloads are **cities**
 (`◍N` — population = ready replicas, flagged `‼`/`!` when concerning)
 sited on the province hosting most of their pods, so a city *migrates
 when its pods do*. DaemonSets pave `≣` roads instead of building cities.
-Anything with no place on the land — projected custom resources (`✦`) and
-zero-pod workloads (`◌`) — lives on **namespace islands** in the southern
-sea. Walk anywhere with `h/j/k/l`; `]`/`[` sail city to city; `Enter`
-opens whatever you stand on.
+A city's network exposure is moored off its **east coast**: Services are
+`Ψ` **harbors**, Ingresses are `∏` **gates** (the shoreline is the network
+boundary). Anything with no place on the land — projected custom resources
+(`✦`) and zero-pod workloads (`◌`) — lives on **namespace islands** in the
+southern sea. Walk anywhere with `h/j/k/l`; `]`/`[` sail city to city;
+`Enter` opens whatever you stand on.
 
 Pods keep their glyphs in city and node screens: `●` ready · `◐` starting
 · `○` pending · `◌` terminating · `✗` failing · `◆` succeeded. The cpu/mem

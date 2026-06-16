@@ -8,7 +8,7 @@ use k8sciv_core::state::attention::Concern;
 use k8sciv_core::state::model::{
     MetricSource, NodeHealth, PodState, WorkloadRef, build_city, build_node_detail,
 };
-use k8sciv_core::state::world::Region;
+use k8sciv_core::state::world::{CoastKind, Region};
 use k8sciv_core::util::format_age_opt;
 use macroquad::prelude::*;
 
@@ -48,53 +48,64 @@ pub fn draw_tooltip(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot, mouse: 
         let (tag, color) = cluster_tag(sw.id);
         lines.push((format!("{tag} {}", sw.label), color));
     }
-    match sw.world.region_at(local.0, local.1) {
-        Region::City(_, c) => {
-            lines.push((c.r.name.clone(), INK));
-            let gap = if c.ready < c.desired { WARN } else { DIM };
-            lines.push((
-                format!(
-                    "{} {} . pop {}/{}",
-                    c.r.kind, c.r.namespace, c.ready, c.desired
-                ),
-                gap,
-            ));
-            if let Some(sev) = c.severity {
-                lines.push(("needs attention".into(), severity_color(sev)));
+    if let Some((_, m)) = sw.world.coast_at(local.0, local.1) {
+        // A coast marker (not a land region): the city's harbor / gate.
+        let (title, what) = match m.kind {
+            CoastKind::Harbor => ("harbor", format!("service {} . {}", m.name, m.detail)),
+            CoastKind::Gate => ("gate", format!("ingress {} . {}", m.name, m.detail)),
+        };
+        lines.push((title.into(), STRUCT));
+        lines.push((what, INK));
+        lines.push((format!("-> {}", m.workload.name), DIM));
+    } else {
+        match sw.world.region_at(local.0, local.1) {
+            Region::City(_, c) => {
+                lines.push((c.r.name.clone(), INK));
+                let gap = if c.ready < c.desired { WARN } else { DIM };
+                lines.push((
+                    format!(
+                        "{} {} . pop {}/{}",
+                        c.r.kind, c.r.namespace, c.ready, c.desired
+                    ),
+                    gap,
+                ));
+                if let Some(sev) = c.severity {
+                    lines.push(("needs attention".into(), severity_color(sev)));
+                }
+                if let Some(pair) = &snap.pair
+                    && let Some(st) = pair.state(&c.r)
+                {
+                    lines.push((st.describe(sw.id), sync_color(st)));
+                }
             }
-            if let Some(pair) = &snap.pair
-                && let Some(st) = pair.state(&c.r)
-            {
-                lines.push((st.describe(sw.id), sync_color(st)));
+            Region::Province(p) => {
+                lines.push((p.tile.name.clone(), INK));
+                let health = match p.tile.health {
+                    NodeHealth::Healthy => ("healthy", DIM),
+                    NodeHealth::Cordoned => ("cordoned", WARN),
+                    NodeHealth::Pressure => ("under pressure", WARN),
+                    NodeHealth::NotReady => ("NotReady", CRIT),
+                };
+                lines.push((
+                    format!("{} . {} pods", health.0, p.tile.pods.len()),
+                    health.1,
+                ));
             }
-        }
-        Region::Province(p) => {
-            lines.push((p.tile.name.clone(), INK));
-            let health = match p.tile.health {
-                NodeHealth::Healthy => ("healthy", DIM),
-                NodeHealth::Cordoned => ("cordoned", WARN),
-                NodeHealth::Pressure => ("under pressure", WARN),
-                NodeHealth::NotReady => ("NotReady", CRIT),
-            };
-            lines.push((
-                format!("{} . {} pods", health.0, p.tile.pods.len()),
-                health.1,
-            ));
-        }
-        Region::Structure(_, s) => {
-            lines.push((format!("{}/{}", s.kind, s.name), INK));
-            if s.workload.is_some() {
-                lines.push(("encampment - no pods on any land".into(), WARN));
+            Region::Structure(_, s) => {
+                lines.push((format!("{}/{}", s.kind, s.name), INK));
+                if s.workload.is_some() {
+                    lines.push(("encampment - no pods on any land".into(), WARN));
+                }
             }
-        }
-        Region::Island(isl) => {
-            lines.push((format!("isle of {}", isl.label), INK));
-        }
-        Region::Ocean => {
-            if !paired {
-                return;
+            Region::Island(isl) => {
+                lines.push((format!("isle of {}", isl.label), INK));
             }
-            lines.push(("open sea".into(), DIM));
+            Region::Ocean => {
+                if !paired {
+                    return;
+                }
+                lines.push(("open sea".into(), DIM));
+            }
         }
     }
     let fs = 14.0;

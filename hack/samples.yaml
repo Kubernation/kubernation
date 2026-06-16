@@ -40,6 +40,25 @@ spec:
   ports:
     - port: 80
 ---
+# Ingress → web: the city's external gate (Ψ harbor + ∏ gate on its coast).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  namespace: k8sciv-demo
+spec:
+  rules:
+    - host: web.k8sciv.example
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80
+---
 # Crashes on purpose: enters CrashLoopBackOff within a minute of apply.
 apiVersion: apps/v1
 kind: Deployment

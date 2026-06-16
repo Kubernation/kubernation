@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::core::v1::{Event, Node, PersistentVolumeClaim, Pod, Service};
+use k8s_openapi::api::networking::v1::Ingress;
 use kube::api::Api;
 use kube::runtime::reflector::store::Writer;
 use kube::runtime::{WatchStreamExt, reflector, watcher};
@@ -127,6 +128,16 @@ pub fn spawn(
         sink.clone(),
         WorldDelta::Services,
     ));
+    // Ingresses share the Services dirty-bit (both feed the connectivity
+    // projection, and rebuilds are wholesale).
+    let (ingresses, w) = reflector::store::<Ingress>();
+    tasks.push(spawn_reflector(
+        Api::all(c.clone()),
+        w,
+        id,
+        sink.clone(),
+        WorldDelta::Services,
+    ));
 
     let events = Arc::new(Mutex::new(VecDeque::new()));
     tasks.push(spawn_events(
@@ -172,6 +183,7 @@ pub fn spawn(
         daemonsets,
         pvcs,
         services,
+        ingresses,
         events,
     };
     WorldHandle { world, tasks }

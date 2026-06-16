@@ -475,6 +475,10 @@ async fn main() {
 
 fn panel_for(worlds: &[SceneWorld], sel: (u16, u16)) -> Option<Panel> {
     let (sw, local) = locate(worlds, sel)?;
+    // A coast marker opens the city it serves.
+    if let Some((_, m)) = sw.world.coast_at(local.0, local.1) {
+        return Some(Panel::City(sw.id, m.workload.clone()));
+    }
     match sw.world.region_at(local.0, local.1) {
         Region::City(_, c) => Some(Panel::City(sw.id, c.r.clone())),
         Region::Province(p) => Some(Panel::Node(sw.id, p.tile.name.clone())),

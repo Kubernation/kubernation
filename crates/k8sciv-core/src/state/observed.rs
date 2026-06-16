@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::core::v1::{Event, Node, PersistentVolumeClaim, Pod, Service};
+use k8s_openapi::api::networking::v1::Ingress;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::runtime::reflector::Store;
 
@@ -22,6 +23,9 @@ pub struct ObservedWorld {
     pub daemonsets: Store<DaemonSet>,
     pub pvcs: Store<PersistentVolumeClaim>,
     pub services: Store<Service>,
+    /// Ingresses — the cluster's external gates, projected beside the
+    /// Service harbors they route to.
+    pub ingresses: Store<Ingress>,
     /// Bounded ring of recent events (all types; Warning drives attention).
     pub events: Arc<Mutex<VecDeque<RecentEvent>>>,
     /// Dynamic custom-resource projections (configured via `projections` /

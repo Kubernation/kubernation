@@ -111,6 +111,25 @@ what makes the interesting logic unit-testable without a cluster.
   (`#[default] Hot`) for `LogsView::default()` — the orphan rule blocks
   `impl Default` in the TUI crate. Dev flag `--tail` (with `--inspect`)
   auto-opens the first pod's logs for headless screenshots (docs/gui-logs.png).
+- **Connectivity layer** (2026-06-16, first slice of "more kinds on the map"):
+  Services become `Ψ` harbors and Ingresses `∏` gates, **moored in the ocean
+  strip on a continent's east coast, each on the latitude of the city it
+  serves** — the shoreline reads as the network boundary. `build_exposure`
+  (pure, in `model.rs`) is the reverse of `build_city`'s service match: it
+  resolves Service selectors → workloads (harbors) and Ingress backends →
+  Services → workloads (gates), deduped per (workload, kind, name).
+  `build_world` moors them as `CoastMarker`s on `Continent.coast` at
+  `cont.x + PATCH_W + i` (gates sort ahead of harbors so external exposure
+  is never the one dropped to `COAST_CAP`=3). They are **render-only** — not
+  a `Region` hit-test variant — so the change doesn't ripple through every
+  `region_at` consumer; `WorldModel::coast_at` powers the GUI hover tooltip
+  and click-to-open-city, and the city screen carries the authoritative
+  routes (Service `svc/` + Ingress `ing/host`). Both frontends drop the
+  marks at world scale and show them at regional/local (TUI: cyan `Ψ`/`∏`;
+  GUI: cyan anchor / arch line-marks). Demo: `hack/samples.yaml` adds an
+  Ingress for `web` (docs/gui-connectivity.png). Deferred to later slices:
+  PVCs as granaries, Jobs/CronJobs, and connectivity attention (orphan
+  ingress / harbor with no city).
 - **Stable layout:** nodes sort within a zone by FNV-1a-64(name) — pinned by
   test so layouts never reshuffle across runs or Rust upgrades. Zones sort
   by name; `unzoned` sinks to the end.
@@ -118,10 +137,11 @@ what makes the interesting logic unit-testable without a cluster.
   `failure-domain.beta.kubernetes.io/zone` fallback. kind has no zone labels,
   so `hack/kind-config.yaml` bakes z-a/z-b/z-c onto the workers.
 - **Watched resources:** Node, Pod, Deployment, ReplicaSet (ownership chain +
-  rollout), StatefulSet, DaemonSet, PVC, Service, Event. **Secrets and
-  ConfigMaps are never watched** — the city screen derives their *names*
+  rollout), StatefulSet, DaemonSet, PVC, Service, Ingress, Event. **Secrets
+  and ConfigMaps are never watched** — the city screen derives their *names*
   from pod-template references, so we observe dependency shape without
-  reading contents (least privilege).
+  reading contents (least privilege). Ingress shares the `Services` dirty-bit
+  (both feed the connectivity projection; see "Connectivity layer").
 - **Events:** no reflector store; a bounded ring (500) deduped by
   (kind, ns, name, reason). Attention considers Warning events from the last
   15 minutes, skipping objects already covered by a stronger concern.
@@ -334,6 +354,8 @@ what makes the interesting logic unit-testable without a cluster.
 | `▪` (civ) / `·` (plain) | world-panel node cell, colored by worst state |
 | `┌┐└┘` | world-panel viewport frame (reversed cell = cursor) |
 | `▒`   | fog of war (world not yet synced)  |
+| `Ψ`   | Service harbor (on the city's east coast, cyan) |
+| `∏`   | Ingress gate (on the city's east coast, cyan) |
 
 Health precedence on a tile: NotReady > Cordoned > Pressure > Healthy.
 Zone headers carry a `▪N` rollup (colored by the zone's worst node) when
@@ -412,7 +434,9 @@ never blocks input.
 ## Deferred (deliberately)
 
 mutations & the planning-turn diff UI · external services / chaos layers ·
-Job/CronJob city screens · namespace filtering · mouse
+more map kinds beyond the connectivity slice (PVCs as granaries,
+Jobs/CronJobs as expeditions) + connectivity attention · Job/CronJob city
+screens · namespace filtering · mouse
 support · pod-level live metrics (node-level done) · minimap horizontal
 compression for very wide zone counts (~60+) · zoom levels (compact 1-line
 tiles for very large boards) · pair: per-container image diffs, env/config

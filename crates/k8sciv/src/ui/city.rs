@@ -325,6 +325,7 @@ mod tests {
             "web-7d4b",
         ));
         s.service(fx::service("demo", "web", &[("app", "web")]));
+        s.ingress(fx::ingress("demo", "web-ing", "web.example.com", "web"));
 
         let models = Models::build(&world);
         let theme = Theme::new(ColorMode::Auto);
@@ -372,6 +373,10 @@ mod tests {
             "pod reason missing:\n{text}"
         );
         assert!(text.contains("svc/web"), "owned service missing:\n{text}");
+        assert!(
+            text.contains("ing/web-ing"),
+            "owned ingress (gate) missing:\n{text}"
+        );
         assert!(
             text.contains("RECENT EVENTS"),
             "events panel missing:\n{text}"

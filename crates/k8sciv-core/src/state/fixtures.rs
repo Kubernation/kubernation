@@ -13,6 +13,10 @@ use k8s_openapi::api::core::v1::{
     NodeSpec, NodeStatus, NodeSystemInfo, PersistentVolumeClaim, PersistentVolumeClaimStatus, Pod,
     PodCondition, PodSpec, PodStatus, PodTemplateSpec, ResourceRequirements, Service, ServiceSpec,
 };
+use k8s_openapi::api::networking::v1::{
+    HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressBackend, IngressRule,
+    IngressServiceBackend, IngressSpec, ServiceBackendPort,
+};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
 use kube::runtime::reflector::store::Writer;
@@ -32,6 +36,7 @@ pub struct Seeds {
     pub daemonsets: Writer<DaemonSet>,
     pub pvcs: Writer<PersistentVolumeClaim>,
     pub services: Writer<Service>,
+    pub ingresses: Writer<Ingress>,
 }
 
 macro_rules! seed_fn {
@@ -51,6 +56,7 @@ impl Seeds {
     seed_fn!(daemonset, daemonsets, DaemonSet);
     seed_fn!(pvc, pvcs, PersistentVolumeClaim);
     seed_fn!(service, services, Service);
+    seed_fn!(ingress, ingresses, Ingress);
 }
 
 pub fn world() -> (ObservedWorld, Seeds) {
@@ -62,6 +68,7 @@ pub fn world() -> (ObservedWorld, Seeds) {
     let (daemonsets, daemonsets_w) = reflector::store();
     let (pvcs, pvcs_w) = reflector::store();
     let (services, services_w) = reflector::store();
+    let (ingresses, ingresses_w) = reflector::store();
     let world = ObservedWorld {
         meta: ClusterMeta {
             context: "test".into(),
@@ -77,6 +84,7 @@ pub fn world() -> (ObservedWorld, Seeds) {
         daemonsets,
         pvcs,
         services,
+        ingresses,
         events: Arc::new(Mutex::new(VecDeque::new())),
         customs: Arc::new(Vec::new()),
         metrics: crate::k8s::metrics::store(),
@@ -90,6 +98,7 @@ pub fn world() -> (ObservedWorld, Seeds) {
         daemonsets: daemonsets_w,
         pvcs: pvcs_w,
         services: services_w,
+        ingresses: ingresses_w,
     };
     (world, seeds)
 }
@@ -375,6 +384,36 @@ pub fn service(ns: &str, name: &str, selector: &[(&str, &str)]) -> Service {
                     .collect(),
             ),
             type_: Some("ClusterIP".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// An Ingress with a single host→service rule (the common shape).
+pub fn ingress(ns: &str, name: &str, host: &str, service: &str) -> Ingress {
+    Ingress {
+        metadata: meta(Some(ns), name),
+        spec: Some(IngressSpec {
+            rules: Some(vec![IngressRule {
+                host: Some(host.into()),
+                http: Some(HTTPIngressRuleValue {
+                    paths: vec![HTTPIngressPath {
+                        path: Some("/".into()),
+                        path_type: "Prefix".into(),
+                        backend: IngressBackend {
+                            service: Some(IngressServiceBackend {
+                                name: service.into(),
+                                port: Some(ServiceBackendPort {
+                                    number: Some(80),
+                                    ..Default::default()
+                                }),
+                            }),
+                            ..Default::default()
+                        },
+                    }],
+                }),
+            }]),
             ..Default::default()
         }),
         ..Default::default()
