@@ -200,6 +200,41 @@ pub fn lod(zoom: f32) -> Lod {
     }
 }
 
+// --- label de-confliction -------------------------------------------------
+//
+// Monmonier's displacement operator: a label takes the first of its
+// candidate positions that clears every label already placed this frame.
+// Continent > province > city priority (drawn in that order), so the most
+// important labels keep their preferred spot and lesser ones step aside.
+
+const LABEL_PAD: f32 = 2.0;
+
+fn rect_hits(a: Rect, occ: &[Rect]) -> bool {
+    occ.iter().any(|o| {
+        a.x < o.x + o.w + LABEL_PAD
+            && a.x + a.w + LABEL_PAD > o.x
+            && a.y < o.y + o.h + LABEL_PAD
+            && a.y + a.h + LABEL_PAD > o.y
+    })
+}
+
+/// Reserve the first candidate rect that clears placed labels (or the last
+/// if all collide). Returns the chosen rect.
+fn place(occ: &mut Vec<Rect>, candidates: &[Rect]) -> Rect {
+    for &c in candidates {
+        if !rect_hits(c, occ) {
+            occ.push(c);
+            return c;
+        }
+    }
+    let last = candidates
+        .last()
+        .copied()
+        .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+    occ.push(last);
+    last
+}
+
 // --- irregular coastlines -------------------------------------------------
 //
 // The core world model is a clean rectangular grid (the canonical
@@ -398,29 +433,43 @@ pub fn draw_world(
     let cols = (screen_width() / cw) as i32 + 2;
     let rows = (screen_height() / ch) as i32 + 2;
 
+    // Labels placed this frame, so later (lesser) ones step around earlier
+    // (more important) ones. Continent names go first.
+    let mut occupied: Vec<Rect> = Vec::new();
+
     for cont in &world.continents {
         if detail.province_labels {
             let p = cam.to_screen(cont.x as f32 + 1.0, cont.y as f32 - 1.0);
-            text(
-                ascii(&format!(
-                    "{}  ({} provinces)",
-                    cont.zone,
-                    cont.provinces.len()
-                )),
-                p.x,
-                p.y + ch * 0.7,
-                20.0 * cam.zoom.max(0.8),
-                PARCHMENT,
-            );
+            let label = ascii(&format!(
+                "{}  ({} provinces)",
+                cont.zone,
+                cont.provinces.len()
+            ));
+            let fs = 20.0 * cam.zoom.max(0.8);
+            let tm = text_size(&label, fs);
+            let y = p.y + ch * 0.7;
+            occupied.push(Rect::new(p.x, y - tm.height, tm.width, tm.height + 4.0));
+            text(&label, p.x, y, fs, PARCHMENT);
         }
         let coast = Coast::new(cont);
         for prov in &cont.provinces {
-            draw_province(prov, cam, &detail, pair, &coast, x0, y0, cols, rows);
+            draw_province(
+                prov,
+                cam,
+                &detail,
+                pair,
+                &coast,
+                &mut occupied,
+                x0,
+                y0,
+                cols,
+                rows,
+            );
         }
     }
 
     for isl in &world.islands {
-        draw_island(isl, cam, &detail);
+        draw_island(isl, cam, &detail, &mut occupied);
     }
 }
 
@@ -446,6 +495,7 @@ fn draw_province(
     detail: &Lod,
     pair: Option<&PairSync>,
     coast: &Coast,
+    occupied: &mut Vec<Rect>,
     vx0: i32,
     vy0: i32,
     vcols: i32,
@@ -602,18 +652,24 @@ fn draw_province(
     }
 
     if detail.province_labels {
-        // Inset the label to the top row's shore so it sits on land.
+        // Inset the label to the top row's shore so it sits on land, and
+        // reserve its two-line block so settlements step around it.
         let (top_li, _) = coast.land_span(prov.y as i32, prov.w as f32);
         let label_x = tl.x + top_li * cw + 6.0;
+        let fs = 16.0 * cam.zoom.max(0.7);
+        let name = ascii(&prov.tile.name);
+        let pods = format!("{} pods", prov.tile.pods.len());
+        let nm = text_size(&name, fs);
+        let block_w = nm.width.max(text_size(&pods, fs * 0.8).width);
+        occupied.push(Rect::new(
+            label_x - 2.0,
+            tl.y + 2.0,
+            block_w + 4.0,
+            32.0 * cam.zoom.max(0.7),
+        ));
+        text(&name, label_x, tl.y + 15.0 * cam.zoom.max(0.7), fs, INK);
         text(
-            ascii(&prov.tile.name),
-            label_x,
-            tl.y + 15.0 * cam.zoom.max(0.7),
-            16.0 * cam.zoom.max(0.7),
-            INK,
-        );
-        text(
-            format!("{} pods", prov.tile.pods.len()),
+            &pods,
             label_x,
             tl.y + 30.0 * cam.zoom.max(0.7),
             13.0 * cam.zoom.max(0.7),
@@ -627,7 +683,7 @@ fn draw_province(
         draw_province_aggregate(prov, cam, coast);
     } else {
         for city in &prov.cities {
-            draw_city(city, cam, detail, pair);
+            draw_city(city, cam, detail, pair, occupied);
         }
     }
 }
@@ -697,7 +753,13 @@ fn draw_province_aggregate(prov: &Province, cam: &Camera, coast: &Coast) {
 /// A settlement, Civ-style: huts that grow with population, a white pop
 /// box, walls once it's a real city, a flag and tint when it needs the
 /// operator — and a sync chip when a warm twin exists.
-fn draw_city(city: &City, cam: &Camera, detail: &Lod, pair: Option<&PairSync>) {
+fn draw_city(
+    city: &City,
+    cam: &Camera,
+    detail: &Lod,
+    pair: Option<&PairSync>,
+    occupied: &mut Vec<Rect>,
+) {
     let z = cam.zoom;
     let c = cam.to_screen(city.x as f32 + 0.5, city.y as f32 + 0.8);
     let tier = match city.ready {
@@ -806,7 +868,8 @@ fn draw_city(city: &City, cam: &Camera, detail: &Lod, pair: Option<&PairSync>) {
         );
     }
 
-    // Population box (Civ's white number chip).
+    // Population box (Civ's white number chip), de-conflicted around the
+    // building so stacked settlements don't pile their chips together.
     let (box_col, num_col) = match city.severity {
         Some(Severity::Critical) => (CRIT, INK),
         Some(Severity::Warning) => (WARN, PLATE),
@@ -814,31 +877,44 @@ fn draw_city(city: &City, cam: &Camera, detail: &Lod, pair: Option<&PairSync>) {
     };
     let pop = city.ready.to_string();
     let fs = (14.0 * z).max(10.0);
-    let m = text_size(&pop, fs);
-    let bw = m.width + 6.0;
+    let bw = text_size(&pop, fs).width + 6.0;
     let bh = fs + 2.0;
-    let bx = c.x - plate_r - bw + 4.0;
-    let by = c.y - plate_r - bh + 2.0;
-    draw_rectangle(bx, by, bw, bh, box_col);
-    draw_rectangle_lines(bx, by, bw, bh, 1.0, PLATE);
-    text(&pop, bx + 3.0, by + bh - 4.0, fs, num_col);
+    let chip = place(
+        occupied,
+        &[
+            Rect::new(c.x - plate_r - bw + 4.0, c.y - plate_r - bh + 2.0, bw, bh),
+            Rect::new(c.x + plate_r - 4.0, c.y - plate_r - bh + 2.0, bw, bh),
+            Rect::new(c.x - plate_r - bw + 4.0, c.y + plate_r - 2.0, bw, bh),
+            Rect::new(c.x + plate_r - 4.0, c.y + plate_r - 2.0, bw, bh),
+        ],
+    );
+    draw_rectangle(chip.x, chip.y, bw, bh, box_col);
+    draw_rectangle_lines(chip.x, chip.y, bw, bh, 1.0, PLATE);
+    text(&pop, chip.x + 3.0, chip.y + bh - 4.0, fs, num_col);
 
     // Sync chip beside the pop box, when a warm twin exists.
     if let Some(p) = pair
         && let Some(st) = p.state(&city.r)
     {
         let badge = ascii(&st.badge());
-        let cm = text_size(&badge, fs);
-        let chip_w = cm.width + 6.0;
-        let chip_x = bx - chip_w - 3.0;
-        draw_rectangle(chip_x, by, chip_w, bh, PLATE);
-        draw_rectangle_lines(chip_x, by, chip_w, bh, 1.0, sync_color(st));
-        text(&badge, chip_x + 3.0, by + bh - 4.0, fs, sync_color(st));
+        let chip_w = text_size(&badge, fs).width + 6.0;
+        let sr = place(
+            occupied,
+            &[
+                Rect::new(chip.x - chip_w - 3.0, chip.y, chip_w, bh),
+                Rect::new(chip.x + bw + 3.0, chip.y, chip_w, bh),
+            ],
+        );
+        draw_rectangle(sr.x, sr.y, chip_w, bh, PLATE);
+        draw_rectangle_lines(sr.x, sr.y, chip_w, bh, 1.0, sync_color(st));
+        text(&badge, sr.x + 3.0, sr.y + bh - 4.0, fs, sync_color(st));
     }
 
     // Name plate. At regional scale only the noteworthy keep their labels
     // (Monmonier selection — troubled or populous cities), abbreviated to
-    // cut clutter; at local scale every settlement is named in full.
+    // cut clutter; at local scale every settlement is named in full. The
+    // label takes the first free position (Brewer prefers the right), so
+    // stacked cities fan their names out instead of colliding.
     let named = detail.name_plates
         && (detail.scale == Scale::Local
             || detail.name_all
@@ -849,16 +925,21 @@ fn draw_city(city: &City, cam: &Camera, detail: &Lod, pair: Option<&PairSync>) {
         let label = ascii(&abbrev(&city.r.name, if full { 64 } else { 11 }));
         let fs = (15.0 * z).max(11.0);
         let tm = text_size(&label, fs);
-        let lx = c.x - tm.width / 2.0;
-        let ly = c.y + plate_r + fs * 0.95;
-        draw_rectangle(
-            lx - 4.0,
-            ly - tm.height,
-            tm.width + 8.0,
-            tm.height + 5.0,
-            PLATE,
+        let pw = tm.width + 8.0;
+        let ph = tm.height + 5.0;
+        let gap = 4.0;
+        let nr = place(
+            occupied,
+            &[
+                Rect::new(c.x + plate_r + gap, c.y - ph / 2.0, pw, ph), // right
+                Rect::new(c.x + plate_r + gap, c.y - plate_r - ph, pw, ph), // upper-right
+                Rect::new(c.x + plate_r + gap, c.y + plate_r, pw, ph),  // lower-right
+                Rect::new(c.x - plate_r - gap - pw, c.y - ph / 2.0, pw, ph), // left
+                Rect::new(c.x - pw / 2.0, c.y + plate_r + gap, pw, ph), // below
+            ],
         );
-        text(&label, lx, ly, fs, INK);
+        draw_rectangle(nr.x, nr.y, pw, ph, PLATE);
+        text(&label, nr.x + 4.0, nr.y + ph - 5.0, fs, INK);
     }
 }
 
@@ -873,7 +954,7 @@ fn abbrev(s: &str, max: usize) -> String {
     }
 }
 
-fn draw_island(isl: &Island, cam: &Camera, detail: &Lod) {
+fn draw_island(isl: &Island, cam: &Camera, detail: &Lod, occupied: &mut Vec<Rect>) {
     let (cw, ch) = cam.cell_px();
     let tl = cam.to_screen(isl.x as f32, isl.y as f32);
     let w = isl.w as f32 * cw;
@@ -945,13 +1026,18 @@ fn draw_island(isl: &Island, cam: &Camera, detail: &Lod) {
             draw_poly_lines(p.x, p.y, 4, 6.0 * cam.zoom, 45.0, 1.5, darker(color, 0.5));
         }
         if detail.structures_labels {
-            text(
-                ascii(&format!("{}/{}", s.kind, s.name)),
-                p.x + 11.0,
-                p.y + 5.0,
-                13.0 * cam.zoom.max(0.8),
-                darker(SAND, 0.3),
+            let label = ascii(&format!("{}/{}", s.kind, s.name));
+            let fs = 13.0 * cam.zoom.max(0.8);
+            let tm = text_size(&label, fs);
+            let r = place(
+                occupied,
+                &[
+                    Rect::new(p.x + 10.0, p.y - tm.height / 2.0, tm.width, tm.height),
+                    Rect::new(p.x + 10.0, p.y + 6.0, tm.width, tm.height),
+                    Rect::new(p.x + 10.0, p.y - tm.height - 6.0, tm.width, tm.height),
+                ],
             );
+            text(&label, r.x, r.y + tm.height - 2.0, fs, darker(SAND, 0.3));
         }
     }
     if isl.more > 0 {

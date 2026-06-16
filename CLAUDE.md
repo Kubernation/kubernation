@@ -234,9 +234,22 @@ what makes the interesting logic unit-testable without a cluster.
   city, dense worlds select (troubled or ready≥4) — clutter-driven, not a
   fixed rule. Local = everything, full names. Civ-II aesthetic is
   preserved (same sprites/parchment); only the *density* changes with
-  scale. Pop-chip stays upper-left (Civ convention) rather than Brewer's
-  upper-right — deliberate. Dev flags `--zoom <f>` and `--inspect <node>`
-  added for headless tier verification.
+  scale. Pop-chip prefers upper-left, names prefer the right. Dev flags
+  `--zoom <f>` and `--inspect <node>` added for headless tier verification.
+- **GUI label de-confliction** (2026-06-16, "we're getting label
+  collisions"): Monmonier's *displacement* operator. `draw_world` keeps a
+  per-frame `occupied: Vec<Rect>`; every label (continent → province →
+  city chips → city names, in that priority order) takes the first of a
+  candidate-position list that clears already-placed rects (`place()` /
+  `rect_hits`). City names default to the **right** of the building
+  (Brewer's preferred point-label position) with upper-right/lower-right/
+  left/below fallbacks, so settlements stacked in a province's vertical
+  column fan their names out instead of piling up; pop chips flip
+  upper-left→upper-right→lower to dodge the province label; island
+  structure labels de-conflict too. The user waived strict Civ
+  name-below placement ("the Civ convention is satisfied by the shape,
+  colors, minimap and behaviors") for legibility. Names sit east of
+  buildings (which are placed in the western half), so they stay on land.
 - **`Store::wait_until_ready` allows ONE concurrent waiter per store** (found
   2026-06-12): kube's readiness uses a `DelayedInit` over a futures oneshot
   receiver, which holds a single waker slot. Two tasks awaiting the same
