@@ -21,7 +21,7 @@ pub const STRIP_H: f32 = 64.0;
 pub const CHROME_H: f32 = 32.0;
 const PANEL_W: f32 = 390.0;
 
-fn pod_color(s: PodState) -> Color {
+pub(crate) fn pod_color(s: PodState) -> Color {
     match s {
         PodState::Ok => Color::new(0.45, 0.70, 0.40, 1.0),
         PodState::Starting => Color::new(0.40, 0.75, 0.80, 1.0),

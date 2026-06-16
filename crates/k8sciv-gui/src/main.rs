@@ -8,17 +8,21 @@
 //!
 //! Controls: WASD/arrows or right-drag pan · wheel zoom · hover for
 //! tooltips · click to inspect (city screen / node panel) · ]/[ sail
-//! between cities · N fly to the next concern · Esc close · Q quit.
+//! between cities · N fly to the next concern · ?/F1 Almanac (in-app
+//! reference) · Esc close · Q quit.
 
+mod almanac;
 mod draw;
 mod net;
 mod panels;
 mod sprites;
 mod text;
 mod theme;
+mod window;
 
 use std::path::PathBuf;
 
+use almanac::{Almanac, AlmanacAction};
 use clap::Parser;
 use draw::{
     Camera, SceneWorld, draw_minimap, draw_sea, draw_selection, draw_world, locate, minimap_layout,
@@ -70,6 +74,9 @@ struct Args {
     /// After --inspect opens a panel, tail its first pod's logs (verification)
     #[arg(long)]
     tail: bool,
+    /// Open the Almanac (in-app reference) on sync (development verification)
+    #[arg(long)]
+    almanac: bool,
 }
 
 fn window_conf() -> Conf {
@@ -117,6 +124,8 @@ async fn main() {
     let mut pod_hits: Vec<PodRowHit> = Vec::new();
     let mut log_open = false;
     let mut auto_tail = args.tail;
+    // The Almanac (in-app reference) — a modal window; None = closed.
+    let mut almanac: Option<Almanac> = None;
 
     loop {
         let snap = net.snapshot();
@@ -139,8 +148,21 @@ async fn main() {
         if is_key_pressed(KeyCode::Q) {
             break;
         }
+        // ?, /, or F1 toggle the Almanac (in-app reference). Track an open
+        // *this frame* so the same click/press doesn't immediately dismiss it.
+        let mut almanac_just_opened = false;
+        if is_key_pressed(KeyCode::F1) || is_key_pressed(KeyCode::Slash) {
+            if almanac.is_some() {
+                almanac = None;
+            } else {
+                almanac = Some(Almanac::new());
+                almanac_just_opened = true;
+            }
+        }
         if is_key_pressed(KeyCode::Escape) {
-            if picker {
+            if almanac.is_some() {
+                almanac = None;
+            } else if picker {
                 picker = false;
             } else if log_open {
                 log_open = false;
@@ -173,8 +195,16 @@ async fn main() {
             }
         }
 
+        // The Almanac swallows the wheel (scroll its content, not zoom).
+        if let Some(a) = almanac.as_mut() {
+            let (_, wheel) = mouse_wheel();
+            if wheel.abs() > 0.0 {
+                a.scroll_by(wheel);
+            }
+        }
+
         let mut manual_pan = false;
-        if !picker {
+        if !picker && almanac.is_none() {
             let pan = 14.0;
             if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) {
                 cam.pos.x -= pan;
@@ -236,9 +266,12 @@ async fn main() {
                     picker = true;
                     picker_idx = contexts.iter().position(|c| *c == current_ctx).unwrap_or(0);
                 }
+                if args.almanac {
+                    almanac = Some(Almanac::new());
+                }
             }
-            if picker {
-                // Picker open: world navigation is suspended this frame.
+            if picker || almanac.is_some() {
+                // A modal is open: world navigation is suspended this frame.
             } else {
                 if is_key_pressed(KeyCode::F) {
                     cam.fit(bounds);
@@ -389,6 +422,7 @@ async fn main() {
                 let ml = minimap_layout(bounds);
                 let over_minimap = panel.is_none() && ml.frame.contains(mouse);
                 if !picker
+                    && almanac.is_none()
                     && drag_anchor.is_none()
                     && !over_panel
                     && !over_minimap
@@ -439,9 +473,23 @@ async fn main() {
             20.0,
             PARCHMENT,
         );
-        let help = "drag/WASD pan . wheel zoom . F fit . click inspect . click pod=logs . ]/[ cities . N concern . C context . Q quit";
+        // Almanac button (top-right); the help line ends to its left.
+        let help_btn = Rect::new(screen_width() - 30.0, 5.0, 22.0, 22.0);
+        draw_rectangle(help_btn.x, help_btn.y, help_btn.w, help_btn.h, PLATE);
+        draw_rectangle_lines(
+            help_btn.x, help_btn.y, help_btn.w, help_btn.h, 1.0, PARCHMENT,
+        );
+        text_bold("?", help_btn.x + 7.0, help_btn.y + 16.0, 16.0, PARCHMENT);
+        if is_mouse_button_pressed(MouseButton::Left)
+            && help_btn.contains(mouse)
+            && almanac.is_none()
+        {
+            almanac = Some(Almanac::new());
+            almanac_just_opened = true;
+        }
+        let help = "drag/WASD pan . wheel zoom . F fit . click inspect . ]/[ cities . N concern . C context . ? almanac";
         let hm = text_size(help, 14.0);
-        text(help, screen_width() - hm.width - 12.0, 21.0, 14.0, DIM);
+        text(help, help_btn.x - hm.width - 10.0, 21.0, 14.0, DIM);
 
         // Context picker, drawn on top of everything.
         if picker {
@@ -456,6 +504,22 @@ async fn main() {
                         concern_idx = 0;
                     }
                 }
+            }
+        }
+
+        // The Almanac, drawn on top of everything; it handles its own clicks
+        // (but not the click that opened it this frame).
+        if almanac.is_some() {
+            let click = is_mouse_button_pressed(MouseButton::Left) && !almanac_just_opened;
+            let action = almanac.as_mut().map(|a| a.draw(mouse, click));
+            match action {
+                Some(AlmanacAction::Close) => almanac = None,
+                Some(AlmanacAction::Page(p)) => {
+                    if let Some(a) = almanac.as_mut() {
+                        a.go(p);
+                    }
+                }
+                _ => {}
             }
         }
 

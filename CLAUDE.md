@@ -60,6 +60,8 @@ crates/
                  ObservedWorld snapshots), draw.rs (terrain mosaic,
                  settlements, minimap, camera), panels.rs (tooltip, city/
                  node panels via the pure core builders, attention strip),
+                 window.rs (reusable modal chrome for drill-downs),
+                 almanac.rs (the in-app reference / Civilopedia),
                  theme.rs. See "GUI spike" + "GUI promotion" decisions.
 ```
 
@@ -160,6 +162,24 @@ what makes the interesting logic unit-testable without a cluster.
   GUI's wider labels show them in full. Demo: `migrate` Job + daily `nightly`
   CronJob in samples (docs/gui-batch.png). Deferred: Job-object attention
   (Job *pod* failures already route to the node), Job/CronJob city screens.
+- **GUI window system + Almanac** (2026-06-16, user request after pasting
+  Civ II's Civilopedia + city screens): the GUI had only bespoke overlays
+  (tooltip, side panel, log overlay, picker) — no shared modal. `window.rs`
+  is a reusable centered modal (dimmed scrim, parchment frame, titlebar +
+  icon, a clipped body the caller fills, a button/tab row; Esc / close-box /
+  click-outside dismiss), mirroring Civ II's window *structure* in the
+  K8sCiv palette. macroquad has no easy scissor, so the body is culled +
+  scrolled by the caller (per-line visibility test), like `draw_logs`.
+  `almanac.rs` is the first consumer — our **Civilopedia**: pages Legend /
+  World / Controls / Reading, opened with `?`/`F1` or the top-bar `?` button
+  (`--almanac` dev flag for headless shots). The Legend draws the **actual
+  marks** (reuses `draw_harbor/gate/granary/job/cronjob`, now `pub(crate)`,
+  + `pod_color`) beside each definition, so it can't drift from the map.
+  The TUI's `?` help gained a matching compact MAP LEGEND section. Cities
+  staying a right-side panel for now; the **next step** is moving city/node
+  detail into the window system as rich Civ-II-style drill-downs (citizens,
+  food/trade/science bars, improvements, units, production) — the system was
+  built to host them. docs/gui-almanac.png.
 - **Stable layout:** nodes sort within a zone by FNV-1a-64(name) — pinned by
   test so layouts never reshuffle across runs or Rust upgrades. Zones sort
   by name; `unzoned` sinks to the end.

@@ -21,6 +21,20 @@ const KEYMAP: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "MAP LEGEND",
+        &[
+            ("◍  city", "workload (deploy/sts); pop = ready pods"),
+            ("≣  road", "daemonset"),
+            ("Ψ  ∏", "Service harbor / Ingress gate (coast)"),
+            ("⊞  granary", "mounted PVCs (yellow = unbound)"),
+            ("✦  ◌", "custom resource / encampment"),
+            ("◈  ◷", "Job / CronJob (namespace islands)"),
+            ("▣ ▤ ▥ ▦", "node: ok / cordon / pressure / notready"),
+            ("● ◐ ○ ◌ ✗ ◆", "pod: ok/start/pend/term/fail/done"),
+            ("‼  !  ·", "attention: critical / warning / info"),
+        ],
+    ),
+    (
         "VIEWS",
         &[
             ("m", "main map"),
@@ -60,7 +74,7 @@ pub fn render(f: &mut Frame, theme: &Theme) {
     lines.pop(); // trailing blank
 
     let h = (lines.len() as u16) + 4;
-    let area = centered(f.area(), 66, h);
+    let area = centered(f.area(), 72, h);
     f.render_widget(Clear, area);
     let block = Block::bordered()
         .border_style(theme.chrome())

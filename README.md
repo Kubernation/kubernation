@@ -116,6 +116,13 @@ their schedule — beside the custom-resource structures:
 
 ![GUI batch](docs/gui-batch.png)
 
+Press **`?`** (or `F1`, or the top-bar `?`) for the **Almanac** — an in-app
+reference, drawn on a reusable popup-window system, that documents the map's
+whole visual vocabulary with the *actual marks* beside each definition, plus
+the world metaphor, controls, and how to read state:
+
+![GUI Almanac](docs/gui-almanac.png)
+
 Press **`c`** to switch the hot
 cluster from a context picker — no restart. Text is **Fira Sans**
 (bundled OFL); both font and sprites are embedded so the binary is

@@ -983,7 +983,7 @@ fn draw_coast(cont: &Continent, cam: &Camera, detail: &Lod) {
 }
 
 /// A small anchor — the Service harbor mark.
-fn draw_harbor(c: Vec2, z: f32) {
+pub(crate) fn draw_harbor(c: Vec2, z: f32) {
     let u = (4.5 * z).clamp(3.0, 14.0);
     let th = (z * 1.6).clamp(1.0, 3.0);
     draw_circle(c.x, c.y, u * 1.4, Color::new(0.04, 0.06, 0.10, 0.55));
@@ -1002,7 +1002,7 @@ fn draw_harbor(c: Vec2, z: f32) {
 }
 
 /// A small arch — the Ingress gate mark.
-fn draw_gate(c: Vec2, z: f32) {
+pub(crate) fn draw_gate(c: Vec2, z: f32) {
     let u = (4.5 * z).clamp(3.0, 14.0);
     let th = (z * 1.6).clamp(1.0, 3.0);
     let w = u * 0.8;
@@ -1021,7 +1021,7 @@ fn draw_gate(c: Vec2, z: f32) {
 
 /// A small silo — the persistent-storage granary mark. `col` carries the
 /// binding state: cyan when all claims are Bound, yellow when any pends.
-fn draw_granary(c: Vec2, z: f32, col: Color) {
+pub(crate) fn draw_granary(c: Vec2, z: f32, col: Color) {
     let u = (4.0 * z).clamp(2.5, 12.0);
     let th = (z * 1.4).clamp(1.0, 2.5);
     draw_circle(c.x, c.y, u * 1.5, Color::new(0.04, 0.06, 0.10, 0.5));
@@ -1039,7 +1039,7 @@ fn draw_granary(c: Vec2, z: f32, col: Color) {
 }
 
 /// A pennant on a pole — a Job expedition.
-fn draw_job(c: Vec2, z: f32, col: Color) {
+pub(crate) fn draw_job(c: Vec2, z: f32, col: Color) {
     let u = (6.0 * z).clamp(4.0, 16.0);
     let th = (z * 1.4).clamp(1.0, 2.5);
     draw_line(
@@ -1059,7 +1059,7 @@ fn draw_job(c: Vec2, z: f32, col: Color) {
 }
 
 /// A clock face — a CronJob's recurring schedule.
-fn draw_cronjob(c: Vec2, z: f32, col: Color) {
+pub(crate) fn draw_cronjob(c: Vec2, z: f32, col: Color) {
     let r = (5.0 * z).clamp(3.5, 13.0);
     let th = (z * 1.4).clamp(1.0, 2.5);
     draw_circle_lines(c.x, c.y, r, th, col);
