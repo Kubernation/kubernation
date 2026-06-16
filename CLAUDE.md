@@ -1,4 +1,8 @@
-# K8sCiv
+# Kubernation
+
+The app is branded **Kubernation** (display name, 2026-06-16). The crate,
+binary, kind-cluster, context, and config-path identifiers stay `k8sciv`
+(an identifier migration is a separate task, not titling).
 
 A Civilization-inspired Kubernetes TUI. The cluster is a living **world**
 the operator explores: zones are continents, nodes are provinces of

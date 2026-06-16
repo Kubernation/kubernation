@@ -1,4 +1,4 @@
-//! K8sCiv GUI: the observed world rendered as a windowed strategy map —
+//! Kubernation GUI: the observed world rendered as a windowed strategy map —
 //! the same `k8sciv-core` models as the TUI, painted with macroquad.
 //! With `--warm`, the standby cluster appears as a second archipelago
 //! east of the hot one, with sync chips on every city.
@@ -80,7 +80,7 @@ struct Args {
 
 fn window_conf() -> Conf {
     Conf {
-        window_title: "K8sCiv".into(),
+        window_title: "Kubernation".into(),
         window_width: 1380,
         window_height: 860,
         high_dpi: true,
@@ -497,7 +497,7 @@ async fn main() {
         draw_rectangle(0.0, 0.0, screen_width(), panels::CHROME_H - 2.0, PANEL);
         draw_rectangle(0.0, panels::CHROME_H - 2.0, screen_width(), 2.0, PARCHMENT);
         text_bold(
-            ascii(&format!("K8SCIV — {status}")),
+            ascii(&format!("KUBERNATION — {status}")),
             12.0,
             21.0,
             20.0,

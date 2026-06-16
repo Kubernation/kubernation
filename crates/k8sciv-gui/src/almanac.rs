@@ -1,4 +1,4 @@
-//! The Almanac — K8sCiv's Civilopedia. An in-app reference, drawn on the
+//! The Almanac — Kubernation's Civilopedia. An in-app reference, drawn on the
 //! window system, for the map's visual vocabulary and how to read the world.
 //! The Legend draws the *actual* marks beside each definition (reusing the
 //! map's painters) so it stays a true key, not prose that drifts from the
@@ -461,7 +461,7 @@ fn page_legend(cx: &mut Ctx) {
 fn page_world(cx: &mut Ctx) {
     cx.heading("The world is your cluster");
     cx.para(
-        "K8sCiv renders the cluster as a living world you explore, in the grammar of Civilization — but the nouns stay kubectl-greppable.",
+        "Kubernation renders the cluster as a living world you explore, in the grammar of Civilization — but the nouns stay kubectl-greppable.",
     );
     cx.para("Zones are continents of solid land, separated by ocean.");
     cx.para(
@@ -481,7 +481,7 @@ fn page_world(cx: &mut Ctx) {
     );
     cx.heading("Observe-only");
     cx.para(
-        "K8sCiv only watches. There are no mutation paths anywhere — exploring the world never changes the cluster.",
+        "Kubernation only watches. There are no mutation paths anywhere — exploring the world never changes the cluster.",
     );
 }
 

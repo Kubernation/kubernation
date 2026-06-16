@@ -1,4 +1,4 @@
-# K8sCiv
+# Kubernation
 
 **The cluster as a living world.** A terminal UI for observing Kubernetes,
 built on the interface grammar of early Sid Meier's Civilization: a 2D

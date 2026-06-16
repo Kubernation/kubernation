@@ -35,7 +35,7 @@ pub fn render(
         None => {
             let meta = &hot.world.meta;
             format!(
-                " K8SCIV ▏{} ▏{} ▏{} ▏{}",
+                " KUBERNATION ▏{} ▏{} ▏{} ▏{}",
                 truncate(&meta.context, 28),
                 meta.platform.label(),
                 truncate(&meta.server, 34),
@@ -43,7 +43,7 @@ pub fn render(
             )
         }
         Some(w) => format!(
-            " K8SCIV ▏H {} {} ▏W {} {}",
+            " KUBERNATION ▏H {} {} ▏W {} {}",
             truncate(&hot.world.meta.context, 24),
             counts(hot),
             truncate(&w.world.meta.context, 24),
