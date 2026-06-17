@@ -169,6 +169,8 @@ async fn main() {
     // Namespace-filter picker (single-select: "all" or one namespace).
     let mut ns_picker = false;
     let mut ns_picker_idx = 0usize;
+    // Dragging the minimap viewport box to recenter the main view.
+    let mut minimap_drag = false;
     // While Some, the city window's image field is capturing a new image string
     // (the "set image" planning verb); global single-key shortcuts are text.
     let mut city_image_edit: Option<String> = None;
@@ -625,20 +627,38 @@ async fn main() {
                     panel = panel_for(&worlds, sel);
                 }
 
-                // No modal is open here (the whole block is suspended when one
-                // is), so a left click is either a minimap jump or a
-                // map-cell inspect that opens a drill-down window.
-                if is_mouse_button_pressed(MouseButton::Left) {
-                    let ml = minimap_layout(bounds);
-                    if let Some(cell) = ml.world_cell(mouse, bounds) {
-                        cam.fly_to(cell);
-                    } else if mouse.y > panels::CHROME_H && mouse.x < panels::map_width() {
-                        // Map clicks only in the play area, not under the column.
-                        selected = cam.cell_at(mouse, bounds);
-                        if let Some(sel) = selected {
-                            panel = panel_for(&worlds, sel);
-                            panel_just_opened = panel.is_some();
+                // Minimap navigation: click or drag to recenter the main view
+                // on that spot. Holding the button lets you scrub the viewport
+                // box around the chart; the cursor is clamped to the frame so a
+                // drag past its edge keeps tracking.
+                let ml = minimap_layout(bounds);
+                if is_mouse_button_pressed(MouseButton::Left) && ml.frame.contains(mouse) {
+                    minimap_drag = true;
+                }
+                if minimap_drag {
+                    if is_mouse_button_down(MouseButton::Left) {
+                        let cm = vec2(
+                            mouse.x.clamp(ml.frame.x, ml.frame.x + ml.frame.w),
+                            mouse.y.clamp(ml.frame.y, ml.frame.y + ml.frame.h),
+                        );
+                        if let Some(cell) = ml.world_cell(cm, bounds) {
+                            cam.jump_to(cell);
                         }
+                    } else {
+                        minimap_drag = false;
+                    }
+                }
+                // A map-cell inspect (left of the column, not the minimap) opens
+                // a drill-down window.
+                if is_mouse_button_pressed(MouseButton::Left)
+                    && !ml.frame.contains(mouse)
+                    && mouse.y > panels::CHROME_H
+                    && mouse.x < panels::map_width()
+                {
+                    selected = cam.cell_at(mouse, bounds);
+                    if let Some(sel) = selected {
+                        panel = panel_for(&worlds, sel);
+                        panel_just_opened = panel.is_some();
                     }
                 }
 

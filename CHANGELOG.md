@@ -8,6 +8,21 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+- **Minimap viewport box: constant-size + drag-to-navigate.** The box now
+  sizes purely from the zoom level (it's the play area scaled by the
+  minimap-to-main ratio) and only *translates* as you pan — it no longer
+  shrinks near the world edge. Click anywhere on the minimap to recenter the
+  main view there, or hold and drag to scrub the box around; every spot is
+  navigable, open ocean included (the click resolves to the nearest cell).
+
+### Fixed
+- **Bottom-bar / chrome text contrast.** Attention text on the warm-stone
+  chrome (the attention strip, the column's STATUS rollup, the tooltip /
+  SELECTION lines) used the bright map colors, which washed out on tan — now
+  it uses dark, high-contrast stone variants (`severity_on_stone`): deep red
+  for critical, dark amber for warning, near-black for info.
+
 ### Added
 - **Docked right column (GUI) — the classic-4X right panel.** The floating
   minimap was replaced by an always-visible right column (`sidebar.rs`) with

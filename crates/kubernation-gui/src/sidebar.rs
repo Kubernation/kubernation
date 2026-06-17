@@ -76,8 +76,8 @@ pub fn draw_sidebar(
     let n = |s: Severity| counts.get(&s).copied().unwrap_or(0);
     let mut tx = x;
     for (count, label, col_on) in [
-        (n(Severity::Critical), "crit", CRIT),
-        (n(Severity::Warning), "warn", WARN),
+        (n(Severity::Critical), "crit", STONE_CRIT),
+        (n(Severity::Warning), "warn", STONE_WARN),
         (n(Severity::Info), "info", STONE_INK),
     ] {
         let token = format!("{count} {label}");
@@ -100,7 +100,7 @@ pub fn draw_sidebar(
     );
     y += 18.0;
     if ns_filter.is_active() {
-        text(ascii(&ns_filter.label()), x, y, 13.0, WARN);
+        text(ascii(&ns_filter.label()), x, y, 13.0, STONE_WARN);
         y += 18.0;
     }
 

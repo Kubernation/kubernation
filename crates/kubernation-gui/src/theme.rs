@@ -51,6 +51,11 @@ pub const STONE_SHADOW: Color = Color::new(0.30, 0.25, 0.17, 1.0);
 pub const STONE_EDGE: Color = Color::new(0.34, 0.28, 0.19, 1.0);
 pub const STONE_INK: Color = Color::new(0.16, 0.12, 0.07, 1.0);
 pub const STONE_INK_DIM: Color = Color::new(0.36, 0.30, 0.21, 1.0);
+// Severity ink for *stone* backgrounds (the strip / column / tooltip). The
+// bright map colors (CRIT/WARN/DIM) wash out on warm tan, so attention text on
+// stone uses these darker, higher-contrast variants instead.
+pub const STONE_CRIT: Color = Color::new(0.60, 0.09, 0.06, 1.0);
+pub const STONE_WARN: Color = Color::new(0.52, 0.33, 0.02, 1.0);
 
 // --- settlement masonry (warm neutral tones, NOT meaning-encoding) --------
 pub const WALL: Color = Color::new(0.82, 0.76, 0.63, 1.0);
@@ -147,6 +152,15 @@ pub fn severity_color(s: Severity) -> Color {
         Severity::Critical => CRIT,
         Severity::Warning => WARN,
         Severity::Info => DIM,
+    }
+}
+
+/// Severity ink for text on a stone background (high-contrast dark variants).
+pub fn severity_on_stone(s: Severity) -> Color {
+    match s {
+        Severity::Critical => STONE_CRIT,
+        Severity::Warning => STONE_WARN,
+        Severity::Info => STONE_INK,
     }
 }
 

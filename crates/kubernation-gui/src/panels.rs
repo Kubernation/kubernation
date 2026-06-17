@@ -80,7 +80,7 @@ pub fn region_lines(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot) -> Vec<
             Region::City(_, c) => {
                 lines.push((c.r.name.clone(), STONE_INK));
                 let gap = if c.ready < c.desired {
-                    WARN
+                    STONE_WARN
                 } else {
                     STONE_INK_DIM
                 };
@@ -92,13 +92,13 @@ pub fn region_lines(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot) -> Vec<
                     gap,
                 ));
                 if let Some(sev) = c.severity {
-                    lines.push(("needs attention".into(), severity_color(sev)));
+                    lines.push(("needs attention".into(), severity_on_stone(sev)));
                 }
                 if let Some(store) = c.storage {
                     let (txt, col) = if store.pending > 0 {
                         (
                             format!("{} PVCs . {} pending", store.claims, store.pending),
-                            WARN,
+                            STONE_WARN,
                         )
                     } else {
                         (format!("{} PVCs", store.claims), STRUCT)
@@ -115,9 +115,9 @@ pub fn region_lines(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot) -> Vec<
                 lines.push((p.tile.name.clone(), STONE_INK));
                 let health = match p.tile.health {
                     NodeHealth::Healthy => ("healthy", STONE_INK_DIM),
-                    NodeHealth::Cordoned => ("cordoned", WARN),
-                    NodeHealth::Pressure => ("under pressure", WARN),
-                    NodeHealth::NotReady => ("NotReady", CRIT),
+                    NodeHealth::Cordoned => ("cordoned", STONE_WARN),
+                    NodeHealth::Pressure => ("under pressure", STONE_WARN),
+                    NodeHealth::NotReady => ("NotReady", STONE_CRIT),
                 };
                 lines.push((
                     format!("{} . {} pods", health.0, p.tile.pods.len()),
@@ -127,7 +127,7 @@ pub fn region_lines(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot) -> Vec<
             Region::Structure(_, s) => {
                 lines.push((format!("{}/{}", s.kind, s.name), STONE_INK));
                 if s.workload.is_some() {
-                    lines.push(("encampment - no pods on any land".into(), WARN));
+                    lines.push(("encampment - no pods on any land".into(), STONE_WARN));
                 }
             }
             Region::Island(isl) => {
@@ -355,7 +355,7 @@ pub fn draw_attention_strip(attention: &[Concern], paired: bool, concern_idx: us
             16.0,
             base + 20.0 + i as f32 * 19.0,
             16.0,
-            severity_color(c.severity),
+            severity_on_stone(c.severity),
         );
     }
     if attention.len() > 3 {

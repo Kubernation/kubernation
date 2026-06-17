@@ -594,15 +594,27 @@ what makes the interesting logic unit-testable without a cluster.
   (round-trip-tested, like the main `cell_at`). Land is drawn as one iso
   parallelogram per province (health-tinted, 2 triangles), islands likewise; the
   per-row coast carving is dropped (a minimap is an overview). The viewport
-  indicator is an **axis-aligned rectangle** bounding the visible region: the 4
-  screen corners are inverse-projected to continuous world coords, clamped to
-  `[0,bounds]`, projected through `pt`, and their bounding box drawn. (A true
-  sheared parallelogram was tried first but degenerated into a confusing
-  triangle when the view clipped a world edge — user's call, a rectangle reads
-  as "the part of the map on screen".)
-  The **zoom LOD** half (World/Regional/Local `Scale` tiers, `lod(zoom)`) was
-  already built (see "GUI cartographic scale tiers"). Verified live at two
-  zooms. The TUI minimap stays its own compact node-cell chart.
+  indicator is an **axis-aligned rectangle whose size tracks only the zoom**
+  (user's call, 2026-06-17): the minimap and main view share the iso projection
+  at different scales, so the play-area rect maps to a minimap rect of size
+  `play·ratio` (`ratio = ml.hw / cam.cell_px().0`, capped at the panel) — it
+  *translates* with the pan but never resizes, and the position (not the size)
+  is clamped so it pins to the panel edge at the world boundary instead of
+  shrinking. (Earlier tries — a sheared parallelogram, then a bounds-clamped
+  AABB — both changed shape/size with the pan, which read as a confusing
+  zoom.) **Drag-to-navigate:** clicking or dragging the minimap recenters the
+  main view (`minimap_drag` + `cam.jump_to(world_cell(..))`); `world_cell`
+  clamps to the grid so *every* spot is navigable, open ocean included. The
+  **zoom LOD** half (World/Regional/Local `Scale` tiers, `lod(zoom)`) was
+  already built (see "GUI cartographic scale tiers"). Verified live. The TUI
+  minimap stays its own compact node-cell chart.
+- **Stone-background severity ink** (2026-06-17, user: bottom-bar text contrast):
+  the bright map attention colors (`CRIT`/`WARN`/`DIM`) washed out on the warm
+  tan chrome, so `theme::severity_on_stone` (+ `STONE_CRIT`/`STONE_WARN`
+  consts) gives darker, high-contrast variants used by everything that paints
+  attention text on stone — the attention strip, the column STATUS rollup, and
+  `panels::region_lines` (tooltip + SELECTION). The map's own colors are
+  untouched (they read fine on the dark sea).
 - **GUI docked right column** (2026-06-17, user: "get closer to the Civ gaming
   interface … the minimap is bound to a right column that provides spaces for
   additional information"): the floating minimap was replaced by an

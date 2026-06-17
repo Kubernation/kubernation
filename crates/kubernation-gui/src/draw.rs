@@ -1427,7 +1427,6 @@ pub struct MinimapLayout {
     hh: f32,
     /// Horizontal shift so the diamond's west tip lands at `inner.x`.
     offx: f32,
-    bounds: (u16, u16),
 }
 
 impl MinimapLayout {
@@ -1440,17 +1439,18 @@ impl MinimapLayout {
         )
     }
 
-    /// Inverse: minimap click → the world cell under it (iso un-projection).
+    /// Inverse: minimap point → the world cell under it (iso un-projection),
+    /// clamped to the grid so *any* point in the frame resolves to a cell —
+    /// every area is navigable, even open ocean past the landmasses.
     pub fn world_cell(&self, screen: Vec2, bounds: (u16, u16)) -> Option<(u16, u16)> {
         if !self.frame.contains(screen) {
             return None;
         }
         let a = (screen.x - self.inner.x - self.offx) / self.hw; // wx - wy
         let b = (screen.y - self.inner.y) / self.hh; // wx + wy
-        let wx = (a + b) * 0.5;
-        let wy = (b - a) * 0.5;
-        (wx >= 0.0 && wy >= 0.0 && wx < bounds.0 as f32 && wy < bounds.1 as f32)
-            .then_some((wx as u16, wy as u16))
+        let wx = ((a + b) * 0.5).clamp(0.0, bounds.0 as f32 - 1.0);
+        let wy = ((b - a) * 0.5).clamp(0.0, bounds.1 as f32 - 1.0);
+        Some((wx as u16, wy as u16))
     }
 }
 
@@ -1472,7 +1472,6 @@ pub fn minimap_layout(bounds: (u16, u16)) -> MinimapLayout {
         hw,
         hh,
         offx: h * hw,
-        bounds,
     }
 }
 
@@ -1517,52 +1516,26 @@ pub fn draw_minimap(worlds: &[SceneWorld], cam: &Camera, ml: &MinimapLayout) {
         }
     }
 
-    // Viewport indicator: inverse-project the four screen corners to continuous
-    // world coords (clamped to the world), project them onto the minimap, and
-    // draw their bounding box. An axis-aligned rectangle reads cleanly as "the
-    // part of the map on screen"; a true (sheared) parallelogram degenerated
-    // into a confusing triangle when the view clipped a world edge.
-    let (hw, hh) = cam.cell_px();
-    let (cw, ch) = (ml.bounds.0 as f32, ml.bounds.1 as f32);
-    let corner = |sx: f32, sy: f32| {
-        let a = (sx + cam.pos.x) / hw; // wx - wy
-        let b = (sy + cam.pos.y) / hh; // wx + wy
-        ml.pt(
-            ((a + b) * 0.5).clamp(0.0, cw),
-            ((b - a) * 0.5).clamp(0.0, ch),
-        )
-    };
-    // Only the play area is actually visible — the right column, top chrome,
-    // and bottom strip occlude the full-width map, so box that region, not the
-    // whole window (else the indicator claims hidden cells are on screen).
+    // Viewport indicator. The minimap and the main view share the same iso
+    // projection at different scales, so the play-area screen rectangle maps to
+    // an axis-aligned minimap rectangle of size (play·ratio) where
+    // ratio = mm_scale / main_scale = 1/zoom (up to the fixed minimap scale).
+    // The size therefore tracks ONLY the zoom — panning just translates it.
+    let main_hw = cam.cell_px().0;
+    let ratio = ml.hw / main_hw;
     let (rx, by) = (screen_width() - COL_W, screen_height() - STRIP_H);
-    let pts = [
-        corner(0.0, CHROME_H),
-        corner(rx, CHROME_H),
-        corner(rx, by),
-        corner(0.0, by),
-    ];
-    let x0 = pts
-        .iter()
-        .map(|p| p.x)
-        .fold(f32::MAX, f32::min)
-        .max(ml.inner.x);
-    let y0 = pts
-        .iter()
-        .map(|p| p.y)
-        .fold(f32::MAX, f32::min)
-        .max(ml.inner.y);
-    let x1 = pts
-        .iter()
-        .map(|p| p.x)
-        .fold(f32::MIN, f32::max)
-        .min(ml.inner.x + ml.inner.w);
-    let y1 = pts
-        .iter()
-        .map(|p| p.y)
-        .fold(f32::MIN, f32::max)
-        .min(ml.inner.y + ml.inner.h);
-    draw_rectangle_lines(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0), 1.5, INK);
+    // mm point of a screen point, via the shared affine (uniform scale, no shear).
+    let mmx = |sx: f32| ml.inner.x + ml.offx + (sx + cam.pos.x) * ratio;
+    let mmy = |sy: f32| ml.inner.y + (sy + cam.pos.y) * ratio;
+    // Constant size for this zoom (capped at the minimap when zoomed all the
+    // way out so the whole world is the viewport).
+    let w = (rx * ratio).min(ml.inner.w);
+    let h = ((by - CHROME_H) * ratio).min(ml.inner.h);
+    // Clamp the *position* (never the size) so the box stays in the panel; it
+    // pins to the edge at the world boundary instead of shrinking.
+    let x0 = mmx(0.0).clamp(ml.inner.x, ml.inner.x + ml.inner.w - w);
+    let y0 = mmy(CHROME_H).clamp(ml.inner.y, ml.inner.y + ml.inner.h - h);
+    draw_rectangle_lines(x0, y0, w, h, 1.5, INK);
 }
 
 #[cfg(test)]
@@ -1623,7 +1596,6 @@ mod tests {
             hw,
             hh,
             offx: h * hw,
-            bounds,
         };
         for wx in 0..bounds.0 {
             for wy in 0..bounds.1 {
