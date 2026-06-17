@@ -745,15 +745,23 @@ what makes the interesting logic unit-testable without a cluster.
   can't fall through. "Fit view" can't reach `bounds` from the chrome draw, so it
   defers via a `pending_fit` flag consumed next frame. The realm readout
   (context · platform · counts) moves to the right of the bar. **Map overlay**
-  (the View menu's "map display"): a render-only `Overlay { Terrain, Pressure }`
-  threaded through `draw_world` → `draw_province_terrain` → `land_diamond` and
-  the minimap. `Terrain` is the default node-health tinting; `Pressure` recolors
-  each province by `max(cpu,mem)` ratio using the documented buckets (<0.7 green
-  / 0.7–0.9 amber / ≥0.9 red, `theme::pressure_pair`). The non-default view is
-  labeled in STATUS so a red-tinted terrain isn't mistaken for NotReady. Dev
-  flags `--overlay pressure` and `--menu <name>` capture both headlessly. The
+  (the View menu's "map display"): a render-only `Overlay { Terrain, Pressure,
+  Replicas, Namespace }` threaded through `draw_world` → `draw_province_terrain`
+  → `land_diamond` and the minimap (`overlay_pair`/`overlay_flat` take the whole
+  `&Province` since Replicas/Namespace read its `cities`). `Terrain` is the
+  default node-health tinting; `Pressure` recolors each province by `max(cpu,mem)`
+  ratio using the documented buckets (<0.7 green / 0.7–0.9 amber / ≥0.9 red,
+  `theme::heat_pair`/`pressure_pair`); `Replicas` colors by the worst workload
+  health sited there (`replica_level` over the cities — full green / gap amber /
+  down-or-critical red); `Namespace` colors by the plurality namespace's stable
+  hue (`dominant_namespace` + `theme::namespace_pair`, a tiny HSV from
+  `fnv1a64(ns)`) — a political/territory map. Provinces with no cities show
+  `idle_land_pair` (a desaturated grey-green) under the two city-based overlays.
+  The non-default view is labeled in STATUS so a recolored terrain isn't mistaken
+  for NotReady. Dev flags `--overlay <terrain|pressure|replicas|namespace>` and
+  `--menu <name>` capture them headlessly (all four verified live on kind). The
   TUI keeps its own `1/2/3` overlays + key-driven actions (no menu bar). Deferred:
-  replicas / namespace map overlays (only Pressure shipped); a TUI menu bar.
+  a TUI menu bar.
 
 ## The pair (hot/warm)
 

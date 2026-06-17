@@ -12,7 +12,7 @@
 
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::Severity;
-use kubernation_core::state::model::{NodeHealth, NodeTile};
+use kubernation_core::state::model::NodeHealth;
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::world::{City, CoastKind, Continent, Island, Province, WorldModel};
 use macroquad::prelude::*;
@@ -37,12 +37,16 @@ pub const WORLD_GAP: u16 = 8;
 
 /// What the terrain is colored *by* — the classic-4X "map display" / View
 /// menu. `Terrain` is the default node-health tinting; `Pressure` recolors each
-/// province as a cpu/mem heat-map. Render-only, GUI-loop state.
+/// province as a cpu/mem heat-map; `Replicas` by the worst workload health
+/// sited there; `Namespace` by a per-namespace hue (a political/territory map).
+/// Render-only, GUI-loop state.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Overlay {
     #[default]
     Terrain,
     Pressure,
+    Replicas,
+    Namespace,
 }
 
 impl Overlay {
@@ -51,23 +55,73 @@ impl Overlay {
         match self {
             Overlay::Terrain => "terrain",
             Overlay::Pressure => "pressure",
+            Overlay::Replicas => "replicas",
+            Overlay::Namespace => "namespace",
         }
     }
 }
 
+/// Worst workload-health level among a set of cities, for the Replicas overlay:
+/// 0 ok, 1 elevated (replica gap or Warning), 2 critical (down or Critical).
+/// `None` when there are no cities.
+fn replica_level(cities: &[City]) -> Option<u8> {
+    use kubernation_core::state::attention::Severity;
+    if cities.is_empty() {
+        return None;
+    }
+    let mut level = 0u8;
+    for c in cities {
+        let mut l = if c.desired > 0 && c.ready == 0 {
+            2
+        } else if c.ready < c.desired {
+            1
+        } else {
+            0
+        };
+        if let Some(s) = c.severity {
+            l = l.max(match s {
+                Severity::Critical => 2,
+                Severity::Warning => 1,
+                Severity::Info => 0,
+            });
+        }
+        level = level.max(l);
+    }
+    Some(level)
+}
+
+/// The plurality namespace among a set of cities (ties → first seen), for the
+/// Namespace overlay. `None` when there are no cities.
+fn dominant_namespace(cities: &[City]) -> Option<&str> {
+    let mut tally: Vec<(&str, u32)> = Vec::new();
+    for c in cities {
+        let ns = c.r.namespace.as_str();
+        match tally.iter_mut().find(|(n, _)| *n == ns) {
+            Some(e) => e.1 += 1,
+            None => tally.push((ns, 1)),
+        }
+    }
+    tally.into_iter().max_by_key(|(_, n)| *n).map(|(ns, _)| ns)
+}
+
 /// The two-shade land pair a province's terrain is filled with, per overlay.
-fn overlay_pair(overlay: Overlay, tile: &NodeTile) -> (Color, Color) {
+fn overlay_pair(overlay: Overlay, prov: &Province) -> (Color, Color) {
     match overlay {
-        Overlay::Terrain => iso_terrain_pair(tile.health),
-        Overlay::Pressure => pressure_pair(tile.cpu_ratio.max(tile.mem_ratio)),
+        Overlay::Terrain => iso_terrain_pair(prov.tile.health),
+        Overlay::Pressure => pressure_pair(prov.tile.cpu_ratio.max(prov.tile.mem_ratio)),
+        Overlay::Replicas => replica_level(&prov.cities).map_or_else(idle_land_pair, heat_pair),
+        Overlay::Namespace => {
+            dominant_namespace(&prov.cities).map_or_else(idle_land_pair, namespace_pair)
+        }
     }
 }
 
-/// A single flat color for a province on the minimap, per overlay.
-fn overlay_flat(overlay: Overlay, tile: &NodeTile) -> Color {
+/// A single flat color for a province on the minimap, per overlay. Terrain
+/// keeps its original flat tint; the data overlays reuse the land pair.
+fn overlay_flat(overlay: Overlay, prov: &Province) -> Color {
     match overlay {
-        Overlay::Terrain => terrain(tile.health),
-        Overlay::Pressure => pressure_pair(tile.cpu_ratio.max(tile.mem_ratio)).1,
+        Overlay::Terrain => terrain(prov.tile.health),
+        _ => overlay_pair(overlay, prov).1,
     }
 }
 
@@ -695,9 +749,9 @@ fn draw_province_terrain(prov: &Province, cam: &Camera, coast: &Coast, overlay: 
         return;
     }
     let (hw, hh) = cam.cell_px();
-    // The land pair depends on the active overlay (health vs. pressure heat);
-    // computed once per province, not per cell.
-    let pair = overlay_pair(overlay, &prov.tile);
+    // The land pair depends on the active overlay (health / pressure / replicas
+    // / namespace); computed once per province, not per cell.
+    let pair = overlay_pair(overlay, prov);
     let x0 = prov.x as i32;
     let w = prov.w as f32;
     let y1 = (prov.y + prov.h) as i32;
@@ -1543,7 +1597,7 @@ pub fn draw_minimap(worlds: &[SceneWorld], cam: &Camera, ml: &MinimapLayout, ove
                     p.y as f32,
                     p.w as f32,
                     p.h as f32,
-                    overlay_flat(overlay, &p.tile),
+                    overlay_flat(overlay, p),
                 );
             }
         }
@@ -1626,6 +1680,62 @@ mod tests {
     fn overlay_default_is_terrain() {
         assert_eq!(Overlay::default(), Overlay::Terrain);
         assert_eq!(Overlay::Pressure.label(), "pressure");
+        assert_eq!(Overlay::Replicas.label(), "replicas");
+        assert_eq!(Overlay::Namespace.label(), "namespace");
+    }
+
+    fn city(ns: &str, ready: i32, desired: i32, sev: Option<Severity>) -> City {
+        use kubernation_core::state::model::{WorkloadKind, WorkloadRef};
+        City {
+            r: WorkloadRef {
+                kind: WorkloadKind::Deployment,
+                namespace: ns.to_string(),
+                name: "w".to_string(),
+            },
+            ready,
+            desired,
+            severity: sev,
+            storage: None,
+            x: 0,
+            y: 0,
+        }
+    }
+
+    #[test]
+    fn replica_overlay_takes_the_worst_city() {
+        // Empty province -> no signal (idle land).
+        assert_eq!(replica_level(&[]), None);
+        // All full strength, no severity -> calm.
+        assert_eq!(replica_level(&[city("a", 3, 3, None)]), Some(0));
+        // A replica gap -> elevated; worst-wins across cities.
+        assert_eq!(
+            replica_level(&[city("a", 3, 3, None), city("b", 1, 3, None)]),
+            Some(1)
+        );
+        // Down (0 of N) -> critical, even if another is fine.
+        assert_eq!(
+            replica_level(&[city("a", 3, 3, None), city("b", 0, 2, None)]),
+            Some(2)
+        );
+        // Severity escalates a fully-ready city (e.g. crashloop at full count).
+        assert_eq!(
+            replica_level(&[city("a", 2, 2, Some(Severity::Critical))]),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn namespace_overlay_picks_plurality_and_is_stable() {
+        assert_eq!(dominant_namespace(&[]), None);
+        let cs = [
+            city("alpha", 1, 1, None),
+            city("beta", 1, 1, None),
+            city("beta", 1, 1, None),
+        ];
+        assert_eq!(dominant_namespace(&cs), Some("beta"));
+        // Stable hue: same namespace -> identical color, distinct namespaces differ.
+        assert_eq!(namespace_pair("alpha"), namespace_pair("alpha"));
+        assert_ne!(namespace_pair("alpha").0, namespace_pair("beta").0);
     }
 
     #[test]

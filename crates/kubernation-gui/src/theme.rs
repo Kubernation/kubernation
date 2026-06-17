@@ -4,6 +4,7 @@
 
 use kubernation_core::state::attention::Severity;
 use kubernation_core::state::model::NodeHealth;
+use kubernation_core::util::fnv1a64;
 use macroquad::prelude::*;
 
 pub const OCEAN: Color = Color::new(0.06, 0.17, 0.30, 1.0);
@@ -103,27 +104,70 @@ pub fn iso_terrain_pair(h: NodeHealth) -> (Color, Color) {
     }
 }
 
-/// Heat color pair for a scheduling/usage ratio — the **Pressure** map
-/// overlay. Mirrors the documented pressure buckets (`state/model.rs`): <0.7
-/// calm green, 0.7–0.9 elevated amber, ≥0.9 high red. Two shades so the iso
-/// terrain checker/jitter still reads as textured land, not a flat wash.
-pub fn pressure_pair(ratio: f64) -> (Color, Color) {
-    if ratio >= 0.9 {
-        (
+/// A two-shade land "heat" pair by severity level (0 calm green, 1 elevated
+/// amber, 2 high red), shared by the Pressure and Replicas overlays. Two shades
+/// so the iso terrain checker/jitter still reads as textured land.
+pub fn heat_pair(level: u8) -> (Color, Color) {
+    match level {
+        2 => (
             Color::new(0.55, 0.16, 0.13, 1.0),
             Color::new(0.62, 0.21, 0.17, 1.0),
-        )
-    } else if ratio >= 0.7 {
-        (
+        ),
+        1 => (
             Color::new(0.62, 0.46, 0.16, 1.0),
             Color::new(0.68, 0.52, 0.20, 1.0),
-        )
-    } else {
-        (
+        ),
+        _ => (
             Color::new(0.26, 0.46, 0.24, 1.0),
             Color::new(0.31, 0.52, 0.28, 1.0),
-        )
+        ),
     }
+}
+
+/// Heat color pair for a scheduling/usage ratio — the **Pressure** map
+/// overlay. Mirrors the documented pressure buckets (`state/model.rs`): <0.7
+/// calm green, 0.7–0.9 elevated amber, ≥0.9 high red.
+pub fn pressure_pair(ratio: f64) -> (Color, Color) {
+    heat_pair(if ratio >= 0.9 {
+        2
+    } else if ratio >= 0.7 {
+        1
+    } else {
+        0
+    })
+}
+
+/// Desaturated grey-green land for a province with nothing to encode under the
+/// current overlay (no cities for Replicas / Namespace) — it recedes so the
+/// flagged provinces pop.
+pub fn idle_land_pair() -> (Color, Color) {
+    (
+        Color::new(0.34, 0.37, 0.34, 1.0),
+        Color::new(0.39, 0.42, 0.39, 1.0),
+    )
+}
+
+/// A stable two-shade land pair for a namespace — the **Namespace** "political"
+/// overlay (each namespace a deterministic hue, muted to terrain saturation).
+pub fn namespace_pair(ns: &str) -> (Color, Color) {
+    let hue = (fnv1a64(ns) % 360) as f32;
+    (hsv(hue, 0.42, 0.52), hsv(hue, 0.42, 0.60))
+}
+
+/// Minimal HSV→RGB (h in [0,360), s/v in [0,1]) for the namespace palette.
+fn hsv(h: f32, s: f32, v: f32) -> Color {
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = match (h / 60.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    Color::new(r + m, g + m, b + m, 1.0)
 }
 
 /// Cheap per-cell shade jitter (no allocation, unlike `terrain_cell`'s

@@ -19,14 +19,16 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   item or outside to dismiss. An open menu suspends map navigation like the
   other modals. The realm readout (context · platform · counts) moves to the
   right of the bar.
-- **GUI: a Pressure map overlay (the View menu's "map display").** A new map
-  view recolors every province as a cpu/mem heat-map — calm green / elevated
-  amber / high red, the documented pressure buckets — so scheduling/usage
-  pressure reads at a glance across the whole world (main map *and* minimap).
-  The default **Terrain (health)** view is unchanged; the active non-default
-  view is labeled in STATUS so a red-tinted terrain isn't mistaken for node
-  health. Dev flags `--overlay pressure` and `--menu <name>` capture both
-  headlessly.
+- **GUI: four map overlays (the View menu's "map display").** Beyond the
+  default **Terrain (health)** view, the map (and minimap) can recolor every
+  province by: **Pressure** — a cpu/mem heat-map (calm green / elevated amber /
+  high red, the documented pressure buckets); **Replicas** — the worst workload
+  health sited there (full strength green / replica gap amber / down or critical
+  red); or **Namespace** — a stable per-namespace hue, a political/territory map
+  of which namespace dominates each node. The active non-default view is labeled
+  in STATUS so a recolored terrain isn't mistaken for node health. Dev flags
+  `--overlay <terrain|pressure|replicas|namespace>` and `--menu <name>` capture
+  them headlessly.
 
 ### Changed
 - **Minimap viewport box: constant-size + drag-to-navigate.** The box now

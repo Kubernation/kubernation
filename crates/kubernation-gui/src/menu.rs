@@ -117,6 +117,16 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                     MenuAction::SetOverlay(Overlay::Pressure),
                 )
                 .check(ctx.overlay == Overlay::Pressure),
+                Item::act(
+                    "Replicas (health)",
+                    MenuAction::SetOverlay(Overlay::Replicas),
+                )
+                .check(ctx.overlay == Overlay::Replicas),
+                Item::act(
+                    "Namespace (territory)",
+                    MenuAction::SetOverlay(Overlay::Namespace),
+                )
+                .check(ctx.overlay == Overlay::Namespace),
             ],
         },
         Menu {

@@ -122,8 +122,9 @@ struct Args {
     /// still change it from the World menu). Also used for verification.
     #[arg(long, value_name = "NS")]
     namespace: Option<String>,
-    /// Start with a map overlay active: "terrain" (default) or "pressure"
-    /// (cpu/mem heat). Set from the View menu at runtime; flag is for shots.
+    /// Start with a map overlay active: "terrain" (default), "pressure"
+    /// (cpu/mem heat), "replicas" (workload health) or "namespace" (territory).
+    /// Set from the View menu at runtime; flag is for shots.
     #[arg(long, value_name = "MODE")]
     overlay: Option<String>,
     /// Open a chrome menu on sync — game / view / orders / world / help
@@ -188,6 +189,8 @@ async fn main() {
     // colored. A --overlay dev flag seeds it for headless shots.
     let mut overlay = match args.overlay.as_deref() {
         Some("pressure") => Overlay::Pressure,
+        Some("replicas") => Overlay::Replicas,
+        Some("namespace") => Overlay::Namespace,
         _ => Overlay::Terrain,
     };
     // Menu "Fit view" can't reach `bounds` from the chrome draw, so it defers
