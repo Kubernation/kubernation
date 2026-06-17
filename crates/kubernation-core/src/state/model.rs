@@ -752,7 +752,7 @@ fn ingress_host(ing: &Ingress) -> String {
 }
 
 /// Every Service an Ingress backends to (default backend + every rule path).
-fn ingress_backends(ing: &Ingress) -> BTreeSet<String> {
+pub(crate) fn ingress_backends(ing: &Ingress) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let Some(spec) = ing.spec.as_ref() else {
         return out;

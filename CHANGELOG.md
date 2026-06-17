@@ -9,6 +9,19 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Deeper attention queue: failed Jobs & broken routes.** Three new pure
+  detectors (`state/attention.rs`, unit-tested against fixtures):
+  - a **failed Job** surfaces as its own concern — Critical when it hit its
+    backoff limit (a `Failed` condition), Warning while it's still racking up
+    pod failures; a *completed* Job stays quiet. The Job's own failing pods
+    **fold under it** (no one-line-per-pod spam), keeping the queue's
+    "city in trouble, not 40 alarms" discipline.
+  - an **orphan Ingress** (a route whose backend Service doesn't exist) is a
+    Warning — a gate to nowhere.
+  - a **Service that selects no pods** (a harbor with no city) is an Info;
+    headless / external Services (no selector) are skipped, so healthy
+    clusters stay silent. Verified live (failed Job + orphan Ingress fire;
+    a healthy cluster adds zero false positives).
 - **Rolling restart intervention.** A city window's plan controls gain a
   **restart** toggle that stages a `Restart` intervention; committing it stamps
   the workload's pod template with a `kubectl.kubernetes.io/restartedAt`

@@ -10,7 +10,7 @@ use crate::events::ClusterId;
 
 use super::model::{
     MapModel, OwnerIndex, PRESSURE_HIGH, PodState, RolloutStatus, WorkloadRef, WorkloadRow,
-    pod_oom_killed, pod_restarts, pod_state,
+    ingress_backends, pod_oom_killed, pod_restarts, pod_state,
 };
 use super::observed::ObservedWorld;
 
@@ -126,6 +126,52 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
     // One snapshot for the whole pass — Store::state() clones a Vec per call.
     let pods = world.pods.state();
 
+    // --- Jobs: object-level failure (the Job lost, not just one pod) --------
+    // Jobs have no city screen, so a Job's own failure surfaces here as its own
+    // line — and its failing pods fold under it (the pod loop below defers to
+    // `covered_jobs`), keeping it one concern, not one-per-failed-pod.
+    let mut covered_jobs: HashSet<(String, String)> = HashSet::new();
+    for job in world.jobs.state() {
+        let ns = job.metadata.namespace.clone().unwrap_or_default();
+        let name = job.metadata.name.clone().unwrap_or_default();
+        let st = job.status.as_ref();
+        let cond = |t: &str| {
+            st.and_then(|s| s.conditions.as_ref()).is_some_and(|cs| {
+                cs.iter()
+                    .any(|c| c.type_ == t && c.status.eq_ignore_ascii_case("true"))
+            })
+        };
+        // A completed Job is quiet, even if it had retries along the way.
+        let completions = job.spec.as_ref().and_then(|s| s.completions).unwrap_or(1);
+        let succeeded = st.and_then(|s| s.succeeded).unwrap_or(0);
+        if cond("Complete") || succeeded >= completions.max(1) {
+            continue;
+        }
+        let failed = st.and_then(|s| s.failed).unwrap_or(0);
+        let (severity, msg) = if cond("Failed") {
+            (
+                Severity::Critical,
+                "failed (backoff limit reached)".to_string(),
+            )
+        } else if failed >= 1 {
+            (
+                Severity::Warning,
+                format!("{failed} pod failure{}", if failed == 1 { "" } else { "s" }),
+            )
+        } else {
+            continue;
+        };
+        covered_jobs.insert((ns.clone(), name.clone()));
+        concerns.push(Concern {
+            cluster: ClusterId::Hot,
+            severity,
+            title: format!("job {ns}/{name} — {msg}"),
+            detail: String::new(),
+            target: Target::WorkloadList,
+            key: format!("j:{ns}/{name}"),
+        });
+    }
+
     // --- Pod-level signals, aggregated per owning workload -----------------
     let mut by_workload: BTreeMap<WorkloadRef, Agg> = BTreeMap::new();
     for pod in &pods {
@@ -153,8 +199,12 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
                 e.flapping += agg.flapping;
             }
             None => {
-                // Bare pod (or Job-owned — Jobs have no city screen yet).
+                // Bare pod, or Job-owned. A pod whose Job already has its own
+                // concern folds under it (no per-pod spam for a failed Job).
                 let ns = pod.metadata.namespace.clone().unwrap_or_default();
+                if job_owner(pod).is_some_and(|j| covered_jobs.contains(&(ns.clone(), j))) {
+                    continue;
+                }
                 let name = pod.metadata.name.clone().unwrap_or_default();
                 let (severity, msg) = agg.primary().expect("agg.any() checked");
                 let target = pod
@@ -298,6 +348,69 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
         });
     }
 
+    // --- Connectivity: routes that lead nowhere -----------------------------
+    // Orphan Ingress: a backend Service that doesn't exist (a gate to nowhere).
+    let svc_names: HashSet<(String, String)> = world
+        .services
+        .state()
+        .iter()
+        .filter_map(|s| Some((s.metadata.namespace.clone()?, s.metadata.name.clone()?)))
+        .collect();
+    for ing in world.ingresses.state() {
+        let ns = ing.metadata.namespace.clone().unwrap_or_default();
+        let name = ing.metadata.name.clone().unwrap_or_default();
+        let mut missing: Vec<String> = ingress_backends(&ing)
+            .into_iter()
+            .filter(|b| !svc_names.contains(&(ns.clone(), b.clone())))
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        missing.sort();
+        concerns.push(Concern {
+            cluster: ClusterId::Hot,
+            severity: Severity::Warning,
+            title: format!(
+                "ingress {ns}/{name} — backend {} has no Service",
+                missing.join(", ")
+            ),
+            detail: "route points at a missing Service".into(),
+            target: Target::WorkloadList,
+            key: format!("i:{ns}/{name}"),
+        });
+    }
+    // Harbor with no city: a Service whose selector matches no pod (no
+    // endpoints). Info — it can be transient mid-rollout; headless/external
+    // Services (no selector) are skipped.
+    for svc in world.services.state() {
+        let ns = svc.metadata.namespace.clone().unwrap_or_default();
+        let name = svc.metadata.name.clone().unwrap_or_default();
+        let Some(sel) = svc.spec.as_ref().and_then(|s| s.selector.as_ref()) else {
+            continue;
+        };
+        if sel.is_empty() {
+            continue;
+        }
+        let has_endpoint = pods.iter().any(|p| {
+            p.metadata.namespace.as_deref() == Some(ns.as_str())
+                && p.metadata
+                    .labels
+                    .as_ref()
+                    .is_some_and(|l| sel.iter().all(|(k, v)| l.get(k) == Some(v)))
+        });
+        if has_endpoint {
+            continue;
+        }
+        concerns.push(Concern {
+            cluster: ClusterId::Hot,
+            severity: Severity::Info,
+            title: format!("service {ns}/{name} — selects no pods"),
+            detail: "harbor with no city".into(),
+            target: Target::WorkloadList,
+            key: format!("s:{ns}/{name}"),
+        });
+    }
+
     // --- Recent Warning events not already covered above ---------------------
     let now = jiff::Timestamp::now();
     let mut event_groups: BTreeMap<(String, String, String), (u32, String)> = BTreeMap::new();
@@ -313,6 +426,9 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
             continue;
         }
         if ev.kind == "Node" && covered_nodes.contains(&ev.name) {
+            continue;
+        }
+        if ev.kind == "Job" && covered_jobs.contains(&(ev.namespace.clone(), ev.name.clone())) {
             continue;
         }
         if covered_workloads.contains(&(ev.namespace.clone(), ev.name.clone())) {
@@ -359,6 +475,18 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
 
     concerns.sort_by(|a, b| b.severity.cmp(&a.severity).then_with(|| a.key.cmp(&b.key)));
     concerns
+}
+
+/// The name of the Job that owns this pod, if any (Jobs aren't `WorkloadRef`s,
+/// so `OwnerIndex` skips them — this is the lightweight lookup we need to fold
+/// a failed Job's pods under its object-level concern).
+fn job_owner(pod: &k8s_openapi::api::core::v1::Pod) -> Option<String> {
+    pod.metadata
+        .owner_references
+        .as_ref()?
+        .iter()
+        .find(|o| o.kind == "Job")
+        .map(|o| o.name.clone())
 }
 
 /// Find the StatefulSet a PVC belongs to (claim-template naming), or the
@@ -594,6 +722,95 @@ mod tests {
         assert!(cs[1].title.contains("cordoned"));
         // Healthy node contributes nothing.
         assert!(!cs.iter().any(|c| c.title.contains("n-ok")));
+    }
+
+    #[test]
+    fn failed_job_surfaces_as_its_own_concern() {
+        let (world, mut s) = fx::world();
+        // 3 pod failures, not yet complete (0 succeeded of 1).
+        s.job(fx::job("demo", "migrate", 1, 0, 0, 3));
+        let cs = concerns(&world);
+        let c = cs
+            .iter()
+            .find(|c| c.key == "j:demo/migrate")
+            .expect("job concern");
+        assert_eq!(c.severity, Severity::Warning);
+        assert!(c.title.contains("3 pod failures"), "{}", c.title);
+        assert_eq!(c.target, Target::WorkloadList);
+    }
+
+    #[test]
+    fn completed_job_is_quiet() {
+        let (world, mut s) = fx::world();
+        // succeeded == completions → nothing to surface, even if it had retries.
+        s.job(fx::job("demo", "done", 1, 1, 0, 2));
+        let cs = concerns(&world);
+        assert!(!cs.iter().any(|c| c.key.starts_with("j:")), "{cs:?}");
+    }
+
+    #[test]
+    fn failed_jobs_pods_fold_under_the_job_concern() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.job(fx::job("demo", "doomed", 1, 0, 0, 2)); // 2 failures, not complete
+        for i in 0..2 {
+            s.pod(fx::pod_owned(
+                fx::pod_waiting(
+                    fx::pod("demo", &format!("doomed-{i}"), Some("n1")),
+                    "CrashLoopBackOff",
+                ),
+                "Job",
+                "doomed",
+            ));
+        }
+        let cs = concerns(&world);
+        // One Job concern — no per-pod (b:) spam for the Job's own pods.
+        assert_eq!(
+            cs.iter().filter(|c| c.key.starts_with("j:")).count(),
+            1,
+            "{cs:?}"
+        );
+        assert!(!cs.iter().any(|c| c.key.starts_with("b:")), "{cs:?}");
+    }
+
+    #[test]
+    fn orphan_ingress_points_at_missing_service() {
+        let (world, mut s) = fx::world();
+        // Ingress backends "ghost-svc", which doesn't exist.
+        s.ingress(fx::ingress(
+            "demo",
+            "web-ing",
+            "web.example.com",
+            "ghost-svc",
+        ));
+        let cs = concerns(&world);
+        let c = cs
+            .iter()
+            .find(|c| c.key == "i:demo/web-ing")
+            .expect("orphan ingress concern");
+        assert_eq!(c.severity, Severity::Warning);
+        assert!(c.title.contains("ghost-svc"), "{}", c.title);
+    }
+
+    #[test]
+    fn ingress_with_existing_backend_is_quiet() {
+        let (world, mut s) = fx::world();
+        s.service(fx::service("demo", "web", &[("app", "web")]));
+        s.ingress(fx::ingress("demo", "web-ing", "web.example.com", "web"));
+        let cs = concerns(&world);
+        assert!(!cs.iter().any(|c| c.key.starts_with("i:")), "{cs:?}");
+    }
+
+    #[test]
+    fn service_selecting_no_pods_is_info() {
+        let (world, mut s) = fx::world();
+        s.service(fx::service("demo", "lonely", &[("app", "nobody")]));
+        let cs = concerns(&world);
+        let c = cs
+            .iter()
+            .find(|c| c.key == "s:demo/lonely")
+            .expect("orphan harbor concern");
+        assert_eq!(c.severity, Severity::Info);
     }
 
     #[test]

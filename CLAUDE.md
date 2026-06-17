@@ -147,8 +147,9 @@ what makes the interesting logic unit-testable without a cluster.
   marks at world scale and show them at regional/local (TUI: cyan `Ψ`/`∏`;
   GUI: cyan anchor / arch line-marks). Demo: `hack/samples.yaml` adds an
   Ingress for `web` (docs/gui-connectivity.png). Deferred to later slices:
-  PVCs as granaries, Jobs/CronJobs, and connectivity attention (orphan
-  ingress / harbor with no city).
+  PVCs as granaries, Jobs/CronJobs (both since built); connectivity attention
+  (orphan ingress / harbor with no city) was added later — see the
+  "failed-Job + connectivity detectors" decision.
 - **Storage layer** (2026-06-16, second slice of "more kinds on the map"):
   PVCs become `⊞` granaries sited **inland of (west of) the city that mounts
   them** — cities took the western half, harbors the east coast, so storage
@@ -177,8 +178,9 @@ what makes the interesting logic unit-testable without a cluster.
   colour (GUI: pennant for Job, clock for CronJob; `ascii()` gained `✓`/`✗`).
   TUI islands are narrow (22 cells) so long CronJob schedules truncate — the
   GUI's wider labels show them in full. Demo: `migrate` Job + daily `nightly`
-  CronJob in samples (docs/gui-batch.png). Deferred: Job-object attention
-  (Job *pod* failures already route to the node), Job/CronJob city screens.
+  CronJob in samples (docs/gui-batch.png). Job-object attention (the failed-Job
+  concern) was added later — see the "failed-Job + connectivity detectors"
+  decision. Deferred: Job/CronJob city screens.
 - **GUI window system + Almanac** (2026-06-16, user request after pasting
   a 4X game's reference + city screens): the GUI had only bespoke overlays
   (tooltip, side panel, log overlay, picker) — no shared modal. `window.rs`
@@ -568,6 +570,26 @@ what makes the interesting logic unit-testable without a cluster.
   unaffected); `--splash` forces+captures it. The logos are first-party art, so
   CREDITS notes them but no third-party license applies (the new serif/`image`
   aside).
+- **Attention: failed-Job + connectivity detectors** (2026-06-17, roadmap
+  "deepen the attention queue"): three new pure detectors in
+  `state/attention.rs`, each unit-tested against `fixtures.rs`. **Failed Job:**
+  a Job with a `Failed` condition (backoff limit reached) → Critical; a Job
+  still accumulating `status.failed` pod failures → Warning; a *completed* Job
+  (`Complete` condition or `succeeded ≥ completions`) stays quiet. Crucially
+  the detector runs **before** the pod loop and records `covered_jobs`; the
+  bare-pod arm then **folds** a Job's own failing pods under the one Job concern
+  (via `job_owner`, since Jobs aren't `WorkloadRef`s so `OwnerIndex` skips
+  them) — preserving the "city in trouble, not 40 pod alarms" rule. Job
+  *events* dedup against `covered_jobs` too. **Connectivity:** an **orphan
+  Ingress** (a backend Service name absent from `world.services`) → Warning
+  (reuses `model::ingress_backends`, now `pub(crate)`); a **Service whose
+  selector matches no pod** ("harbor with no city") → Info, with no-selector
+  (headless/ExternalName) Services skipped so healthy clusters stay silent.
+  All target `WorkloadList` (Jobs/Services have no city). Verified live on kind:
+  a healthy cluster adds **zero** false positives; a deliberately broken
+  Ingress + a `BackoffLimitExceeded` Job both fire, and the Job collapses from
+  three lines (2 pods + Job) to one. Still deferred: unmounted-PVC island
+  granaries (a *map* feature, not attention).
 
 ## The pair (hot/warm)
 
@@ -707,8 +729,8 @@ never blocks input.
 more interventions (image set) · the planning turn in the TUI (staging + diff
 + commit; the GUI has it, the TUI has evict only) ·
 external services / chaos layers ·
-connectivity attention (orphan ingress / harbor with no city) + unmounted-PVC
-island granaries + Job-object attention (failed-Job concern) · Job/CronJob
+unmounted-PVC island granaries (the *map* feature; connectivity + failed-Job
+attention are now built) · Job/CronJob
 city screens · namespace filtering · mouse
 support · pod-level live metrics (node-level done) · minimap horizontal
 compression for very wide zone counts (~60+) · zoom levels (compact 1-line
