@@ -8,6 +8,26 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **GUI: a classic-4X dropdown menu bar.** The scattered chrome buttons (the
+  `?` almanac toggle, the End-Turn badge, the namespace-filter chip) are
+  replaced by a real menu bar — **Game** (switch context · fit · quit),
+  **View** (the map overlay), **Orders** (end of turn · discard, with the
+  staged count in the title), **World** (namespace filter), **Help** (field
+  guide · version) — the iconic menu of the genre, in the carved-stone palette.
+  Click a title to open its dropdown; slide across to switch menus; click an
+  item or outside to dismiss. An open menu suspends map navigation like the
+  other modals. The realm readout (context · platform · counts) moves to the
+  right of the bar.
+- **GUI: a Pressure map overlay (the View menu's "map display").** A new map
+  view recolors every province as a cpu/mem heat-map — calm green / elevated
+  amber / high red, the documented pressure buckets — so scheduling/usage
+  pressure reads at a glance across the whole world (main map *and* minimap).
+  The default **Terrain (health)** view is unchanged; the active non-default
+  view is labeled in STATUS so a red-tinted terrain isn't mistaken for node
+  health. Dev flags `--overlay pressure` and `--menu <name>` capture both
+  headlessly.
+
 ### Changed
 - **Minimap viewport box: constant-size + drag-to-navigate.** The box now
   sizes purely from the zoom level (it's the play area scaled by the

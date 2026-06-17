@@ -78,13 +78,15 @@ crates/
                  procedural settlements, iso minimap; all original geometry, no
                  sprites), panels.rs (hover tooltip, attention strip, context
                  picker, shared helpers), sidebar.rs (the docked right column —
-                 WORLD/STATUS/SELECTION, classic-4X right panel), window.rs
-                 (reusable modal chrome for drill-downs), almanac.rs (the in-app
-                 reference / field guide),
+                 WORLD/STATUS/SELECTION, classic-4X right panel), menu.rs (the
+                 classic-4X dropdown menu bar — Game/View/Orders/World/Help),
+                 window.rs (reusable modal chrome for drill-downs), almanac.rs
+                 (the in-app reference / field guide),
                  city.rs / node.rs (the 4X city + province drill-down
                  windows, on window.rs), plan.rs (the End-of-Turn review),
                  text.rs (bundled sans + serif fonts), theme.rs. See the
-                 "Isometric world map" + "GUI spike/promotion" decisions.
+                 "Isometric world map" + "GUI menu bar + overlays" + "GUI
+                 spike/promotion" decisions.
 ```
 
 **Data flow:** watchers (kube 3.x reflectors) keep `ObservedWorld` stores
@@ -726,6 +728,32 @@ what makes the interesting logic unit-testable without a cluster.
   shared helper, via the GUI's `--plan --plan-go`: metrics-server 1→3, worker
   cordoned, web rolled — then reverted); the TUI plan view has a TestBackend
   snapshot test. The TUI is no longer read-only-plus-evict — it has both writes.
+- **GUI menu bar + map overlays** (2026-06-17, user chose "Menu bar" from a
+  "closer to Civ II" options menu): the scattered GUI chrome buttons (the `?`
+  almanac toggle, the End-Turn badge, the namespace chip, the long help line)
+  are replaced by a classic-4X **dropdown menu bar** (`menu.rs`) — **Game**
+  (switch context · fit view · quit), **View** (the map overlay radio),
+  **Orders** (end of turn · discard, with the staged count in the title),
+  **World** (namespace filter), **Help** (field guide · version). `draw_menu_bar`
+  is immediate-mode like the rest of the GUI: it both paints the bar + any open
+  dropdown and hit-tests, returning a `MenuAction` the main loop maps to existing
+  state; the open menu is GUI-loop state (`open_menu: Option<usize>`). Behavior
+  mirrors the genre: click a title to toggle its dropdown, slide across to switch
+  menus, click an item or anywhere outside to dismiss. **An open menu suspends
+  map navigation** (added to the same modal-suspend conditions as picker/plan/
+  panel), and the dropdown draws over the world at chrome time — so map clicks
+  can't fall through. "Fit view" can't reach `bounds` from the chrome draw, so it
+  defers via a `pending_fit` flag consumed next frame. The realm readout
+  (context · platform · counts) moves to the right of the bar. **Map overlay**
+  (the View menu's "map display"): a render-only `Overlay { Terrain, Pressure }`
+  threaded through `draw_world` → `draw_province_terrain` → `land_diamond` and
+  the minimap. `Terrain` is the default node-health tinting; `Pressure` recolors
+  each province by `max(cpu,mem)` ratio using the documented buckets (<0.7 green
+  / 0.7–0.9 amber / ≥0.9 red, `theme::pressure_pair`). The non-default view is
+  labeled in STATUS so a red-tinted terrain isn't mistaken for NotReady. Dev
+  flags `--overlay pressure` and `--menu <name>` capture both headlessly. The
+  TUI keeps its own `1/2/3` overlays + key-driven actions (no menu bar). Deferred:
+  replicas / namespace map overlays (only Pressure shipped); a TUI menu bar.
 
 ## The pair (hot/warm)
 

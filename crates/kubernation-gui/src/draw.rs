@@ -12,7 +12,7 @@
 
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::Severity;
-use kubernation_core::state::model::NodeHealth;
+use kubernation_core::state::model::{NodeHealth, NodeTile};
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::world::{City, CoastKind, Continent, Island, Province, WorldModel};
 use macroquad::prelude::*;
@@ -32,6 +32,44 @@ pub const TILE_W: f32 = 32.0;
 pub const TILE_H: f32 = 16.0;
 /// Ocean strait between the hot and warm archipelagos, in cells.
 pub const WORLD_GAP: u16 = 8;
+
+// --- map overlays (the View menu's "map display") -------------------------
+
+/// What the terrain is colored *by* — the classic-4X "map display" / View
+/// menu. `Terrain` is the default node-health tinting; `Pressure` recolors each
+/// province as a cpu/mem heat-map. Render-only, GUI-loop state.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Overlay {
+    #[default]
+    Terrain,
+    Pressure,
+}
+
+impl Overlay {
+    /// Short label for the chrome / menu radio.
+    pub fn label(self) -> &'static str {
+        match self {
+            Overlay::Terrain => "terrain",
+            Overlay::Pressure => "pressure",
+        }
+    }
+}
+
+/// The two-shade land pair a province's terrain is filled with, per overlay.
+fn overlay_pair(overlay: Overlay, tile: &NodeTile) -> (Color, Color) {
+    match overlay {
+        Overlay::Terrain => iso_terrain_pair(tile.health),
+        Overlay::Pressure => pressure_pair(tile.cpu_ratio.max(tile.mem_ratio)),
+    }
+}
+
+/// A single flat color for a province on the minimap, per overlay.
+fn overlay_flat(overlay: Overlay, tile: &NodeTile) -> Color {
+    match overlay {
+        Overlay::Terrain => terrain(tile.health),
+        Overlay::Pressure => pressure_pair(tile.cpu_ratio.max(tile.mem_ratio)).1,
+    }
+}
 
 // --- scene ----------------------------------------------------------------
 
@@ -460,6 +498,7 @@ pub fn draw_world(
     cam: &Camera,
     banner: Option<(&str, ClusterId)>,
     pair: Option<&PairSync>,
+    overlay: Overlay,
 ) {
     let mut detail = lod(cam.zoom);
     detail.name_all = world.cities().take(DENSE_CITIES + 1).count() <= DENSE_CITIES;
@@ -507,7 +546,7 @@ pub fn draw_world(
             draw_province_shallows(prov, cam, &coasts[ci]);
         }
         for prov in &cont.provinces {
-            draw_province_terrain(prov, cam, &coasts[ci]);
+            draw_province_terrain(prov, cam, &coasts[ci], overlay);
         }
     }
     for &ii in &isl_order {
@@ -651,11 +690,14 @@ fn draw_province_shallows(prov: &Province, cam: &Camera, coast: &Coast) {
 /// show through. Land/sea is the same per-row `Coast` inset the rectangular
 /// map used; the continent's vertical extent (`coast.y0`/`coast.h`) marks the
 /// north/south shore so inter-province band seams stay interior land.
-fn draw_province_terrain(prov: &Province, cam: &Camera, coast: &Coast) {
+fn draw_province_terrain(prov: &Province, cam: &Camera, coast: &Coast, overlay: Overlay) {
     if province_offscreen(prov, cam) {
         return;
     }
     let (hw, hh) = cam.cell_px();
+    // The land pair depends on the active overlay (health vs. pressure heat);
+    // computed once per province, not per cell.
+    let pair = overlay_pair(overlay, &prov.tile);
     let x0 = prov.x as i32;
     let w = prov.w as f32;
     let y1 = (prov.y + prov.h) as i32;
@@ -704,7 +746,7 @@ fn draw_province_terrain(prov: &Province, cam: &Camera, coast: &Coast) {
                 );
                 fill_diamond(c, hw, hh, sand);
             } else {
-                land_diamond(c, hw, hh, prov.tile.health, wx as u16, wy as u16);
+                land_diamond(c, hw, hh, pair, wx as u16, wy as u16);
             }
         }
     }
@@ -712,8 +754,8 @@ fn draw_province_terrain(prov: &Province, cam: &Camera, coast: &Coast) {
 
 /// A single health-tinted land diamond with a 2-shade grassland checker plus a
 /// cheap per-cell micro-jitter, so big fields read as textured, not a grid.
-fn land_diamond(c: Vec2, hw: f32, hh: f32, h: NodeHealth, wx: u16, wy: u16) {
-    let (a, b) = iso_terrain_pair(h);
+fn land_diamond(c: Vec2, hw: f32, hh: f32, pair: (Color, Color), wx: u16, wy: u16) {
+    let (a, b) = pair;
     let base = if (wx as u32 + wy as u32) & 1 == 0 {
         a
     } else {
@@ -1475,7 +1517,7 @@ pub fn minimap_layout(bounds: (u16, u16)) -> MinimapLayout {
     }
 }
 
-pub fn draw_minimap(worlds: &[SceneWorld], cam: &Camera, ml: &MinimapLayout) {
+pub fn draw_minimap(worlds: &[SceneWorld], cam: &Camera, ml: &MinimapLayout, overlay: Overlay) {
     draw_rectangle(ml.frame.x, ml.frame.y, ml.frame.w, ml.frame.h, PANEL);
     draw_rectangle_lines(
         ml.frame.x, ml.frame.y, ml.frame.w, ml.frame.h, 2.0, PARCHMENT,
@@ -1501,7 +1543,7 @@ pub fn draw_minimap(worlds: &[SceneWorld], cam: &Camera, ml: &MinimapLayout) {
                     p.y as f32,
                     p.w as f32,
                     p.h as f32,
-                    terrain(p.tile.health),
+                    overlay_flat(overlay, &p.tile),
                 );
             }
         }
@@ -1560,6 +1602,30 @@ mod tests {
                 "cell ({wx},{wy}) center misrouted at zoom {zoom}"
             );
         }
+    }
+
+    // The Pressure overlay's heat buckets must match the documented pressure
+    // thresholds (<0.7 calm green, 0.7–0.9 elevated amber, ≥0.9 high red) so a
+    // recolored province reads the same way the gauges do.
+    #[test]
+    fn pressure_overlay_heats_by_bucket() {
+        use crate::theme::pressure_pair;
+        let calm = pressure_pair(0.5).0;
+        let high = pressure_pair(0.95).0;
+        assert!(calm.g > calm.r, "calm load reads green");
+        assert!(high.r > high.g, "high load reads red");
+        // Bucket edges: 0.69 is still calm, 0.9 is already high.
+        assert_eq!(pressure_pair(0.69).0.r, pressure_pair(0.0).0.r);
+        assert_eq!(pressure_pair(0.9).0.r, pressure_pair(1.0).0.r);
+        // The three buckets are visibly distinct.
+        assert_ne!(pressure_pair(0.5).0.r, pressure_pair(0.8).0.r);
+        assert_ne!(pressure_pair(0.8).0.r, pressure_pair(0.95).0.r);
+    }
+
+    #[test]
+    fn overlay_default_is_terrain() {
+        assert_eq!(Overlay::default(), Overlay::Terrain);
+        assert_eq!(Overlay::Pressure.label(), "pressure");
     }
 
     #[test]

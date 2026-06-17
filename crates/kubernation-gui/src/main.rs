@@ -15,6 +15,7 @@ mod almanac;
 mod city;
 mod draw;
 mod logo;
+mod menu;
 mod net;
 mod node;
 mod panels;
@@ -29,19 +30,20 @@ use std::path::PathBuf;
 use almanac::{Almanac, AlmanacAction};
 use clap::Parser;
 use draw::{
-    Camera, SceneWorld, draw_sea, draw_selection, draw_world, locate, minimap_layout, scene,
-    scene_size,
+    Camera, Overlay, SceneWorld, draw_sea, draw_selection, draw_world, locate, minimap_layout,
+    scene, scene_size,
 };
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::Target;
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::world::Region;
 use macroquad::prelude::*;
+use menu::{MenuAction, MenuCtx};
 use net::{EvictReq, LogReq};
 use panels::{
     Panel, draw_attention_strip, draw_commit_confirm, draw_evict_confirm, draw_logs, draw_tooltip,
 };
-use text::{text, text_bold, text_size};
+use text::{text, text_size};
 use theme::*;
 
 #[derive(Debug, Parser)]
@@ -117,9 +119,17 @@ struct Args {
     #[arg(long, value_name = "SUBSTR")]
     log_filter: Option<String>,
     /// Launch scoped to a single namespace (the namespace filter; you can
-    /// still change it from the chrome button). Also used for verification.
+    /// still change it from the World menu). Also used for verification.
     #[arg(long, value_name = "NS")]
     namespace: Option<String>,
+    /// Start with a map overlay active: "terrain" (default) or "pressure"
+    /// (cpu/mem heat). Set from the View menu at runtime; flag is for shots.
+    #[arg(long, value_name = "MODE")]
+    overlay: Option<String>,
+    /// Open a chrome menu on sync — game / view / orders / world / help
+    /// (development verification of the menu bar dropdowns)
+    #[arg(long, value_name = "NAME")]
+    menu: Option<String>,
 }
 
 fn window_conf() -> Conf {
@@ -171,6 +181,18 @@ async fn main() {
     let mut ns_picker_idx = 0usize;
     // Dragging the minimap viewport box to recenter the main view.
     let mut minimap_drag = false;
+    // The Civ-style chrome menu bar: which top-level menu is open (None = all
+    // closed). An open menu suspends map navigation, like the other modals.
+    let mut open_menu: Option<usize> = None;
+    // The active map overlay (the View menu's "map display"): how terrain is
+    // colored. A --overlay dev flag seeds it for headless shots.
+    let mut overlay = match args.overlay.as_deref() {
+        Some("pressure") => Overlay::Pressure,
+        _ => Overlay::Terrain,
+    };
+    // Menu "Fit view" can't reach `bounds` from the chrome draw, so it defers
+    // the camera fit to the next frame's input block (where bounds is in scope).
+    let mut pending_fit = false;
     // While Some, the city window's image field is capturing a new image string
     // (the "set image" planning verb); global single-key shortcuts are text.
     let mut city_image_edit: Option<String> = None;
@@ -465,7 +487,13 @@ async fn main() {
         }
 
         let mut manual_pan = false;
-        if !picker && !ns_picker && almanac.is_none() && !panel_modal && !plan_open {
+        if !picker
+            && !ns_picker
+            && almanac.is_none()
+            && !panel_modal
+            && !plan_open
+            && open_menu.is_none()
+        {
             let pan = 14.0;
             if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) {
                 cam.pos.x -= pan;
@@ -516,6 +544,12 @@ async fn main() {
             let worlds = scene(s);
             let bounds = scene_size(&worlds);
 
+            // Menu "Fit view" deferred from the chrome draw (bounds wasn't in
+            // scope there).
+            if std::mem::take(&mut pending_fit) {
+                cam.fit(bounds);
+            }
+
             // Frame the whole world whenever a snapshot first appears —
             // initial sync, a reconnect, or after a context switch (which
             // clears the snapshot). Skipped when --inspect will fly us in.
@@ -562,6 +596,16 @@ async fn main() {
                 if args.almanac {
                     almanac = Some(Almanac::new());
                 }
+                if let Some(m) = &args.menu {
+                    open_menu = match m.as_str() {
+                        "game" => Some(0),
+                        "view" => Some(1),
+                        "orders" => Some(2),
+                        "world" => Some(3),
+                        "help" => Some(4),
+                        _ => None,
+                    };
+                }
                 if args.plan {
                     let w = &s.hot.models.world;
                     let mut cities = w.cities();
@@ -577,8 +621,15 @@ async fn main() {
                     plan_open = true;
                 }
             }
-            if picker || ns_picker || almanac.is_some() || panel_modal || plan_open {
-                // A modal is open: world navigation is suspended this frame.
+            if picker
+                || ns_picker
+                || almanac.is_some()
+                || panel_modal
+                || plan_open
+                || open_menu.is_some()
+            {
+                // A modal (or an open chrome menu) is up: world navigation is
+                // suspended this frame.
             } else {
                 if is_key_pressed(KeyCode::F) {
                     cam.fit(bounds);
@@ -749,7 +800,7 @@ async fn main() {
                 for sw in &worlds {
                     let wc = cam.shifted(sw.off);
                     let banner = paired.then_some((sw.label.as_str(), sw.id));
-                    draw_world(sw.world, &wc, banner, s.pair.as_deref());
+                    draw_world(sw.world, &wc, banner, s.pair.as_deref(), overlay);
                 }
                 if let Some(sel) = selected {
                     draw_selection(&cam, sel);
@@ -767,13 +818,14 @@ async fn main() {
                     .flatten()
                     .and_then(|cell| locate(&worlds, cell));
                 let sidebar_sel = selected.and_then(|cell| locate(&worlds, cell)).or(hovered);
-                sidebar::draw_sidebar(&worlds, &cam, s, sidebar_sel, &ns_filter_now, &ml);
+                sidebar::draw_sidebar(&worlds, &cam, s, sidebar_sel, &ns_filter_now, &ml, overlay);
 
                 // Hover tooltip over the map (not the column / chrome / strip).
                 if !picker
                     && almanac.is_none()
                     && !panel_modal
                     && !plan_open
+                    && open_menu.is_none()
                     && drag_anchor.is_none()
                     && !minimap_drag
                     && let Some((sw, local)) = hovered
@@ -939,93 +991,46 @@ async fn main() {
             STONE_SHADOW,
         );
         logo::draw_mark(vec2(17.0, panels::CHROME_H / 2.0 - 1.0), 24.0);
-        text_bold(
-            ascii(&format!(
-                "KUBERNATION v{} — {status}",
-                env!("CARGO_PKG_VERSION")
-            )),
-            34.0,
-            21.0,
-            20.0,
-            STONE_INK,
-        );
-        // Almanac button (top-right); the help line ends to its left.
-        let help_btn = Rect::new(screen_width() - 30.0, 5.0, 22.0, 22.0);
-        draw_rectangle(help_btn.x, help_btn.y, help_btn.w, help_btn.h, STONE_DARK);
-        draw_rectangle_lines(
-            help_btn.x, help_btn.y, help_btn.w, help_btn.h, 1.0, STONE_EDGE,
-        );
-        text_bold("?", help_btn.x + 7.0, help_btn.y + 16.0, 16.0, STONE_LIGHT);
-        if is_mouse_button_pressed(MouseButton::Left)
-            && help_btn.contains(mouse)
+
+        // The classic-4X dropdown menu bar — Game / View / Orders / World /
+        // Help — replaces the scattered chrome buttons. It's interactive only
+        // when no centered modal owns input; otherwise its titles draw inert
+        // and any open dropdown is dismissed.
+        let menu_live = !picker
+            && !ns_picker
             && almanac.is_none()
-        {
-            almanac = Some(Almanac::new());
-            almanac_just_opened = true;
+            && !plan_open
+            && panel.is_none()
+            && !log_open
+            && pending_evict.is_none()
+            && !pending_commit;
+        if !menu_live {
+            open_menu = None;
         }
-        // End-Turn button + staged-change count (planning turn), left of `?`.
-        let mut chrome_right = help_btn.x - 10.0;
-        if !planned.is_empty() {
-            let label = format!("End Turn ({})", planned.len());
-            let tw = text_size(&label, 14.0).width;
-            let tb = Rect::new(help_btn.x - tw - 24.0, 5.0, tw + 14.0, 22.0);
-            let bg = if tb.contains(mouse) {
-                lighter(STONE_DARK, 1.4)
-            } else {
-                STONE_DARK
-            };
-            draw_rectangle(tb.x, tb.y, tb.w, tb.h, bg);
-            draw_rectangle_lines(tb.x, tb.y, tb.w, tb.h, 1.0, WARN);
-            text(&label, tb.x + 7.0, 21.0, 14.0, WARN);
-            if is_mouse_button_pressed(MouseButton::Left)
-                && tb.contains(mouse)
-                && panel.is_none()
-                && almanac.is_none()
-                && !picker
-                && !plan_open
-            {
-                // Opens next frame (this draw already ran), so the opening
-                // click can't reach the review as a click-outside dismiss.
+        let mctx = MenuCtx {
+            overlay,
+            staged: planned.len(),
+            ns_active: ns_filter_now.is_active(),
+        };
+        let menu_click = is_mouse_button_pressed(MouseButton::Left) && menu_live;
+        match menu::draw_menu_bar(42.0, mouse, menu_click, &mut open_menu, &mctx) {
+            Some(MenuAction::SwitchContext) => {
+                // No-op when there are no contexts (an empty picker); picker_idx
+                // is harmless then.
+                picker_idx = contexts.iter().position(|c| *c == current_ctx).unwrap_or(0);
+                picker = !contexts.is_empty();
+            }
+            Some(MenuAction::Fit) => pending_fit = true,
+            Some(MenuAction::Quit) => break,
+            Some(MenuAction::SetOverlay(o)) => overlay = o,
+            Some(MenuAction::EndTurn) => {
+                // The review draws next frame; by then the press edge is gone,
+                // so the opening click can't reach it as a click-outside
+                // dismiss (no plan_just_opened guard needed on this path).
                 plan_open = true;
             }
-            chrome_right = tb.x - 10.0;
-        }
-        // Namespace-filter button — always shown so the scope is discoverable;
-        // highlighted when a filter is active. Click opens the picker.
-        {
-            let label = panels::truncate_str(&ns_filter_now.label(), 22);
-            let tw = text_size(&label, 13.0).width;
-            let nb = Rect::new(chrome_right - tw - 14.0, 5.0, tw + 12.0, 22.0);
-            let active = ns_filter_now.is_active();
-            let bg = if nb.contains(mouse) {
-                lighter(STONE_DARK, 1.4)
-            } else {
-                STONE_DARK
-            };
-            draw_rectangle(nb.x, nb.y, nb.w, nb.h, bg);
-            draw_rectangle_lines(
-                nb.x,
-                nb.y,
-                nb.w,
-                nb.h,
-                1.0,
-                if active { PARCHMENT } else { STONE_EDGE },
-            );
-            text(
-                ascii(&label),
-                nb.x + 6.0,
-                21.0,
-                13.0,
-                if active { PARCHMENT } else { STONE_INK },
-            );
-            if is_mouse_button_pressed(MouseButton::Left)
-                && nb.contains(mouse)
-                && panel.is_none()
-                && almanac.is_none()
-                && !picker
-                && !plan_open
-                && !ns_picker
-            {
+            Some(MenuAction::DiscardTurn) => planned.clear(),
+            Some(MenuAction::NamespaceFilter) => {
                 ns_picker = true;
                 ns_picker_idx = match &ns_filter_now {
                     NamespaceFilter::Only(s) => s
@@ -1036,11 +1041,24 @@ async fn main() {
                     _ => 0,
                 };
             }
-            chrome_right = nb.x - 10.0;
+            Some(MenuAction::Almanac) => {
+                almanac = Some(Almanac::new());
+                almanac_just_opened = true;
+            }
+            None => {}
         }
-        let help = "drag/WASD pan . wheel zoom . F fit . click inspect . ]/[ cities . N concern . C context . t end-turn . ? almanac";
-        let hm = text_size(help, 14.0);
-        text(help, chrome_right - hm.width, 21.0, 14.0, STONE_INK_DIM);
+
+        // The realm readout (context · platform · counts) right-aligned, like a
+        // 4X title bar's status line.
+        let st = ascii(&status);
+        let sm = text_size(&st, 14.0);
+        text(
+            &st,
+            screen_width() - sm.width - 12.0,
+            21.0,
+            14.0,
+            STONE_INK_DIM,
+        );
 
         // Context picker, drawn on top of everything.
         if picker {

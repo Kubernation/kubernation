@@ -497,11 +497,16 @@ fn page_controls(cx: &mut Ctx) {
     cx.key("Click a harbor / gate", "open the city it serves");
     cx.key("Click a pod row", "tail that pod's logs");
     cx.key("Hover", "tooltip for whatever is under the cursor");
-    cx.heading("Cluster & windows");
+    cx.heading("Plan & cluster");
+    cx.key("t", "open the End-of-Turn review (staged changes)");
     cx.key("C", "switch kube context");
     cx.key("? / F1", "this Almanac");
     cx.key("Esc", "close the open panel / window");
     cx.key("Q", "quit");
+    cx.heading("Menu bar");
+    cx.para(
+        "The top bar holds the menus: Game (context, fit, quit), View (the map overlay — terrain health or cpu/mem pressure), Orders (end of turn, discard), World (namespace filter), Help. Click a title to open it.",
+    );
 }
 
 fn page_reading(cx: &mut Ctx) {

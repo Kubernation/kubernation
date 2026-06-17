@@ -14,7 +14,7 @@ use macroquad::prelude::*;
 use kubernation_core::state::attention::{Severity, severity_counts};
 use kubernation_core::state::filter::NamespaceFilter;
 
-use crate::draw::{Camera, MinimapLayout, SceneWorld, draw_minimap};
+use crate::draw::{Camera, MinimapLayout, Overlay, SceneWorld, draw_minimap};
 use crate::net::Snapshot;
 use crate::panels::{self, region_lines, truncate_str};
 use crate::text::{text, text_bold};
@@ -27,6 +27,7 @@ pub fn draw_sidebar(
     sel: Option<(&SceneWorld, (u16, u16))>,
     ns_filter: &NamespaceFilter,
     ml: &MinimapLayout,
+    overlay: Overlay,
 ) {
     let col = panels::sidebar_rect();
     stone_panel(col.x, col.y, col.w, col.h);
@@ -38,7 +39,7 @@ pub fn draw_sidebar(
 
     // --- WORLD ------------------------------------------------------------
     text_bold("WORLD", x, col.y + 18.0, 15.0, STONE_INK);
-    draw_minimap(worlds, cam, ml); // ml is positioned inside this column
+    draw_minimap(worlds, cam, ml, overlay); // ml is positioned inside this column
 
     // --- STATUS -----------------------------------------------------------
     let mut y = ml.frame.y + ml.frame.h + 14.0;
@@ -99,6 +100,12 @@ pub fn draw_sidebar(
         STONE_INK_DIM,
     );
     y += 18.0;
+    // The map overlay is labeled when non-default so a pressure-recolored
+    // terrain (red/amber by load) isn't mistaken for node health.
+    if overlay != Overlay::Terrain {
+        text(format!("view: {}", overlay.label()), x, y, 13.0, STONE_WARN);
+        y += 18.0;
+    }
     if ns_filter.is_active() {
         text(ascii(&ns_filter.label()), x, y, 13.0, STONE_WARN);
         y += 18.0;

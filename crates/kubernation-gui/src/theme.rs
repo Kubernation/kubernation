@@ -103,6 +103,29 @@ pub fn iso_terrain_pair(h: NodeHealth) -> (Color, Color) {
     }
 }
 
+/// Heat color pair for a scheduling/usage ratio — the **Pressure** map
+/// overlay. Mirrors the documented pressure buckets (`state/model.rs`): <0.7
+/// calm green, 0.7–0.9 elevated amber, ≥0.9 high red. Two shades so the iso
+/// terrain checker/jitter still reads as textured land, not a flat wash.
+pub fn pressure_pair(ratio: f64) -> (Color, Color) {
+    if ratio >= 0.9 {
+        (
+            Color::new(0.55, 0.16, 0.13, 1.0),
+            Color::new(0.62, 0.21, 0.17, 1.0),
+        )
+    } else if ratio >= 0.7 {
+        (
+            Color::new(0.62, 0.46, 0.16, 1.0),
+            Color::new(0.68, 0.52, 0.20, 1.0),
+        )
+    } else {
+        (
+            Color::new(0.26, 0.46, 0.24, 1.0),
+            Color::new(0.31, 0.52, 0.28, 1.0),
+        )
+    }
+}
+
 /// Cheap per-cell shade jitter (no allocation, unlike `terrain_cell`'s
 /// `format!` hash) so large iso terrain fills don't read as a printed grid.
 pub fn cell_jitter(wx: u16, wy: u16) -> f32 {
