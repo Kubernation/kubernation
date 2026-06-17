@@ -299,6 +299,12 @@ async fn main() {
         let mut commit_just_opened = false;
 
         // ---- input ------------------------------------------------------
+        // A minimap drag ends the moment the button is up — checked here,
+        // outside the modal-suspended nav block, so opening a modal mid-drag
+        // (which suspends that block) can't latch the flag into the next click.
+        if !is_mouse_button_down(MouseButton::Left) {
+            minimap_drag = false;
+        }
         // While typing into the log filter or the city image field, single-key
         // shortcuts are text, not commands.
         let typing = (log_open && log_filter_active) || city_image_edit.is_some();
@@ -635,17 +641,14 @@ async fn main() {
                 if is_mouse_button_pressed(MouseButton::Left) && ml.frame.contains(mouse) {
                     minimap_drag = true;
                 }
-                if minimap_drag {
-                    if is_mouse_button_down(MouseButton::Left) {
-                        let cm = vec2(
-                            mouse.x.clamp(ml.frame.x, ml.frame.x + ml.frame.w),
-                            mouse.y.clamp(ml.frame.y, ml.frame.y + ml.frame.h),
-                        );
-                        if let Some(cell) = ml.world_cell(cm, bounds) {
-                            cam.jump_to(cell);
-                        }
-                    } else {
-                        minimap_drag = false;
+                // (minimap_drag is cleared on button-up at the top of input.)
+                if minimap_drag && is_mouse_button_down(MouseButton::Left) {
+                    let cm = vec2(
+                        mouse.x.clamp(ml.frame.x, ml.frame.x + ml.frame.w),
+                        mouse.y.clamp(ml.frame.y, ml.frame.y + ml.frame.h),
+                    );
+                    if let Some(cell) = ml.world_cell(cm, bounds) {
+                        cam.jump_to(cell);
                     }
                 }
                 // A map-cell inspect (left of the column, not the minimap) opens
@@ -772,6 +775,7 @@ async fn main() {
                     && !panel_modal
                     && !plan_open
                     && drag_anchor.is_none()
+                    && !minimap_drag
                     && let Some((sw, local)) = hovered
                 {
                     draw_tooltip(sw, local, s, mouse);

@@ -56,6 +56,9 @@ pub const STONE_INK_DIM: Color = Color::new(0.36, 0.30, 0.21, 1.0);
 // stone uses these darker, higher-contrast variants instead.
 pub const STONE_CRIT: Color = Color::new(0.60, 0.09, 0.06, 1.0);
 pub const STONE_WARN: Color = Color::new(0.52, 0.33, 0.02, 1.0);
+/// Connectivity/structure ink for stone (a dark teal — the bright `STRUCT`
+/// cyan washes out on tan), keeping the cyan hue but legible.
+pub const STONE_STRUCT: Color = Color::new(0.06, 0.34, 0.38, 1.0);
 
 // --- settlement masonry (warm neutral tones, NOT meaning-encoding) --------
 pub const WALL: Color = Color::new(0.82, 0.76, 0.63, 1.0);
@@ -187,5 +190,16 @@ pub fn sync_color(state: &kubernation_core::state::pair::SyncState) -> Color {
         SyncState::Drift { .. } => WARN,
         SyncState::OnlyHot => CRIT,
         SyncState::OnlyWarm => STRUCT,
+    }
+}
+
+/// Pair-sync ink for a stone background (high-contrast dark variants).
+pub fn sync_on_stone(state: &kubernation_core::state::pair::SyncState) -> Color {
+    use kubernation_core::state::pair::SyncState;
+    match state {
+        SyncState::InSync => STONE_INK_DIM,
+        SyncState::Drift { .. } => STONE_WARN,
+        SyncState::OnlyHot => STONE_CRIT,
+        SyncState::OnlyWarm => STONE_STRUCT,
     }
 }

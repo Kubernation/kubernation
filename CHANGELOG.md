@@ -17,6 +17,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   navigable, open ocean included (the click resolves to the nearest cell).
 
 ### Fixed
+- **Minimap-nav review follow-ups.** A minimap drag no longer latches if a
+  modal is opened mid-drag (the flag is cleared on button-up, outside the
+  modal-suspended block), so it can't cause a stray camera jump on the next
+  click; and the hover tooltip is suppressed while scrubbing the minimap. The
+  remaining bright-cyan chrome text — the harbor/gate tooltip title, the
+  all-bound "N PVCs" line, and the pair-sync line — now uses dark stone-legible
+  variants (`STONE_STRUCT`, `sync_on_stone`), completing the contrast pass.
 - **Bottom-bar / chrome text contrast.** Attention text on the warm-stone
   chrome (the attention strip, the column's STATUS rollup, the tooltip /
   SELECTION lines) used the bright map colors, which washed out on tan — now

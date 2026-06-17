@@ -72,7 +72,7 @@ pub fn region_lines(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot) -> Vec<
             CoastKind::Harbor => ("harbor", format!("service {} . {}", m.name, m.detail)),
             CoastKind::Gate => ("gate", format!("ingress {} . {}", m.name, m.detail)),
         };
-        lines.push((title.into(), STRUCT));
+        lines.push((title.into(), STONE_STRUCT));
         lines.push((what, STONE_INK));
         lines.push((format!("-> {}", m.workload.name), STONE_INK_DIM));
     } else {
@@ -101,14 +101,14 @@ pub fn region_lines(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot) -> Vec<
                             STONE_WARN,
                         )
                     } else {
-                        (format!("{} PVCs", store.claims), STRUCT)
+                        (format!("{} PVCs", store.claims), STONE_STRUCT)
                     };
                     lines.push((txt, col));
                 }
                 if let Some(pair) = &snap.pair
                     && let Some(st) = pair.state(&c.r)
                 {
-                    lines.push((st.describe(sw.id), sync_color(st)));
+                    lines.push((st.describe(sw.id), sync_on_stone(st)));
                 }
             }
             Region::Province(p) => {
