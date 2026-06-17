@@ -18,7 +18,6 @@ mod net;
 mod node;
 mod panels;
 mod plan;
-mod sprites;
 mod text;
 mod theme;
 mod window;
@@ -54,9 +53,6 @@ struct Args {
     /// Project a CRD's instances onto the map (repeatable)
     #[arg(long = "project", value_name = "CRD")]
     project: Vec<String>,
-    /// Directory of replacement sprite PNGs (grass.png, house.png, …)
-    #[arg(long)]
-    tileset: Option<PathBuf>,
 
     /// Render until synced, save a PNG, exit (development verification)
     #[arg(long)]
@@ -106,7 +102,6 @@ fn window_conf() -> Conf {
 async fn main() {
     let args = Args::parse();
     text::init();
-    sprites::init(args.tileset.as_deref());
     let shot = args.screenshot.clone();
     let inspect = args.inspect.clone();
     let want_warm = args.warm.is_some();
@@ -337,11 +332,7 @@ async fn main() {
                     }
                 } else if let Some(z) = args.zoom {
                     cam.zoom = z.clamp(0.3, 3.0);
-                    let (cw, ch) = cam.cell_px();
-                    cam.pos = vec2(
-                        (bounds.0 as f32 * cw - screen_width()) / 2.0,
-                        (bounds.1 as f32 * ch - screen_height()) / 2.0 - 10.0,
-                    );
+                    cam.jump_to((bounds.0 / 2, bounds.1 / 2));
                 }
                 if args.pick && !contexts.is_empty() {
                     picker = true;
@@ -602,9 +593,16 @@ async fn main() {
             }
         }
 
-        // Top chrome.
-        draw_rectangle(0.0, 0.0, screen_width(), panels::CHROME_H - 2.0, PANEL);
-        draw_rectangle(0.0, panels::CHROME_H - 2.0, screen_width(), 2.0, PARCHMENT);
+        // Top chrome: a carved tan-stone bar.
+        draw_rectangle(0.0, 0.0, screen_width(), panels::CHROME_H - 2.0, STONE);
+        draw_rectangle(0.0, 0.0, screen_width(), 1.5, STONE_LIGHT);
+        draw_rectangle(
+            0.0,
+            panels::CHROME_H - 2.0,
+            screen_width(),
+            2.0,
+            STONE_SHADOW,
+        );
         text_bold(
             ascii(&format!(
                 "KUBERNATION v{} — {status}",
@@ -613,15 +611,15 @@ async fn main() {
             12.0,
             21.0,
             20.0,
-            PARCHMENT,
+            STONE_INK,
         );
         // Almanac button (top-right); the help line ends to its left.
         let help_btn = Rect::new(screen_width() - 30.0, 5.0, 22.0, 22.0);
-        draw_rectangle(help_btn.x, help_btn.y, help_btn.w, help_btn.h, PLATE);
+        draw_rectangle(help_btn.x, help_btn.y, help_btn.w, help_btn.h, STONE_DARK);
         draw_rectangle_lines(
-            help_btn.x, help_btn.y, help_btn.w, help_btn.h, 1.0, PARCHMENT,
+            help_btn.x, help_btn.y, help_btn.w, help_btn.h, 1.0, STONE_EDGE,
         );
-        text_bold("?", help_btn.x + 7.0, help_btn.y + 16.0, 16.0, PARCHMENT);
+        text_bold("?", help_btn.x + 7.0, help_btn.y + 16.0, 16.0, STONE_LIGHT);
         if is_mouse_button_pressed(MouseButton::Left)
             && help_btn.contains(mouse)
             && almanac.is_none()
@@ -636,9 +634,9 @@ async fn main() {
             let tw = text_size(&label, 14.0).width;
             let tb = Rect::new(help_btn.x - tw - 24.0, 5.0, tw + 14.0, 22.0);
             let bg = if tb.contains(mouse) {
-                lighter(PLATE, 1.7)
+                lighter(STONE_DARK, 1.4)
             } else {
-                PLATE
+                STONE_DARK
             };
             draw_rectangle(tb.x, tb.y, tb.w, tb.h, bg);
             draw_rectangle_lines(tb.x, tb.y, tb.w, tb.h, 1.0, WARN);
@@ -658,7 +656,7 @@ async fn main() {
         }
         let help = "drag/WASD pan . wheel zoom . F fit . click inspect . ]/[ cities . N concern . C context . t end-turn . ? almanac";
         let hm = text_size(help, 14.0);
-        text(help, chrome_right - hm.width, 21.0, 14.0, DIM);
+        text(help, chrome_right - hm.width, 21.0, 14.0, STONE_INK_DIM);
 
         // Context picker, drawn on top of everything.
         if picker {

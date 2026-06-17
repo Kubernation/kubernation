@@ -513,7 +513,7 @@ fn page_reading(cx: &mut Ctx) {
         "Local (zoom in)",
         "everything — full names, every settlement",
     );
-    cx.key("Regional", "sprites + chips; names selected when crowded");
+    cx.key("Regional", "towns + chips; names selected when crowded");
     cx.key("World (zoom out)", "each province aggregates to one badge");
     cx.heading("Gauges");
     cx.para(

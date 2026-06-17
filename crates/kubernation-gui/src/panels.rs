@@ -51,13 +51,17 @@ pub fn draw_tooltip(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot, mouse: 
             CoastKind::Gate => ("gate", format!("ingress {} . {}", m.name, m.detail)),
         };
         lines.push((title.into(), STRUCT));
-        lines.push((what, INK));
-        lines.push((format!("-> {}", m.workload.name), DIM));
+        lines.push((what, STONE_INK));
+        lines.push((format!("-> {}", m.workload.name), STONE_INK_DIM));
     } else {
         match sw.world.region_at(local.0, local.1) {
             Region::City(_, c) => {
-                lines.push((c.r.name.clone(), INK));
-                let gap = if c.ready < c.desired { WARN } else { DIM };
+                lines.push((c.r.name.clone(), STONE_INK));
+                let gap = if c.ready < c.desired {
+                    WARN
+                } else {
+                    STONE_INK_DIM
+                };
                 lines.push((
                     format!(
                         "{} {} . pop {}/{}",
@@ -86,9 +90,9 @@ pub fn draw_tooltip(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot, mouse: 
                 }
             }
             Region::Province(p) => {
-                lines.push((p.tile.name.clone(), INK));
+                lines.push((p.tile.name.clone(), STONE_INK));
                 let health = match p.tile.health {
-                    NodeHealth::Healthy => ("healthy", DIM),
+                    NodeHealth::Healthy => ("healthy", STONE_INK_DIM),
                     NodeHealth::Cordoned => ("cordoned", WARN),
                     NodeHealth::Pressure => ("under pressure", WARN),
                     NodeHealth::NotReady => ("NotReady", CRIT),
@@ -99,19 +103,19 @@ pub fn draw_tooltip(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot, mouse: 
                 ));
             }
             Region::Structure(_, s) => {
-                lines.push((format!("{}/{}", s.kind, s.name), INK));
+                lines.push((format!("{}/{}", s.kind, s.name), STONE_INK));
                 if s.workload.is_some() {
                     lines.push(("encampment - no pods on any land".into(), WARN));
                 }
             }
             Region::Island(isl) => {
-                lines.push((format!("isle of {}", isl.label), INK));
+                lines.push((format!("isle of {}", isl.label), STONE_INK));
             }
             Region::Ocean => {
                 if !paired {
                     return;
                 }
-                lines.push(("open sea".into(), DIM));
+                lines.push(("open sea".into(), STONE_INK_DIM));
             }
         }
     }
@@ -124,8 +128,7 @@ pub fn draw_tooltip(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot, mouse: 
     let h = lines.len() as f32 * 17.0 + 10.0;
     let x = (mouse.x + 16.0).min(screen_width() - w - 8.0);
     let y = (mouse.y + 18.0).min(screen_height() - STRIP_H - h - 8.0);
-    draw_rectangle(x, y, w, h, PLATE);
-    draw_rectangle_lines(x, y, w, h, 1.5, PARCHMENT);
+    stone_panel(x, y, w, h);
     for (i, (content, color)) in lines.iter().enumerate() {
         text(
             ascii(content),
@@ -244,10 +247,17 @@ pub(crate) fn truncate_str(s: &str, max: usize) -> String {
 
 pub fn draw_attention_strip(attention: &[Concern], paired: bool, concern_idx: usize) {
     let base = screen_height() - STRIP_H;
-    draw_rectangle(0.0, base, screen_width(), STRIP_H, PANEL);
-    draw_rectangle(0.0, base, screen_width(), 2.0, PARCHMENT);
+    draw_rectangle(0.0, base, screen_width(), STRIP_H, STONE);
+    draw_rectangle(0.0, base, screen_width(), 2.0, STONE_LIGHT);
+    draw_rectangle(0.0, base + STRIP_H - 2.0, screen_width(), 2.0, STONE_SHADOW);
     if attention.is_empty() {
-        text("all quiet - no concerns", 16.0, base + 26.0, 18.0, DIM);
+        text(
+            "all quiet - no concerns",
+            16.0,
+            base + 26.0,
+            18.0,
+            STONE_INK_DIM,
+        );
         return;
     }
     for (i, c) in attention.iter().take(3).enumerate() {
@@ -278,7 +288,7 @@ pub fn draw_attention_strip(attention: &[Concern], paired: bool, concern_idx: us
             screen_width() - 50.0,
             base + 20.0,
             14.0,
-            DIM,
+            STONE_INK_DIM,
         );
     }
 }
@@ -304,15 +314,14 @@ pub fn draw_picker(contexts: &[String], current: &str, idx: usize) -> PickerLayo
     let h = 58.0 + contexts.len().max(1) as f32 * row_h;
     let x = (screen_width() - w) / 2.0;
     let y = (screen_height() - h) / 2.0;
-    draw_rectangle(x, y, w, h, PANEL);
-    draw_rectangle_lines(x, y, w, h, 2.0, PARCHMENT);
-    text_bold("SWITCH CONTEXT", x + 16.0, y + 26.0, 18.0, PARCHMENT);
+    stone_panel(x, y, w, h);
+    text_bold("SWITCH CONTEXT", x + 16.0, y + 26.0, 18.0, STONE_INK);
     text(
         "enter switch . j/k move . c or esc cancel",
         x + 16.0,
         y + 45.0,
         13.0,
-        DIM,
+        STONE_INK_DIM,
     );
     let mut rows = Vec::new();
     let list_y = y + 58.0;
@@ -322,14 +331,14 @@ pub fn draw_picker(contexts: &[String], current: &str, idx: usize) -> PickerLayo
             x + 16.0,
             list_y + 18.0,
             14.0,
-            DIM,
+            STONE_INK_DIM,
         );
     }
     for (i, ctx) in contexts.iter().enumerate() {
         let ry = list_y + i as f32 * row_h;
         let r = Rect::new(x + 8.0, ry, w - 16.0, row_h);
         if i == idx {
-            draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.30, 0.26, 0.12, 0.95));
+            stone_well(r.x, r.y, r.w, r.h);
         }
         if ctx == current {
             draw_circle(
@@ -339,7 +348,8 @@ pub fn draw_picker(contexts: &[String], current: &str, idx: usize) -> PickerLayo
                 Color::new(0.45, 0.78, 0.45, 1.0),
             );
         }
-        text(ascii(ctx), r.x + 26.0, ry + 18.0, 15.0, INK);
+        let row_ink = if i == idx { INK } else { STONE_INK };
+        text(ascii(ctx), r.x + 26.0, ry + 18.0, 15.0, row_ink);
         rows.push(r);
     }
     PickerLayout { rows }

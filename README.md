@@ -82,15 +82,15 @@ make gui    # or: cargo run -p kubernation-gui --release -- --context <ctx>
 ```
 
 The same `kubernation-core` world rendered as a real strategy-game view
-(macroquad). Zones are **continents with irregular, noise-carved
-coastlines** — bays, capes, sand beaches — so a cluster reads as
-geography rather than a grid (the rectangular model underneath stays the
-canonical coordinate system; the GUI just paints organic shores over it).
-**Kenney CC0 sprite terrain** (tiled grass/sand/stone keyed to node
-health, trees on healthy land); **building sprites** that grow from a
-single house to a walled keep with population, with white population
-chips and warning banners over troubled cities; namespace isles with
-structure sprites, hover tooltips, right-drag panning, wheel zoom around
+(macroquad), on a classic-4X **isometric 2:1 diamond** map — the
+rectangular model underneath stays the canonical coordinate system; the
+GUI projects it to diamonds (render-only). **All-original procedural
+terrain** (health-tinted, dithered land diamonds keyed to node health,
+inked shorelines, trees on healthy land); **procedural settlements** that
+grow from a single hut to a walled keep with population, each with a solid
+population box and a **serif name banner** (the classic city-label
+convention) — plus warning banners over troubled cities; namespace isles
+with structure marks, hover tooltips, right-drag panning, wheel zoom around
 the cursor, minimap click-to-jump, smooth camera flights on `]`/`[` and
 `N`, and detail drill-downs: click a city for its **city window**, click
 land for its **province window** — both centered modals (below). **Click
@@ -150,10 +150,10 @@ you rehearse the turn.
 ![GUI planning turn](docs/gui-plan.png)
 
 Press **`c`** to switch the hot
-cluster from a context picker — no restart. Text is **Fira Sans**
-(bundled OFL); both font and sprites are embedded so the binary is
-self-contained. Swap the look with `--tileset <dir>` (PNGs named `grass`,
-`house`, `keep`, … override the bundled set, Freeciv-style).
+cluster from a context picker — no restart. Labels use **Fira Sans** with
+**Liberation Serif** for place-name banners (both bundled OFL); the map is
+all original procedural geometry (no sprite assets), so the binary stays
+self-contained.
 
 With `--warm` (`make gui-pair`) the standby cluster rises as a **second
 archipelago** east of the hot one — one sea, free panning between them,

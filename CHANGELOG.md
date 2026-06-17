@@ -8,7 +8,39 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+- **Isometric world map (GUI).** The macroquad map was reprojected from a
+  top-down rectangular grid to a classic-4X **isometric 2:1 diamond** grid.
+  The core world model stays a rectangular `(u16,u16)` grid (both frontends'
+  canonical coords) — this is render-only inside `kubernation-gui`. `Camera`'s
+  `to_screen` / `cell_at` / `fit` / `fly_to` / `shifted` became the iso
+  forward/inverse transforms (integer cell = diamond north vertex,
+  `+0.5,+0.5` = center; pan/zoom-anchor math is unchanged); rendering is a
+  back-to-front two-pass painter's algorithm so tiles and tall buildings
+  overlap correctly. A round-trip unit test pins `cell_at(to_screen(center))`.
+- **Softer sea & shore.** The ocean's hard 2-colour checker was replaced with
+  a smooth mottle of overlapping faint swell patches (no grid), and coastlines
+  now blend through graded **shallows rings** (deep → shallow → beach) drawn
+  under the shore instead of a hard inked diamond waterline.
+- **All-procedural terrain & settlements.** Terrain is now health-tinted,
+  dithered iso diamonds with soft shallows coasts; cities are procedural building
+  clusters that grow with population (hut → walled keep), with a solid
+  lower-left **population box** and a **serif name banner** below
+  (classic-4X city labels). The Kenney "Medieval RTS" sprite set and the
+  `--tileset` override were removed — the map is original geometry only.
+- **Tan-stone HUD chrome.** The top bar, hover tooltip, attention strip, and
+  context picker were retinted from near-black plates to warm carved stone;
+  meaning colors (red/yellow attention, cyan structures, sync chips) are
+  untouched and read harder against stone.
+- **Map labels are now constant screen size** (a `label_scale` clamp) instead
+  of scaling with zoom, so they no longer balloon or clip when zoomed in; the
+  continent name is pinned on-screen; and a namespace island's structures are
+  drawn as a tidy scrim-backed legend list rather than scattered labels that
+  overprinted each other. Un-plated labels (continent / province / island) get
+  a dark text halo (`text_outline`) so they stay legible over both land and sea.
+
+### Added
+- Bundled **Liberation Serif Bold** (OFL 1.1) for the map's place-name banners.
 
 ## [0.3.0] — 2026-06-16
 

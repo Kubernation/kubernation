@@ -63,14 +63,16 @@ crates/
                  theme, symbols). `cargo run` = this (default-members).
   kubernation-gui/    macroquad windowed client over the same core (promoted
                  from spike): net.rs (tokio thread publishing Models +
-                 ObservedWorld snapshots), draw.rs (terrain mosaic,
-                 settlements, minimap, camera), panels.rs (hover tooltip,
-                 attention strip, context picker, shared helpers),
-                 window.rs (reusable modal chrome for drill-downs),
-                 almanac.rs (the in-app reference / field guide),
+                 ObservedWorld snapshots), draw.rs (ISOMETRIC 2:1 diamond
+                 projection — iso camera/transform, dithered terrain diamonds,
+                 procedural settlements, minimap; all original geometry, no
+                 sprites), panels.rs (hover tooltip, attention strip, context
+                 picker, shared helpers), window.rs (reusable modal chrome for
+                 drill-downs), almanac.rs (the in-app reference / field guide),
                  city.rs / node.rs (the 4X city + province drill-down
                  windows, on window.rs), plan.rs (the End-of-Turn review),
-                 theme.rs. See "GUI spike" + "GUI promotion" decisions.
+                 text.rs (bundled sans + serif fonts), theme.rs. See the
+                 "Isometric world map" + "GUI spike/promotion" decisions.
 ```
 
 **Data flow:** watchers (kube 3.x reflectors) keep `ObservedWorld` stores
@@ -338,7 +340,10 @@ what makes the interesting logic unit-testable without a cluster.
   list in one snapshot. `F` fits the whole scene; the camera also fits
   once on first sync. A warm connect failure degrades to single-world
   with a status message instead of aborting.
-- **GUI font + sprite tileset** (2026-06-12, "text could be better"):
+- **GUI font + sprite tileset** (2026-06-12, "text could be better";
+  **sprites superseded 2026-06-16** by the isometric rework — `sprites.rs`,
+  the bundled Kenney PNGs, and `--tileset` were removed when the map went
+  fully procedural; the font half stands, now joined by a bundled serif):
   macroquad's built-in font is a blurry ASCII bitmap, so `text.rs`
   bundles Fira Sans (OFL) via `include_bytes!` and routes all labels
   through `text`/`text_bold`/`text_size` helpers (font in a thread_local,
@@ -443,6 +448,47 @@ what makes the interesting logic unit-testable without a cluster.
   `--inspect`/`--almanac`/`--plan` verification flags. Capture is the
   established `--screenshot` path. The four unreferenced/historical shots
   (spike, metrics, labels, world-scale) were dropped rather than reshot.
+- **Isometric world map** (2026-06-16, user: "get the visuals closer to the
+  original game" + a Civ II screenshot; chose **full isometric** + **evoke the
+  genre with original/CC0 art**, NOT a trademarked clone): the GUI map was
+  reprojected from a top-down rectangular grid to a classic-4X **isometric 2:1
+  diamond** grid. **Render-only** — `state/world.rs` stays the canonical
+  rectangular `(u16,u16)` grid both frontends share (the TUI still renders it
+  rectangularly); all iso lives in `kubernation-gui/draw.rs`. **Camera:**
+  `to_screen(wx,wy) = ((wx−wy)·hw, (wx+wy)·hh) − pos`, `cell_px()` returns
+  diamond **half-extents**, `cell_at` is the algebraic inverse. **Convention
+  (load-bearing):** integer cell = the diamond's **north vertex**, so
+  `to_screen(x+0.5, y+0.5)` is the **center** — every existing painter that
+  passed `+0.5` offsets keeps working, and `cell_at` **floors** the inverted
+  coords (a round-trip unit test pins `cell_at(to_screen(center))==cell`).
+  Because `pos` stays a screen translation and `zoom` a scalar, `main.rs`
+  pan/zoom-anchor/drag code was **untouched**; `fit` uses the iso diamond AABB
+  `(W+H)·hw × (W+H)·hh`, `shifted(off)` subtracts the diagonal `off·(hw,hh)`
+  (warm world drops to the south-east), `draw_selection` is a pulsing diamond.
+  **Rendering** is a back-to-front **two-pass** painter's algorithm
+  (`draw_world`: all terrain — continents+islands sorted by `x+y` — then
+  features/settlements/labels) so south tiles and tall buildings overlap
+  correctly. **Terrain** (`draw_province_terrain`): one health-tinted, 2-shade
+  dithered diamond per LAND cell (land/sea reuses the per-row `Coast` insets;
+  the continent's `y0/h` mark N/S shore so inter-province band seams stay
+  interior land), with sea-facing shoreline cells drawn sand + an inked
+  waterline on only their sea-facing edges. **Ocean** is screen-space
+  (`draw_sea`: wash + coarse dither + waves — O(screen), not O(cells)).
+  **Settlements** (`draw_city`/`draw_settlement`/`iso_block`) are procedural
+  iso building clusters that grow hut→walled-keep by population, with a solid
+  **lower-left population box** and a **serif name banner below** (the classic
+  city-label convention; serif = bundled **Liberation Serif Bold**, OFL 1.1,
+  via `text::name_text`). HUD chrome (top bar, tooltip, attention strip,
+  picker) went **tan carved stone** (`theme::STONE*` + `stone_panel`/
+  `stone_well`); meaning colors (red/yellow attention, cyan structures, sync)
+  are unchanged. **The Kenney sprite set + `sprites.rs` + `--tileset` were
+  removed** — the map is now 100% original geometry, satisfying the
+  de-trademark posture (evoke the genre, clone nothing). Minimap stays a
+  top-down chart (its viewport box inverse-projects the 4 screen corners).
+  `cargo test` round-trips the hit-test; `--zoom`/`--center`/`--screenshot`
+  verify framing headlessly. Deferred: chunkier landmasses depend on real
+  multi-node zones (the dev cluster has 1 node/zone → thin diagonal bands);
+  per-tile sprite art if ever wanted; iso minimap.
 
 ## The pair (hot/warm)
 
