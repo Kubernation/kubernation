@@ -42,6 +42,8 @@ pub enum Action {
         namespace: String,
         pod: String,
     },
+    /// Re-fetch the open log tail now (e.g. the `--previous` toggle flipped).
+    RefetchLogs,
     SwitchContext(String),
     /// Stage a planning-turn intervention (scale / cordon). Preview-only until
     /// committed from the End-of-Turn review.

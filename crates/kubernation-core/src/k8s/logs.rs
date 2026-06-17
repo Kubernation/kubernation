@@ -13,18 +13,23 @@ pub const TAIL: i64 = 500;
 
 /// Fetch the recent log tail for one pod. `container` is required only for
 /// multi-container pods; `None` lets the server pick the sole container.
-/// Errors are returned as display strings for the log view to show inline.
+/// `previous` tails the *previously terminated* container instead of the
+/// running one (the `kubectl logs --previous` idiom — useful for a crash
+/// loop); the server errors if no previous instance exists, which the view
+/// surfaces inline. Errors are returned as display strings.
 pub async fn tail(
     client: Client,
     namespace: &str,
     pod: &str,
     container: Option<String>,
+    previous: bool,
 ) -> Result<String, String> {
     let api: Api<Pod> = Api::namespaced(client, namespace);
     let lp = LogParams {
         container,
         tail_lines: Some(TAIL),
         timestamps: false,
+        previous,
         ..Default::default()
     };
     api.logs(pod, &lp).await.map_err(|e| e.to_string())

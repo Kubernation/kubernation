@@ -162,7 +162,9 @@ pub(crate) fn observed_for(
 
 /// A centered scrollback panel showing the tail of one pod's logs. The net
 /// thread keeps `tail` fresh on a ~2s poll; this just paints the latest.
-pub fn draw_logs(tail: &LogTail) {
+/// `filter` (case-insensitive substring) narrows the shown lines; `previous`
+/// reflects the `--previous` toggle, `filter_active` the live filter editor.
+pub fn draw_logs(tail: &LogTail, filter: &str, filter_active: bool, previous: bool) {
     let w = (screen_width() * 0.72).min(940.0);
     let h = (screen_height() - STRIP_H - CHROME_H - 40.0).max(200.0);
     let x = (screen_width() - w) / 2.0;
@@ -177,13 +179,14 @@ pub fn draw_logs(tail: &LogTail) {
             } else {
                 ""
             };
-            format!("logs · {tag}{}/{}", t.namespace, t.pod)
+            let prev = if previous { " <previous>" } else { "" };
+            format!("logs · {tag}{}/{}{prev}", t.namespace, t.pod)
         }
         None => "logs".into(),
     };
     text_bold(ascii(&title), x + 14.0, y + 22.0, 16.0, PARCHMENT);
     text(
-        "Esc to close · last 500 lines · live",
+        "Esc close · / filter · p previous · last 500 lines · live",
         x + 14.0,
         y + 40.0,
         12.0,
@@ -207,9 +210,52 @@ pub fn draw_logs(tail: &LogTail) {
         text("(waiting for log lines…)", x + 14.0, body_top, 14.0, DIM);
         return;
     }
+
+    // Apply the substring filter (case-insensitive) over the fetched tail.
+    let needle = filter.to_lowercase();
+    let total = tail.text.lines().count();
+    let all: Vec<&str> = if needle.is_empty() {
+        tail.text.lines().collect()
+    } else {
+        tail.text
+            .lines()
+            .filter(|l| l.to_lowercase().contains(&needle))
+            .collect()
+    };
+
+    // The live filter editor / active-filter summary, on the right of the
+    // subtitle row.
+    if filter_active {
+        text(
+            ascii(&format!("filter: {filter}_")),
+            x + w - 320.0,
+            y + 40.0,
+            13.0,
+            PARCHMENT,
+        );
+    } else if !filter.is_empty() {
+        text(
+            ascii(&format!("filter: {filter}  ({}/{total})", all.len())),
+            x + w - 320.0,
+            y + 40.0,
+            12.0,
+            DIM,
+        );
+    }
+
+    if all.is_empty() {
+        text(
+            ascii(&format!("(no lines match \"{filter}\")")),
+            x + 14.0,
+            body_top,
+            14.0,
+            DIM,
+        );
+        return;
+    }
+
     // Show the tail end that fits — newest lines are most useful.
     let rows = (((y + h - 12.0) - body_top) / line_h).floor().max(1.0) as usize;
-    let all: Vec<&str> = tail.text.lines().collect();
     let start = all.len().saturating_sub(rows);
     let mut ly = body_top;
     for raw in &all[start..] {
@@ -227,7 +273,7 @@ pub fn draw_logs(tail: &LogTail) {
         text(
             ascii(&format!("… {start} earlier lines",)),
             x + w - 170.0,
-            y + 40.0,
+            y + 22.0,
             12.0,
             DIM,
         );

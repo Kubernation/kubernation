@@ -443,6 +443,12 @@ impl App {
             }
             return;
         }
+        // While editing the log filter, every keystroke (incl. Esc/Backspace,
+        // which the app otherwise treats as "back") is text input.
+        if self.screens.last() == Some(&Screen::Logs) && self.logs.filtering() {
+            self.logs.filter_input(key);
+            return;
+        }
         // The End-of-Turn review owns its keys (so its c/x/D don't hit the
         // global bindings); a few navigation escapes still work.
         if self.screens.last() == Some(&Screen::Plan) {
@@ -595,6 +601,7 @@ impl App {
                 self.push_screen(Screen::Logs);
                 self.fetch_logs();
             }
+            Action::RefetchLogs => self.fetch_logs(),
             Action::EvictPod { namespace, pod } => {
                 // RBAC gate (cached per namespace): only raise the confirm if
                 // the user may delete pods there; otherwise say why.
@@ -783,10 +790,11 @@ impl App {
         };
         let ns = self.logs.namespace.clone();
         let pod = self.logs.pod.clone();
+        let previous = self.logs.previous;
         let tx = self.tx.clone();
         tokio::spawn(async move {
             let container = logs::first_container(client.clone(), &ns, &pod).await;
-            let result = logs::tail(client, &ns, &pod, container).await;
+            let result = logs::tail(client, &ns, &pod, container, previous).await;
             let _ = tx.send(AppEvent::Logs { generation, result }).await;
         });
     }

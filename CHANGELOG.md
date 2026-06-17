@@ -9,6 +9,18 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Log `--previous` + grep/filter.** The log tail gains two controls in both
+  frontends: **`p`** toggles tailing the *previously terminated* container
+  (`kubectl logs --previous` — the crash-loop's last words), with the tail
+  re-fetched on toggle; and **`/`** opens a case-insensitive substring
+  **filter** over the fetched lines (live `n/m` match count, `(no lines
+  match)` when empty). The filter is client-side over the last 500 lines (no
+  refetch); typing into it never triggers global shortcuts. The TUI shows a
+  USE-style filter chip on the top border and routes edit keystrokes (incl.
+  Esc/Backspace) to the editor; the GUI captures text input and gates `q`/`/`.
+  Verified live: `<previous>` shows a crashed container's output, and a
+  `process 48` filter narrowed nginx logs to `1/31`. Dev flags
+  `--log-previous` / `--log-filter <substr>` (with `--tail`).
 - **Pod-level live metrics.** When metrics-server is present, the metrics poll
   now also lists `metrics.k8s.io` PodMetrics (summed across containers) into a
   per-pod usage map, and the **city CITIZENS** and **node GARRISON** pod lists

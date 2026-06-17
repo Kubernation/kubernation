@@ -106,6 +106,14 @@ struct Args {
     /// — development verification of the apply path
     #[arg(long)]
     plan_go: bool,
+    /// With --tail, open the log overlay on the *previous* container
+    /// (development verification of the --previous toggle)
+    #[arg(long)]
+    log_previous: bool,
+    /// With --tail, pre-fill the log filter with this substring
+    /// (development verification of the grep/filter)
+    #[arg(long, value_name = "SUBSTR")]
+    log_filter: Option<String>,
 }
 
 fn window_conf() -> Conf {
@@ -151,6 +159,10 @@ async fn main() {
     let mut picker_idx = 0usize;
     // Log tailing: the open overlay + a headless auto-open after --inspect.
     let mut log_open = false;
+    // Log overlay state: --previous container toggle + substring filter editor.
+    let mut log_previous = false;
+    let mut log_filter = String::new();
+    let mut log_filter_active = false;
     let mut auto_tail = args.tail;
     // The Almanac (in-app reference) — a modal window; None = closed.
     let mut almanac: Option<Almanac> = None;
@@ -263,13 +275,16 @@ async fn main() {
         let mut commit_just_opened = false;
 
         // ---- input ------------------------------------------------------
-        if is_key_pressed(KeyCode::Q) {
+        // While typing into the log filter, single-key shortcuts are text.
+        let log_typing = log_open && log_filter_active;
+        if is_key_pressed(KeyCode::Q) && !log_typing {
             break;
         }
         // ?, /, or F1 toggle the Almanac (in-app reference). Track an open
         // *this frame* so the same click/press doesn't immediately dismiss it.
+        // When a log overlay is open, `/` is its filter trigger instead.
         let mut almanac_just_opened = false;
-        if is_key_pressed(KeyCode::F1) || is_key_pressed(KeyCode::Slash) {
+        if (is_key_pressed(KeyCode::F1) || is_key_pressed(KeyCode::Slash)) && !log_open {
             if almanac.is_some() {
                 almanac = None;
             } else {
@@ -298,6 +313,9 @@ async fn main() {
                 plan_open = false;
             } else if picker {
                 picker = false;
+            } else if log_open && log_filter_active {
+                // First Esc leaves the filter editor; a second closes the log.
+                log_filter_active = false;
             } else if log_open {
                 log_open = false;
                 net.clear_logs();
@@ -305,6 +323,40 @@ async fn main() {
                 panel = None;
             } else {
                 break;
+            }
+        }
+        // Log overlay owns its keys: `/` edits a filter, `p` toggles previous.
+        if log_open {
+            if log_filter_active {
+                while let Some(c) = get_char_pressed() {
+                    if !c.is_control() {
+                        log_filter.push(c);
+                    }
+                }
+                if is_key_pressed(KeyCode::Backspace) {
+                    log_filter.pop();
+                }
+                if is_key_pressed(KeyCode::Enter) {
+                    log_filter_active = false;
+                }
+            } else {
+                // Drain any stray typed chars so the queue is empty when the
+                // editor opens next frame (no leading `/`).
+                while get_char_pressed().is_some() {}
+                if is_key_pressed(KeyCode::Slash) {
+                    log_filter_active = true;
+                }
+                if is_key_pressed(KeyCode::P) {
+                    // Drive the re-fetch off the live request (set the instant
+                    // the overlay opened), not the tail (None until a fetch
+                    // lands) — and flip the flag only when we actually re-issue,
+                    // so the title can never run ahead of the fetched container.
+                    if let Some(mut r) = net.log_request() {
+                        log_previous = !log_previous;
+                        r.previous = log_previous;
+                        net.request_logs(r);
+                    }
+                }
             }
         }
         // While the context picker is open it swallows navigation.
@@ -707,10 +759,14 @@ async fn main() {
                                 }
                             }
                             if let Some((ns, pod)) = act.log {
+                                log_previous = args.log_previous;
+                                log_filter = args.log_filter.clone().unwrap_or_default();
+                                log_filter_active = false;
                                 net.request_logs(LogReq {
                                     cluster: *cid,
                                     namespace: ns,
                                     pod,
+                                    previous: log_previous,
                                 });
                                 log_open = true;
                                 auto_tail = false;
@@ -736,10 +792,14 @@ async fn main() {
                                 planned.stage(iv);
                             }
                             if let Some((ns, pod)) = act.log {
+                                log_previous = args.log_previous;
+                                log_filter = args.log_filter.clone().unwrap_or_default();
+                                log_filter_active = false;
                                 net.request_logs(LogReq {
                                     cluster: *nid,
                                     namespace: ns,
                                     pod,
+                                    previous: log_previous,
                                 });
                                 log_open = true;
                                 auto_tail = false;
@@ -765,7 +825,12 @@ async fn main() {
                     net.clear_logs();
                 }
                 if log_open {
-                    draw_logs(&net.log_tail());
+                    draw_logs(
+                        &net.log_tail(),
+                        &log_filter,
+                        log_filter_active,
+                        log_previous,
+                    );
                 }
                 draw_attention_strip(&s.attention, paired, concern_idx);
             }

@@ -29,6 +29,9 @@ pub struct LogReq {
     pub cluster: ClusterId,
     pub namespace: String,
     pub pod: String,
+    /// Tail the previously-terminated container (`kubectl logs --previous`).
+    /// Flipping it changes the request, so the poll re-fetches automatically.
+    pub previous: bool,
 }
 
 /// The latest tail for the requested pod.
@@ -155,6 +158,14 @@ impl Net {
 
     pub fn clear_logs(&self) {
         *self.log_req.lock().unwrap() = None;
+    }
+
+    /// The pod whose logs are currently requested — set the instant
+    /// `request_logs` is called and held across tail resets, so the `p`
+    /// toggle can re-issue even before the first fetch lands (unlike
+    /// `log_tail().target`, which is None until a fetch completes).
+    pub fn log_request(&self) -> Option<LogReq> {
+        self.log_req.lock().unwrap().clone()
     }
 
     pub fn log_tail(&self) -> LogTail {
@@ -301,7 +312,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     };
                     let container =
                         logs::first_container(client.clone(), &r.namespace, &r.pod).await;
-                    let res = logs::tail(client, &r.namespace, &r.pod, container).await;
+                    let res = logs::tail(client, &r.namespace, &r.pod, container, r.previous).await;
                     // Only store if still the requested target.
                     if net.log_req.lock().unwrap().as_ref() == Some(&r) {
                         let mut g = net.log_tail.lock().unwrap();

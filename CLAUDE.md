@@ -144,6 +144,25 @@ what makes the interesting logic unit-testable without a cluster.
   (`#[default] Hot`) for `LogsView::default()` — the orphan rule blocks
   `impl Default` in the TUI crate. Dev flag `--tail` (with `--inspect`)
   auto-opens the first pod's logs for headless screenshots (docs/gui-logs.png).
+- **Logs: `--previous` + grep/filter** (2026-06-17, roadmap "polish"):
+  `logs::tail` gained a `previous: bool` → `LogParams.previous` (tail the
+  *previously terminated* container — the crash loop's last words; the server
+  errors if no prior instance, surfaced inline). Both frontends toggle it with
+  **`p`** and re-fetch (TUI: `Action::RefetchLogs` → `fetch_logs` reads
+  `LogsView.previous`; GUI: flip `LogReq.previous`, whose `PartialEq` change
+  makes the poll re-fetch). **`/`** opens a **case-insensitive substring
+  filter** over the *already-fetched* 500 lines (no refetch) — purely a display
+  narrowing, with an `n/m` match count. The hard part is keyboard ownership:
+  while editing the filter, ordinary keys must be *text*, not shortcuts — the
+  **TUI** routes all keys (incl. Esc/Backspace) to `LogsView::filter_input`
+  when `Screen::Logs && filtering()` (Ctrl+C still quits, intercepted earlier);
+  the **GUI** computes `log_typing` to gate `Q`, gates the almanac `/` behind
+  `!log_open` so `/` is the filter trigger, drains `get_char_pressed` when not
+  editing (no stray leading `/`), and Esc first leaves the editor then closes
+  the overlay. Filter chrome rides the *top* border (TUI) so body scroll math
+  is untouched. Dev flags `--log-previous` / `--log-filter <substr>` (with
+  `--tail`) verify both headlessly; verified live (`<previous>` shows crashy's
+  `boom`; a `process 48` filter narrowed web to `1/31`).
 - **Connectivity layer** (2026-06-16, first slice of "more kinds on the map"):
   Services become `Ψ` harbors and Ingresses `∏` gates, **moored in the ocean
   strip on a continent's east coast, each on the latitude of the city it
@@ -696,6 +715,8 @@ on 256-color terminals.
 `h/j/k/l`+arrows explore · `]`/`[` next/prev city · `PgUp/PgDn` page,
 `Ctrl+u/d` half page, `Home/End` west/east continent · `Enter` opens the
 region under the cursor · `l` tail the selected pod's logs (city/node) ·
+**in the log view:** `/` filter (case-insensitive substring), `p` toggle
+the previous-container tail, `j/k`/`g`/`G`/`f` scroll/follow ·
 `e` evict the selected pod (city/node — real delete, RBAC-gated, y/n confirm) ·
 **planning turn:** `+`/`−` stage scale & `R` toggle restart (city), `C` stage
 cordon (node), `t` open the End-of-Turn review (`x` unstage · `D` discard ·
@@ -774,5 +795,5 @@ support · minimap horizontal
 compression for very wide zone counts (~60+) · zoom levels (compact 1-line
 tiles for very large boards) · pair: per-container image diffs, env/config
 drift, unified single-board mode ("one continent, sync ghosts") · logs:
-the kube log *stream* (we poll the tail), `--previous`, multi-container
-picker, grep/filter.
+the kube log *stream* (we poll the tail) and a multi-container picker
+(`--previous` + grep/filter are now built).

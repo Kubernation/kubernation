@@ -17,6 +17,10 @@ const KEYMAP: &[(&str, &[(&str, &str)])] = &[
             ("Home / End", "westmost / eastmost continent"),
             ("Enter", "open the thing under the cursor"),
             ("l", "tail logs of the selected pod (city / node)"),
+            (
+                "/  p (in logs)",
+                "filter (substring) · toggle previous container",
+            ),
             ("e", "evict the selected pod — deletes it (confirm y/n)"),
             ("Esc / Backspace", "back"),
         ],
