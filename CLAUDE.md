@@ -113,9 +113,20 @@ what makes the interesting logic unit-testable without a cluster.
   drives the source label ("gauges live"/node detail "cpu use" / GUI "live
   usage"). First poll failure flips `available=false` and it keeps polling,
   so a later `make metrics-up` is picked up without restart. Node health
-  now reflects live usage when present (≥0.9 = Pressure). Pod-level metrics
-  are a possible later add; gauges are node-level. `make metrics-up`
+  now reflects live usage when present (≥0.9 = Pressure). `make metrics-up`
   installs metrics-server on kind (needs `--kubelet-insecure-tls`).
+- **Pod-level live metrics** (2026-06-17, roadmap "polish"): the same poll now
+  also LISTs `metrics.k8s.io` **PodMetrics** (plural `pods`, built by hand like
+  the node resource) and sums each pod's per-container usage into
+  `Metrics.pods` keyed by `(namespace, name)`. Best-effort — a PodMetrics
+  failure leaves the map empty but keeps `available` true (NodeMetrics is the
+  signal). `ObservedWorld::pod_usage(ns, name)` mirrors `node_usage`; the pure
+  builders hang it on `CityPod.usage` / `NodePodRow.usage` (both
+  `Option<NodeUsage>`). The **city CITIZENS** and **node GARRISON** pod lists
+  show it via the shared `util::format_usage` (`kubectl top`-style
+  `{millicores}m {human_bytes}`) — a new USE column in the TUI tables, appended
+  to the row in the GUI. Unit-tested (`pod_usage_flows_into_city_and_node_models`)
+  + verified live (GUI city window shows `0m 10Mi`).
 - **Logs & live tail** (2026-06-16): `k8s/logs.rs` is *fetch-not-watch* — a
   one-shot `Api::<Pod>::logs` tail of the last 500 lines (`first_container`
   resolves the container so multi-container pods work without guessing).
@@ -759,7 +770,7 @@ external services / chaos layers ·
 unmounted-PVC island granaries (the *map* feature; connectivity + failed-Job
 attention are now built) · Job/CronJob
 city screens · namespace filtering · mouse
-support · pod-level live metrics (node-level done) · minimap horizontal
+support · minimap horizontal
 compression for very wide zone counts (~60+) · zoom levels (compact 1-line
 tiles for very large boards) · pair: per-container image diffs, env/config
 drift, unified single-board mode ("one continent, sync ghosts") · logs:

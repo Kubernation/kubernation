@@ -9,6 +9,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Pod-level live metrics.** When metrics-server is present, the metrics poll
+  now also lists `metrics.k8s.io` PodMetrics (summed across containers) into a
+  per-pod usage map, and the **city CITIZENS** and **node GARRISON** pod lists
+  show each pod's live cpu/mem (`kubectl top`-style `12m 45Mi`) in both
+  frontends — a new **USE** column in the TUI, appended to the row in the GUI.
+  Best-effort: a PodMetrics failure leaves usage blank without affecting the
+  node gauges. Verified live (GUI city window shows `0m 10Mi` per pod).
 - **The planning turn comes to the TUI.** The terminal client gains the full
   staging + commit flow the GUI has: on a **city** screen `+`/`−` stage a scale
   delta and `R` toggles a rolling restart; on a **node** screen `C` stages a

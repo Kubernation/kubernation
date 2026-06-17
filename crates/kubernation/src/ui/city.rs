@@ -15,7 +15,7 @@ use kubernation_core::state::model::{
     CityModel, RolloutStatus, WorkloadKind, WorkloadRef, build_city,
 };
 use kubernation_core::state::planned::Intervention;
-use kubernation_core::util::{format_age_opt, truncate};
+use kubernation_core::util::{format_age_opt, format_usage, truncate};
 
 #[derive(Default)]
 pub struct CityView {
@@ -263,6 +263,12 @@ impl Component for CityView {
                     Span::styled(p.reason.clone(), style),
                     Span::raw(p.restarts.to_string()),
                     Span::raw(format_age_opt(p.age.as_ref())),
+                    Span::styled(
+                        p.usage
+                            .map(|u| format_usage(u.cpu, u.mem))
+                            .unwrap_or_default(),
+                        theme.dim(),
+                    ),
                     Span::styled(p.node.clone(), theme.dim()),
                 ])
             })
@@ -275,10 +281,13 @@ impl Component for CityView {
                 Constraint::Length(18),
                 Constraint::Length(3),
                 Constraint::Length(5),
+                Constraint::Length(11),
                 Constraint::Min(12),
             ],
         )
-        .header(Row::new(vec![" ", "POD", "STATUS", "RST", "AGE", "NODE"]).style(theme.dim()))
+        .header(
+            Row::new(vec![" ", "POD", "STATUS", "RST", "AGE", "USE", "NODE"]).style(theme.dim()),
+        )
         .block(
             Block::bordered()
                 .border_style(theme.chrome())

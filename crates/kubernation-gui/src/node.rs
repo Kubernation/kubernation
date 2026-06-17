@@ -13,6 +13,8 @@ use kubernation_core::events::ClusterId;
 use kubernation_core::state::model::{MetricSource, NodeHealth, PodState, build_node_detail};
 use kubernation_core::state::planned::{Intervention, PlannedWorld};
 
+use kubernation_core::util::format_usage;
+
 use crate::net::Snapshot;
 use crate::panels::{observed_for, pod_color, truncate_str};
 use crate::text::{text, text_bold, text_size};
@@ -189,10 +191,15 @@ pub fn draw_node(
             );
         }
         draw_circle(left_x + 5.0, ly + row_h / 2.0, 4.0, pod_color(p.state));
+        let use_suffix = p
+            .usage
+            .map(|u| format!("  {}", format_usage(u.cpu, u.mem)))
+            .unwrap_or_default();
         let label = format!(
-            "{}/{}",
+            "{}/{}{}",
             p.namespace,
-            truncate_str(&p.name, 28 - p.namespace.len().min(16))
+            truncate_str(&p.name, 28 - p.namespace.len().min(16)),
+            use_suffix
         );
         let col = if p.state == PodState::Failing {
             CRIT

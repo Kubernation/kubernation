@@ -74,6 +74,16 @@ impl ObservedWorld {
         g.nodes.get(name).copied()
     }
 
+    /// Live usage for a pod, if metrics-server is available and reporting it.
+    /// `None` means no per-pod metrics this poll (show requests / nothing).
+    pub fn pod_usage(&self, namespace: &str, name: &str) -> Option<crate::k8s::metrics::NodeUsage> {
+        let g = self.metrics.lock().ok()?;
+        if !g.available {
+            return None;
+        }
+        g.pod_usage(namespace, name)
+    }
+
     /// Whether live metrics are currently driving the gauges.
     pub fn metrics_available(&self) -> bool {
         self.metrics.lock().map(|g| g.available).unwrap_or(false)

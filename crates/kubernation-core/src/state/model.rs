@@ -665,6 +665,8 @@ pub struct CityPod {
     pub restarts: i32,
     pub age: Option<Time>,
     pub node: String,
+    /// Live usage from metrics-server, if reporting (cpu cores, mem bytes).
+    pub usage: Option<NodeUsage>,
 }
 
 #[derive(Debug, Clone)]
@@ -1157,6 +1159,7 @@ pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
                 pvc_names.insert(c.claim_name.clone());
             }
         }
+        let usage = world.pod_usage(&r.namespace, &name);
         pods.push(CityPod {
             name,
             state,
@@ -1168,6 +1171,7 @@ pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
                 .as_ref()
                 .and_then(|s| s.node_name.clone())
                 .unwrap_or_default(),
+            usage,
         });
     }
     pods.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1301,6 +1305,8 @@ pub struct NodePodRow {
     pub restarts: i32,
     pub age: Option<Time>,
     pub owner: Option<WorkloadRef>,
+    /// Live usage from metrics-server, if reporting (cpu cores, mem bytes).
+    pub usage: Option<NodeUsage>,
 }
 
 #[derive(Debug, Clone)]
@@ -1372,14 +1378,18 @@ pub fn build_node_detail(world: &ObservedWorld, name: &str) -> Option<NodeDetail
         .iter()
         .map(|p| {
             let (state, reason) = pod_state(p);
+            let namespace = p.metadata.namespace.clone().unwrap_or_default();
+            let name = p.metadata.name.clone().unwrap_or_default();
+            let usage = world.pod_usage(&namespace, &name);
             NodePodRow {
-                namespace: p.metadata.namespace.clone().unwrap_or_default(),
-                name: p.metadata.name.clone().unwrap_or_default(),
+                namespace,
+                name,
                 state,
                 reason,
                 restarts: pod_restarts(p),
                 age: p.metadata.creation_timestamp.clone(),
                 owner: idx.workload_of(p),
+                usage,
             }
         })
         .collect();
@@ -1542,6 +1552,47 @@ mod tests {
         // No usage → request-based pressure and source Requests.
         let bare = build_node_tile(&n, &[], &OwnerIndex::default(), None);
         assert_eq!(bare.metric_source, MetricSource::Requests);
+    }
+
+    #[test]
+    fn pod_usage_flows_into_city_and_node_models() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.deployment(fx::deployment("demo", "web", 1, 1));
+        s.replicaset(fx::replicaset("demo", "web-7d4b", "web"));
+        s.pod(fx::pod_owned(
+            fx::pod("demo", "web-7d4b-1", Some("n1")),
+            "ReplicaSet",
+            "web-7d4b",
+        ));
+        // Seed metrics-server pod usage.
+        {
+            let mut g = world.metrics.lock().unwrap();
+            g.available = true;
+            g.pods.insert(
+                ("demo".into(), "web-7d4b-1".into()),
+                NodeUsage {
+                    cpu: 0.05,
+                    mem: 64.0 * 1024.0 * 1024.0,
+                },
+            );
+        }
+        let r = WorkloadRef {
+            kind: WorkloadKind::Deployment,
+            namespace: "demo".into(),
+            name: "web".into(),
+        };
+        let city = build_city(&world, &r).expect("city");
+        let cu = city.pods[0].usage.expect("city pod usage");
+        assert!((cu.cpu - 0.05).abs() < 1e-9);
+
+        let node = build_node_detail(&world, "n1").expect("node");
+        let nu = node.pods[0].usage.expect("node pod usage");
+        assert!((nu.mem - 64.0 * 1024.0 * 1024.0).abs() < 1.0);
+
+        // When metrics-server is unavailable, usage is None.
+        world.metrics.lock().unwrap().available = false;
+        assert!(build_city(&world, &r).unwrap().pods[0].usage.is_none());
     }
 
     #[test]

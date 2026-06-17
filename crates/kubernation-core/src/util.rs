@@ -53,6 +53,12 @@ pub fn human_bytes(bytes: f64) -> String {
     format!("{bytes:.0}B")
 }
 
+/// Compact live-usage label: cpu in millicores + memory (e.g. `12m 45Mi`),
+/// the `kubectl top` idiom. Cpu is cores in, scaled to millicores.
+pub fn format_usage(cpu_cores: f64, mem_bytes: f64) -> String {
+    format!("{:.0}m {}", cpu_cores * 1000.0, human_bytes(mem_bytes))
+}
+
 /// Truncate to `max` display characters, appending `…` when cut.
 pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {

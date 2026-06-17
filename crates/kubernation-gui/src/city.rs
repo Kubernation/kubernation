@@ -15,7 +15,7 @@ use macroquad::prelude::*;
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::model::{WorkloadRef, build_city};
 use kubernation_core::state::planned::{Intervention, PlannedWorld};
-use kubernation_core::util::format_age_opt;
+use kubernation_core::util::{format_age_opt, format_usage};
 
 use crate::net::Snapshot;
 use crate::panels::{observed_for, pod_color, truncate_str};
@@ -288,12 +288,17 @@ pub fn draw_city(
         } else {
             format!("  {}", p.reason)
         };
+        let use_suffix = p
+            .usage
+            .map(|u| format!(" . {}", format_usage(u.cpu, u.mem)))
+            .unwrap_or_default();
         let label = format!(
-            "{}{} . r{} . {}",
+            "{}{} . r{} . {}{}",
             truncate_str(&p.name, 22),
             reason,
             p.restarts,
-            format_age_opt(p.age.as_ref())
+            format_age_opt(p.age.as_ref()),
+            use_suffix
         );
         let col = if p.state == kubernation_core::state::model::PodState::Failing {
             CRIT

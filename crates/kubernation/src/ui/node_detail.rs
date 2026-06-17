@@ -13,7 +13,7 @@ use super::{Action, Component, RenderCtx};
 use kubernation_core::state::attention::Severity;
 use kubernation_core::state::model::{MetricSource, NodeDetailModel, build_node_detail};
 use kubernation_core::state::planned::Intervention;
-use kubernation_core::util::{format_age_opt, human_bytes};
+use kubernation_core::util::{format_age_opt, format_usage, human_bytes};
 
 #[derive(Default)]
 pub struct NodeDetailView {
@@ -245,6 +245,12 @@ impl Component for NodeDetailView {
                     Span::raw(p.restarts.to_string()),
                     Span::raw(format_age_opt(p.age.as_ref())),
                     Span::styled(
+                        p.usage
+                            .map(|u| format_usage(u.cpu, u.mem))
+                            .unwrap_or_default(),
+                        theme.dim(),
+                    ),
+                    Span::styled(
                         p.owner
                             .as_ref()
                             .map(|o| o.to_string())
@@ -263,6 +269,7 @@ impl Component for NodeDetailView {
                 Constraint::Length(18),
                 Constraint::Length(3),
                 Constraint::Length(5),
+                Constraint::Length(11),
                 Constraint::Min(16),
             ],
         )
@@ -274,6 +281,7 @@ impl Component for NodeDetailView {
                 "STATUS",
                 "RST",
                 "AGE",
+                "USE",
                 "WORKLOAD",
             ])
             .style(theme.dim()),
