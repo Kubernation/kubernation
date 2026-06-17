@@ -258,9 +258,12 @@ what makes the interesting logic unit-testable without a cluster.
   itself and closes. Dry-run is preferred over a plain SSAR here because it
   validates the actual patch + admission, not just authz. Verified live
   (`--plan --plan-go`): metrics-server 1→3 + a node cordoned, "committed 2/2",
-  then reverted. Still preview-only elsewhere; staging never writes. Deferred:
-  apply in the TUI planning turn (the TUI has no planning turn yet); image-set /
-  restart interventions.
+  then reverted. Still preview-only elsewhere; staging never writes. A third
+  intervention, **Restart** (rolling restart — `apply_intervention` stamps the
+  pod template's `kubectl.kubernetes.io/restartedAt`, for Deploy/STS/DS; staged
+  by a city's "restart" toggle, can coexist with a scale), rides the same
+  commit path (verified live). Deferred: apply in the TUI planning turn (the
+  TUI has no planning turn yet); image-set intervention.
 - **Stable layout:** nodes sort within a zone by FNV-1a-64(name) — pinned by
   test so layouts never reshuffle across runs or Rust upgrades. Zones sort
   by name; `unzoned` sinks to the end.
@@ -701,8 +704,8 @@ never blocks input.
 
 ## Deferred (deliberately)
 
-more interventions (image set, rollout restart) · the planning turn in the
-TUI (staging + diff + commit; the GUI has it, the TUI has evict only) ·
+more interventions (image set) · the planning turn in the TUI (staging + diff
++ commit; the GUI has it, the TUI has evict only) ·
 external services / chaos layers ·
 connectivity attention (orphan ingress / harbor with no city) + unmounted-PVC
 island granaries + Job-object attention (failed-Job concern) · Job/CronJob

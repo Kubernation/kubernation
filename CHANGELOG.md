@@ -9,6 +9,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Rolling restart intervention.** A city window's plan controls gain a
+  **restart** toggle that stages a `Restart` intervention; committing it stamps
+  the workload's pod template with a `kubectl.kubernetes.io/restartedAt`
+  annotation (Deployment / StatefulSet / DaemonSet), rolling its pods — exactly
+  like `kubectl rollout restart`. Goes through the same dry-run + confirm + RBAC
+  commit path as scale/cordon. A workload can stage a restart and a scale at
+  once. Verified live (`--plan-go`).
 - **Commit the planning turn (apply staged interventions).** The End-of-Turn
   review's Commit is now live (GUI): it applies staged Scale (Deployment /
   StatefulSet `spec.replicas`) and Cordon (Node `spec.unschedulable`) to the

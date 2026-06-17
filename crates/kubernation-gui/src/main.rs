@@ -448,8 +448,12 @@ async fn main() {
                 }
                 if args.plan {
                     let w = &s.hot.models.world;
-                    if let Some(c) = w.cities().next() {
+                    let mut cities = w.cities();
+                    if let Some(c) = cities.next() {
                         planned.stage_scale(c.r.clone(), c.desired + 2);
+                    }
+                    if let Some(c) = cities.next() {
+                        planned.stage_restart(c.r.clone());
                     }
                     if let Some(p) = w.continents.iter().flat_map(|c| &c.provinces).next() {
                         planned.stage_cordon(p.tile.name.clone(), true);
@@ -694,6 +698,13 @@ async fn main() {
                             );
                             if let Some(iv) = act.stage {
                                 planned.stage(iv);
+                            }
+                            if let Some(wr) = act.restart_toggle {
+                                if planned.restarting(&wr) {
+                                    planned.unstage_restart(&wr);
+                                } else {
+                                    planned.stage_restart(wr);
+                                }
                             }
                             if let Some((ns, pod)) = act.log {
                                 net.request_logs(LogReq {

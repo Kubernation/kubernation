@@ -8,7 +8,7 @@
 //! dry-run** (which also enforces RBAC) before any real apply. Kept apart so
 //! the entire write surface is one small, auditable file.
 
-use k8s_openapi::api::apps::v1::{Deployment, StatefulSet};
+use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use k8s_openapi::api::authorization::v1::{
     ResourceAttributes, SelfSubjectAccessReview, SelfSubjectAccessReviewSpec,
 };
@@ -95,6 +95,36 @@ pub async fn apply_intervention(
                 .await
                 .map(|_| ())
                 .map_err(|e| e.to_string())
+        }
+        Intervention::Restart { workload } => {
+            // The kubectl convention: stamp the pod template with a fresh
+            // `restartedAt` annotation, which rolls the workload's pods.
+            let ts = k8s_openapi::jiff::Timestamp::now().to_string();
+            let patch = Patch::Merge(serde_json::json!({
+                "spec": { "template": { "metadata": { "annotations": {
+                    "kubectl.kubernetes.io/restartedAt": ts
+                }}}}
+            }));
+            let ns = workload.namespace.as_str();
+            let name = workload.name.as_str();
+            let to_err = |e: kube::Error| e.to_string();
+            match workload.kind {
+                WorkloadKind::Deployment => Api::<Deployment>::namespaced(client, ns)
+                    .patch(name, &pp, &patch)
+                    .await
+                    .map(|_| ())
+                    .map_err(to_err),
+                WorkloadKind::StatefulSet => Api::<StatefulSet>::namespaced(client, ns)
+                    .patch(name, &pp, &patch)
+                    .await
+                    .map(|_| ())
+                    .map_err(to_err),
+                WorkloadKind::DaemonSet => Api::<DaemonSet>::namespaced(client, ns)
+                    .patch(name, &pp, &patch)
+                    .await
+                    .map(|_| ())
+                    .map_err(to_err),
+            }
         }
     }
 }

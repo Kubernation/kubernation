@@ -75,6 +75,10 @@ fn iv_label(iv: &Intervention) -> String {
         Intervention::Cordon { node, on } => {
             format!("{} node {node}", if *on { "cordon" } else { "uncordon" })
         }
+        Intervention::Restart { workload } => format!(
+            "restart {} {}/{}",
+            workload.kind, workload.namespace, workload.name
+        ),
     }
 }
 

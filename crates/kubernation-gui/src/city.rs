@@ -133,6 +133,28 @@ pub fn draw_city(
                 WARN,
             );
         }
+        // Rolling-restart toggle (stages an imperative Restart for the turn).
+        let restarting = planned.restarting(r);
+        let rbtn = Rect::new(b.x + 320.0, y - 1.0, 80.0, 19.0);
+        let rbg = if restarting {
+            darker(WARN, 0.7)
+        } else if rbtn.contains(mouse) {
+            lighter(PLATE, 1.7)
+        } else {
+            PLATE
+        };
+        draw_rectangle(rbtn.x, rbtn.y, rbtn.w, rbtn.h, rbg);
+        draw_rectangle_lines(rbtn.x, rbtn.y, rbtn.w, rbtn.h, 1.0, PARCHMENT);
+        text(
+            "restart",
+            rbtn.x + 8.0,
+            y + 13.0,
+            13.0,
+            if restarting { WARN } else { INK },
+        );
+        if restarting {
+            text("staged", rbtn.x + 88.0, y + 13.0, 12.0, WARN);
+        }
         if click {
             if minus.contains(mouse) {
                 act.stage = Some(Intervention::Scale {
@@ -144,6 +166,9 @@ pub fn draw_city(
                     workload: r.clone(),
                     replicas: shown + 1,
                 });
+            } else if rbtn.contains(mouse) {
+                // Toggle: stage a restart, or clear it if already staged.
+                act.restart_toggle = Some(r.clone());
             }
         }
         y += 24.0;

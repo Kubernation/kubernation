@@ -1,16 +1,16 @@
 //! The staged-intervention world — the planning turn.
 //!
 //! Operator changes are *staged* here as intents against
-//! [`super::observed::ObservedWorld`], reviewed as a diff, and (in a future
-//! slice) committed as a deliberate "end of turn". This is the design doc's
-//! planning-turn model: intervention as deliberate staged changes rather
-//! than imperative edits.
+//! [`super::observed::ObservedWorld`], reviewed as a diff, and committed as a
+//! deliberate "end of turn". This is the design doc's planning-turn model:
+//! intervention as deliberate staged changes rather than imperative edits.
 //!
-//! **Preview-only:** staging never touches the cluster. `PlannedWorld` holds
-//! intents and [`plan_diff`] derives a pure from→to diff against the observed
-//! world; applying those intents is a separate, explicitly-gated step that
-//! does not exist yet — so the codebase keeps its "no mutation paths"
-//! guarantee while the planning *experience* is built.
+//! This module is **pure**: staging and [`plan_diff`] never touch the cluster.
+//! Committing — applying the staged intents — is a separate, explicitly-gated
+//! step in the GUI: `k8s::actions::apply_intervention` patches the cluster
+//! behind a confirm, after a server-side dry-run validates every change (which
+//! also enforces RBAC). So the diff stays a pure function of the observed
+//! world; only Commit writes.
 
 use super::model::{WorkloadKind, WorkloadRef};
 use super::observed::ObservedWorld;
@@ -26,6 +26,9 @@ pub enum Intervention {
     },
     /// Cordon (`on = true`) or uncordon a node.
     Cordon { node: String, on: bool },
+    /// Rolling-restart a workload (Deployment / StatefulSet / DaemonSet) — a
+    /// one-shot trigger, not a state, so it has no from→to and never no-ops.
+    Restart { workload: WorkloadRef },
 }
 
 /// The staged plan: a set of interventions, at most one per target.
@@ -51,7 +54,29 @@ impl PlannedWorld {
         match iv {
             Intervention::Scale { workload, replicas } => self.stage_scale(workload, replicas),
             Intervention::Cordon { node, on } => self.stage_cordon(node, on),
+            Intervention::Restart { workload } => self.stage_restart(workload),
         }
+    }
+
+    /// Stage (or replace) a rolling-restart intent for a workload. A workload
+    /// can carry a restart *and* a scale at once — they're different fields.
+    pub fn stage_restart(&mut self, workload: WorkloadRef) {
+        self.interventions
+            .retain(|i| !matches!(i, Intervention::Restart { workload: w } if *w == workload));
+        self.interventions.push(Intervention::Restart { workload });
+    }
+
+    /// Drop a staged restart for a workload (the city's restart toggle).
+    pub fn unstage_restart(&mut self, workload: &WorkloadRef) {
+        self.interventions
+            .retain(|i| !matches!(i, Intervention::Restart { workload: w } if w == workload));
+    }
+
+    /// Is a rolling restart staged for this workload?
+    pub fn restarting(&self, workload: &WorkloadRef) -> bool {
+        self.interventions
+            .iter()
+            .any(|i| matches!(i, Intervention::Restart { workload: w } if w == workload))
     }
 
     /// Stage (or replace) a cordon intent for a node.
@@ -140,6 +165,13 @@ pub fn plan_diff(observed: &ObservedWorld, planned: &PlannedWorld) -> Vec<PlanCh
                     noop: current == Some(*on),
                 }
             }
+            Intervention::Restart { workload } => PlanChange {
+                target: workload.to_string(),
+                field: "restart",
+                from: "running".into(),
+                to: "rolling restart".into(),
+                noop: false,
+            },
         })
         .collect()
 }
@@ -227,6 +259,27 @@ mod tests {
         assert_eq!(p.cordoned("n1"), Some(true));
         p.clear();
         assert!(p.is_empty());
+    }
+
+    #[test]
+    fn restart_coexists_with_scale_and_diffs() {
+        let (world, mut s) = fx::world();
+        s.deployment(fx::deployment("demo", "web", 2, 2));
+        let mut p = PlannedWorld::default();
+        p.stage_scale(wref("web"), 4);
+        p.stage_restart(wref("web")); // a workload can have both
+        assert_eq!(p.len(), 2);
+        assert!(p.restarting(&wref("web")));
+        assert_eq!(p.scaled(&wref("web")), Some(4));
+
+        let diff = plan_diff(&world, &p);
+        let restart = diff.iter().find(|c| c.field == "restart").unwrap();
+        assert_eq!(restart.to.as_str(), "rolling restart");
+        assert!(!restart.noop); // a restart is never a no-op
+
+        p.unstage_restart(&wref("web"));
+        assert!(!p.restarting(&wref("web")));
+        assert_eq!(p.len(), 1); // scale survives
     }
 
     #[test]

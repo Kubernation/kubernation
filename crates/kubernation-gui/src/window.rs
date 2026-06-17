@@ -46,6 +46,9 @@ pub struct WinAction {
     pub evict: Option<(String, String)>,
     /// An intervention the operator staged from this window (planning turn).
     pub stage: Option<Intervention>,
+    /// Toggle a staged rolling-restart for this workload (stage if absent,
+    /// unstage if present — the caller has the planned world to decide).
+    pub restart_toggle: Option<kubernation_core::state::model::WorkloadRef>,
 }
 
 /// Draw the scrim, frame, title bar (with icon), and bottom button row;
