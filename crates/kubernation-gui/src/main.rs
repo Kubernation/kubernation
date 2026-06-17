@@ -488,8 +488,14 @@ async fn main() {
             } else {
                 drag_anchor = None;
             }
+            // Wheel-zoom anchors at the cursor, so only over the play area —
+            // over the column/chrome/strip it would anchor on a hidden cell and
+            // jolt the map sideways.
+            let over_map = mouse.x < panels::map_width()
+                && mouse.y > panels::CHROME_H
+                && mouse.y < screen_height() - panels::STRIP_H;
             let (_, wheel) = mouse_wheel();
-            if wheel.abs() > 0.0 {
+            if wheel.abs() > 0.0 && over_map {
                 let factor = if wheel > 0.0 { 1.1 } else { 1.0 / 1.1 };
                 let before = (mouse + cam.pos) / cam.zoom;
                 cam.zoom = (cam.zoom * factor).clamp(0.30, 3.0);

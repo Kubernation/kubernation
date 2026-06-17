@@ -110,13 +110,21 @@ pub fn draw_sidebar(
     y += 16.0;
     text_bold("SELECTION", x, y, 15.0, STONE_INK);
     y += 20.0;
-    match sel {
-        Some((sw, local)) => {
-            for (content, color) in region_lines(sw, local, snap).into_iter().take(9) {
-                text(ascii(&content), x, y, 14.0, color);
-                y += 17.0;
+    // Compute the lines first so an empty result (e.g. open sea in a single
+    // cluster) falls back to the placeholder rather than a bare header.
+    let lines = sel
+        .map(|(sw, local)| region_lines(sw, local, snap))
+        .unwrap_or_default();
+    if lines.is_empty() {
+        text("click a tile to inspect", x, y, 13.0, STONE_INK_DIM);
+    } else {
+        let bottom = col.y + col.h - 6.0; // stop before spilling off the column
+        for (content, color) in lines.into_iter().take(12) {
+            if y > bottom {
+                break;
             }
+            text(ascii(&content), x, y, 14.0, color);
+            y += 17.0;
         }
-        None => text("click a tile to inspect", x, y, 13.0, STONE_INK_DIM),
     }
 }

@@ -32,6 +32,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   generalization) were already in place.
 
 ### Fixed
+- **Docked-column interaction polish** (adversarial-review follow-up). Wheel-zoom
+  is now gated to the play area, so scrolling with the cursor over the column
+  (or chrome/strip) no longer anchors the zoom on a hidden cell and jolts the
+  map. The minimap's viewport rectangle now boxes only the un-occluded play
+  area (it was overstating the visible region by the column's width). The
+  SELECTION panel falls back to its "click a tile" placeholder over open sea
+  (instead of a bare header) and stops drawing before it can spill off the
+  column bottom on a shrunk window.
 - **GUI image editor input hygiene** (adversarial-review follow-up). Opening
   the city window's image field now flushes macroquad's stray char queue (so
   nav keys pressed before opening don't pre-fill the buffer — matching the log

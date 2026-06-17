@@ -18,7 +18,7 @@ use kubernation_core::state::world::{City, CoastKind, Continent, Island, Provinc
 use macroquad::prelude::*;
 
 use crate::net::Snapshot;
-use crate::panels::{CHROME_H, COL_W};
+use crate::panels::{CHROME_H, COL_W, STRIP_H};
 use crate::text::{name_text, name_text_size, text, text_bold, text_outline, text_size};
 use crate::theme::*;
 use kubernation_core::util::fnv1a64;
@@ -1532,11 +1532,15 @@ pub fn draw_minimap(worlds: &[SceneWorld], cam: &Camera, ml: &MinimapLayout) {
             ((b - a) * 0.5).clamp(0.0, ch),
         )
     };
+    // Only the play area is actually visible — the right column, top chrome,
+    // and bottom strip occlude the full-width map, so box that region, not the
+    // whole window (else the indicator claims hidden cells are on screen).
+    let (rx, by) = (screen_width() - COL_W, screen_height() - STRIP_H);
     let pts = [
-        corner(0.0, 0.0),
-        corner(screen_width(), 0.0),
-        corner(screen_width(), screen_height()),
-        corner(0.0, screen_height()),
+        corner(0.0, CHROME_H),
+        corner(rx, CHROME_H),
+        corner(rx, by),
+        corner(0.0, by),
     ];
     let x0 = pts
         .iter()
