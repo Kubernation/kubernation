@@ -11,7 +11,7 @@ use macroquad::prelude::*;
 
 use crate::draw::SceneWorld;
 use crate::net::{LogTail, Snapshot};
-use crate::text::{text, text_bold, text_size};
+use crate::text::{name_text, name_text_size, text, text_bold, text_size};
 use crate::theme::*;
 
 pub const STRIP_H: f32 = 64.0;
@@ -34,6 +34,54 @@ pub fn sidebar_rect() -> Rect {
 /// live).
 pub fn map_width() -> f32 {
     (screen_width() - COL_W).max(0.0)
+}
+
+/// A cartographic title cartouche centered over the top of the play area —
+/// classic-4X "<realm> map" labeling. `title` is the realm name (serif);
+/// `subtitle` is an optional small suffix (the active map view), dimmed. A
+/// small iso-diamond flourish sits at each end so it reads as a map title.
+pub fn draw_map_title(title: &str, subtitle: Option<&str>, map_w: f32) {
+    let fs = 21.0;
+    let sub_fs = 13.0;
+    let tw = name_text_size(title, fs).width;
+    let sub = subtitle.unwrap_or("");
+    let sw = if sub.is_empty() {
+        0.0
+    } else {
+        text_size(sub, sub_fs).width + 12.0
+    };
+    let pad = 24.0;
+    let bw = tw + sw + pad * 2.0;
+    let bx = (map_w / 2.0 - bw / 2.0).max(2.0);
+    let by = CHROME_H + 5.0;
+    let bh = 27.0;
+    stone_panel(bx, by, bw, bh);
+
+    // Iso-diamond flourishes tucked into the side padding.
+    let cy = by + bh / 2.0;
+    let diamond = |dx: f32| {
+        let d = 4.0;
+        draw_triangle(
+            vec2(dx - d, cy),
+            vec2(dx, cy - d),
+            vec2(dx + d, cy),
+            PARCHMENT,
+        );
+        draw_triangle(
+            vec2(dx - d, cy),
+            vec2(dx, cy + d),
+            vec2(dx + d, cy),
+            PARCHMENT,
+        );
+    };
+    diamond(bx + 11.0);
+    diamond(bx + bw - 11.0);
+
+    let ty = by + 20.0;
+    name_text(title, bx + pad, ty, fs, STONE_INK);
+    if !sub.is_empty() {
+        text(sub, bx + pad + tw + 12.0, ty - 2.0, sub_fs, STONE_INK_DIM);
+    }
 }
 
 pub(crate) fn pod_color(s: PodState) -> Color {

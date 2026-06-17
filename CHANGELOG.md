@@ -9,6 +9,11 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **GUI: a cartographic map title bar.** A centered stone cartouche over the top
+  of the board names the realm — "Cluster Map — &lt;context&gt;" in the serif map
+  font, with an iso-diamond flourish at each end — and, when a non-default map
+  view is active, a dimmed "&lt;view&gt; view" suffix. Classic-4X map labeling
+  ("&lt;realm&gt; Landkarte").
 - **GUI: a classic-4X dropdown menu bar.** The scattered chrome buttons (the
   `?` almanac toggle, the End-Turn badge, the namespace-filter chip) are
   replaced by a real menu bar — **Game** (switch context · fit · quit),

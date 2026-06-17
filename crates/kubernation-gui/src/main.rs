@@ -831,6 +831,16 @@ async fn main() {
                 let sidebar_sel = selected.and_then(|cell| locate(&worlds, cell)).or(hovered);
                 sidebar::draw_sidebar(&worlds, &cam, s, sidebar_sel, &ns_filter_now, &ml, overlay);
 
+                // Cartographic title cartouche over the top of the map (a
+                // centered modal's scrim dims it, like the rest of the board).
+                let view_sub =
+                    (overlay != Overlay::Terrain).then(|| format!("{} view", overlay.label()));
+                panels::draw_map_title(
+                    &format!("Cluster Map — {current_ctx}"),
+                    view_sub.as_deref(),
+                    panels::map_width(),
+                );
+
                 // Hover tooltip over the map (not the column / chrome / strip).
                 if !picker
                     && almanac.is_none()
