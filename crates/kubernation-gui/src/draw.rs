@@ -101,7 +101,12 @@ fn dominant_namespace(cities: &[City]) -> Option<&str> {
             None => tally.push((ns, 1)),
         }
     }
-    tally.into_iter().max_by_key(|(_, n)| *n).map(|(ns, _)| ns)
+    // Strict `>` keeps the first-seen entry on a count tie (Iterator::max_by_key
+    // would return the last — see the "ties → first seen" contract above).
+    tally
+        .into_iter()
+        .reduce(|best, cur| if cur.1 > best.1 { cur } else { best })
+        .map(|(ns, _)| ns)
 }
 
 /// The two-shade land pair a province's terrain is filled with, per overlay.
@@ -1733,6 +1738,11 @@ mod tests {
             city("beta", 1, 1, None),
         ];
         assert_eq!(dominant_namespace(&cs), Some("beta"));
+        // On a count tie, the first-seen namespace wins (per the contract).
+        assert_eq!(
+            dominant_namespace(&[city("alpha", 1, 1, None), city("beta", 1, 1, None)]),
+            Some("alpha")
+        );
         // Stable hue: same namespace -> identical color, distinct namespaces differ.
         assert_eq!(namespace_pair("alpha"), namespace_pair("alpha"));
         assert_ne!(namespace_pair("alpha").0, namespace_pair("beta").0);
