@@ -532,6 +532,20 @@ what makes the interesting logic unit-testable without a cluster.
   flashes the result via `AppEvent::Evicted`. RBAC verified via
   `kubectl auth can-i delete pods` (admin → yes/enabled; unprivileged → no/
   locked). Still deferred: scale/cordon apply, image-set/restart.
+- **Logos + intro splash** (2026-06-17, user supplied two logos): the compass
+  **mark** (transparent, icon-grade) and the full **KuberNation** scene
+  (opaque). Originals live at the repo root; downsized copies are compiled into
+  the GUI (`assets/logo/{mark,full}.png`) via `logo.rs`. The mark is the OS
+  window icon (`Conf.icon` — 16/32/64 RGBA decoded + resized with the `image`
+  crate, the one new dep) and the top-bar emblem; the full scene is the
+  fog-of-war splash. Because that splash otherwise vanished the instant the
+  world synced, the loop opens with an **intro splash phase** (`splash_start`/
+  `splash_skipped`): the full scene held ~2.4s with a fade in/out + slow zoom,
+  skippable by any key/click, suspended (early `continue`) so nothing else
+  draws or takes input. It's off under `--screenshot` (so docs shots are
+  unaffected); `--splash` forces+captures it. The logos are first-party art, so
+  CREDITS notes them but no third-party license applies (the new serif/`image`
+  aside).
 
 ## The pair (hot/warm)
 

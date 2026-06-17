@@ -96,6 +96,10 @@ struct Args {
     /// development verification of the write path
     #[arg(long)]
     evict_go: bool,
+    /// Hold the intro splash (the full Kubernation scene) — replays it, and
+    /// with --screenshot captures it (development verification / demo)
+    #[arg(long)]
+    splash: bool,
 }
 
 fn window_conf() -> Conf {
@@ -150,6 +154,11 @@ async fn main() {
     let mut plan_open = false;
     // The one mutation: a pod awaiting evict confirmation (cluster, ns, pod).
     let mut pending_evict: Option<(ClusterId, String, String)> = None;
+    // Intro splash: hold the full Kubernation scene a few moments on launch.
+    let mut splash_start: Option<f64> = None;
+    let mut splash_skipped = false;
+    let mut splash_frames: u32 = 0;
+    const SPLASH_SECS: f64 = 2.4;
 
     loop {
         let snap = net.snapshot();
@@ -157,6 +166,72 @@ async fn main() {
         let mouse = Vec2::from(mouse_position());
         let had_snap = prev_had_snap;
         prev_had_snap = snap.is_some();
+
+        // ---- intro splash -------------------------------------------------
+        // Give the full Kubernation scene a few moments on launch (it would
+        // otherwise vanish the instant the world syncs). Fades in, drifts a
+        // slow zoom, fades out; any key / click skips it. Suppressed for
+        // headless captures unless `--splash` asks to hold (and shoot) it.
+        let now = get_time();
+        if splash_start.is_none() {
+            splash_start = Some(now);
+        }
+        let elapsed = now - splash_start.unwrap_or(now);
+        let splash_active =
+            !splash_skipped && (args.splash || (shot.is_none() && elapsed < SPLASH_SECS));
+        if splash_active {
+            if is_key_pressed(KeyCode::Q) {
+                break;
+            }
+            if is_mouse_button_pressed(MouseButton::Left)
+                || is_key_pressed(KeyCode::Escape)
+                || is_key_pressed(KeyCode::Enter)
+                || is_key_pressed(KeyCode::Space)
+            {
+                splash_skipped = true;
+            }
+            clear_background(Color::new(0.05, 0.06, 0.09, 1.0));
+            let fade_in = (elapsed / 0.5).clamp(0.0, 1.0) as f32;
+            let fade_out = if args.splash {
+                1.0
+            } else {
+                ((SPLASH_SECS - elapsed) / 0.5).clamp(0.0, 1.0) as f32
+            };
+            let reveal = fade_in.min(fade_out);
+            let zoom = 1.0 + (elapsed.min(6.0) as f32) * 0.022;
+            let cx = screen_width() / 2.0;
+            let cy = screen_height() / 2.0;
+            logo::draw_full(
+                vec2(cx, cy - 16.0),
+                (screen_height() * 0.6).min(500.0) * zoom,
+            );
+            // Fade veil (black → clear → black).
+            draw_rectangle(
+                0.0,
+                0.0,
+                screen_width(),
+                screen_height(),
+                Color::new(0.05, 0.06, 0.09, 1.0 - reveal),
+            );
+            if reveal > 0.4 {
+                let st = ascii(&status);
+                let sm = text_size(&st, 20.0);
+                text(&st, cx - sm.width / 2.0, cy + 232.0, 20.0, PARCHMENT);
+                let hint = "press any key";
+                let hm = text_size(hint, 14.0);
+                text(hint, cx - hm.width / 2.0, cy + 256.0, 14.0, DIM);
+            }
+            splash_frames += 1;
+            if let Some(path) = &shot
+                && args.splash
+                && splash_frames > 30
+            {
+                get_screen_data().export_png(&path.to_string_lossy());
+                break;
+            }
+            next_frame().await;
+            continue;
+        }
 
         // Context list for the picker (from the hot world's kubeconfig).
         let contexts: Vec<String> = snap

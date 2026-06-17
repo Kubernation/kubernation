@@ -23,6 +23,11 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 - **Bundled logos.** The compass **mark** is the OS window icon and the
   top-bar emblem; the full **KuberNation** scene is the splash on the
   fog-of-war screen. Downsized copies are compiled in (`assets/logo/`).
+- **Intro splash.** On launch the GUI now holds the full Kubernation scene for
+  a couple of seconds (fade in/out + a slow Ken-Burns zoom) so it's actually
+  seen instead of flashing past as the world syncs; any key / click skips it.
+  Suppressed for headless `--screenshot` runs (a `--splash` flag holds/captures
+  it for demos).
 - **Pod eviction — the project's first cluster write.** Hover a pod in a
   city's *citizens* list or a node's *garrison* list and a red **`evict`**
   button appears; it raises a confirm modal, and on confirm the GUI issues a
