@@ -37,6 +37,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   navigable, open ocean included (the click resolves to the nearest cell).
 
 ### Fixed
+- **Menu-bar review follow-ups (4 adversarial findings).** Clicking one menu
+  title while another is open now *switches* to it instead of closing the whole
+  bar (the toggle keys off the pre-slide open state, not the value the
+  slide-across hover just set). **Esc** now dismisses an open dropdown instead of
+  falling through to quit the app. The context / namespace pickers opened from a
+  menu get a `*_just_opened` guard, so the opening click can't fall through to a
+  picker row the same frame (latent under window resize). The right-aligned realm
+  readout is truncated/clamped to the space right of the menu bar so a long
+  paired/error label can't overdraw the rightmost menu titles on a narrow window.
 - **Minimap-nav review follow-ups.** A minimap drag no longer latches if a
   modal is opened mid-drag (the flag is cleared on button-up, outside the
   modal-suspended block), so it can't cause a stray camera jump on the next

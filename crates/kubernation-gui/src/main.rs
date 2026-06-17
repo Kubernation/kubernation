@@ -319,6 +319,11 @@ async fn main() {
         // click can't also hit the confirm's buttons.
         let mut evict_just_opened = false;
         let mut commit_just_opened = false;
+        // Track a context / namespace picker opened by *this frame's* menu click
+        // — the picker draws same-frame and would otherwise read that click as a
+        // row select if its rows ever overlapped the dropdown (e.g. on resize).
+        let mut picker_just_opened = false;
+        let mut ns_picker_just_opened = false;
 
         // ---- input ------------------------------------------------------
         // A minimap drag ends the moment the button is up — checked here,
@@ -378,6 +383,9 @@ async fn main() {
             } else if city_image_edit.is_some() {
                 // First Esc leaves the image editor; a second closes the window.
                 city_image_edit = None;
+            } else if open_menu.is_some() {
+                // Esc dismisses an open dropdown before it can quit the app.
+                open_menu = None;
             } else if panel.is_some() {
                 panel = None;
             } else {
@@ -1013,12 +1021,15 @@ async fn main() {
             ns_active: ns_filter_now.is_active(),
         };
         let menu_click = is_mouse_button_pressed(MouseButton::Left) && menu_live;
-        match menu::draw_menu_bar(42.0, mouse, menu_click, &mut open_menu, &mctx) {
+        let (menu_action, bar_right) =
+            menu::draw_menu_bar(42.0, mouse, menu_click, &mut open_menu, &mctx);
+        match menu_action {
             Some(MenuAction::SwitchContext) => {
                 // No-op when there are no contexts (an empty picker); picker_idx
                 // is harmless then.
                 picker_idx = contexts.iter().position(|c| *c == current_ctx).unwrap_or(0);
                 picker = !contexts.is_empty();
+                picker_just_opened = picker;
             }
             Some(MenuAction::Fit) => pending_fit = true,
             Some(MenuAction::Quit) => break,
@@ -1032,6 +1043,7 @@ async fn main() {
             Some(MenuAction::DiscardTurn) => planned.clear(),
             Some(MenuAction::NamespaceFilter) => {
                 ns_picker = true;
+                ns_picker_just_opened = true;
                 ns_picker_idx = match &ns_filter_now {
                     NamespaceFilter::Only(s) => s
                         .iter()
@@ -1049,12 +1061,20 @@ async fn main() {
         }
 
         // The realm readout (context · platform · counts) right-aligned, like a
-        // 4X title bar's status line.
-        let st = ascii(&status);
-        let sm = text_size(&st, 14.0);
+        // 4X title bar's status line. Truncated to the space left of the screen
+        // edge and right of the menu bar so a long paired/error label can't
+        // overdraw the rightmost menu titles on a narrow window.
+        let mut st = ascii(&status);
+        let mut sm = text_size(&st, 14.0);
+        let avail = screen_width() - 12.0 - (bar_right + 12.0);
+        if sm.width > avail && !st.is_empty() {
+            let budget = ((st.chars().count() as f32) * (avail / sm.width)) as usize;
+            st = panels::truncate_str(&st, budget.max(3));
+            sm = text_size(&st, 14.0);
+        }
         text(
             &st,
-            screen_width() - sm.width - 12.0,
+            (screen_width() - sm.width - 12.0).max(bar_right + 12.0),
             21.0,
             14.0,
             STONE_INK_DIM,
@@ -1069,7 +1089,7 @@ async fn main() {
                 "SWITCH CONTEXT",
                 "enter switch . j/k move . c or esc cancel",
             );
-            if is_mouse_button_pressed(MouseButton::Left) {
+            if is_mouse_button_pressed(MouseButton::Left) && !picker_just_opened {
                 for (i, r) in layout.rows.iter().enumerate() {
                     if r.contains(mouse) && i < contexts.len() {
                         net.request_switch(contexts[i].clone());
@@ -1099,7 +1119,7 @@ async fn main() {
                 "NAMESPACE FILTER",
                 "enter apply . j/k move . esc cancel",
             );
-            if is_mouse_button_pressed(MouseButton::Left) {
+            if is_mouse_button_pressed(MouseButton::Left) && !ns_picker_just_opened {
                 for (i, r) in layout.rows.iter().enumerate() {
                     if r.contains(mouse) && i < ns_items.len() {
                         let f = if i == 0 {

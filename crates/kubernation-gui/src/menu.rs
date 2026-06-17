@@ -153,14 +153,15 @@ const ITEM_H: f32 = 24.0;
 /// the left-press edge for this frame, already gated off by the caller when a
 /// centered modal owns input (in which case pass `false`). Returns the chosen
 /// action, if any. Toggling a title open/closed, picking an item, or clicking
-/// outside all updates `*open`.
+/// outside all updates `*open`. Returns the chosen action plus the bar's right
+/// edge (x) so the caller can keep its realm readout from overlapping.
 pub fn draw_menu_bar(
     bar_x0: f32,
     mouse: Vec2,
     click: bool,
     open: &mut Option<usize>,
     ctx: &MenuCtx,
-) -> Option<MenuAction> {
+) -> (Option<MenuAction>, f32) {
     let menus = menus(ctx);
 
     // Lay out the top-level titles left to right in the chrome bar.
@@ -171,6 +172,13 @@ pub fn draw_menu_bar(
         titles.push(Rect::new(x, 0.0, w, CHROME_H - 2.0));
         x += w;
     }
+    let bar_right = x;
+
+    // Which menu was open coming into this frame — the toggle below keys off
+    // this, NOT the post-slide value, so a *click* on a different title opens
+    // that title (rather than the slide-across pre-selecting it and the toggle
+    // then reading it as "already open" and closing everything).
+    let was_open = *open;
 
     // While a menu is open, hovering a different title switches to it — the
     // classic menubar "slide across" behavior.
@@ -187,8 +195,8 @@ pub fn draw_menu_bar(
 
     // Top-level titles.
     for (i, (m, r)) in menus.iter().zip(&titles).enumerate() {
-        let is_open = *open == Some(i);
-        if is_open {
+        // Visual highlight reflects the (post-slide) currently-open menu.
+        if *open == Some(i) {
             stone_well(r.x, r.y, r.w, r.h);
         } else if r.contains(mouse) {
             draw_rectangle(r.x, r.y, r.w, r.h, lighter(STONE, 1.06));
@@ -196,7 +204,9 @@ pub fn draw_menu_bar(
         text_bold(&m.title, r.x + PAD, 21.0, TITLE_FS, STONE_INK);
         if click && r.contains(mouse) {
             consumed = true;
-            *open = if is_open { None } else { Some(i) };
+            // Toggle against the pre-slide state: clicking the same open title
+            // closes it; clicking any other opens that one.
+            *open = if was_open == Some(i) { None } else { Some(i) };
         }
     }
 
@@ -250,5 +260,5 @@ pub fn draw_menu_bar(
     if click && !consumed {
         *open = None;
     }
-    result
+    (result, bar_right)
 }
