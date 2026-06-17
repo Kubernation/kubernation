@@ -18,6 +18,7 @@ use kubernation_core::state::world::{City, CoastKind, Continent, Island, Provinc
 use macroquad::prelude::*;
 
 use crate::net::Snapshot;
+use crate::panels::{CHROME_H, COL_W};
 use crate::text::{name_text, name_text_size, text, text_bold, text_outline, text_size};
 use crate::theme::*;
 use kubernation_core::util::fnv1a64;
@@ -1456,14 +1457,15 @@ impl MinimapLayout {
 pub fn minimap_layout(bounds: (u16, u16)) -> MinimapLayout {
     let (w, h) = (bounds.0 as f32, bounds.1 as f32);
     let span = (w + h).max(1.0);
-    // The iso scene is a diamond whose AABB is span·hw wide × span·hh tall
-    // (2:1). Fit the width to ~220px, capping per-cell size for tiny scenes.
-    let hw = (220.0 / span).min(6.0);
+    // Dock in the right column's WORLD section: fit the iso AABB (span·hw wide ×
+    // span·hh tall, 2:1) into the column width, centered, below the title.
+    let avail = COL_W - 36.0;
+    let hw = (avail / span).min(6.0);
     let hh = hw * (TILE_H / TILE_W);
     let mw = span * hw;
     let mh = span * hh;
-    let x0 = screen_width() - mw - 16.0;
-    let y0 = 46.0;
+    let x0 = (screen_width() - COL_W) + (COL_W - mw) / 2.0;
+    let y0 = CHROME_H + 30.0;
     MinimapLayout {
         frame: Rect::new(x0 - 6.0, y0 - 6.0, mw + 12.0, mh + 12.0),
         inner: Rect::new(x0, y0, mw, mh),

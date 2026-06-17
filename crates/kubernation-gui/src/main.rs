@@ -19,6 +19,7 @@ mod net;
 mod node;
 mod panels;
 mod plan;
+mod sidebar;
 mod text;
 mod theme;
 mod window;
@@ -28,8 +29,8 @@ use std::path::PathBuf;
 use almanac::{Almanac, AlmanacAction};
 use clap::Parser;
 use draw::{
-    Camera, SceneWorld, draw_minimap, draw_sea, draw_selection, draw_world, locate, minimap_layout,
-    scene, scene_size,
+    Camera, SceneWorld, draw_sea, draw_selection, draw_world, locate, minimap_layout, scene,
+    scene_size,
 };
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::Target;
@@ -625,7 +626,8 @@ async fn main() {
                     let ml = minimap_layout(bounds);
                     if let Some(cell) = ml.world_cell(mouse, bounds) {
                         cam.fly_to(cell);
-                    } else if mouse.y > panels::CHROME_H {
+                    } else if mouse.y > panels::CHROME_H && mouse.x < panels::map_width() {
+                        // Map clicks only in the play area, not under the column.
                         selected = cam.cell_at(mouse, bounds);
                         if let Some(sel) = selected {
                             panel = panel_for(&worlds, sel);
@@ -724,19 +726,27 @@ async fn main() {
                     draw_selection(&cam, sel);
                 }
 
-                // Hover tooltip (suppressed under a modal / while dragging).
+                // The docked right column (WORLD / STATUS / SELECTION) — always
+                // shown; the drill-down modals dim it behind their scrim. The
+                // SELECTION box follows the clicked tile, else the hovered one.
                 let ml = minimap_layout(bounds);
-                let over_minimap = panel.is_none() && ml.frame.contains(mouse);
+                let over_map = mouse.x < panels::map_width()
+                    && mouse.y > panels::CHROME_H
+                    && mouse.y < screen_height() - panels::STRIP_H;
+                let hovered = over_map
+                    .then(|| cam.cell_at(mouse, bounds))
+                    .flatten()
+                    .and_then(|cell| locate(&worlds, cell));
+                let sidebar_sel = selected.and_then(|cell| locate(&worlds, cell)).or(hovered);
+                sidebar::draw_sidebar(&worlds, &cam, s, sidebar_sel, &ns_filter_now, &ml);
+
+                // Hover tooltip over the map (not the column / chrome / strip).
                 if !picker
                     && almanac.is_none()
                     && !panel_modal
                     && !plan_open
                     && drag_anchor.is_none()
-                    && !over_minimap
-                    && mouse.y > panels::CHROME_H
-                    && mouse.y < screen_height() - panels::STRIP_H
-                    && let Some(cell) = cam.cell_at(mouse, bounds)
-                    && let Some((sw, local)) = locate(&worlds, cell)
+                    && let Some((sw, local)) = hovered
                 {
                     draw_tooltip(sw, local, s, mouse);
                 }
@@ -865,7 +875,8 @@ async fn main() {
                                 log_open = false;
                                 net.clear_logs();
                             }
-                            draw_minimap(&worlds, &cam, &ml);
+                            // The minimap now lives in the always-on right
+                            // column (drawn above), not a floating overlay.
                         }
                     }
                 }
@@ -883,7 +894,7 @@ async fn main() {
                         log_previous,
                     );
                 }
-                draw_attention_strip(&s.attention, paired, concern_idx);
+                draw_attention_strip(&s.attention, paired, concern_idx, panels::map_width());
             }
         }
 

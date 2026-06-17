@@ -75,10 +75,12 @@ crates/
                  from spike): net.rs (tokio thread publishing Models +
                  ObservedWorld snapshots), draw.rs (ISOMETRIC 2:1 diamond
                  projection — iso camera/transform, dithered terrain diamonds,
-                 procedural settlements, minimap; all original geometry, no
+                 procedural settlements, iso minimap; all original geometry, no
                  sprites), panels.rs (hover tooltip, attention strip, context
-                 picker, shared helpers), window.rs (reusable modal chrome for
-                 drill-downs), almanac.rs (the in-app reference / field guide),
+                 picker, shared helpers), sidebar.rs (the docked right column —
+                 WORLD/STATUS/SELECTION, classic-4X right panel), window.rs
+                 (reusable modal chrome for drill-downs), almanac.rs (the in-app
+                 reference / field guide),
                  city.rs / node.rs (the 4X city + province drill-down
                  windows, on window.rs), plan.rs (the End-of-Turn review),
                  text.rs (bundled sans + serif fonts), theme.rs. See the
@@ -601,6 +603,22 @@ what makes the interesting logic unit-testable without a cluster.
   The **zoom LOD** half (World/Regional/Local `Scale` tiers, `lod(zoom)`) was
   already built (see "GUI cartographic scale tiers"). Verified live at two
   zooms. The TUI minimap stays its own compact node-cell chart.
+- **GUI docked right column** (2026-06-17, user: "get closer to the Civ gaming
+  interface … the minimap is bound to a right column that provides spaces for
+  additional information"): the floating minimap was replaced by an
+  always-visible right column (`sidebar.rs`, `COL_W=264`), mirroring the TUI's
+  sidebar and the classic-4X right panel. Three stacked sections: **WORLD** (the
+  iso minimap — `minimap_layout` now docks it centered at the column top),
+  **STATUS** (context, platform · node/pod counts, the concern rollup via
+  `severity_counts`, gauge source, active namespace filter), **SELECTION** (the
+  clicked-or-hovered tile, reusing `panels::region_lines` — extracted from
+  `draw_tooltip` so the box and the tooltip can't drift). The map renders full
+  width *under* the column (camera unchanged); `panels::map_width()` /
+  `sidebar_rect()` bound the play area — map clicks and the hover tooltip are
+  gated to `mouse.x < map_width()`, and `draw_attention_strip` spans only the
+  play area. Drill-down modals (city/node) keep working: they're centered with
+  a scrim that dims the column. `draw_minimap` moved into the column (no longer
+  a `None`-panel overlay). Verified live.
 - **Pod eviction — the first mutation** (2026-06-17, user's explicit call to
   "add the ability to delete pods", choosing **real live deletion** labeled
   **"evict"**): the project's first and only cluster *write*, a deliberate,

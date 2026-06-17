@@ -8,6 +8,18 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Docked right column (GUI) — the classic-4X right panel.** The floating
+  minimap was replaced by an always-visible right column (`sidebar.rs`) with
+  three stacked sections: **WORLD** (the isometric minimap), **STATUS**
+  (context, platform · node/pod counts, the concern rollup `N crit / N warn /
+  N info`, the gauge source, and the active namespace filter), and
+  **SELECTION** (the clicked-or-hovered tile, reusing the hover tooltip's
+  lines — 4X's "moving unit" box). The map fills everything to the column's
+  left; the attention strip now spans only that play area. Drill-down modals
+  dim the column behind their scrim. Brings the GUI much closer to the Civ-II
+  reference interface.
+
 ### Changed
 - **Isometric minimap (GUI).** The overview minimap was reprojected from a
   top-down chart to the same 2:1 isometric diamond as the main map: landmasses

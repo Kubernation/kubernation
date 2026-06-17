@@ -16,6 +16,25 @@ use crate::theme::*;
 
 pub const STRIP_H: f32 = 64.0;
 pub const CHROME_H: f32 = 32.0;
+/// Width of the docked right column (the WORLD / STATUS / SELECTION sidebar,
+/// after the classic-4X right panel). The map fills everything to its left.
+pub const COL_W: f32 = 264.0;
+
+/// The right column's rect (below the top chrome, full height to the bottom).
+pub fn sidebar_rect() -> Rect {
+    Rect::new(
+        screen_width() - COL_W,
+        CHROME_H,
+        COL_W,
+        screen_height() - CHROME_H,
+    )
+}
+
+/// The play area to the left of the column (where the map + attention strip
+/// live).
+pub fn map_width() -> f32 {
+    (screen_width() - COL_W).max(0.0)
+}
 
 pub(crate) fn pod_color(s: PodState) -> Color {
     match s {
@@ -37,7 +56,10 @@ fn cluster_tag(id: ClusterId) -> (&'static str, Color) {
 
 // --- hover tooltip ------------------------------------------------------
 
-pub fn draw_tooltip(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot, mouse: Vec2) {
+/// The text lines describing whatever is at `local` in `sw` — shared by the
+/// hover tooltip and the right column's SELECTION panel. Empty for open sea in
+/// a single-cluster session (nothing worth saying).
+pub fn region_lines(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot) -> Vec<(String, Color)> {
     let paired = snap.warm.is_some();
     let mut lines: Vec<(String, Color)> = Vec::new();
     if paired {
@@ -113,11 +135,19 @@ pub fn draw_tooltip(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot, mouse: 
             }
             Region::Ocean => {
                 if !paired {
-                    return;
+                    return Vec::new();
                 }
                 lines.push(("open sea".into(), STONE_INK_DIM));
             }
         }
+    }
+    lines
+}
+
+pub fn draw_tooltip(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot, mouse: Vec2) {
+    let lines = region_lines(sw, local, snap);
+    if lines.is_empty() {
+        return;
     }
     let fs = 14.0;
     let w = lines
@@ -291,11 +321,11 @@ pub(crate) fn truncate_str(s: &str, max: usize) -> String {
 
 // --- attention strip ------------------------------------------------------
 
-pub fn draw_attention_strip(attention: &[Concern], paired: bool, concern_idx: usize) {
+pub fn draw_attention_strip(attention: &[Concern], paired: bool, concern_idx: usize, width: f32) {
     let base = screen_height() - STRIP_H;
-    draw_rectangle(0.0, base, screen_width(), STRIP_H, STONE);
-    draw_rectangle(0.0, base, screen_width(), 2.0, STONE_LIGHT);
-    draw_rectangle(0.0, base + STRIP_H - 2.0, screen_width(), 2.0, STONE_SHADOW);
+    draw_rectangle(0.0, base, width, STRIP_H, STONE);
+    draw_rectangle(0.0, base, width, 2.0, STONE_LIGHT);
+    draw_rectangle(0.0, base + STRIP_H - 2.0, width, 2.0, STONE_SHADOW);
     if attention.is_empty() {
         text(
             "all quiet - no concerns",
@@ -331,7 +361,7 @@ pub fn draw_attention_strip(attention: &[Concern], paired: bool, concern_idx: us
     if attention.len() > 3 {
         text(
             format!("+{}", attention.len() - 3),
-            screen_width() - 50.0,
+            width - 44.0,
             base + 20.0,
             14.0,
             STONE_INK_DIM,
