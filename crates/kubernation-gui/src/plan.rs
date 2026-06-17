@@ -1,18 +1,24 @@
-//! The End-of-Turn review — the planning turn's staged-diff window.
+//! The End-of-Turn review — the planning turn's staged-diff window, and the
+//! one place the staged interventions are *committed*.
 //!
-//! Preview-only: it lists what *would* change (`plan_diff`) and lets the
-//! operator unstage a row or discard the whole turn. **Commit is shown but
-//! disabled** — nothing here writes to the cluster, so the codebase keeps its
-//! "no mutation paths" guarantee while the planning experience exists.
+//! It lists what would change (`plan_diff`), lets the operator unstage a row
+//! or discard the turn, and **Commit** (behind a confirm) applies the staged
+//! changes to the hot cluster. Every change is validated with a server-side
+//! dry-run first — which also enforces RBAC — so a turn that the cluster would
+//! reject is blocked before any real write, and the per-row outcome is shown
+//! here.
 
 use macroquad::prelude::*;
 
 use kubernation_core::state::planned::{PlannedWorld, plan_diff};
 
-use crate::net::Snapshot;
+use crate::net::{PlanOutcome, Snapshot};
+use crate::panels::truncate_str;
 use crate::text::text;
 use crate::theme::*;
 use crate::window::draw_window;
+
+const GREEN: Color = Color::new(0.32, 0.55, 0.30, 1.0);
 
 /// What the review window asks the caller to do this frame.
 #[derive(Default)]
@@ -20,18 +26,21 @@ pub struct PlanAction {
     pub close: bool,
     pub discard: bool,
     pub unstage: Option<usize>,
+    /// The operator clicked Commit (the caller confirms, then applies).
+    pub commit: bool,
 }
 
 pub fn draw_plan(
     planned: &PlannedWorld,
     snap: Option<&Snapshot>,
+    outcome: Option<&PlanOutcome>,
     mouse: Vec2,
     click: bool,
 ) -> PlanAction {
     let mut act = PlanAction::default();
     let win = draw_window(
         "End of Turn — staged interventions",
-        vec2(720.0, 520.0),
+        vec2(720.0, 540.0),
         &["Discard all", "Close"],
         usize::MAX,
     );
@@ -41,6 +50,7 @@ pub fn draw_plan(
     let changes = snap
         .map(|s| plan_diff(&s.hot.observed, planned))
         .unwrap_or_default();
+    let appliable = changes.iter().filter(|c| !c.noop).count();
 
     if changes.is_empty() {
         text(
@@ -51,20 +61,37 @@ pub fn draw_plan(
             DIM,
         );
     } else {
-        text(
-            format!(
-                "{} staged change(s) — review before committing:",
-                changes.len()
+        // Header reflects the latest commit outcome, if any.
+        let (header, hcol) = match outcome {
+            Some(o) if o.applied => {
+                let n_ok = o.rows.iter().filter(|r| r.ok).count();
+                let col = if n_ok == o.rows.len() { GREEN } else { WARN };
+                (format!("Committed {n_ok}/{} change(s).", o.rows.len()), col)
+            }
+            Some(_) => (
+                "Commit blocked by dry-run — fix the flagged change(s) and retry.".to_string(),
+                CRIT,
             ),
-            b.x,
-            y + 13.0,
-            14.0,
-            PARCHMENT,
-        );
+            None => (
+                format!("{appliable} change(s) to apply — review, then Commit."),
+                PARCHMENT,
+            ),
+        };
+        text(ascii(&header), b.x, y + 13.0, 14.0, hcol);
         y += 28.0;
+
+        // Reserve a bottom strip for the per-row commit result, if present.
+        let result_rows = outcome.map(|o| o.rows.len().min(4)).unwrap_or(0);
+        let result_h = if result_rows > 0 {
+            result_rows as f32 * 18.0 + 10.0
+        } else {
+            0.0
+        };
+        let list_bottom = b.y + b.h - 38.0 - result_h;
+
         let row_h = 24.0;
         for (i, c) in changes.iter().enumerate() {
-            if y + row_h > b.y + b.h - 36.0 {
+            if y + row_h > list_bottom {
                 text(
                     format!("+{} more", changes.len() - i),
                     b.x + 6.0,
@@ -90,7 +117,6 @@ pub fn draw_plan(
             if c.noop {
                 text("(no change)", b.x + 500.0, y + 16.0, 12.0, DIM);
             }
-            // Unstage [x].
             let xbtn = Rect::new(b.x + b.w - 24.0, y + 2.0, 20.0, 20.0);
             let xbg = if xbtn.contains(mouse) {
                 lighter(PLATE, 1.8)
@@ -105,11 +131,37 @@ pub fn draw_plan(
             }
             y += row_h;
         }
+
+        // Per-row commit result.
+        if let Some(o) = outcome {
+            let mut ry = list_bottom + 6.0;
+            draw_line(b.x, ry, b.x + b.w, ry, 1.0, darker(PARCHMENT, 0.5));
+            ry += 4.0;
+            for r in o.rows.iter().take(4) {
+                let (mark, col) = if r.ok { ("ok ", GREEN) } else { ("x  ", CRIT) };
+                let line = if r.detail.is_empty() {
+                    format!("{mark}{}", r.label)
+                } else {
+                    format!("{mark}{} — {}", r.label, truncate_str(&r.detail, 60))
+                };
+                text(ascii(&line), b.x + 6.0, ry + 14.0, 12.0, col);
+                ry += 18.0;
+            }
+        }
     }
 
-    // Commit — shown but disabled (preview-only; the apply path doesn't exist).
+    // Commit — enabled when there's something to apply. Behind a confirm in the
+    // caller; the apply itself is server-side dry-run-gated.
     let commit = Rect::new(b.x, b.y + b.h - 28.0, 150.0, 24.0);
-    draw_rectangle(commit.x, commit.y, commit.w, commit.h, darker(PLATE, 0.7));
+    let enabled = appliable > 0;
+    let cbg = if !enabled {
+        darker(PLATE, 0.7)
+    } else if commit.contains(mouse) {
+        lighter(GREEN, 1.25)
+    } else {
+        GREEN
+    };
+    draw_rectangle(commit.x, commit.y, commit.w, commit.h, cbg);
     draw_rectangle_lines(
         commit.x,
         commit.y,
@@ -118,16 +170,26 @@ pub fn draw_plan(
         1.0,
         darker(PARCHMENT, 0.5),
     );
-    text("Commit", commit.x + 12.0, commit.y + 16.0, 14.0, DIM);
+    let clabel = format!("Commit ({appliable})");
     text(
-        "preview only — nothing is applied to the cluster",
+        &clabel,
+        commit.x + 12.0,
+        commit.y + 16.0,
+        14.0,
+        if enabled { INK } else { DIM },
+    );
+    text(
+        "applies to the cluster — dry-run validated, then confirmed",
         commit.x + 164.0,
         commit.y + 16.0,
         13.0,
         DIM,
     );
+    if enabled && click && commit.contains(mouse) {
+        act.commit = true;
+    }
 
-    if act.unstage.is_none() && click {
+    if act.unstage.is_none() && !act.commit && click {
         if win.close.contains(mouse) {
             act.close = true;
         } else if let Some(bi) = win.button_at(mouse) {

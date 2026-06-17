@@ -9,6 +9,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Commit the planning turn (apply staged interventions).** The End-of-Turn
+  review's Commit is now live (GUI): it applies staged Scale (Deployment /
+  StatefulSet `spec.replicas`) and Cordon (Node `spec.unschedulable`) to the
+  hot cluster via `actions::apply_intervention`, behind a confirm. Every staged
+  change is **server-side dry-run validated first** (which also enforces RBAC),
+  so a turn the cluster would reject is blocked before any real write; per-row
+  results show in the review. The planning turn is the project's second write
+  path (after evict); staging still never writes. Verified live (`--plan-go`).
 - **RBAC-aware evict control.** Before offering eviction, both frontends probe
   `delete pods` permission for the pod's namespace via a `SelfSubjectAccessReview`
   (`k8s::actions::can_evict_pod`). In the GUI the per-pod button renders enabled

@@ -8,14 +8,17 @@ health-textured terrain, workloads are cities sited where their pods run
 islands in the southern sea. An attention queue surfaces what needs focus
 and parks the explorer's cursor on it — 4X's "next unit needing orders",
 not a wall of dashboards.
-**Near observe-only.** The app reads the cluster and does not mutate it —
-with **one** deliberate, gated exception: **pod eviction** (a real `DELETE`),
-invoked only from the GUI behind an explicit confirm (user's call,
-2026-06-17). The entire write surface is one small, auditable file,
-`kubernation-core/src/k8s/actions.rs`; everything else (reflectors, pure
-models, on-demand log tails) stays read-only. The **planning turn**
-(Scale/Cordon) remains **preview-only** — staging records intent and previews
-the diff, but never writes. See the "Pod eviction" decision.
+**Reads by default; writes are deliberate and gated** (user's call,
+2026-06-17). The whole write surface is one small, auditable file,
+`kubernation-core/src/k8s/actions.rs` — everything else (reflectors, pure
+models, on-demand log tails) is read-only. Two write paths exist, each behind
+an explicit confirm: **pod eviction** (a real `DELETE`, from a pod's evict
+control), and **committing the planning turn** (apply staged Scale/Cordon to
+the cluster). Both are **RBAC-aware**: eviction probes `delete pods` with a
+`SelfSubjectAccessReview`; the planning turn validates every staged change with
+a **server-side dry-run** (which also enforces RBAC) and only applies if all
+pass. Staging itself still never writes — only Commit does. See the
+"Pod eviction" and "Planning-turn apply" decisions.
 
 The full product brief lives in `kubernation-tui-mvp-prompt.md`. Read it before
 proposing scope changes.
@@ -237,11 +240,27 @@ what makes the interesting logic unit-testable without a cluster.
   `[uncordon]` toggle — both return `WinAction.stage: Option<Intervention>`.
   **`t`** (or the chrome "End Turn (N)" button) opens `plan.rs`, the
   End-of-Turn review: the diff with per-row unstage `[x]`, **Discard all**,
-  and a **disabled Commit** ("preview only — nothing is applied"). Modal like
-  the others (suspends nav; Esc / close / click-outside). **No kube client
-  writes exist** — applying staged intents is the next, explicitly-gated
-  slice (server-side dry-run + confirm + RBAC). `--plan` dev flag stages a
-  demo scale+cordon and opens the review for headless shots (docs/gui-plan.png).
+  and Commit. Modal like the others (suspends nav; Esc / close / click-outside).
+  Originally preview-only; Commit is now wired (see "Planning-turn apply").
+  `--plan` dev flag stages a demo scale+cordon and opens the review for
+  headless shots (docs/gui-plan.png).
+- **Planning-turn apply** (2026-06-17, the second write path): Commit now
+  applies the staged turn to the **hot** cluster. `actions::apply_intervention`
+  (in the one write file) patches `spec.replicas` (Deployment / StatefulSet) or
+  `spec.unschedulable` (Node) with a strategic-merge patch; a `dry_run` flag
+  routes it through `PatchParams.dry_run`. The GUI net thread, on a confirmed
+  commit (`Net.plan_req`), **dry-runs every staged change first** — which also
+  enforces RBAC, so a turn the cluster would reject is blocked before any real
+  write — and only if all pass applies them for real, reporting per-row results
+  in `Net.plan_outcome` (shown in the review) plus a toast. `plan.rs`'s Commit
+  is enabled when there are non-noop changes, behind `panels::draw_commit_confirm`
+  (the generic `Confirm` modal shared with evict); a fully-applied turn clears
+  itself and closes. Dry-run is preferred over a plain SSAR here because it
+  validates the actual patch + admission, not just authz. Verified live
+  (`--plan --plan-go`): metrics-server 1→3 + a node cordoned, "committed 2/2",
+  then reverted. Still preview-only elsewhere; staging never writes. Deferred:
+  apply in the TUI planning turn (the TUI has no planning turn yet); image-set /
+  restart interventions.
 - **Stable layout:** nodes sort within a zone by FNV-1a-64(name) — pinned by
   test so layouts never reshuffle across runs or Rust upgrades. Zones sort
   by name; `unzoned` sinks to the end.
@@ -682,12 +701,9 @@ never blocks input.
 
 ## Deferred (deliberately)
 
-applying staged interventions to the cluster (the planning-turn staging +
-diff UI is built, preview-only; apply needs dry-run + confirm + RBAC —
-note pod **eviction** now writes directly, outside the planning turn, behind
-its own confirm; eviction is RBAC-gated and in both frontends) · more
-interventions (image set, restart, scale-apply, cordon-apply) ·
-planning turn in the TUI · external services / chaos layers ·
+more interventions (image set, rollout restart) · the planning turn in the
+TUI (staging + diff + commit; the GUI has it, the TUI has evict only) ·
+external services / chaos layers ·
 connectivity attention (orphan ingress / harbor with no city) + unmounted-PVC
 island granaries + Job-object attention (failed-Job concern) · Job/CronJob
 city screens · namespace filtering · mouse

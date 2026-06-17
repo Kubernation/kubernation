@@ -296,20 +296,14 @@ pub fn draw_attention_strip(attention: &[Concern], paired: bool, concern_idx: us
 // --- evict confirm ------------------------------------------------------
 
 #[derive(Default)]
-pub struct EvictConfirm {
-    pub evict: bool,
+pub struct Confirm {
+    pub yes: bool,
     pub cancel: bool,
 }
 
 /// A destructive-action confirm modal for pod eviction (the app's only write).
 /// `tag` is "" or "WARM " in pair mode. Returns which button was clicked.
-pub fn draw_evict_confirm(
-    tag: &str,
-    ns: &str,
-    pod: &str,
-    mouse: Vec2,
-    click: bool,
-) -> EvictConfirm {
+pub fn draw_evict_confirm(tag: &str, ns: &str, pod: &str, mouse: Vec2, click: bool) -> Confirm {
     draw_rectangle(
         0.0,
         0.0,
@@ -379,8 +373,78 @@ pub fn draw_evict_confirm(
         15.0,
         INK,
     );
-    EvictConfirm {
-        evict: click && evict.contains(mouse),
+    Confirm {
+        yes: click && evict.contains(mouse),
+        cancel: click && cancel.contains(mouse),
+    }
+}
+
+/// Confirm modal for committing the planning turn (applies N changes to the
+/// cluster). Returns (commit, cancel).
+pub fn draw_commit_confirm(n: usize, mouse: Vec2, click: bool) -> Confirm {
+    draw_rectangle(
+        0.0,
+        0.0,
+        screen_width(),
+        screen_height(),
+        Color::new(0.0, 0.0, 0.0, 0.55),
+    );
+    let w = 480.0;
+    let h = 150.0;
+    let x = ((screen_width() - w) / 2.0).floor();
+    let y = ((screen_height() - h) / 2.0).floor();
+    stone_panel(x, y, w, h);
+    text_bold("Commit the turn?", x + 16.0, y + 28.0, 18.0, WARN);
+    text(
+        format!("Apply {n} staged change(s) to the cluster."),
+        x + 16.0,
+        y + 54.0,
+        14.0,
+        STONE_INK,
+    );
+    text(
+        "Each is dry-run validated first; anything rejected is blocked.",
+        x + 16.0,
+        y + 74.0,
+        12.0,
+        STONE_INK_DIM,
+    );
+    let bh = 28.0;
+    let by = y + h - bh - 12.0;
+    let cancel = Rect::new(x + 16.0, by, 150.0, bh);
+    let commit = Rect::new(x + w - 166.0, by, 150.0, bh);
+    let cbg = if cancel.contains(mouse) {
+        lighter(STONE_DARK, 1.4)
+    } else {
+        STONE_DARK
+    };
+    draw_rectangle(cancel.x, cancel.y, cancel.w, cancel.h, cbg);
+    draw_rectangle_lines(cancel.x, cancel.y, cancel.w, cancel.h, 1.0, STONE_EDGE);
+    let cm = text_size("Cancel", 15.0);
+    text(
+        "Cancel",
+        cancel.x + (cancel.w - cm.width) / 2.0,
+        by + 19.0,
+        15.0,
+        STONE_LIGHT,
+    );
+    let ebg = if commit.contains(mouse) {
+        WARN
+    } else {
+        darker(WARN, 0.8)
+    };
+    draw_rectangle(commit.x, commit.y, commit.w, commit.h, ebg);
+    draw_rectangle_lines(commit.x, commit.y, commit.w, commit.h, 1.0, WARN);
+    let em = text_size("Commit", 15.0);
+    text(
+        "Commit",
+        commit.x + (commit.w - em.width) / 2.0,
+        by + 19.0,
+        15.0,
+        PLATE,
+    );
+    Confirm {
+        yes: click && commit.contains(mouse),
         cancel: click && cancel.contains(mouse),
     }
 }

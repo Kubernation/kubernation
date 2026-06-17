@@ -21,6 +21,7 @@ use kubernation_core::state::attention::Concern;
 use kubernation_core::state::model::Models;
 use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::pair::PairSync;
+use kubernation_core::state::planned::Intervention;
 
 /// Which pod's logs the UI wants tailed.
 #[derive(Clone, PartialEq, Eq)]
@@ -46,6 +47,35 @@ pub struct EvictReq {
     pub cluster: ClusterId,
     pub namespace: String,
     pub pod: String,
+}
+
+/// One row of an End-of-Turn commit result, per staged intervention.
+#[derive(Clone)]
+pub struct PlanRow {
+    pub label: String,
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// The result of a commit attempt: `applied` is false when a server-side
+/// dry-run blocked the turn (rows then carry the dry-run failures).
+#[derive(Clone)]
+pub struct PlanOutcome {
+    pub applied: bool,
+    pub rows: Vec<PlanRow>,
+}
+
+/// Short label for a staged intervention (commit-result rows).
+fn iv_label(iv: &Intervention) -> String {
+    match iv {
+        Intervention::Scale { workload, replicas } => format!(
+            "scale {} {}/{} → {replicas}",
+            workload.kind, workload.namespace, workload.name
+        ),
+        Intervention::Cordon { node, on } => {
+            format!("{} node {node}", if *on { "cordon" } else { "uncordon" })
+        }
+    }
 }
 
 pub struct WorldSnap {
@@ -81,6 +111,11 @@ pub struct Net {
     evict_perm: Mutex<HashMap<(ClusterId, String), bool>>,
     /// Namespaces awaiting a permission probe.
     evict_perm_pending: Mutex<HashSet<(ClusterId, String)>>,
+    /// A confirmed End-of-Turn commit: the staged interventions to apply to
+    /// the hot cluster (dry-run-validated, then applied).
+    plan_req: Mutex<Option<Vec<Intervention>>>,
+    /// The result of the last commit (per-row), shown in the review window.
+    plan_outcome: Mutex<Option<PlanOutcome>>,
 }
 
 impl Net {
@@ -95,7 +130,24 @@ impl Net {
             evict_status: Mutex::new(None),
             evict_perm: Mutex::new(HashMap::new()),
             evict_perm_pending: Mutex::new(HashSet::new()),
+            plan_req: Mutex::new(None),
+            plan_outcome: Mutex::new(None),
         })
+    }
+
+    /// Queue a confirmed End-of-Turn commit (the net thread dry-runs then
+    /// applies it to the hot cluster).
+    pub fn request_commit(&self, interventions: Vec<Intervention>) {
+        *self.plan_req.lock().unwrap() = Some(interventions);
+    }
+
+    /// The result of the last commit attempt, if any.
+    pub fn plan_outcome(&self) -> Option<PlanOutcome> {
+        self.plan_outcome.lock().unwrap().clone()
+    }
+
+    pub fn clear_plan_outcome(&self) {
+        *self.plan_outcome.lock().unwrap() = None;
     }
 
     /// Queue a confirmed pod eviction (the net thread runs it once).
@@ -318,6 +370,57 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 {
                     *net.evict_status.lock().unwrap() = None;
                     evict_set = None;
+                }
+
+                // End-of-Turn commit (hot cluster). Validate every staged
+                // change with a server-side dry-run first (which also enforces
+                // RBAC); only if all pass do we apply for real. Either way the
+                // per-row outcome goes back to the review window.
+                let commit = net.plan_req.lock().unwrap().take();
+                if let Some(ivs) = commit {
+                    let mut dry_fail = Vec::new();
+                    for iv in &ivs {
+                        if let Err(e) =
+                            actions::apply_intervention(hot_client.clone(), iv, true).await
+                        {
+                            dry_fail.push(PlanRow {
+                                label: iv_label(iv),
+                                ok: false,
+                                detail: e,
+                            });
+                        }
+                    }
+                    let outcome = if dry_fail.is_empty() {
+                        let mut rows = Vec::new();
+                        for iv in &ivs {
+                            let r =
+                                actions::apply_intervention(hot_client.clone(), iv, false).await;
+                            rows.push(PlanRow {
+                                label: iv_label(iv),
+                                ok: r.is_ok(),
+                                detail: r.err().unwrap_or_default(),
+                            });
+                        }
+                        let n_ok = rows.iter().filter(|r| r.ok).count();
+                        *net.evict_status.lock().unwrap() =
+                            Some(format!("committed {n_ok}/{} change(s)", rows.len()));
+                        PlanOutcome {
+                            applied: true,
+                            rows,
+                        }
+                    } else {
+                        *net.evict_status.lock().unwrap() = Some(format!(
+                            "commit blocked — {} change(s) failed dry-run",
+                            dry_fail.len()
+                        ));
+                        PlanOutcome {
+                            applied: false,
+                            rows: dry_fail,
+                        }
+                    };
+                    *net.plan_outcome.lock().unwrap() = Some(outcome);
+                    evict_set = Some(ticks);
+                    dirty.store(true, Ordering::Relaxed);
                 }
 
                 // Answer any pending evict-permission (RBAC) probes; cache the

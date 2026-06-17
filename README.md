@@ -150,9 +150,11 @@ not imperative edits. Set replicas from a city window (`plan replicas [−] N
 [+]`) or cordon a node from its province window; the change is staged, not
 applied. Press **`t`** (or the chrome **End Turn (N)**) for the End-of-Turn
 review — a from→to diff of everything staged, with per-row unstage and
-Discard. **It is preview-only:** Commit is shown but disabled and *nothing is
-written to the cluster* — the planning turn never writes; you just rehearse
-the turn.
+Discard. **Commit** (behind a confirm) applies the turn to the cluster: each
+staged change is **server-side dry-run validated first** — which also enforces
+RBAC — so a turn the cluster would reject is blocked before any real write,
+and per-row results show right in the review. Staging itself never writes; only
+Commit does.
 
 ![GUI planning turn](docs/gui-plan.png)
 

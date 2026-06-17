@@ -36,7 +36,9 @@ use kubernation_core::state::attention::Target;
 use kubernation_core::state::world::Region;
 use macroquad::prelude::*;
 use net::{EvictReq, LogReq};
-use panels::{Panel, draw_attention_strip, draw_evict_confirm, draw_logs, draw_tooltip};
+use panels::{
+    Panel, draw_attention_strip, draw_commit_confirm, draw_evict_confirm, draw_logs, draw_tooltip,
+};
 use text::{text, text_bold, text_size};
 use theme::*;
 
@@ -100,6 +102,10 @@ struct Args {
     /// with --screenshot captures it (development verification / demo)
     #[arg(long)]
     splash: bool,
+    /// With --plan, auto-commit the staged turn (REALLY applies scale/cordon)
+    /// — development verification of the apply path
+    #[arg(long)]
+    plan_go: bool,
 }
 
 fn window_conf() -> Conf {
@@ -154,6 +160,8 @@ async fn main() {
     let mut plan_open = false;
     // The one mutation: a pod awaiting evict confirmation (cluster, ns, pod).
     let mut pending_evict: Option<(ClusterId, String, String)> = None;
+    // End-of-Turn commit awaiting confirmation.
+    let mut pending_commit = false;
     // Intro splash: hold the full Kubernation scene a few moments on launch.
     let mut splash_start: Option<f64> = None;
     let mut splash_skipped = false;
@@ -249,9 +257,10 @@ async fn main() {
         // read that same click as a click-outside dismiss.
         let mut panel_just_opened = false;
         let mut plan_just_opened = false;
-        // Track an evict confirm opened *this frame* so the opening click can't
-        // also hit the confirm's buttons.
+        // Track an evict / commit confirm opened *this frame* so the opening
+        // click can't also hit the confirm's buttons.
         let mut evict_just_opened = false;
+        let mut commit_just_opened = false;
 
         // ---- input ------------------------------------------------------
         if is_key_pressed(KeyCode::Q) {
@@ -279,7 +288,9 @@ async fn main() {
             plan_just_opened = plan_open;
         }
         if is_key_pressed(KeyCode::Escape) {
-            if pending_evict.is_some() {
+            if pending_commit {
+                pending_commit = false;
+            } else if pending_evict.is_some() {
                 pending_evict = None;
             } else if almanac.is_some() {
                 almanac = None;
@@ -635,17 +646,38 @@ async fn main() {
                     && pending_evict.is_none();
                 let mut close_panel = false;
                 if plan_open {
-                    let pclick = is_mouse_button_pressed(MouseButton::Left) && !plan_just_opened;
-                    let act = plan::draw_plan(&planned, Some(s), mouse, pclick);
-                    if let Some(i) = act.unstage {
-                        planned.unstage(i);
-                    }
-                    if act.discard {
+                    let outcome = net.plan_outcome();
+                    // A fully-applied commit: clear the turn and close.
+                    if outcome
+                        .as_ref()
+                        .is_some_and(|o| o.applied && o.rows.iter().all(|r| r.ok))
+                    {
                         planned.clear();
                         plan_open = false;
-                    }
-                    if act.close {
-                        plan_open = false;
+                        net.clear_plan_outcome();
+                    } else {
+                        let pclick = is_mouse_button_pressed(MouseButton::Left)
+                            && !plan_just_opened
+                            && !pending_commit;
+                        let act =
+                            plan::draw_plan(&planned, Some(s), outcome.as_ref(), mouse, pclick);
+                        if let Some(i) = act.unstage {
+                            planned.unstage(i);
+                            net.clear_plan_outcome();
+                        }
+                        if act.commit {
+                            pending_commit = true;
+                            commit_just_opened = true;
+                        }
+                        if act.discard {
+                            planned.clear();
+                            plan_open = false;
+                            net.clear_plan_outcome();
+                        }
+                        if act.close {
+                            plan_open = false;
+                            net.clear_plan_outcome();
+                        }
                     }
                 } else {
                     match &panel {
@@ -847,6 +879,11 @@ async fn main() {
                 pod,
             });
         }
+        // Development verification: auto-commit the staged turn (REAL apply).
+        if args.plan_go && frames_synced == 20 && plan_open && !planned.is_empty() {
+            net.clear_plan_outcome();
+            net.request_commit(planned.interventions().to_vec());
+        }
 
         // Evict confirm — the one destructive action, on top of everything.
         // Esc cancels (handled above); the opening click can't reach a button.
@@ -859,7 +896,7 @@ async fn main() {
             };
             let cclick = is_mouse_button_pressed(MouseButton::Left) && !evict_just_opened;
             let act = draw_evict_confirm(tag, &ns, &pod, mouse, cclick);
-            if act.evict {
+            if act.yes {
                 net.request_evict(EvictReq {
                     cluster: cid,
                     namespace: ns,
@@ -868,6 +905,19 @@ async fn main() {
                 pending_evict = None;
             } else if act.cancel {
                 pending_evict = None;
+            }
+        }
+
+        // Commit confirm — applies the planning turn to the cluster.
+        if pending_commit {
+            let cclick = is_mouse_button_pressed(MouseButton::Left) && !commit_just_opened;
+            let act = draw_commit_confirm(planned.len(), mouse, cclick);
+            if act.yes {
+                net.clear_plan_outcome();
+                net.request_commit(planned.interventions().to_vec());
+                pending_commit = false;
+            } else if act.cancel {
+                pending_commit = false;
             }
         }
 
@@ -885,7 +935,13 @@ async fn main() {
 
         // When tailing, wait long enough for the net thread's first fetch
         // (first_container + tail, two API round-trips) to land.
-        let shot_at = if args.tail { 240 } else { 45 };
+        let shot_at = if args.tail {
+            240
+        } else if args.plan_go {
+            120
+        } else {
+            45
+        };
         if let Some(path) = &shot
             && frames_synced > shot_at
         {
