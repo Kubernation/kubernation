@@ -131,6 +131,40 @@ pub async fn apply_intervention(
                     .map_err(to_err),
             }
         }
+        Intervention::SetImage {
+            workload,
+            container,
+            image,
+        } => {
+            // A *strategic* merge so the containers list is merged by `name`
+            // (preserving the container's other fields and sibling containers).
+            // A plain JSON merge patch would replace the whole containers array.
+            let patch = Patch::Strategic(serde_json::json!({
+                "spec": { "template": { "spec": { "containers": [
+                    { "name": container, "image": image }
+                ]}}}
+            }));
+            let ns = workload.namespace.as_str();
+            let name = workload.name.as_str();
+            let to_err = |e: kube::Error| e.to_string();
+            match workload.kind {
+                WorkloadKind::Deployment => Api::<Deployment>::namespaced(client, ns)
+                    .patch(name, &pp, &patch)
+                    .await
+                    .map(|_| ())
+                    .map_err(to_err),
+                WorkloadKind::StatefulSet => Api::<StatefulSet>::namespaced(client, ns)
+                    .patch(name, &pp, &patch)
+                    .await
+                    .map(|_| ())
+                    .map_err(to_err),
+                WorkloadKind::DaemonSet => Api::<DaemonSet>::namespaced(client, ns)
+                    .patch(name, &pp, &patch)
+                    .await
+                    .map(|_| ())
+                    .map_err(to_err),
+            }
+        }
     }
 }
 
@@ -199,6 +233,14 @@ pub fn iv_label(iv: &Intervention) -> String {
         }
         Intervention::Restart { workload } => format!(
             "restart {} {}/{}",
+            workload.kind, workload.namespace, workload.name
+        ),
+        Intervention::SetImage {
+            workload,
+            container,
+            image,
+        } => format!(
+            "set image {} {}/{} [{container}] → {image}",
             workload.kind, workload.namespace, workload.name
         ),
     }

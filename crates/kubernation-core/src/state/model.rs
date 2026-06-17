@@ -691,6 +691,9 @@ pub struct CityModel {
     pub pods: Vec<CityPod>,
     pub owned: Vec<OwnedRes>,
     pub events: Vec<RecentEvent>, // newest first
+    /// First container of the pod template — the default target for a staged
+    /// image change (`kubectl set image`). None if the template is absent.
+    pub primary_container: Option<String>,
 }
 
 fn template_labels(t: Option<&PodTemplateSpec>) -> BTreeMap<String, String> {
@@ -1278,6 +1281,12 @@ pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
     events.reverse(); // ring is oldest-first
     events.truncate(30);
 
+    let primary_container = template
+        .as_ref()
+        .and_then(|t| t.spec.as_ref())
+        .and_then(|s| s.containers.first())
+        .map(|c| c.name.clone());
+
     Some(CityModel {
         r: r.clone(),
         desired,
@@ -1291,6 +1300,7 @@ pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
         pods,
         owned,
         events,
+        primary_container,
     })
 }
 

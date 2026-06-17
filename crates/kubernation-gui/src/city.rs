@@ -38,6 +38,7 @@ pub fn draw_city(
     click: bool,
     auto_log: bool,
     net: &crate::net::Net,
+    image_edit: &mut Option<String>,
 ) -> WinAction {
     let mut act = WinAction::default();
     let tag = match (snap.warm.is_some(), id) {
@@ -170,6 +171,85 @@ pub fn draw_city(
                 // Toggle: stage a restart, or clear it if already staged.
                 act.restart_toggle = Some(r.clone());
             }
+        }
+        y += 24.0;
+    }
+
+    // PLAN: set the primary container's image. Click the field to edit, type,
+    // Enter stages a SetImage; Esc (handled by the caller) cancels.
+    {
+        let container = city.primary_container.clone();
+        let staged_img = container.as_deref().and_then(|c| planned.image_set(r, c));
+        text("plan", b.x, y + 13.0, 14.0, PARCHMENT);
+        text("image", b.x + 44.0, y + 13.0, 13.0, DIM);
+        let field = Rect::new(b.x + 122.0, y - 1.0, 380.0, 19.0);
+        let editing = image_edit.is_some();
+        let fbg = if editing {
+            darker(WARN, 0.7)
+        } else if field.contains(mouse) {
+            lighter(PLATE, 1.7)
+        } else {
+            PLATE
+        };
+        draw_rectangle(field.x, field.y, field.w, field.h, fbg);
+        draw_rectangle_lines(
+            field.x,
+            field.y,
+            field.w,
+            field.h,
+            1.0,
+            if editing || staged_img.is_some() {
+                WARN
+            } else {
+                PARCHMENT
+            },
+        );
+        let shown = if let Some(buf) = image_edit.as_deref() {
+            format!("{buf}_")
+        } else if let Some(img) = staged_img {
+            format!("-> {img}")
+        } else if container.is_some() {
+            "click to set image".to_string()
+        } else {
+            "(no container)".to_string()
+        };
+        let col = if editing {
+            INK
+        } else if staged_img.is_some() {
+            WARN
+        } else {
+            DIM
+        };
+        text(
+            ascii(&truncate_str(&shown, 48)),
+            field.x + 6.0,
+            y + 13.0,
+            13.0,
+            col,
+        );
+
+        if let Some(buf) = image_edit.as_mut() {
+            while let Some(ch) = get_char_pressed() {
+                if !ch.is_control() {
+                    buf.push(ch);
+                }
+            }
+            if is_key_pressed(KeyCode::Backspace) {
+                buf.pop();
+            }
+            if is_key_pressed(KeyCode::Enter) {
+                let image = buf.trim().to_string();
+                if let (Some(c), false) = (container.clone(), image.is_empty()) {
+                    act.stage = Some(Intervention::SetImage {
+                        workload: r.clone(),
+                        container: c,
+                        image,
+                    });
+                }
+                *image_edit = None;
+            }
+        } else if click && field.contains(mouse) && container.is_some() {
+            *image_edit = Some(staged_img.unwrap_or("").to_string());
         }
         y += 24.0;
     }

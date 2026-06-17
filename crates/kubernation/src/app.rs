@@ -466,6 +466,14 @@ impl App {
             self.logs.filter_input(key);
             return;
         }
+        // Same for the city's image editor (the "set image" planning verb).
+        if self.screens.last() == Some(&Screen::City) && self.city.image_editing() {
+            let source = self.view_cluster(Screen::City);
+            if let Some(a) = self.city.image_input(key) {
+                self.apply(a, source).await;
+            }
+            return;
+        }
         // The End-of-Turn review owns its keys (so its c/x/D don't hit the
         // global bindings); a few navigation escapes still work.
         if self.screens.last() == Some(&Screen::Plan) {

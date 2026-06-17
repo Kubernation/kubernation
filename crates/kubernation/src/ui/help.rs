@@ -62,6 +62,7 @@ const KEYMAP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("+ / −", "stage scale ± on the city screen"),
             ("R", "stage rolling restart (city)"),
+            ("i", "stage a container image (city — type, Enter)"),
             ("C", "stage cordon / uncordon (node)"),
             ("t", "End of Turn — review the staged diff"),
             ("x / D", "(review) unstage row / discard all"),

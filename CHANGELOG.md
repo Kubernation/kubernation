@@ -9,6 +9,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Image-set intervention.** The planning turn's last verb: stage a new image
+  for a workload's primary container (`kubectl set image`) and commit it through
+  the same dry-run/RBAC gate as scale/cordon/restart. The apply uses a
+  **strategic** merge patch so the container is matched by name and its other
+  fields (ports, env, …) and sibling containers are preserved. **TUI:** `i` on
+  the city screen opens an inline image editor (type, Enter stages). **GUI:** a
+  click-to-edit image field in the city window. The verb set is now complete:
+  Scale / Cordon / Restart / **Image**. Verified the strategic patch
+  server-side; core unit-tested (diff from→to, latest-wins).
 - **Namespace filtering.** Scope the whole world — cities, the workload list,
   attention, island structures, coast/storage marks — to one or more
   namespaces, while terrain (nodes are cluster-scoped) and node pressure stay

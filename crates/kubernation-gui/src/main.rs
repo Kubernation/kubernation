@@ -168,6 +168,9 @@ async fn main() {
     // Namespace-filter picker (single-select: "all" or one namespace).
     let mut ns_picker = false;
     let mut ns_picker_idx = 0usize;
+    // While Some, the city window's image field is capturing a new image string
+    // (the "set image" planning verb); global single-key shortcuts are text.
+    let mut city_image_edit: Option<String> = None;
     // Log tailing: the open overlay + a headless auto-open after --inspect.
     let mut log_open = false;
     // Log overlay state: --previous container toggle + substring filter editor.
@@ -293,16 +296,17 @@ async fn main() {
         let mut commit_just_opened = false;
 
         // ---- input ------------------------------------------------------
-        // While typing into the log filter, single-key shortcuts are text.
-        let log_typing = log_open && log_filter_active;
-        if is_key_pressed(KeyCode::Q) && !log_typing {
+        // While typing into the log filter or the city image field, single-key
+        // shortcuts are text, not commands.
+        let typing = (log_open && log_filter_active) || city_image_edit.is_some();
+        if is_key_pressed(KeyCode::Q) && !typing {
             break;
         }
         // ?, /, or F1 toggle the Almanac (in-app reference). Track an open
         // *this frame* so the same click/press doesn't immediately dismiss it.
-        // When a log overlay is open, `/` is its filter trigger instead.
+        // When a log overlay or a text editor is open, `/` is text instead.
         let mut almanac_just_opened = false;
-        if (is_key_pressed(KeyCode::F1) || is_key_pressed(KeyCode::Slash)) && !log_open {
+        if (is_key_pressed(KeyCode::F1) || is_key_pressed(KeyCode::Slash)) && !log_open && !typing {
             if almanac.is_some() {
                 almanac = None;
             } else {
@@ -339,6 +343,9 @@ async fn main() {
             } else if log_open {
                 log_open = false;
                 net.clear_logs();
+            } else if city_image_edit.is_some() {
+                // First Esc leaves the image editor; a second closes the window.
+                city_image_edit = None;
             } else if panel.is_some() {
                 panel = None;
             } else {
@@ -788,6 +795,7 @@ async fn main() {
                                 click,
                                 auto_tail && !log_open,
                                 &net,
+                                &mut city_image_edit,
                             );
                             if let Some(iv) = act.stage {
                                 planned.stage(iv);
@@ -863,6 +871,7 @@ async fn main() {
                 if close_panel {
                     panel = None;
                     log_open = false;
+                    city_image_edit = None;
                     net.clear_logs();
                 }
                 if log_open {

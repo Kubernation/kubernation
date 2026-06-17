@@ -14,8 +14,8 @@ not a wall of dashboards.
 models, on-demand log tails) is read-only. Two write paths exist, each behind
 an explicit confirm: **pod eviction** (a real `DELETE`, from a pod's evict
 control), and **committing the planning turn** (apply staged Scale/Cordon/
-Restart to the cluster). Both write paths now exist in **both** frontends (GUI
-and TUI). Both are **RBAC-aware**: eviction probes `delete pods` with a
+Restart/Image to the cluster). Both write paths now exist in **both** frontends
+(GUI and TUI). Both are **RBAC-aware**: eviction probes `delete pods` with a
 `SelfSubjectAccessReview`; the planning turn validates every staged change with
 a **server-side dry-run** (which also enforces RBAC) and only applies if all
 pass (all-or-nothing at the gate, via `actions::commit_interventions`). Staging
@@ -320,8 +320,14 @@ what makes the interesting logic unit-testable without a cluster.
   intervention, **Restart** (rolling restart — `apply_intervention` stamps the
   pod template's `kubectl.kubernetes.io/restartedAt`, for Deploy/STS/DS; staged
   by a city's "restart" toggle, can coexist with a scale), rides the same
-  commit path (verified live). Deferred: apply in the TUI planning turn (the
-  TUI has no planning turn yet); image-set intervention.
+  commit path (verified live). A fourth, **SetImage** (set a container's image —
+  `apply_intervention` uses a *strategic* merge patch so the container is merged
+  by `name`, preserving its other fields + sibling containers; for Deploy/STS/DS;
+  staged from a city's image field/editor, keyed per (workload, container)),
+  completes the verb set (Scale/Cordon/Restart/Image). `build_city` now exposes
+  `primary_container` as the default target; the strategic patch was verified
+  server-side. Both frontends have the full planning turn (see "Planning turn in
+  the TUI"). Deferred: nothing here — image-set was the last one.
 - **Stable layout:** nodes sort within a zone by FNV-1a-64(name) — pinned by
   test so layouts never reshuffle across runs or Rust upgrades. Zones sort
   by name; `unzoned` sinks to the end.
@@ -741,9 +747,9 @@ region under the cursor · `l` tail the selected pod's logs (city/node) ·
 **in the log view:** `/` filter (case-insensitive substring), `p` toggle
 the previous-container tail, `j/k`/`g`/`G`/`f` scroll/follow ·
 `e` evict the selected pod (city/node — real delete, RBAC-gated, y/n confirm) ·
-**planning turn:** `+`/`−` stage scale & `R` toggle restart (city), `C` stage
-cordon (node), `t` open the End-of-Turn review (`x` unstage · `D` discard ·
-`c`/`Enter` commit, y/n confirm) ·
+**planning turn:** `+`/`−` stage scale, `R` toggle restart & `i` set image
+(city), `C` stage cordon (node), `t` open the End-of-Turn review (`x` unstage ·
+`D` discard · `c`/`Enter` commit, y/n confirm) ·
 `Esc` back · `m` map ·
 `w` workloads · `n` next concern · `a` attention panel · `Tab` focus panel ·
 `c` context picker · `N` namespace filter (multi-select; status bar shows it) ·
@@ -810,7 +816,6 @@ never blocks input.
 
 ## Deferred (deliberately)
 
-more interventions (image set) ·
 external services / chaos layers ·
 unmounted-PVC island granaries (the *map* feature; connectivity + failed-Job
 attention are now built) · Job/CronJob

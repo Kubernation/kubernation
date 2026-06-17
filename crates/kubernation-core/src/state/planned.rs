@@ -29,6 +29,14 @@ pub enum Intervention {
     /// Rolling-restart a workload (Deployment / StatefulSet / DaemonSet) — a
     /// one-shot trigger, not a state, so it has no from→to and never no-ops.
     Restart { workload: WorkloadRef },
+    /// Set a container's image on a workload (Deployment / StatefulSet /
+    /// DaemonSet). Keyed by (workload, container) so multi-container pods can
+    /// each be set; rolls the workload like `kubectl set image`.
+    SetImage {
+        workload: WorkloadRef,
+        container: String,
+        image: String,
+    },
 }
 
 /// The staged plan: a set of interventions, at most one per target.
@@ -55,7 +63,38 @@ impl PlannedWorld {
             Intervention::Scale { workload, replicas } => self.stage_scale(workload, replicas),
             Intervention::Cordon { node, on } => self.stage_cordon(node, on),
             Intervention::Restart { workload } => self.stage_restart(workload),
+            Intervention::SetImage {
+                workload,
+                container,
+                image,
+            } => self.stage_set_image(workload, container, image),
         }
+    }
+
+    /// Stage (or replace) a container-image change for a workload, latest-wins
+    /// per (workload, container).
+    pub fn stage_set_image(&mut self, workload: WorkloadRef, container: String, image: String) {
+        self.interventions.retain(|i| {
+            !matches!(i, Intervention::SetImage { workload: w, container: c, .. }
+                if *w == workload && *c == container)
+        });
+        self.interventions.push(Intervention::SetImage {
+            workload,
+            container,
+            image,
+        });
+    }
+
+    /// The staged image for a workload's container, if any.
+    pub fn image_set(&self, workload: &WorkloadRef, container: &str) -> Option<&str> {
+        self.interventions.iter().find_map(|i| match i {
+            Intervention::SetImage {
+                workload: w,
+                container: c,
+                image,
+            } if w == workload && c == container => Some(image.as_str()),
+            _ => None,
+        })
     }
 
     /// Stage (or replace) a rolling-restart intent for a workload. A workload
@@ -172,8 +211,53 @@ pub fn plan_diff(observed: &ObservedWorld, planned: &PlannedWorld) -> Vec<PlanCh
                 to: "rolling restart".into(),
                 noop: false,
             },
+            Intervention::SetImage {
+                workload,
+                container,
+                image,
+            } => {
+                let current = current_image(observed, workload, container);
+                PlanChange {
+                    target: format!("{workload} [{container}]"),
+                    field: "image",
+                    from: current.clone().unwrap_or_else(|| "?".into()),
+                    to: image.clone(),
+                    noop: current.as_deref() == Some(image.as_str()),
+                }
+            }
         })
         .collect()
+}
+
+/// The observed image of a named container in a workload's pod template.
+fn current_image(world: &ObservedWorld, r: &WorkloadRef, container: &str) -> Option<String> {
+    let ns = r.namespace.as_str();
+    let name = r.name.as_str();
+    let from_template = |tmpl: Option<&k8s_openapi::api::core::v1::PodTemplateSpec>| {
+        tmpl.and_then(|t| t.spec.as_ref())
+            .and_then(|s| s.containers.iter().find(|c| c.name == container))
+            .and_then(|c| c.image.clone())
+    };
+    match r.kind {
+        WorkloadKind::Deployment => world.deployments.state().into_iter().find_map(|d| {
+            (d.metadata.namespace.as_deref() == Some(ns)
+                && d.metadata.name.as_deref() == Some(name))
+            .then(|| from_template(d.spec.as_ref().map(|s| &s.template)))
+            .flatten()
+        }),
+        WorkloadKind::StatefulSet => world.statefulsets.state().into_iter().find_map(|s| {
+            (s.metadata.namespace.as_deref() == Some(ns)
+                && s.metadata.name.as_deref() == Some(name))
+            .then(|| from_template(s.spec.as_ref().map(|sp| &sp.template)))
+            .flatten()
+        }),
+        WorkloadKind::DaemonSet => world.daemonsets.state().into_iter().find_map(|ds| {
+            (ds.metadata.namespace.as_deref() == Some(ns)
+                && ds.metadata.name.as_deref() == Some(name))
+            .then(|| from_template(ds.spec.as_ref().map(|sp| &sp.template)))
+            .flatten()
+        }),
+    }
 }
 
 fn cordon_word(on: bool) -> String {
@@ -247,6 +331,49 @@ mod tests {
         // Replicas floor at 0.
         p.stage_scale(wref("web"), -3);
         assert_eq!(p.scaled(&wref("web")), Some(0));
+    }
+
+    #[test]
+    fn set_image_diffs_from_current_and_is_latest_wins() {
+        let (world, mut s) = fx::world();
+        let mut d = fx::deployment("demo", "web", 1, 1);
+        d.spec
+            .as_mut()
+            .unwrap()
+            .template
+            .spec
+            .as_mut()
+            .unwrap()
+            .containers[0]
+            .image = Some("nginx:1.25".into());
+        s.deployment(d);
+
+        let mut p = PlannedWorld::default();
+        p.stage_set_image(wref("web"), "main".into(), "nginx:1.26".into());
+        assert_eq!(p.image_set(&wref("web"), "main"), Some("nginx:1.26"));
+        // Latest-wins per (workload, container).
+        p.stage_set_image(wref("web"), "main".into(), "nginx:1.27".into());
+        assert_eq!(p.len(), 1);
+        assert_eq!(p.image_set(&wref("web"), "main"), Some("nginx:1.27"));
+
+        let diff = plan_diff(&world, &p);
+        let img = diff.iter().find(|c| c.field == "image").unwrap();
+        assert_eq!(
+            (img.from.as_str(), img.to.as_str()),
+            ("nginx:1.25", "nginx:1.27")
+        );
+        assert!(!img.noop);
+        assert!(img.target.contains("[main]"), "{}", img.target);
+
+        // Staging the current image is a no-op change.
+        p.stage_set_image(wref("web"), "main".into(), "nginx:1.25".into());
+        assert!(
+            plan_diff(&world, &p)
+                .iter()
+                .find(|c| c.field == "image")
+                .unwrap()
+                .noop
+        );
     }
 
     #[test]

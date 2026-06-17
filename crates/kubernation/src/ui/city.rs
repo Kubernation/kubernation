@@ -22,6 +22,10 @@ pub struct CityView {
     pub current: Option<WorkloadRef>,
     model: Option<CityModel>,
     pods: TableState,
+    /// While `Some`, the operator is typing a new image for the primary
+    /// container (the planning-turn "set image" verb). The app routes keys to
+    /// `image_input` until Enter/Esc.
+    image_edit: Option<String>,
 }
 
 impl CityView {
@@ -29,11 +33,55 @@ impl CityView {
         self.current = Some(r);
         self.model = None; // rebuilt on next update
         self.pods.select(Some(0));
+        self.image_edit = None;
     }
 
     pub fn close(&mut self) {
         self.current = None;
         self.model = None;
+        self.image_edit = None;
+    }
+
+    /// Is the image editor capturing input (the app routes keys here)?
+    pub fn image_editing(&self) -> bool {
+        self.image_edit.is_some()
+    }
+
+    /// Feed a keystroke to the image editor. Enter stages a `SetImage` for the
+    /// primary container; Esc cancels; Backspace deletes.
+    pub fn image_input(&mut self, key: KeyEvent) -> Option<Action> {
+        match key.code {
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .contains(ratatui_crossterm::crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                if let Some(buf) = self.image_edit.as_mut() {
+                    buf.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(buf) = self.image_edit.as_mut() {
+                    buf.pop();
+                }
+            }
+            KeyCode::Esc => self.image_edit = None,
+            KeyCode::Enter => {
+                let buf = self.image_edit.take().unwrap_or_default();
+                let m = self.model.as_ref()?;
+                let container = m.primary_container.clone()?;
+                let image = buf.trim().to_string();
+                if !image.is_empty() {
+                    return Some(Action::Stage(Intervention::SetImage {
+                        workload: m.r.clone(),
+                        container,
+                        image,
+                    }));
+                }
+            }
+            _ => {}
+        }
+        None
     }
 }
 
@@ -67,6 +115,19 @@ impl Component for CityView {
             KeyCode::Char('R') => {
                 if let Some(m) = self.model.as_ref() {
                     return Some(Action::ToggleRestart(m.r.clone()));
+                }
+            }
+            // `i` opens the image editor for the primary container.
+            KeyCode::Char('i') => {
+                if let Some(m) = self.model.as_ref()
+                    && let Some(container) = m.primary_container.as_deref()
+                {
+                    let prefill = ctx
+                        .planned
+                        .image_set(&m.r, container)
+                        .unwrap_or("")
+                        .to_string();
+                    self.image_edit = Some(prefill);
                 }
             }
             KeyCode::Down | KeyCode::Char('j') if len > 0 => {
@@ -145,8 +206,14 @@ impl Component for CityView {
             return;
         };
 
-        // Header carries an extra line for the plan/hint and one for pair.
-        let head_h = if ctx.pair.is_some() { 6 } else { 5 };
+        // Header: replicas + strategy + plan/hint, plus a line for pair and a
+        // line for the image (editor or a staged value) when present.
+        let staged_image = m
+            .primary_container
+            .as_deref()
+            .and_then(|c| ctx.planned.image_set(&m.r, c));
+        let show_image_line = self.image_edit.is_some() || staged_image.is_some();
+        let head_h = 5 + u16::from(ctx.pair.is_some()) + u16::from(show_image_line);
         let [head_a, mid_a, ev_a] = Layout::vertical([
             Constraint::Length(head_h),
             Constraint::Min(6),
@@ -240,11 +307,27 @@ impl Component for CityView {
             lines.push(Line::from(spans));
         } else {
             let hint = if m.r.kind == WorkloadKind::DaemonSet {
-                "plan      R restart · t end of turn"
+                "plan      R restart · i image · t end of turn"
             } else {
-                "plan      +/− scale · R restart · t end of turn"
+                "plan      +/− scale · R restart · i image · t end of turn"
             };
             lines.push(Line::styled(hint, theme.dim()));
+        }
+        // The image line: an editor while typing, else the staged image.
+        if let Some(buf) = &self.image_edit {
+            lines.push(Line::from(vec![
+                Span::styled("image     ", theme.title()),
+                Span::raw(buf.clone()),
+                Span::styled("▏", theme.title()),
+                Span::styled("  (Enter stage · Esc cancel)", theme.dim()),
+            ]));
+        } else if let Some(img) = staged_image {
+            let warn = theme.severity(Severity::Warning);
+            lines.push(Line::from(vec![
+                Span::styled("image     ", theme.title()),
+                Span::styled(format!("→ {img}"), warn),
+                Span::styled("  (t: end of turn)", theme.dim()),
+            ]));
         }
         f.render_widget(Paragraph::new(lines).block(head_block), head_a);
 
