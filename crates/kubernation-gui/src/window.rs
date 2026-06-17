@@ -138,6 +138,35 @@ pub fn draw_window(title: &str, size: Vec2, buttons: &[&str], active: usize) -> 
     }
 }
 
+/// A per-pod evict button, revealed on row hover. RBAC-aware via `allowed`:
+/// `Some(true)` = enabled (red, destructive), `Some(false)` = disabled
+/// ("locked" — no delete permission), `None` = the permission probe is still
+/// in flight ("…"). Returns true only when clicked while enabled.
+pub fn evict_button(r: Rect, mouse: Vec2, click: bool, allowed: Option<bool>) -> bool {
+    let on = r.contains(mouse);
+    let (fill, border, tc, label) = match allowed {
+        Some(true) => (
+            if on { CRIT } else { darker(CRIT, 0.55) },
+            CRIT,
+            if on { INK } else { lighter(CRIT, 1.5) },
+            "evict",
+        ),
+        Some(false) => (darker(PLATE, 1.3), DIM, DIM, "locked"),
+        None => (darker(PLATE, 1.3), DIM, DIM, "..."),
+    };
+    draw_rectangle(r.x, r.y, r.w, r.h, fill);
+    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, border);
+    let tm = text_size(label, 12.0);
+    text(
+        label,
+        r.x + (r.w - tm.width) / 2.0,
+        r.y + r.h - 4.0,
+        12.0,
+        tc,
+    );
+    on && click && allowed == Some(true)
+}
+
 /// A little book/scroll glyph for the title bar.
 fn draw_icon(p: Vec2, s: f32) {
     draw_rectangle(p.x, p.y, s, s, PARCHMENT);

@@ -14,6 +14,7 @@
 mod almanac;
 mod city;
 mod draw;
+mod logo;
 mod net;
 mod node;
 mod panels;
@@ -103,6 +104,7 @@ fn window_conf() -> Conf {
         window_width: 1380,
         window_height: 860,
         high_dpi: true,
+        icon: logo::window_icon(),
         ..Default::default()
     }
 }
@@ -111,6 +113,7 @@ fn window_conf() -> Conf {
 async fn main() {
     let args = Args::parse();
     text::init();
+    logo::init();
     let shot = args.screenshot.clone();
     let inspect = args.inspect.clone();
     let want_warm = args.warm.is_some();
@@ -501,14 +504,16 @@ async fn main() {
         clear_background(OCEAN);
         match snap.as_ref() {
             None => {
-                text(ascii(&status), 40.0, 60.0, 30.0, PARCHMENT);
-                text(
-                    "the world is unexplored - fog of war",
-                    40.0,
-                    100.0,
-                    24.0,
-                    DIM,
-                );
+                // Splash: the full logo over the fog, status centered below.
+                let cx = screen_width() / 2.0;
+                let cy = screen_height() / 2.0;
+                logo::draw_full(vec2(cx, cy - 30.0), (screen_height() * 0.55).min(440.0));
+                let st = ascii(&status);
+                let sm = text_size(&st, 24.0);
+                text(&st, cx - sm.width / 2.0, cy + 210.0, 24.0, PARCHMENT);
+                let fog = "the world is unexplored - fog of war";
+                let fm = text_size(fog, 18.0);
+                text(fog, cx - fm.width / 2.0, cy + 238.0, 18.0, DIM);
             }
             Some(s) => {
                 let worlds = scene(s);
@@ -578,6 +583,7 @@ async fn main() {
                                 mouse,
                                 click,
                                 auto_tail && !log_open,
+                                &net,
                             );
                             if let Some(iv) = act.stage {
                                 planned.stage(iv);
@@ -606,6 +612,7 @@ async fn main() {
                                 mouse,
                                 click,
                                 auto_tail && !log_open,
+                                &net,
                             );
                             if let Some(iv) = act.stage {
                                 planned.stage(iv);
@@ -656,12 +663,13 @@ async fn main() {
             2.0,
             STONE_SHADOW,
         );
+        logo::draw_mark(vec2(17.0, panels::CHROME_H / 2.0 - 1.0), 24.0);
         text_bold(
             ascii(&format!(
                 "KUBERNATION v{} — {status}",
                 env!("CARGO_PKG_VERSION")
             )),
-            12.0,
+            34.0,
             21.0,
             20.0,
             STONE_INK,

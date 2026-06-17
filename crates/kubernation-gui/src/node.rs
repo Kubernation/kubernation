@@ -32,6 +32,7 @@ pub fn draw_node(
     mouse: Vec2,
     click: bool,
     auto_log: bool,
+    net: &crate::net::Net,
 ) -> WinAction {
     let mut act = WinAction::default();
     let tag = match (snap.warm.is_some(), id) {
@@ -176,7 +177,7 @@ pub fn draw_node(
     let max_rows = (((col_bottom - ly) / row_h) as usize).saturating_sub(1);
     for p in detail.pods.iter().take(max_rows) {
         let rect = Rect::new(left_x, ly, left_w, row_h);
-        let evict_btn = Rect::new(left_x + left_w - 48.0, ly + 1.0, 46.0, row_h - 2.0);
+        let evict_btn = Rect::new(left_x + left_w - 52.0, ly + 1.0, 50.0, row_h - 2.0);
         let row_hover = rect.contains(mouse);
         if row_hover {
             draw_rectangle(
@@ -186,19 +187,12 @@ pub fn draw_node(
                 rect.h,
                 Color::new(1.0, 1.0, 1.0, 0.06),
             );
-            if click {
-                if evict_btn.contains(mouse) {
-                    act.evict = Some((p.namespace.clone(), p.name.clone()));
-                } else {
-                    act.log = Some((p.namespace.clone(), p.name.clone()));
-                }
-            }
         }
         draw_circle(left_x + 5.0, ly + row_h / 2.0, 4.0, pod_color(p.state));
         let label = format!(
             "{}/{}",
             p.namespace,
-            truncate_str(&p.name, 30 - p.namespace.len().min(18))
+            truncate_str(&p.name, 28 - p.namespace.len().min(16))
         );
         let col = if p.state == PodState::Failing {
             CRIT
@@ -206,25 +200,14 @@ pub fn draw_node(
             INK
         };
         text(ascii(&label), left_x + 16.0, ly + 13.0, 13.0, col);
+        // Per-pod RBAC: garrison pods can span namespaces.
         if row_hover {
-            let on = evict_btn.contains(mouse);
-            draw_rectangle(
-                evict_btn.x,
-                evict_btn.y,
-                evict_btn.w,
-                evict_btn.h,
-                if on { CRIT } else { darker(CRIT, 0.55) },
-            );
-            draw_rectangle_lines(
-                evict_btn.x,
-                evict_btn.y,
-                evict_btn.w,
-                evict_btn.h,
-                1.0,
-                CRIT,
-            );
-            let tc = if on { INK } else { lighter(CRIT, 1.5) };
-            text("evict", evict_btn.x + 7.0, ly + 13.0, 12.0, tc);
+            let perm = net.evict_allowed(id, &p.namespace);
+            if crate::window::evict_button(evict_btn, mouse, click, perm) {
+                act.evict = Some((p.namespace.clone(), p.name.clone()));
+            } else if click && !evict_btn.contains(mouse) {
+                act.log = Some((p.namespace.clone(), p.name.clone()));
+            }
         }
         ly += row_h;
     }

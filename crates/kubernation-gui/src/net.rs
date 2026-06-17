@@ -9,6 +9,7 @@
 //! requested context into `switch`; the net thread drops the old hot
 //! WorldHandle (its informers abort) and spawns a fresh one.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -74,6 +75,12 @@ pub struct Net {
     evict_req: Mutex<Option<EvictReq>>,
     /// Transient result of the last eviction, shown as a toast then cleared.
     evict_status: Mutex<Option<String>>,
+    /// RBAC cache: can the user delete pods in (cluster, namespace)? Filled by
+    /// the net thread from `SelfSubjectAccessReview` probes; drives whether the
+    /// evict control is enabled.
+    evict_perm: Mutex<HashMap<(ClusterId, String), bool>>,
+    /// Namespaces awaiting a permission probe.
+    evict_perm_pending: Mutex<HashSet<(ClusterId, String)>>,
 }
 
 impl Net {
@@ -86,6 +93,8 @@ impl Net {
             log_tail: Mutex::new(LogTail::default()),
             evict_req: Mutex::new(None),
             evict_status: Mutex::new(None),
+            evict_perm: Mutex::new(HashMap::new()),
+            evict_perm_pending: Mutex::new(HashSet::new()),
         })
     }
 
@@ -97,6 +106,18 @@ impl Net {
     /// The transient result of the last eviction (a toast), if any.
     pub fn evict_status(&self) -> Option<String> {
         self.evict_status.lock().unwrap().clone()
+    }
+
+    /// May the user evict pods in (cluster, namespace)? `Some(true/false)` once
+    /// the RBAC probe has answered, `None` while it's pending — asking also
+    /// enqueues the probe, so the UI just polls this each frame.
+    pub fn evict_allowed(&self, cluster: ClusterId, namespace: &str) -> Option<bool> {
+        let key = (cluster, namespace.to_string());
+        if let Some(b) = self.evict_perm.lock().unwrap().get(&key) {
+            return Some(*b);
+        }
+        self.evict_perm_pending.lock().unwrap().insert(key);
+        None
     }
 
     /// Tail this pod's logs (re-fetched on a poll until cleared).
@@ -227,6 +248,9 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             label = make_label(&c.meta.context, c.meta.platform.label());
                             *net.status.lock().unwrap() = format!("{label} · exploring…");
                             *net.snapshot.lock().unwrap() = None;
+                            // RBAC answers were for the old cluster.
+                            net.evict_perm.lock().unwrap().clear();
+                            net.evict_perm_pending.lock().unwrap().clear();
                         }
                         Err(err) => {
                             *net.status.lock().unwrap() = format!("switch failed: {err}");
@@ -294,6 +318,25 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 {
                     *net.evict_status.lock().unwrap() = None;
                     evict_set = None;
+                }
+
+                // Answer any pending evict-permission (RBAC) probes; cache the
+                // result so the UI can enable/disable the evict control. Deny
+                // on error (the safe default).
+                let perm_todo: Vec<(ClusterId, String)> =
+                    net.evict_perm_pending.lock().unwrap().drain().collect();
+                for (cluster, ns) in perm_todo {
+                    let client = match cluster {
+                        ClusterId::Warm => {
+                            warm_client.clone().unwrap_or_else(|| hot_client.clone())
+                        }
+                        ClusterId::Hot => hot_client.clone(),
+                    };
+                    let allowed = actions::can_evict_pod(client, &ns).await.unwrap_or(false);
+                    net.evict_perm
+                        .lock()
+                        .unwrap()
+                        .insert((cluster, ns), allowed);
                 }
 
                 if !ready_hot.load(Ordering::Relaxed) || !dirty.swap(false, Ordering::Relaxed) {

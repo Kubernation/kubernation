@@ -1,5 +1,9 @@
 # Kubernation
 
+<p align="center">
+  <img src="kubernation-logo-full.png" alt="Kubernation" width="420">
+</p>
+
 **The cluster as a living world.** A terminal UI for observing Kubernetes,
 built on the interface grammar of early Sid Meier's Civilization: a 2D
 world you explore — zones are continents, nodes are provinces of terrain,
@@ -157,7 +161,10 @@ the turn.
 appears; clicking it raises a confirm, and on confirm Kubernation issues a
 real `DELETE` (a managed pod is recreated by its controller; a bare pod is
 gone). It is the only write the app performs — one small, auditable path
-(`k8s/actions.rs`) behind an explicit confirm.
+(`k8s/actions.rs`) behind an explicit confirm. It is **RBAC-aware**: the
+button is disabled (**`locked`**) unless a `SelfSubjectAccessReview` says you
+may delete pods in that namespace. The **TUI** has it too — `e` on the
+selected pod, with a y/n confirm and the same permission check.
 
 ![Evict confirm](docs/gui-evict.png)
 

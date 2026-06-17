@@ -71,6 +71,18 @@ impl Component for NodeDetailView {
                     });
                 }
             }
+            KeyCode::Char('e') => {
+                if let Some(p) = self
+                    .pods
+                    .selected()
+                    .and_then(|i| self.model.as_ref()?.pods.get(i))
+                {
+                    return Some(Action::EvictPod {
+                        namespace: p.namespace.clone(),
+                        pod: p.name.clone(),
+                    });
+                }
+            }
             _ => {}
         }
         None
@@ -243,7 +255,10 @@ impl Component for NodeDetailView {
         .block(
             Block::bordered()
                 .border_style(theme.chrome())
-                .title(format!(" PODS ({}) — Enter opens workload ", m.pods.len()))
+                .title(format!(
+                    " PODS ({}) — Enter workload · l logs · e evict ",
+                    m.pods.len()
+                ))
                 .title_style(theme.title()),
         )
         .row_highlight_style(theme.selection())

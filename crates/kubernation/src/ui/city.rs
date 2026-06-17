@@ -69,6 +69,16 @@ impl Component for CityView {
                     });
                 }
             }
+            KeyCode::Char('e') => {
+                if let Some(m) = self.model.as_ref()
+                    && let Some(pod) = self.pods.selected().and_then(|i| m.pods.get(i))
+                {
+                    return Some(Action::EvictPod {
+                        namespace: m.r.namespace.clone(),
+                        pod: pod.name.clone(),
+                    });
+                }
+            }
             _ => {}
         }
         None
@@ -215,7 +225,7 @@ impl Component for CityView {
         .block(
             Block::bordered()
                 .border_style(theme.chrome())
-                .title(format!(" PODS ({}) ", m.pods.len()))
+                .title(format!(" PODS ({}) — l logs · e evict ", m.pods.len()))
                 .title_style(theme.title()),
         )
         .row_highlight_style(theme.selection())

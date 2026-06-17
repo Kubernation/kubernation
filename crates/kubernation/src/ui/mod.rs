@@ -34,6 +34,12 @@ pub enum Action {
         namespace: String,
         pod: String,
     },
+    /// Evict (delete) a pod (namespace, pod); the app confirms + checks RBAC
+    /// before writing. Cluster is the active view's.
+    EvictPod {
+        namespace: String,
+        pod: String,
+    },
     SwitchContext(String),
     /// Cursor pushed against a map edge — in pair mode the app crosses to
     /// the other continent.

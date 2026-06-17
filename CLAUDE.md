@@ -515,8 +515,23 @@ what makes the interesting logic unit-testable without a cluster.
   the confirm on its first pod) and `--evict-go` (auto-confirm — REALLY
   deletes; verified live: `web-…-7j8fp` deleted, Deployment recreated it 2s
   later). Still **not** built: image-set / restart / scale-apply / cordon-apply
-  (the planning turn stays preview-only); RBAC-aware disabling of the button;
-  TUI eviction.
+  (the planning turn stays preview-only).
+- **Evict: RBAC gate + TUI eviction** (2026-06-17, user follow-up): both
+  frontends now check `delete pods` permission for the pod's namespace before
+  offering eviction, via `actions::can_evict_pod` (a `SelfSubjectAccessReview`
+  — a read-only probe living beside `evict_pod` in the one write file). **GUI:**
+  the net thread caches answers per (cluster, namespace) in `Net.evict_perm`
+  (filled by draining `evict_perm_pending`, cleared on context switch);
+  `Net.evict_allowed` is a poll-and-enqueue lookup the windows call per pod, so
+  the shared `window::evict_button` renders enabled (red `evict`) / `locked`
+  (no permission) / `...` (probe in flight) and only fires when allowed.
+  **TUI** (its first write — was read-only): `e` on a city CITIZENS / node
+  GARRISON pod returns `Action::EvictPod`; `apply` runs the SSAR (cached in
+  `App.evict_perm`) and either raises a red y/n confirm (`render_evict_confirm`,
+  snapshot-tested) or flashes "no permission"; `y` spawns `evict_pod` and
+  flashes the result via `AppEvent::Evicted`. RBAC verified via
+  `kubectl auth can-i delete pods` (admin → yes/enabled; unprivileged → no/
+  locked). Still deferred: scale/cordon apply, image-set/restart.
 
 ## The pair (hot/warm)
 
@@ -587,6 +602,7 @@ on 256-color terminals.
 `h/j/k/l`+arrows explore · `]`/`[` next/prev city · `PgUp/PgDn` page,
 `Ctrl+u/d` half page, `Home/End` west/east continent · `Enter` opens the
 region under the cursor · `l` tail the selected pod's logs (city/node) ·
+`e` evict the selected pod (city/node — real delete, RBAC-gated, y/n confirm) ·
 `Esc` back · `m` map ·
 `w` workloads · `n` next concern · `a` attention panel · `Tab` focus panel ·
 `c` context picker · `1/2/3` overlays (pressure/replicas/namespace) ·
@@ -655,8 +671,8 @@ never blocks input.
 applying staged interventions to the cluster (the planning-turn staging +
 diff UI is built, preview-only; apply needs dry-run + confirm + RBAC —
 note pod **eviction** now writes directly, outside the planning turn, behind
-its own confirm) · more interventions (image set, restart, scale-apply,
-cordon-apply) · RBAC-aware disabling of the evict control · TUI eviction ·
+its own confirm; eviction is RBAC-gated and in both frontends) · more
+interventions (image set, restart, scale-apply, cordon-apply) ·
 planning turn in the TUI · external services / chaos layers ·
 connectivity attention (orphan ingress / harbor with no city) + unmounted-PVC
 island granaries + Job-object attention (failed-Job concern) · Job/CronJob

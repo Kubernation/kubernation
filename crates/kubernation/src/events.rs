@@ -18,6 +18,9 @@ pub enum AppEvent {
         generation: u64,
         result: Result<String, String>,
     },
+    /// A pod eviction finished; the payload is the line to flash (Ok = a
+    /// success message, Err = the failure).
+    Evicted { result: Result<String, String> },
 }
 
 /// Terminal input arrives on a dedicated OS thread feeding the async loop.

@@ -9,6 +9,20 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **RBAC-aware evict control.** Before offering eviction, both frontends probe
+  `delete pods` permission for the pod's namespace via a `SelfSubjectAccessReview`
+  (`k8s::actions::can_evict_pod`). In the GUI the per-pod button renders enabled
+  (red `evict`), **`locked`** (no permission), or `...` (probe in flight); the
+  net thread caches answers per (cluster, namespace) and clears them on context
+  switch. In the TUI the check runs on press and refuses with a clear message.
+- **TUI eviction.** `e` on the selected pod in the city (citizens) or node
+  (garrison) screen raises a red y/n confirm; `y` issues the same real `DELETE`
+  as the GUI (`k8s::actions::evict_pod`), reported via a status flash. The TUI
+  was previously read-only; this is its first write, gated by the RBAC check
+  and the confirm. Keymap/help updated.
+- **Bundled logos.** The compass **mark** is the OS window icon and the
+  top-bar emblem; the full **KuberNation** scene is the splash on the
+  fog-of-war screen. Downsized copies are compiled in (`assets/logo/`).
 - **Pod eviction — the project's first cluster write.** Hover a pod in a
   city's *citizens* list or a node's *garrison* list and a red **`evict`**
   button appears; it raises a confirm modal, and on confirm the GUI issues a

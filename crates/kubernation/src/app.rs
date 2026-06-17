@@ -1,9 +1,13 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use color_eyre::Result;
 use ratatui::DefaultTerminal;
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui_crossterm::crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
@@ -20,10 +24,12 @@ use crate::ui::map::MapView;
 use crate::ui::node_detail::NodeDetailView;
 use crate::ui::theme::Theme;
 use crate::ui::workloads::WorkloadListView;
-use crate::ui::{Action, Component, Edge, OverlayMode, RenderCtx, help, sidebar, status_bar};
+use crate::ui::{
+    Action, Component, Edge, OverlayMode, RenderCtx, centered, help, sidebar, status_bar,
+};
 use kubernation_core::k8s::client::Cluster;
-use kubernation_core::k8s::{client, logs, watch, watch::WorldHandle};
-use kubernation_core::state::attention::Concern;
+use kubernation_core::k8s::{actions, client, logs, watch, watch::WorldHandle};
+use kubernation_core::state::attention::{Concern, Severity};
 use kubernation_core::state::model::Models;
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::planned::PlannedWorld;
@@ -112,6 +118,11 @@ pub struct App {
     dirty: bool,
     quit: bool,
     flash: Option<String>,
+    /// Pod awaiting evict confirmation (cluster, namespace, pod) — the TUI's
+    /// only write, gated behind a y/n prompt.
+    pending_evict: Option<(ClusterId, String, String)>,
+    /// RBAC cache: may the user delete pods in (cluster, namespace)?
+    evict_perm: HashMap<(ClusterId, String), bool>,
 }
 
 impl App {
@@ -167,6 +178,8 @@ impl App {
             dirty: false,
             quit: false,
             flash: None,
+            pending_evict: None,
+            evict_perm: HashMap::new(),
         }
     }
 
@@ -231,6 +244,13 @@ impl App {
                 true
             }
             AppEvent::Logs { .. } => false,
+            AppEvent::Evicted { result } => {
+                self.flash = Some(match result {
+                    Ok(msg) => msg,
+                    Err(e) => format!("evict failed: {e}"),
+                });
+                true
+            }
             AppEvent::Term(TermEvent::Key(key)) if key.kind != KeyEventKind::Release => {
                 self.on_key(key).await;
                 true
@@ -332,6 +352,20 @@ impl App {
     async fn on_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.quit = true;
+            return;
+        }
+        // The evict confirm swallows input: y/Enter writes, n/Esc/q backs out.
+        if let Some((cluster, ns, pod)) = self.pending_evict.clone() {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    self.pending_evict = None;
+                    self.spawn_evict(cluster, ns, pod);
+                }
+                KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {
+                    self.pending_evict = None;
+                }
+                _ => {}
+            }
             return;
         }
         if self.help_open {
@@ -495,6 +529,41 @@ impl App {
                 self.push_screen(Screen::Logs);
                 self.fetch_logs();
             }
+            Action::EvictPod { namespace, pod } => {
+                // RBAC gate (cached per namespace): only raise the confirm if
+                // the user may delete pods there; otherwise say why.
+                let key = (source, namespace.clone());
+                let cached = self.evict_perm.get(&key).copied();
+                let allowed = if let Some(b) = cached {
+                    Some(b)
+                } else {
+                    let client = match source {
+                        ClusterId::Warm => self
+                            .warm_cluster
+                            .as_ref()
+                            .map(|c| c.client.clone())
+                            .unwrap_or_else(|| self.hot_cluster.client.clone()),
+                        ClusterId::Hot => self.hot_cluster.client.clone(),
+                    };
+                    match actions::can_evict_pod(client, &namespace).await {
+                        Ok(b) => {
+                            self.evict_perm.insert(key, b);
+                            Some(b)
+                        }
+                        Err(e) => {
+                            self.flash = Some(format!("permission check failed: {e}"));
+                            None
+                        }
+                    }
+                };
+                match allowed {
+                    Some(true) => self.pending_evict = Some((source, namespace, pod)),
+                    Some(false) => {
+                        self.flash = Some(format!("no permission to evict pods in {namespace}"))
+                    }
+                    None => {}
+                }
+            }
             Action::SwitchContext(name) => self.switch_context(name).await,
             Action::EdgeReached(edge) => {
                 if self.warm.is_some() {
@@ -534,6 +603,8 @@ impl App {
                 self.dirty = true;
                 self.models_hot = Models::default();
                 self.pair = None;
+                self.evict_perm.clear(); // answers were for the old cluster
+                self.pending_evict = None;
                 self.go_home(Screen::Map);
                 self.focus = ClusterId::Hot;
                 self.attention_panel.cycle = None;
@@ -544,6 +615,27 @@ impl App {
                 self.flash = Some(format!("switch failed: {err}"));
             }
         }
+    }
+
+    /// Run the confirmed pod eviction (the TUI's only write) off the loop,
+    /// reporting the outcome back as an `Evicted` event for the flash.
+    fn spawn_evict(&mut self, cluster: ClusterId, namespace: String, pod: String) {
+        let client = match cluster {
+            ClusterId::Warm => self
+                .warm_cluster
+                .as_ref()
+                .map(|c| c.client.clone())
+                .unwrap_or_else(|| self.hot_cluster.client.clone()),
+            ClusterId::Hot => self.hot_cluster.client.clone(),
+        };
+        self.flash = Some(format!("evicting {namespace}/{pod} …"));
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = actions::evict_pod(client, &namespace, &pod)
+                .await
+                .map(|()| format!("evicted {namespace}/{pod}"));
+            let _ = tx.send(AppEvent::Evicted { result }).await;
+        });
     }
 
     /// Kick off an async tail of the currently-open log target. Tagged with
@@ -683,9 +775,34 @@ impl App {
             if self.picker.open {
                 self.picker.render(f, &self.theme);
             }
+            if let Some((_, ns, pod)) = self.pending_evict.clone() {
+                render_evict_confirm(f, &self.theme, &ns, &pod);
+            }
         })?;
         Ok(())
     }
+}
+
+/// The TUI evict confirm — a small centered red-framed prompt; the only write
+/// gate in the terminal client (y writes, n cancels).
+fn render_evict_confirm(f: &mut Frame, theme: &Theme, ns: &str, pod: &str) {
+    let crit = theme.severity(Severity::Critical);
+    let lines = vec![
+        Line::raw(""),
+        Line::from(format!("  {ns}/{pod}")),
+        Line::raw(""),
+        Line::raw("  Deletes the pod from the cluster now."),
+        Line::raw("  A managed pod is recreated; a bare pod is gone."),
+        Line::raw(""),
+        Line::styled("  [y] evict     [n] cancel", crit),
+    ];
+    let area = centered(f.area(), 60, lines.len() as u16 + 2);
+    f.render_widget(Clear, area);
+    let block = Block::bordered()
+        .border_style(crit)
+        .title(" Evict pod? ")
+        .title_style(crit);
+    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// A node's providerID is a stronger platform signal than kubeconfig
@@ -731,5 +848,34 @@ fn divider(f: &mut ratatui::Frame, area: Rect, theme: &Theme) {
     let buf = f.buffer_mut();
     for y in area.top()..area.bottom() {
         buf.set_string(area.x, y, "║", theme.dim());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_evict_confirm;
+    use crate::config::ColorMode;
+    use crate::ui::theme::Theme;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    /// The evict confirm overlay shows the pod and the y/n prompt.
+    #[test]
+    fn evict_confirm_renders() {
+        let theme = Theme::new(ColorMode::Auto);
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| render_evict_confirm(f, &theme, "demo", "web-7d4b-2"))
+            .unwrap();
+        let buf = term.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        assert!(text.contains("Evict pod?"), "title missing:\n{text}");
+        assert!(text.contains("demo/web-7d4b-2"), "pod missing:\n{text}");
+        assert!(text.contains("[y] evict"), "prompt missing:\n{text}");
     }
 }
