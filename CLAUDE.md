@@ -313,7 +313,7 @@ what makes the interesting logic unit-testable without a cluster.
   snapshots, terrain-colored provinces, city circles sized by population
   with 4X-style name plates, namespace islands, pan/wheel-zoom camera,
   click-to-inspect ORDERS, attention strip, `--screenshot` for headless
-  verification (docs/gui-spike.png). SPIKE quality: no tests, flat colors,
+  verification. SPIKE quality: no tests, flat colors,
   ASCII-only text (macroquad default font has no exotic glyphs — `ascii()`
   sanitizer). Next steps if promoted: Kenney CC0 tile sprites, hover
   tooltips, city/node detail panels, pair view.
@@ -433,6 +433,16 @@ what makes the interesting logic unit-testable without a cluster.
   the Freeciv tileset credit stays. Verification: the codename and
   old-nickname greps come back empty; the bare-word and franchise-name greps
   return only the deliberate disclaimer (plus the single homage).
+- **Headless map-shot framing** (2026-06-16): regenerating `docs/gui-*.png`
+  after the rename needed map views (coast harbors, storage granary, batch
+  island) framed without opening a panel — but `--inspect` opens one and the
+  default camera only fits the whole world. Added GUI dev flags `--center
+  <name>` (matches a city → node → island, centers there at `--zoom`, no
+  panel) and `--pan-dx <cells>` (shift the framed point east/west — e.g. +7
+  to reach a city's offshore harbors), alongside the existing
+  `--inspect`/`--almanac`/`--plan` verification flags. Capture is the
+  established `--screenshot` path. The four unreferenced/historical shots
+  (spike, metrics, labels, world-scale) were dropped rather than reshot.
 
 ## The pair (hot/warm)
 

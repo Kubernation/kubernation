@@ -12,6 +12,11 @@ _Nothing yet._
 
 ## [0.3.0] — 2026-06-16
 
+### Added
+- GUI dev flags `--center <name>` (frame the camera on a city / node / island
+  without opening a panel) and `--pan-dx <cells>`, so map screenshots (coast,
+  storage, island marks) can be captured deterministically headlessly.
+
 ### Changed
 - Completed the **Kubernation** rename: the codename is gone from every
   identifier — crate names (`kubernation-core` / `kubernation` /
@@ -21,6 +26,13 @@ _Nothing yet._
   default palette were renamed to generic terms (4X / `atlas`); a single
   nominative attribution homage is kept, and a trademark disclaimer was added
   to the README and `--help`.
+- Regenerated all GUI screenshots in `docs/` so the window chrome reads
+  **Kubernation** (they predated the rebrand and still showed the codename).
+
+### Removed
+- Four stale/unreferenced screenshots (`gui-spike`, `gui-metrics`,
+  `gui-labels`, `gui-world-scale`); the spike shot was historical and no
+  longer linked.
 
 ## [0.2.0] — 2026-06-16
 

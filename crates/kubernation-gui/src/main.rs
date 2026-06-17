@@ -81,6 +81,15 @@ struct Args {
     /// (development verification)
     #[arg(long)]
     plan: bool,
+    /// Center the camera on a named city / node / island at --zoom (default
+    /// 1.4) without opening a panel, so coast & island marks render
+    /// (development verification of map shots)
+    #[arg(long)]
+    center: Option<String>,
+    /// With --center, shift the framed point east (+) / west (−) by N cells —
+    /// e.g. to frame a city's offshore harbors (development verification)
+    #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+    pan_dx: i32,
 }
 
 fn window_conf() -> Conf {
@@ -296,7 +305,37 @@ async fn main() {
             // clears the snapshot). Skipped when --inspect will fly us in.
             if !had_snap && inspect.is_none() {
                 cam.fit(bounds);
-                if let Some(z) = args.zoom {
+                if let Some(needle) = &args.center {
+                    // Headless map framing: zoom in and center on a named
+                    // city / node / island so coast & island marks render
+                    // (no panel, unlike --inspect).
+                    cam.zoom = args.zoom.unwrap_or(1.4).clamp(0.3, 3.0);
+                    let cell = worlds.iter().find_map(|sw| {
+                        sw.world
+                            .cities()
+                            .find(|c| c.r.name.contains(needle.as_str()))
+                            .map(|c| (c.x + sw.off, c.y))
+                            .or_else(|| {
+                                sw.world.continents.iter().find_map(|cont| {
+                                    cont.provinces
+                                        .iter()
+                                        .find(|p| p.tile.name.contains(needle.as_str()))
+                                        .map(|p| (p.x + sw.off + 2, p.y + 1))
+                                })
+                            })
+                            .or_else(|| {
+                                sw.world
+                                    .islands
+                                    .iter()
+                                    .find(|isl| isl.label.contains(needle.as_str()))
+                                    .map(|isl| (isl.x + sw.off + isl.w / 2, isl.y + isl.h / 2))
+                            })
+                    });
+                    if let Some((cx, cy)) = cell {
+                        let cx = (cx as i32 + args.pan_dx).max(0) as u16;
+                        cam.jump_to((cx, cy));
+                    }
+                } else if let Some(z) = args.zoom {
                     cam.zoom = z.clamp(0.3, 3.0);
                     let (cw, ch) = cam.cell_px();
                     cam.pos = vec2(
