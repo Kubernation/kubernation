@@ -205,7 +205,14 @@ pub fn draw_city(
             },
         );
         let shown = if let Some(buf) = image_edit.as_deref() {
-            format!("{buf}_")
+            // Window to the tail so the cursor stays visible for long images.
+            let n = buf.chars().count();
+            let tail: String = if n > 46 {
+                buf.chars().skip(n - 46).collect()
+            } else {
+                buf.to_string()
+            };
+            format!("{tail}_")
         } else if let Some(img) = staged_img {
             format!("-> {img}")
         } else if container.is_some() {
@@ -249,6 +256,9 @@ pub fn draw_city(
                 *image_edit = None;
             }
         } else if click && field.contains(mouse) && container.is_some() {
+            // Flush stray nav chars (macroquad's char queue isn't cleared per
+            // frame) so the editor opens empty, mirroring the log filter.
+            while get_char_pressed().is_some() {}
             *image_edit = Some(staged_img.unwrap_or("").to_string());
         }
         y += 24.0;
@@ -387,7 +397,9 @@ pub fn draw_city(
         };
         text(ascii(&label), left_x + 16.0, ly + 13.0, 13.0, col);
         // Evict affordance: revealed on row hover, disabled without RBAC.
-        if row_hover {
+        // Suppressed while the image editor is open so a stray pod click can't
+        // open logs on top of (and orphan) the editor.
+        if row_hover && image_edit.is_none() {
             if crate::window::evict_button(evict_btn, mouse, click, evict_perm) {
                 act.evict = Some((r.namespace.clone(), p.name.clone()));
             } else if click && !evict_btn.contains(mouse) {

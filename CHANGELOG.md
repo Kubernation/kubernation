@@ -9,6 +9,12 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **GUI image editor input hygiene** (adversarial-review follow-up). Opening
+  the city window's image field now flushes macroquad's stray char queue (so
+  nav keys pressed before opening don't pre-fill the buffer — matching the log
+  filter), the editing cursor stays visible for long image strings (the field
+  windows to the tail), and clicking a pod row while editing no longer opens
+  the log overlay on top of the still-open editor.
 - **Namespace filter now scopes pair-drift too** (adversarial-review follow-up).
   `PairSync::build` takes the `NamespaceFilter`, so the hot/warm "pair drift: N
   workloads differ" concern counts only in-scope namespaces instead of leaking
