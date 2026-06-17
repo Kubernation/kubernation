@@ -592,9 +592,12 @@ what makes the interesting logic unit-testable without a cluster.
   (round-trip-tested, like the main `cell_at`). Land is drawn as one iso
   parallelogram per province (health-tinted, 2 triangles), islands likewise; the
   per-row coast carving is dropped (a minimap is an overview). The viewport
-  indicator became a **sheared parallelogram**: the 4 screen corners are
-  inverse-projected to continuous world coords, clamped to `[0,bounds]`, and
-  re-projected through `pt` — so it tracks the iso view instead of an AABB box.
+  indicator is an **axis-aligned rectangle** bounding the visible region: the 4
+  screen corners are inverse-projected to continuous world coords, clamped to
+  `[0,bounds]`, projected through `pt`, and their bounding box drawn. (A true
+  sheared parallelogram was tried first but degenerated into a confusing
+  triangle when the view clipped a world edge — user's call, a rectangle reads
+  as "the part of the map on screen".)
   The **zoom LOD** half (World/Regional/Local `Scale` tiers, `lod(zoom)`) was
   already built (see "GUI cartographic scale tiers"). Verified live at two
   zooms. The TUI minimap stays its own compact node-cell chart.

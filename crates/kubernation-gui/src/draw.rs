@@ -1516,8 +1516,10 @@ pub fn draw_minimap(worlds: &[SceneWorld], cam: &Camera, ml: &MinimapLayout) {
     }
 
     // Viewport indicator: inverse-project the four screen corners to continuous
-    // world coords, clamp to the world, and re-project onto the minimap — a
-    // sheared parallelogram that matches the iso view (not an AABB box).
+    // world coords (clamped to the world), project them onto the minimap, and
+    // draw their bounding box. An axis-aligned rectangle reads cleanly as "the
+    // part of the map on screen"; a true (sheared) parallelogram degenerated
+    // into a confusing triangle when the view clipped a world edge.
     let (hw, hh) = cam.cell_px();
     let (cw, ch) = (ml.bounds.0 as f32, ml.bounds.1 as f32);
     let corner = |sx: f32, sy: f32| {
@@ -1534,10 +1536,27 @@ pub fn draw_minimap(worlds: &[SceneWorld], cam: &Camera, ml: &MinimapLayout) {
         corner(screen_width(), screen_height()),
         corner(0.0, screen_height()),
     ];
-    for i in 0..4 {
-        let (p, q) = (pts[i], pts[(i + 1) % 4]);
-        draw_line(p.x, p.y, q.x, q.y, 1.5, INK);
-    }
+    let x0 = pts
+        .iter()
+        .map(|p| p.x)
+        .fold(f32::MAX, f32::min)
+        .max(ml.inner.x);
+    let y0 = pts
+        .iter()
+        .map(|p| p.y)
+        .fold(f32::MAX, f32::min)
+        .max(ml.inner.y);
+    let x1 = pts
+        .iter()
+        .map(|p| p.x)
+        .fold(f32::MIN, f32::max)
+        .min(ml.inner.x + ml.inner.w);
+    let y1 = pts
+        .iter()
+        .map(|p| p.y)
+        .fold(f32::MIN, f32::max)
+        .min(ml.inner.y + ml.inner.h);
+    draw_rectangle_lines(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0), 1.5, INK);
 }
 
 #[cfg(test)]
