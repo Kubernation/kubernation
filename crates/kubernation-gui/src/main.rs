@@ -33,6 +33,7 @@ use draw::{
 };
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::Target;
+use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::world::Region;
 use macroquad::prelude::*;
 use net::{EvictReq, LogReq};
@@ -114,6 +115,10 @@ struct Args {
     /// (development verification of the grep/filter)
     #[arg(long, value_name = "SUBSTR")]
     log_filter: Option<String>,
+    /// Launch scoped to a single namespace (the namespace filter; you can
+    /// still change it from the chrome button). Also used for verification.
+    #[arg(long, value_name = "NS")]
+    namespace: Option<String>,
 }
 
 fn window_conf() -> Conf {
@@ -145,6 +150,9 @@ async fn main() {
         },
         net.clone(),
     );
+    if let Some(ns) = &args.namespace {
+        net.set_namespace_filter(NamespaceFilter::only(ns.clone()));
+    }
 
     let mut cam = Camera::new();
     let mut selected: Option<(u16, u16)> = None;
@@ -157,6 +165,9 @@ async fn main() {
     let mut drag_anchor: Option<Vec2> = None;
     let mut picker = false;
     let mut picker_idx = 0usize;
+    // Namespace-filter picker (single-select: "all" or one namespace).
+    let mut ns_picker = false;
+    let mut ns_picker_idx = 0usize;
     // Log tailing: the open overlay + a headless auto-open after --inspect.
     let mut log_open = false;
     // Log overlay state: --previous container toggle + substring filter editor.
@@ -262,6 +273,13 @@ async fn main() {
             .as_ref()
             .map(|s| s.hot.observed.meta.context.clone())
             .unwrap_or_default();
+        // Namespace list for the filter picker: a synthetic "all namespaces"
+        // row, then every namespace the hot world holds.
+        let ns_filter_now = net.namespace_filter();
+        let mut ns_items: Vec<String> = vec!["all namespaces".to_string()];
+        if let Some(s) = snap.as_ref() {
+            ns_items.extend(s.hot.observed.namespaces());
+        }
         // Every drill-down (city or node) is a centered modal window: it
         // suspends map nav like the picker.
         let panel_modal = panel.is_some();
@@ -311,6 +329,8 @@ async fn main() {
                 almanac = None;
             } else if plan_open {
                 plan_open = false;
+            } else if ns_picker {
+                ns_picker = false;
             } else if picker {
                 picker = false;
             } else if log_open && log_filter_active {
@@ -380,6 +400,27 @@ async fn main() {
                 }
             }
         }
+        // The namespace-filter picker: row 0 = all namespaces, else focus one.
+        if ns_picker {
+            let n = ns_items.len();
+            if n > 0 {
+                if is_key_pressed(KeyCode::J) || is_key_pressed(KeyCode::Down) {
+                    ns_picker_idx = (ns_picker_idx + 1) % n;
+                }
+                if is_key_pressed(KeyCode::K) || is_key_pressed(KeyCode::Up) {
+                    ns_picker_idx = (ns_picker_idx + n - 1) % n;
+                }
+                if is_key_pressed(KeyCode::Enter) && ns_picker_idx < n {
+                    let f = if ns_picker_idx == 0 {
+                        NamespaceFilter::All
+                    } else {
+                        NamespaceFilter::only(ns_items[ns_picker_idx].clone())
+                    };
+                    net.set_namespace_filter(f);
+                    ns_picker = false;
+                }
+            }
+        }
 
         // The Almanac swallows the wheel (scroll its content, not zoom) and
         // takes 1-4 / ←→ to switch pages.
@@ -407,7 +448,7 @@ async fn main() {
         }
 
         let mut manual_pan = false;
-        if !picker && almanac.is_none() && !panel_modal && !plan_open {
+        if !picker && !ns_picker && almanac.is_none() && !panel_modal && !plan_open {
             let pan = 14.0;
             if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) {
                 cam.pos.x -= pan;
@@ -513,7 +554,7 @@ async fn main() {
                     plan_open = true;
                 }
             }
-            if picker || almanac.is_some() || panel_modal || plan_open {
+            if picker || ns_picker || almanac.is_some() || panel_modal || plan_open {
                 // A modal is open: world navigation is suspended this frame.
             } else {
                 if is_key_pressed(KeyCode::F) {
@@ -898,6 +939,54 @@ async fn main() {
             }
             chrome_right = tb.x - 10.0;
         }
+        // Namespace-filter button — always shown so the scope is discoverable;
+        // highlighted when a filter is active. Click opens the picker.
+        {
+            let label = panels::truncate_str(&ns_filter_now.label(), 22);
+            let tw = text_size(&label, 13.0).width;
+            let nb = Rect::new(chrome_right - tw - 14.0, 5.0, tw + 12.0, 22.0);
+            let active = ns_filter_now.is_active();
+            let bg = if nb.contains(mouse) {
+                lighter(STONE_DARK, 1.4)
+            } else {
+                STONE_DARK
+            };
+            draw_rectangle(nb.x, nb.y, nb.w, nb.h, bg);
+            draw_rectangle_lines(
+                nb.x,
+                nb.y,
+                nb.w,
+                nb.h,
+                1.0,
+                if active { PARCHMENT } else { STONE_EDGE },
+            );
+            text(
+                ascii(&label),
+                nb.x + 6.0,
+                21.0,
+                13.0,
+                if active { PARCHMENT } else { STONE_INK },
+            );
+            if is_mouse_button_pressed(MouseButton::Left)
+                && nb.contains(mouse)
+                && panel.is_none()
+                && almanac.is_none()
+                && !picker
+                && !plan_open
+                && !ns_picker
+            {
+                ns_picker = true;
+                ns_picker_idx = match &ns_filter_now {
+                    NamespaceFilter::Only(s) => s
+                        .iter()
+                        .next()
+                        .and_then(|ns| ns_items.iter().position(|i| i == ns))
+                        .unwrap_or(0),
+                    _ => 0,
+                };
+            }
+            chrome_right = nb.x - 10.0;
+        }
         let help = "drag/WASD pan . wheel zoom . F fit . click inspect . ]/[ cities . N concern . C context . t end-turn . ? almanac";
         let hm = text_size(help, 14.0);
         text(help, chrome_right - hm.width, 21.0, 14.0, STONE_INK_DIM);
@@ -913,6 +1002,32 @@ async fn main() {
                         selected = None;
                         panel = None;
                         concern_idx = 0;
+                    }
+                }
+            }
+        }
+        // Namespace-filter picker. The "current" marker is the focused
+        // namespace (or "all namespaces" when unfiltered).
+        if ns_picker {
+            let current = match &ns_filter_now {
+                NamespaceFilter::Only(s) => s
+                    .iter()
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| ns_items[0].clone()),
+                NamespaceFilter::All => ns_items[0].clone(),
+            };
+            let layout = panels::draw_picker(&ns_items, &current, ns_picker_idx);
+            if is_mouse_button_pressed(MouseButton::Left) {
+                for (i, r) in layout.rows.iter().enumerate() {
+                    if r.contains(mouse) && i < ns_items.len() {
+                        let f = if i == 0 {
+                            NamespaceFilter::All
+                        } else {
+                            NamespaceFilter::only(ns_items[i].clone())
+                        };
+                        net.set_namespace_filter(f);
+                        ns_picker = false;
                     }
                 }
             }

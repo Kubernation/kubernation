@@ -9,6 +9,18 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Namespace filtering.** Scope the whole world — cities, the workload list,
+  attention, island structures, coast/storage marks — to one or more
+  namespaces, while terrain (nodes are cluster-scoped) and node pressure stay
+  physical. Applied purely in the derived layer (`Models::build_filtered`); the
+  reflectors still watch everything. **TUI:** `N` opens a multi-select picker
+  (Space toggles, Enter applies); the active scope shows in the status bar.
+  **GUI:** a chrome button (always shown, highlighted when active) opens a
+  picker; `--namespace <ns>` launches scoped. Cluster-scoped node concerns are
+  always kept; the filter resets on a context switch (namespaces differ).
+  Verified live: filtering to `kubernation-demo` drops the control-plane's
+  kube-system cities (coredns, local-path-provisioner) while the node terrain +
+  9-pod census remain.
 - **Log `--previous` + grep/filter.** The log tail gains two controls in both
   frontends: **`p`** toggles tailing the *previously terminated* container
   (`kubectl logs --previous` — the crash-loop's last words), with the tail

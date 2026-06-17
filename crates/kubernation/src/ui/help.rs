@@ -45,6 +45,7 @@ const KEYMAP: &[(&str, &[(&str, &str)])] = &[
             ("m", "main map"),
             ("w", "workload list"),
             ("c", "switch kube context (hot)"),
+            ("N", "namespace filter (Space toggle · Enter apply)"),
             ("h / l past the edge", "cross to the other continent (pair)"),
         ],
     ),

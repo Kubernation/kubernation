@@ -368,21 +368,28 @@ pub fn build_world(
     // --- Site each city: the province hosting the plurality of its pods.
     // Ties break on stable hash, so the city only migrates when its pods
     // genuinely move. DaemonSets become per-province infrastructure.
+    // The (possibly namespace-filtered) workload list is the source of truth
+    // for which cities/roads exist — terrain pod census is physical (all
+    // namespaces), so siting must be gated on a workload actually being listed,
+    // else a filtered-out workload still gets a 0-pop city sited from the map.
+    let row_of: HashMap<&WorkloadRef, &WorkloadRow> = workloads.iter().map(|w| (&w.r, w)).collect();
     let mut pods_by_workload_node: HashMap<&WorkloadRef, BTreeMap<&str, usize>> = HashMap::new();
     let mut infra: HashMap<&str, std::collections::BTreeSet<&str>> = HashMap::new();
     for zone in &map.zones {
         for tile in &zone.nodes {
             for pod in &tile.pods {
-                if let Some(owner) = &pod.owner {
-                    if owner.kind == WorkloadKind::DaemonSet {
-                        infra.entry(&tile.name).or_default().insert(&owner.name);
-                    } else {
-                        *pods_by_workload_node
-                            .entry(owner)
-                            .or_default()
-                            .entry(&tile.name)
-                            .or_default() += 1;
-                    }
+                let Some(owner) = &pod.owner else { continue };
+                if !row_of.contains_key(owner) {
+                    continue; // not in the (filtered) workload list
+                }
+                if owner.kind == WorkloadKind::DaemonSet {
+                    infra.entry(&tile.name).or_default().insert(&owner.name);
+                } else {
+                    *pods_by_workload_node
+                        .entry(owner)
+                        .or_default()
+                        .entry(&tile.name)
+                        .or_default() += 1;
                 }
             }
         }
@@ -397,7 +404,6 @@ pub fn build_world(
             city_home.insert(r, h);
         }
     }
-    let row_of: HashMap<&WorkloadRef, &WorkloadRow> = workloads.iter().map(|w| (&w.r, w)).collect();
 
     // --- Continents and provinces -------------------------------------
     let mut continents = Vec::new();

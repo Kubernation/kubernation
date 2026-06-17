@@ -4,6 +4,7 @@ pub mod context_picker;
 pub mod help;
 pub mod logs;
 pub mod map;
+pub mod namespace_picker;
 pub mod node_detail;
 pub mod plan;
 pub mod sidebar;
@@ -18,6 +19,7 @@ use ratatui_crossterm::crossterm::event::KeyEvent;
 
 use crate::events::ClusterId;
 use kubernation_core::state::attention::Concern;
+use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::model::{Models, WorkloadRef};
 use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::pair::PairSync;
@@ -45,6 +47,8 @@ pub enum Action {
     /// Re-fetch the open log tail now (e.g. the `--previous` toggle flipped).
     RefetchLogs,
     SwitchContext(String),
+    /// Scope the whole world to these namespaces (the namespace-filter picker).
+    SetNamespaceFilter(NamespaceFilter),
     /// Stage a planning-turn intervention (scale / cordon). Preview-only until
     /// committed from the End-of-Turn review.
     Stage(Intervention),

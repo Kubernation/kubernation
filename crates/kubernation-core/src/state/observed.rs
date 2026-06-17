@@ -48,6 +48,49 @@ pub struct CustomWatch {
 }
 
 impl ObservedWorld {
+    /// Every namespace that holds an observed object the map can show —
+    /// workloads, pods, batch, storage, connectivity, and projected customs.
+    /// Sorted; feeds the namespace-filter picker.
+    pub fn namespaces(&self) -> std::collections::BTreeSet<String> {
+        let mut out = std::collections::BTreeSet::new();
+        let mut add = |ns: Option<String>| {
+            if let Some(ns) = ns {
+                out.insert(ns);
+            }
+        };
+        for d in self.deployments.state() {
+            add(d.metadata.namespace.clone());
+        }
+        for s in self.statefulsets.state() {
+            add(s.metadata.namespace.clone());
+        }
+        for ds in self.daemonsets.state() {
+            add(ds.metadata.namespace.clone());
+        }
+        for j in self.jobs.state() {
+            add(j.metadata.namespace.clone());
+        }
+        for cj in self.cronjobs.state() {
+            add(cj.metadata.namespace.clone());
+        }
+        for p in self.pods.state() {
+            add(p.metadata.namespace.clone());
+        }
+        for pvc in self.pvcs.state() {
+            add(pvc.metadata.namespace.clone());
+        }
+        for svc in self.services.state() {
+            add(svc.metadata.namespace.clone());
+        }
+        for ing in self.ingresses.state() {
+            add(ing.metadata.namespace.clone());
+        }
+        for c in self.custom_entries() {
+            add(c.namespace);
+        }
+        out
+    }
+
     /// Flatten projected custom-resource instances for the world model.
     pub fn custom_entries(&self) -> Vec<crate::state::world::CustomEntry> {
         let mut out = Vec::new();

@@ -2,6 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use super::RenderCtx;
+use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::util::truncate;
 
 fn counts(ctx: &RenderCtx) -> String {
@@ -23,6 +24,7 @@ pub fn render(
     hot: &RenderCtx,
     warm: Option<&RenderCtx>,
     flash: Option<&str>,
+    ns_filter: &NamespaceFilter,
 ) {
     if area.height == 0 {
         return;
@@ -60,7 +62,17 @@ pub fn render(
     } else {
         "req"
     };
-    let right = format!("gauges {gauges} ▏overlay {} ▏? help ", hot.overlay.label());
+    // A namespace filter is load-bearing context (it's why workloads are
+    // missing), so surface it prominently when active.
+    let ns = if ns_filter.is_active() {
+        format!("{} ▏", ns_filter.label())
+    } else {
+        String::new()
+    };
+    let right = format!(
+        "{ns}gauges {gauges} ▏overlay {} ▏? help ",
+        hot.overlay.label()
+    );
 
     buf.set_stringn(area.x, area.y, &left, area.width as usize, style);
     let rw = right.chars().count() as u16;

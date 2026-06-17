@@ -21,6 +21,7 @@ use crate::ui::city::CityView;
 use crate::ui::context_picker::ContextPicker;
 use crate::ui::logs::LogsView;
 use crate::ui::map::MapView;
+use crate::ui::namespace_picker::NamespacePicker;
 use crate::ui::node_detail::NodeDetailView;
 use crate::ui::plan::{PlanCmd, PlanView};
 use crate::ui::theme::Theme;
@@ -31,6 +32,7 @@ use crate::ui::{
 use kubernation_core::k8s::client::Cluster;
 use kubernation_core::k8s::{actions, client, logs, watch, watch::WorldHandle};
 use kubernation_core::state::attention::{Concern, Severity};
+use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::model::Models;
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::planned::{Intervention, PlannedWorld, plan_diff};
@@ -116,6 +118,10 @@ pub struct App {
     last_log_fetch: Instant,
     attention_panel: AttentionPanel,
     picker: ContextPicker,
+    ns_picker: NamespacePicker,
+    /// Scope every view to these namespaces (the world is observed in full;
+    /// this filters the derived models). Hot + warm share one filter.
+    ns_filter: NamespaceFilter,
     help_open: bool,
     overlay: OverlayMode,
 
@@ -180,6 +186,8 @@ impl App {
             last_log_fetch: Instant::now(),
             attention_panel,
             picker: ContextPicker::default(),
+            ns_picker: NamespacePicker::default(),
+            ns_filter: NamespaceFilter::All,
             help_open: false,
             overlay: OverlayMode::Pressure,
             ready_hot: false,
@@ -290,8 +298,11 @@ impl App {
         if let Some(w) = self.warm.as_mut() {
             refine_platform(w);
         }
-        self.models_hot = Models::build(&self.hot.world);
-        self.models_warm = self.warm.as_ref().map(|w| Models::build(&w.world));
+        self.models_hot = Models::build_filtered(&self.hot.world, &self.ns_filter);
+        self.models_warm = self
+            .warm
+            .as_ref()
+            .map(|w| Models::build_filtered(&w.world, &self.ns_filter));
         self.pair = self
             .warm
             .as_ref()
@@ -422,6 +433,12 @@ impl App {
             }
             return;
         }
+        if self.ns_picker.open {
+            if let Some(a) = self.ns_picker.handle_key(key) {
+                self.apply(a, ClusterId::Hot).await;
+            }
+            return;
+        }
         if self.attention_panel.focused {
             match key.code {
                 KeyCode::Tab | KeyCode::Esc => self.attention_panel.focused = false,
@@ -491,6 +508,9 @@ impl App {
                 &self.hot.world.meta.all_contexts,
                 &self.hot.world.meta.context,
             ),
+            KeyCode::Char('N') => self
+                .ns_picker
+                .open_with(self.hot.world.namespaces(), &self.ns_filter),
             KeyCode::Char('1') => self.overlay = OverlayMode::Pressure,
             KeyCode::Char('2') => self.overlay = OverlayMode::ReplicaHealth,
             KeyCode::Char('3') => self.overlay = OverlayMode::Namespace,
@@ -657,6 +677,11 @@ impl App {
                     self.flash = Some("planning applies to the hot cluster only".into());
                 }
             }
+            Action::SetNamespaceFilter(f) => {
+                self.flash = Some(f.label());
+                self.ns_filter = f;
+                // rebuild() at the end of apply re-derives every view's models.
+            }
             Action::SwitchContext(name) => self.switch_context(name).await,
             Action::EdgeReached(edge) => {
                 if self.warm.is_some() {
@@ -698,6 +723,7 @@ impl App {
                 self.pair = None;
                 self.evict_perm.clear(); // answers were for the old cluster
                 self.pending_evict = None;
+                self.ns_filter = NamespaceFilter::All; // namespaces differ
                 self.go_home(Screen::Map);
                 self.focus = ClusterId::Hot;
                 self.attention_panel.cycle = None;
@@ -819,9 +845,17 @@ impl App {
                         &ctx_hot,
                         Some(&ctx_warm),
                         self.flash.as_deref(),
+                        &self.ns_filter,
                     );
                 } else {
-                    status_bar::render(f, status_a, &ctx_hot, None, self.flash.as_deref());
+                    status_bar::render(
+                        f,
+                        status_a,
+                        &ctx_hot,
+                        None,
+                        self.flash.as_deref(),
+                        &self.ns_filter,
+                    );
                 }
             }
 
@@ -916,6 +950,9 @@ impl App {
             }
             if self.picker.open {
                 self.picker.render(f, &self.theme);
+            }
+            if self.ns_picker.open {
+                self.ns_picker.render(f, &self.theme);
             }
             if let Some((_, ns, pod)) = self.pending_evict.clone() {
                 render_evict_confirm(f, &self.theme, &ns, &pod);

@@ -11,6 +11,7 @@ use k8s_openapi::api::networking::v1::Ingress;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 
 use super::attention::{self, Concern, Severity, Target};
+use super::filter::NamespaceFilter;
 use super::observed::{ObservedWorld, RecentEvent};
 use super::world::{
     BatchEntry, BatchKind, CoastKind, ExposureEntry, StorageEntry, WorldModel, build_world,
@@ -1421,10 +1422,20 @@ pub struct Models {
 }
 
 impl Models {
+    /// Build the full model set across every namespace.
     pub fn build(world: &ObservedWorld) -> Self {
+        Self::build_filtered(world, &NamespaceFilter::All)
+    }
+
+    /// Build the model set scoped to `filter`. Terrain (nodes are
+    /// cluster-scoped) is unaffected; cities, the workload list, attention,
+    /// and island structures all narrow together. Filtering is applied to the
+    /// *derived* layer only — the observed stores are untouched.
+    pub fn build_filtered(world: &ObservedWorld, filter: &NamespaceFilter) -> Self {
         let map = build_map(world);
-        let workloads = build_workloads(world);
-        let attention = attention::build(world, &map, &workloads);
+        let mut workloads = build_workloads(world);
+        workloads.retain(|w| filter.matches(&w.r.namespace));
+        let attention = attention::build(world, &map, &workloads, filter);
         let mut workload_severity: HashMap<WorkloadRef, Severity> = HashMap::new();
         for c in &attention {
             if let Target::Workload(r) = &c.target {
@@ -1434,14 +1445,33 @@ impl Models {
                     .or_insert(c.severity);
             }
         }
+        // Narrow the island/coast inputs to the same namespaces (cities are
+        // already narrowed via `workloads`).
+        let customs: Vec<_> = world
+            .custom_entries()
+            .into_iter()
+            .filter(|c| filter.matches_opt(c.namespace.as_deref()))
+            .collect();
+        let exposure: Vec<_> = build_exposure(world)
+            .into_iter()
+            .filter(|e| filter.matches(&e.workload.namespace))
+            .collect();
+        let storage: Vec<_> = build_storage(world)
+            .into_iter()
+            .filter(|s| filter.matches(&s.workload.namespace))
+            .collect();
+        let batch: Vec<_> = build_batch(world)
+            .into_iter()
+            .filter(|b| filter.matches(&b.namespace))
+            .collect();
         let world_model = build_world(
             &map,
             &workloads,
             &workload_severity,
-            &world.custom_entries(),
-            &build_exposure(world),
-            &build_storage(world),
-            &build_batch(world),
+            &customs,
+            &exposure,
+            &storage,
+            &batch,
         );
         Models {
             map,
@@ -1552,6 +1582,45 @@ mod tests {
         // No usage → request-based pressure and source Requests.
         let bare = build_node_tile(&n, &[], &OwnerIndex::default(), None);
         assert_eq!(bare.metric_source, MetricSource::Requests);
+    }
+
+    #[test]
+    fn namespace_filter_drops_out_of_namespace_cities_keeps_terrain() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.deployment(fx::deployment("demo", "web", 1, 1));
+        s.replicaset(fx::replicaset("demo", "web-rs", "web"));
+        s.pod(fx::pod_owned(
+            fx::pod("demo", "web-rs-0", Some("n1")),
+            "ReplicaSet",
+            "web-rs",
+        ));
+        // A workload in another namespace whose pod also lands on n1.
+        s.deployment(fx::deployment("kube-system", "coredns", 1, 1));
+        s.replicaset(fx::replicaset("kube-system", "coredns-rs", "coredns"));
+        s.pod(fx::pod_owned(
+            fx::pod("kube-system", "coredns-rs-0", Some("n1")),
+            "ReplicaSet",
+            "coredns-rs",
+        ));
+
+        let all = Models::build(&world);
+        let all_names: Vec<&str> = all.world.cities().map(|c| c.r.name.as_str()).collect();
+        assert!(all_names.contains(&"web") && all_names.contains(&"coredns"));
+
+        let demo = Models::build_filtered(&world, &NamespaceFilter::only("demo"));
+        let names: Vec<&str> = demo.world.cities().map(|c| c.r.name.as_str()).collect();
+        assert!(names.contains(&"web"), "in-ns city missing: {names:?}");
+        assert!(
+            !names.contains(&"coredns"),
+            "out-of-ns city leaked onto the map: {names:?}"
+        );
+        // Terrain is physical: the node still reports both pods.
+        assert_eq!(demo.map.total_nodes, 1);
+        assert_eq!(
+            demo.map.total_pods, 2,
+            "terrain census should be unfiltered"
+        );
     }
 
     #[test]

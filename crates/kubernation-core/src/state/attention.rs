@@ -8,6 +8,7 @@ use k8s_openapi::jiff;
 
 use crate::events::ClusterId;
 
+use super::filter::NamespaceFilter;
 use super::model::{
     MapModel, OwnerIndex, PRESSURE_HIGH, PodState, RolloutStatus, WorkloadRef, WorkloadRow,
     ingress_backends, pod_oom_killed, pod_restarts, pod_state,
@@ -120,7 +121,12 @@ impl Agg {
     }
 }
 
-pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -> Vec<Concern> {
+pub fn build(
+    world: &ObservedWorld,
+    map: &MapModel,
+    workloads: &[WorkloadRow],
+    filter: &NamespaceFilter,
+) -> Vec<Concern> {
     let idx = OwnerIndex::build(world);
     let mut concerns: Vec<Concern> = Vec::new();
     // One snapshot for the whole pass — Store::state() clones a Vec per call.
@@ -133,6 +139,9 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
     let mut covered_jobs: HashSet<(String, String)> = HashSet::new();
     for job in world.jobs.state() {
         let ns = job.metadata.namespace.clone().unwrap_or_default();
+        if !filter.matches(&ns) {
+            continue;
+        }
         let name = job.metadata.name.clone().unwrap_or_default();
         let st = job.status.as_ref();
         let cond = |t: &str| {
@@ -175,6 +184,9 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
     // --- Pod-level signals, aggregated per owning workload -----------------
     let mut by_workload: BTreeMap<WorkloadRef, Agg> = BTreeMap::new();
     for pod in &pods {
+        if !filter.matches_opt(pod.metadata.namespace.as_deref()) {
+            continue;
+        }
         let (state, reason) = pod_state(pod);
         let mut agg = Agg::default();
         agg.classify(&reason, state);
@@ -331,6 +343,9 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
             continue;
         }
         let ns = pvc.metadata.namespace.clone().unwrap_or_default();
+        if !filter.matches(&ns) {
+            continue;
+        }
         let name = pvc.metadata.name.clone().unwrap_or_default();
         let owner = pvc_owner(world, &idx, &ns, &name);
         let sc = pvc
@@ -358,6 +373,9 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
         .collect();
     for ing in world.ingresses.state() {
         let ns = ing.metadata.namespace.clone().unwrap_or_default();
+        if !filter.matches(&ns) {
+            continue;
+        }
         let name = ing.metadata.name.clone().unwrap_or_default();
         let mut missing: Vec<String> = ingress_backends(&ing)
             .into_iter()
@@ -384,6 +402,9 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
     // Services (no selector) are skipped.
     for svc in world.services.state() {
         let ns = svc.metadata.namespace.clone().unwrap_or_default();
+        if !filter.matches(&ns) {
+            continue;
+        }
         let name = svc.metadata.name.clone().unwrap_or_default();
         let Some(sel) = svc.spec.as_ref().and_then(|s| s.selector.as_ref()) else {
             continue;
@@ -416,6 +437,10 @@ pub fn build(world: &ObservedWorld, map: &MapModel, workloads: &[WorkloadRow]) -
     let mut event_groups: BTreeMap<(String, String, String), (u32, String)> = BTreeMap::new();
     for ev in world.recent_events() {
         if !ev.warning {
+            continue;
+        }
+        // Keep cluster-scoped Node events; filter the rest by namespace.
+        if ev.kind != "Node" && !filter.matches(&ev.namespace) {
             continue;
         }
         let stale = ev
@@ -592,7 +617,14 @@ mod tests {
     fn concerns(world: &ObservedWorld) -> Vec<Concern> {
         let map = build_map(world);
         let rows = build_workloads(world);
-        build(world, &map, &rows)
+        build(world, &map, &rows, &NamespaceFilter::All)
+    }
+
+    fn concerns_filtered(world: &ObservedWorld, filter: &NamespaceFilter) -> Vec<Concern> {
+        let map = build_map(world);
+        let mut rows = build_workloads(world);
+        rows.retain(|w| filter.matches(&w.r.namespace));
+        build(world, &map, &rows, filter)
     }
 
     #[test]
@@ -811,6 +843,54 @@ mod tests {
             .find(|c| c.key == "s:demo/lonely")
             .expect("orphan harbor concern");
         assert_eq!(c.severity, Severity::Info);
+    }
+
+    #[test]
+    fn namespace_filter_scopes_concerns_but_keeps_nodes() {
+        let (world, mut s) = fx::world();
+        // A cluster-scoped concern: a NotReady node.
+        s.node(fx::node_with_condition(
+            fx::node("n-bad", Some("z-a")),
+            "Ready",
+            "False",
+        ));
+        // A crashing workload in `demo`.
+        s.deployment(fx::deployment("demo", "crashy", 1, 0));
+        s.replicaset(fx::replicaset("demo", "crashy-abc", "crashy"));
+        s.pod(fx::pod_owned(
+            fx::pod_waiting(
+                fx::pod("demo", "crashy-abc-0", Some("n-bad")),
+                "CrashLoopBackOff",
+            ),
+            "ReplicaSet",
+            "crashy-abc",
+        ));
+        // A crashing workload in `other`.
+        s.deployment(fx::deployment("other", "broken", 1, 0));
+        s.replicaset(fx::replicaset("other", "broken-xyz", "broken"));
+        s.pod(fx::pod_owned(
+            fx::pod_waiting(
+                fx::pod("other", "broken-xyz-0", Some("n-bad")),
+                "CrashLoopBackOff",
+            ),
+            "ReplicaSet",
+            "broken-xyz",
+        ));
+
+        let cs = concerns_filtered(&world, &NamespaceFilter::only("demo"));
+        assert!(
+            cs.iter().any(|c| c.title.contains("demo/crashy")),
+            "demo concern missing: {cs:?}"
+        );
+        assert!(
+            !cs.iter().any(|c| c.title.contains("other/broken")),
+            "other-namespace concern leaked: {cs:?}"
+        );
+        // Cluster-scoped node concern stays regardless of the filter.
+        assert!(
+            cs.iter().any(|c| c.title.contains("node n-bad")),
+            "node concern dropped: {cs:?}"
+        );
     }
 
     #[test]

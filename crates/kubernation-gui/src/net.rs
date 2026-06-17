@@ -18,6 +18,7 @@ use std::time::Duration;
 use kubernation_core::events::{ClusterId, WorldDelta};
 use kubernation_core::k8s::{actions, client, logs, watch};
 use kubernation_core::state::attention::Concern;
+use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::model::Models;
 use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::pair::PairSync;
@@ -94,6 +95,8 @@ pub struct Net {
     plan_req: Mutex<Option<Vec<Intervention>>>,
     /// The result of the last commit (per-row), shown in the review window.
     plan_outcome: Mutex<Option<PlanOutcome>>,
+    /// The namespace filter the net thread applies when building Models.
+    ns_filter: Mutex<NamespaceFilter>,
 }
 
 impl Net {
@@ -110,7 +113,19 @@ impl Net {
             evict_perm_pending: Mutex::new(HashSet::new()),
             plan_req: Mutex::new(None),
             plan_outcome: Mutex::new(None),
+            ns_filter: Mutex::new(NamespaceFilter::All),
         })
+    }
+
+    /// Scope the built models to these namespaces (the net thread rebuilds on
+    /// the next tick because the filter changed).
+    pub fn set_namespace_filter(&self, filter: NamespaceFilter) {
+        *self.ns_filter.lock().unwrap() = filter;
+    }
+
+    /// The active namespace filter.
+    pub fn namespace_filter(&self) -> NamespaceFilter {
+        self.ns_filter.lock().unwrap().clone()
     }
 
     /// Queue a confirmed End-of-Turn commit (the net thread dry-runs then
@@ -269,6 +284,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
             let mut ticks: u64 = 0;
             let mut last_log: Option<LogReq> = None;
             let mut evict_set: Option<u64> = None;
+            let mut last_filter = NamespaceFilter::All;
             loop {
                 // Hot-context switch: connect the new cluster, then drop the
                 // old handle (its informers abort) by reassigning. Snapshot
@@ -289,6 +305,8 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             // RBAC answers were for the old cluster.
                             net.evict_perm.lock().unwrap().clear();
                             net.evict_perm_pending.lock().unwrap().clear();
+                            // Namespaces differ across clusters — reset.
+                            *net.ns_filter.lock().unwrap() = NamespaceFilter::All;
                         }
                         Err(err) => {
                             *net.status.lock().unwrap() = format!("switch failed: {err}");
@@ -398,15 +416,23 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         .insert((cluster, ns), allowed);
                 }
 
-                if !ready_hot.load(Ordering::Relaxed) || !dirty.swap(false, Ordering::Relaxed) {
+                // Rebuild when the world changed (dirty) OR the namespace
+                // filter changed under us; either way re-derive with it.
+                if !ready_hot.load(Ordering::Relaxed) {
                     continue;
                 }
-                let hot_models = Arc::new(Models::build(&hot_handle.world));
+                let was_dirty = dirty.swap(false, Ordering::Relaxed);
+                let filter = net.namespace_filter();
+                if !was_dirty && filter == last_filter {
+                    continue;
+                }
+                last_filter = filter.clone();
+                let hot_models = Arc::new(Models::build_filtered(&hot_handle.world, &filter));
                 let warm = warm_handle
                     .as_ref()
                     .filter(|_| ready_warm.load(Ordering::Relaxed))
                     .map(|h| WorldSnap {
-                        models: Arc::new(Models::build(&h.world)),
+                        models: Arc::new(Models::build_filtered(&h.world, &filter)),
                         observed: h.world.clone(),
                     });
                 let pair = warm

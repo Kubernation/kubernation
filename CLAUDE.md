@@ -163,6 +163,29 @@ what makes the interesting logic unit-testable without a cluster.
   is untouched. Dev flags `--log-previous` / `--log-filter <substr>` (with
   `--tail`) verify both headlessly; verified live (`<previous>` shows crashy's
   `boom`; a `process 48` filter narrowed web to `1/31`).
+- **Namespace filtering** (2026-06-17, roadmap "polish", highest-value item):
+  `state/filter.rs` `NamespaceFilter` (`All` | `Only(BTreeSet)`, with
+  `matches`/`matches_opt`/`toggle`/`label`) scopes the *derived* world without
+  touching the reflectors (they always watch all namespaces — filtering is a
+  view concern). `Models::build` delegates to **`Models::build_filtered(world,
+  &filter)`**, which retains workload rows by namespace, threads the filter
+  into `attention::build` (guards every namespaced concern; **node concerns are
+  cluster-scoped → always kept**), and narrows the island/coast inputs
+  (customs/exposure/storage/batch). **Load-bearing subtlety:** terrain
+  (`build_map`) and node pressure must stay *physical* (all pods), but
+  `build_world` sited cities from the map's node-tile pod census — so a
+  filtered-out workload still got a 0-pop city. Fixed by gating city/road
+  siting on the workload being in the (filtered) `workloads` list
+  (`row_of.contains_key(owner)`), a no-op when unfiltered. `ObservedWorld::
+  namespaces()` feeds the pickers. **TUI:** `N` opens `namespace_picker.rs`
+  (multi-select: Space toggles, Enter applies; the status bar shows the active
+  scope); filter resets on context switch. **GUI:** a chrome button (always
+  shown, highlighted when active) opens a single-select picker via the existing
+  `draw_picker`; the net thread holds `ns_filter` (rebuilds when it changes)
+  and resets it on switch; `--namespace <ns>` launches scoped (+ verification).
+  Verified live: scoping to `kubernation-demo` drops the control-plane's
+  kube-system cities (coredns, local-path-provisioner) while the node terrain +
+  9-pod census remain. Unit-tested in core (attention + world-model + filter).
 - **Connectivity layer** (2026-06-16, first slice of "more kinds on the map"):
   Services become `Ψ` harbors and Ingresses `∏` gates, **moored in the ocean
   strip on a continent's east coast, each on the latitude of the city it
@@ -723,7 +746,8 @@ cordon (node), `t` open the End-of-Turn review (`x` unstage · `D` discard ·
 `c`/`Enter` commit, y/n confirm) ·
 `Esc` back · `m` map ·
 `w` workloads · `n` next concern · `a` attention panel · `Tab` focus panel ·
-`c` context picker · `1/2/3` overlays (pressure/replicas/namespace) ·
+`c` context picker · `N` namespace filter (multi-select; status bar shows it) ·
+`1/2/3` overlays (pressure/replicas/namespace) ·
 `?` keymap · `q`/Ctrl-C quit. Keep `help.rs` in sync with any change.
 
 ## Dev loop
@@ -790,7 +814,7 @@ more interventions (image set) ·
 external services / chaos layers ·
 unmounted-PVC island granaries (the *map* feature; connectivity + failed-Job
 attention are now built) · Job/CronJob
-city screens · namespace filtering · mouse
+city screens · mouse
 support · minimap horizontal
 compression for very wide zone counts (~60+) · zoom levels (compact 1-line
 tiles for very large boards) · pair: per-container image diffs, env/config
