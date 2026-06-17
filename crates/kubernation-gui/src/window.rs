@@ -41,6 +41,9 @@ pub struct WinAction {
     pub close: bool,
     /// A pod whose logs to tail: (namespace, pod).
     pub log: Option<(String, String)>,
+    /// A pod the operator asked to evict: (namespace, pod). The caller confirms
+    /// before anything is written.
+    pub evict: Option<(String, String)>,
     /// An intervention the operator staged from this window (planning turn).
     pub stage: Option<Intervention>,
 }

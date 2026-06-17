@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kubernation_core::events::{ClusterId, WorldDelta};
-use kubernation_core::k8s::{client, logs, watch};
+use kubernation_core::k8s::{actions, client, logs, watch};
 use kubernation_core::state::attention::Concern;
 use kubernation_core::state::model::Models;
 use kubernation_core::state::observed::ObservedWorld;
@@ -35,6 +35,16 @@ pub struct LogTail {
     pub target: Option<LogReq>,
     pub text: String,
     pub error: Option<String>,
+}
+
+/// A confirmed request to evict (delete) a pod. The project's only write —
+/// queued by the GUI after an explicit confirm, executed once by the net
+/// thread (see `k8s::actions::evict_pod`).
+#[derive(Clone, PartialEq, Eq)]
+pub struct EvictReq {
+    pub cluster: ClusterId,
+    pub namespace: String,
+    pub pod: String,
 }
 
 pub struct WorldSnap {
@@ -60,6 +70,10 @@ pub struct Net {
     log_req: Mutex<Option<LogReq>>,
     /// The latest fetched tail.
     log_tail: Mutex<LogTail>,
+    /// A confirmed pod eviction the UI has queued (the only write path).
+    evict_req: Mutex<Option<EvictReq>>,
+    /// Transient result of the last eviction, shown as a toast then cleared.
+    evict_status: Mutex<Option<String>>,
 }
 
 impl Net {
@@ -70,7 +84,19 @@ impl Net {
             switch: Mutex::new(None),
             log_req: Mutex::new(None),
             log_tail: Mutex::new(LogTail::default()),
+            evict_req: Mutex::new(None),
+            evict_status: Mutex::new(None),
         })
+    }
+
+    /// Queue a confirmed pod eviction (the net thread runs it once).
+    pub fn request_evict(&self, req: EvictReq) {
+        *self.evict_req.lock().unwrap() = Some(req);
+    }
+
+    /// The transient result of the last eviction (a toast), if any.
+    pub fn evict_status(&self) -> Option<String> {
+        self.evict_status.lock().unwrap().clone()
     }
 
     /// Tail this pod's logs (re-fetched on a poll until cleared).
@@ -183,6 +209,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
             let mut tick = tokio::time::interval(Duration::from_millis(250));
             let mut ticks: u64 = 0;
             let mut last_log: Option<LogReq> = None;
+            let mut evict_set: Option<u64> = None;
             loop {
                 // Hot-context switch: connect the new cluster, then drop the
                 // old handle (its informers abort) by reassigning. Snapshot
@@ -238,6 +265,36 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     }
                 }
                 last_log = req;
+
+                // Confirmed eviction — the only write the app performs. Run it
+                // once, report the result as a transient toast; the watch will
+                // observe the pod's disappearance on a later tick. (Take the
+                // request into a local first so the lock isn't held over the
+                // await.)
+                let evict = net.evict_req.lock().unwrap().take();
+                if let Some(ev) = evict {
+                    let client = match ev.cluster {
+                        ClusterId::Warm => {
+                            warm_client.clone().unwrap_or_else(|| hot_client.clone())
+                        }
+                        ClusterId::Hot => hot_client.clone(),
+                    };
+                    *net.evict_status.lock().unwrap() =
+                        Some(format!("evicting {}/{} …", ev.namespace, ev.pod));
+                    let res = actions::evict_pod(client, &ev.namespace, &ev.pod).await;
+                    *net.evict_status.lock().unwrap() = Some(match res {
+                        Ok(()) => format!("evicted {}/{}", ev.namespace, ev.pod),
+                        Err(e) => format!("evict failed: {e}"),
+                    });
+                    evict_set = Some(ticks);
+                    dirty.store(true, Ordering::Relaxed);
+                }
+                if let Some(t0) = evict_set
+                    && ticks.saturating_sub(t0) > 12
+                {
+                    *net.evict_status.lock().unwrap() = None;
+                    evict_set = None;
+                }
 
                 if !ready_hot.load(Ordering::Relaxed) || !dirty.swap(false, Ordering::Relaxed) {
                     continue;

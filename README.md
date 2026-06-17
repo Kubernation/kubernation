@@ -15,9 +15,12 @@ This is not a retro skin on k9s. It is a different operator model:
 - **Attention-driven.** Failing pods, stuck rollouts, pending PVCs, nodes
   under pressure — aggregated, ranked, and one keypress (`n`) from their
   full context.
-- **Observe-only (for now).** The MVP contains no mutation paths at all.
-  The architecture reserves a `PlannedWorld` for a future planning-turn
-  model: staged diffs committed deliberately, like ending a turn.
+- **Near observe-only.** Kubernation reads the cluster and does not change
+  it — with one deliberate, gated exception: **pod eviction** (a real
+  delete), invoked only from the GUI behind an explicit confirm. The entire
+  write surface is one small file (`k8s/actions.rs`). The planning turn
+  (`PlannedWorld`: scale / cordon) stays preview-only — staged diffs are shown
+  but never applied.
 
 ```text
  KUBERNATION ▏kind-kubernation ▏kind ▏https://127.0.0.1:50970/ ▏4n·25p                     overlay PRESSURE ▏? help
@@ -144,10 +147,19 @@ not imperative edits. Set replicas from a city window (`plan replicas [−] N
 applied. Press **`t`** (or the chrome **End Turn (N)**) for the End-of-Turn
 review — a from→to diff of everything staged, with per-row unstage and
 Discard. **It is preview-only:** Commit is shown but disabled and *nothing is
-written to the cluster* — Kubernation keeps its observe-only guarantee while
-you rehearse the turn.
+written to the cluster* — the planning turn never writes; you just rehearse
+the turn.
 
 ![GUI planning turn](docs/gui-plan.png)
+
+**Evict a pod.** The one direct cluster action: hover a pod in a city's
+**citizens** (or a node's **garrison**) list and an **`evict`** button
+appears; clicking it raises a confirm, and on confirm Kubernation issues a
+real `DELETE` (a managed pod is recreated by its controller; a bare pod is
+gone). It is the only write the app performs — one small, auditable path
+(`k8s/actions.rs`) behind an explicit confirm.
+
+![Evict confirm](docs/gui-evict.png)
 
 Press **`c`** to switch the hot
 cluster from a context picker — no restart. Labels use **Fira Sans** with
@@ -290,14 +302,16 @@ the TUI.
 
 ## Status
 
-Observe-only, with many post-MVP features built: hot/warm cluster pairs,
-metrics-server live usage, the minimap, pod log tailing, the connectivity /
-storage / batch map layers, the in-app Almanac, the city + province
-drill-down windows, and the **planning turn** — staging interventions and
-previewing their diff (preview-only; nothing is applied). Deferred, by
-design: *applying* staged changes to the cluster (dry-run + confirm + RBAC),
-external managed services, chaos layers, and the planning turn in the TUI.
-See CLAUDE.md for the full list and the reasoning.
+Near observe-only — the one write is the confirmed **pod eviction** above;
+everything else reads. Many post-MVP features are built: the isometric world
+map, hot/warm cluster pairs, metrics-server live usage, the minimap, pod log
+tailing, the connectivity / storage / batch map layers, the in-app Almanac,
+the city + province drill-down windows, and the **planning turn** — staging
+interventions and previewing their diff (preview-only; nothing is applied).
+Deferred, by design: *applying* staged changes to the cluster (dry-run +
+confirm + RBAC), more interventions, external managed services, chaos layers,
+and the planning turn in the TUI. See CLAUDE.md for the full list and the
+reasoning.
 
 ## Trademark
 

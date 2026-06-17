@@ -8,6 +8,18 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Pod eviction — the project's first cluster write.** Hover a pod in a
+  city's *citizens* list or a node's *garrison* list and a red **`evict`**
+  button appears; it raises a confirm modal, and on confirm the GUI issues a
+  real `DELETE` (a managed pod is recreated by its controller; a bare pod is
+  gone). All write code is one file, `kubernation-core/src/k8s/actions.rs`
+  (`evict_pod`); the GUI queues it through the net thread and shows a result
+  toast. This deliberately relaxes the former absolute observe-only guarantee
+  to "near observe-only" (one gated, confirmed write); the planning turn
+  (scale/cordon) stays preview-only. Dev flags `--evict <substr>` / `--evict-go`
+  verify the UI and the write path headlessly.
+
 ### Changed
 - **Isometric world map (GUI).** The macroquad map was reprojected from a
   top-down rectangular grid to a classic-4X **isometric 2:1 diamond** grid.

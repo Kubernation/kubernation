@@ -176,7 +176,9 @@ pub fn draw_node(
     let max_rows = (((col_bottom - ly) / row_h) as usize).saturating_sub(1);
     for p in detail.pods.iter().take(max_rows) {
         let rect = Rect::new(left_x, ly, left_w, row_h);
-        if rect.contains(mouse) {
+        let evict_btn = Rect::new(left_x + left_w - 48.0, ly + 1.0, 46.0, row_h - 2.0);
+        let row_hover = rect.contains(mouse);
+        if row_hover {
             draw_rectangle(
                 rect.x,
                 rect.y,
@@ -185,14 +187,18 @@ pub fn draw_node(
                 Color::new(1.0, 1.0, 1.0, 0.06),
             );
             if click {
-                act.log = Some((p.namespace.clone(), p.name.clone()));
+                if evict_btn.contains(mouse) {
+                    act.evict = Some((p.namespace.clone(), p.name.clone()));
+                } else {
+                    act.log = Some((p.namespace.clone(), p.name.clone()));
+                }
             }
         }
         draw_circle(left_x + 5.0, ly + row_h / 2.0, 4.0, pod_color(p.state));
         let label = format!(
             "{}/{}",
             p.namespace,
-            truncate_str(&p.name, 38 - p.namespace.len().min(20))
+            truncate_str(&p.name, 30 - p.namespace.len().min(18))
         );
         let col = if p.state == PodState::Failing {
             CRIT
@@ -200,6 +206,26 @@ pub fn draw_node(
             INK
         };
         text(ascii(&label), left_x + 16.0, ly + 13.0, 13.0, col);
+        if row_hover {
+            let on = evict_btn.contains(mouse);
+            draw_rectangle(
+                evict_btn.x,
+                evict_btn.y,
+                evict_btn.w,
+                evict_btn.h,
+                if on { CRIT } else { darker(CRIT, 0.55) },
+            );
+            draw_rectangle_lines(
+                evict_btn.x,
+                evict_btn.y,
+                evict_btn.w,
+                evict_btn.h,
+                1.0,
+                CRIT,
+            );
+            let tc = if on { INK } else { lighter(CRIT, 1.5) };
+            text("evict", evict_btn.x + 7.0, ly + 13.0, 12.0, tc);
+        }
         ly += row_h;
     }
     if detail.pods.len() > max_rows {
@@ -212,7 +238,7 @@ pub fn draw_node(
         );
     }
     text(
-        "click a pod to tail its logs",
+        "click a pod to tail logs · hover a pod to evict",
         left_x,
         col_bottom,
         12.0,
@@ -269,7 +295,11 @@ pub fn draw_node(
             detail.pods[0].name.clone(),
         ));
     }
-    if click && act.log.is_none() && (win.close.contains(mouse) || !win.frame.contains(mouse)) {
+    if click
+        && act.log.is_none()
+        && act.evict.is_none()
+        && (win.close.contains(mouse) || !win.frame.contains(mouse))
+    {
         act.close = true;
     }
     act

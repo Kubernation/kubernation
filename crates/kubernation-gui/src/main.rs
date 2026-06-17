@@ -30,11 +30,12 @@ use draw::{
     Camera, SceneWorld, draw_minimap, draw_sea, draw_selection, draw_world, locate, minimap_layout,
     scene, scene_size,
 };
+use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::Target;
 use kubernation_core::state::world::Region;
 use macroquad::prelude::*;
-use net::LogReq;
-use panels::{Panel, draw_attention_strip, draw_logs, draw_tooltip};
+use net::{EvictReq, LogReq};
+use panels::{Panel, draw_attention_strip, draw_evict_confirm, draw_logs, draw_tooltip};
 use text::{text, text_bold, text_size};
 use theme::*;
 
@@ -86,6 +87,14 @@ struct Args {
     /// e.g. to frame a city's offshore harbors (development verification)
     #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
     pan_dx: i32,
+    /// Open the first matching workload's city and raise the evict confirm on
+    /// its first pod (development verification of the eviction UI)
+    #[arg(long)]
+    evict: Option<String>,
+    /// With --evict, auto-confirm the eviction (REALLY deletes the pod) —
+    /// development verification of the write path
+    #[arg(long)]
+    evict_go: bool,
 }
 
 fn window_conf() -> Conf {
@@ -136,6 +145,8 @@ async fn main() {
     // End-of-Turn review modal.
     let mut planned = kubernation_core::state::planned::PlannedWorld::default();
     let mut plan_open = false;
+    // The one mutation: a pod awaiting evict confirmation (cluster, ns, pod).
+    let mut pending_evict: Option<(ClusterId, String, String)> = None;
 
     loop {
         let snap = net.snapshot();
@@ -160,6 +171,9 @@ async fn main() {
         // read that same click as a click-outside dismiss.
         let mut panel_just_opened = false;
         let mut plan_just_opened = false;
+        // Track an evict confirm opened *this frame* so the opening click can't
+        // also hit the confirm's buttons.
+        let mut evict_just_opened = false;
 
         // ---- input ------------------------------------------------------
         if is_key_pressed(KeyCode::Q) {
@@ -187,7 +201,9 @@ async fn main() {
             plan_just_opened = plan_open;
         }
         if is_key_pressed(KeyCode::Escape) {
-            if almanac.is_some() {
+            if pending_evict.is_some() {
+                pending_evict = None;
+            } else if almanac.is_some() {
                 almanac = None;
             } else if plan_open {
                 plan_open = false;
@@ -451,6 +467,33 @@ async fn main() {
                     }
                     inspected = true;
                 }
+
+                // Development verification: open the first matching workload's
+                // city and raise the evict confirm on its first pod (and, with
+                // --evict-go, auto-confirm it a few frames later).
+                if let Some(needle) = &args.evict
+                    && pending_evict.is_none()
+                    && panel.is_none()
+                {
+                    'ev: for sw in &worlds {
+                        for c in sw.world.cities() {
+                            if c.r.name.contains(needle.as_str())
+                                && let Some(obs) = panels::observed_for(s, sw.id)
+                                && let Some(city) =
+                                    kubernation_core::state::model::build_city(obs, &c.r)
+                                && let Some(p0) = city.pods.first()
+                            {
+                                let global = (c.x + sw.off, c.y);
+                                selected = Some(global);
+                                cam.jump_to(global);
+                                panel = Some(Panel::City(sw.id, c.r.clone()));
+                                pending_evict =
+                                    Some((sw.id, c.r.namespace.clone(), p0.name.clone()));
+                                break 'ev;
+                            }
+                        }
+                    }
+                }
             } // end world navigation (suspended while the picker is open)
         }
 
@@ -506,8 +549,10 @@ async fn main() {
                 // otherwise the drill-down windows / minimap show. Drill-downs
                 // are modals (the log overlay, when open, sits on top and
                 // swallows clicks via `!log_open`).
-                let click =
-                    is_mouse_button_pressed(MouseButton::Left) && !panel_just_opened && !log_open;
+                let click = is_mouse_button_pressed(MouseButton::Left)
+                    && !panel_just_opened
+                    && !log_open
+                    && pending_evict.is_none();
                 let mut close_panel = false;
                 if plan_open {
                     let pclick = is_mouse_button_pressed(MouseButton::Left) && !plan_just_opened;
@@ -546,6 +591,10 @@ async fn main() {
                                 log_open = true;
                                 auto_tail = false;
                             }
+                            if let Some((ns, pod)) = act.evict {
+                                pending_evict = Some((*cid, ns, pod));
+                                evict_just_opened = true;
+                            }
                             close_panel = act.close;
                         }
                         Some(Panel::Node(nid, nname)) => {
@@ -569,6 +618,10 @@ async fn main() {
                                 });
                                 log_open = true;
                                 auto_tail = false;
+                            }
+                            if let Some((ns, pod)) = act.evict {
+                                pending_evict = Some((*nid, ns, pod));
+                                evict_just_opened = true;
                             }
                             close_panel = act.close;
                         }
@@ -696,6 +749,55 @@ async fn main() {
                 }
                 _ => {}
             }
+        }
+
+        // Development verification: auto-confirm the staged evict (REAL delete)
+        // a few frames after it's raised, so the write path can be exercised
+        // headlessly.
+        if args.evict_go
+            && frames_synced == 20
+            && let Some((cid, ns, pod)) = pending_evict.take()
+        {
+            net.request_evict(EvictReq {
+                cluster: cid,
+                namespace: ns,
+                pod,
+            });
+        }
+
+        // Evict confirm — the one destructive action, on top of everything.
+        // Esc cancels (handled above); the opening click can't reach a button.
+        if let Some((cid, ns, pod)) = pending_evict.clone() {
+            let paired = snap.as_ref().is_some_and(|s| s.warm.is_some());
+            let tag = if paired && cid == ClusterId::Warm {
+                "WARM "
+            } else {
+                ""
+            };
+            let cclick = is_mouse_button_pressed(MouseButton::Left) && !evict_just_opened;
+            let act = draw_evict_confirm(tag, &ns, &pod, mouse, cclick);
+            if act.evict {
+                net.request_evict(EvictReq {
+                    cluster: cid,
+                    namespace: ns,
+                    pod,
+                });
+                pending_evict = None;
+            } else if act.cancel {
+                pending_evict = None;
+            }
+        }
+
+        // Eviction result toast (auto-cleared by the net thread after a few s).
+        if let Some(msg) = net.evict_status() {
+            let fs = 15.0;
+            let tm = text_size(&msg, fs);
+            let bw = tm.width + 24.0;
+            let bx = (screen_width() - bw) / 2.0;
+            let by = panels::CHROME_H + 8.0;
+            draw_rectangle(bx, by, bw, 26.0, STONE);
+            draw_rectangle_lines(bx, by, bw, 26.0, 1.0, STONE_EDGE);
+            text(ascii(&msg), bx + 12.0, by + 18.0, fs, STONE_INK);
         }
 
         // When tailing, wait long enough for the net thread's first fetch

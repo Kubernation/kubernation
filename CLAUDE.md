@@ -8,10 +8,14 @@ health-textured terrain, workloads are cities sited where their pods run
 islands in the southern sea. An attention queue surfaces what needs focus
 and parks the explorer's cursor on it — 4X's "next unit needing orders",
 not a wall of dashboards.
-**Observe-only.** No mutation paths exist anywhere in the codebase. The
-**planning turn** (preview-only) stages interventions and previews their
-diff against the observed world, but *applying* is not built — staging never
-writes to the cluster, so the guarantee holds.
+**Near observe-only.** The app reads the cluster and does not mutate it —
+with **one** deliberate, gated exception: **pod eviction** (a real `DELETE`),
+invoked only from the GUI behind an explicit confirm (user's call,
+2026-06-17). The entire write surface is one small, auditable file,
+`kubernation-core/src/k8s/actions.rs`; everything else (reflectors, pure
+models, on-demand log tails) stays read-only. The **planning turn**
+(Scale/Cordon) remains **preview-only** — staging records intent and previews
+the diff, but never writes. See the "Pod eviction" decision.
 
 The full product brief lives in `kubernation-tui-mvp-prompt.md`. Read it before
 proposing scope changes.
@@ -489,6 +493,30 @@ what makes the interesting logic unit-testable without a cluster.
   verify framing headlessly. Deferred: chunkier landmasses depend on real
   multi-node zones (the dev cluster has 1 node/zone → thin diagonal bands);
   per-tile sprite art if ever wanted; iso minimap.
+- **Pod eviction — the first mutation** (2026-06-17, user's explicit call to
+  "add the ability to delete pods", choosing **real live deletion** labeled
+  **"evict"**): the project's first and only cluster *write*, a deliberate,
+  gated break of the former absolute observe-only guarantee. **All write code
+  lives in one file**, `kubernation-core/src/k8s/actions.rs` —
+  `evict_pod(client, ns, pod)` does a plain `Api::<Pod>::delete` (a managed
+  pod is recreated by its controller; a bare pod is gone); errors come back as
+  strings. **Wiring (GUI only; the TUI stays read-only):** the city CITIZENS
+  list and node GARRISON list grow a hover-revealed red **`evict`** button per
+  pod (`WinAction.evict`); clicking it raises a centered **confirm modal**
+  (`panels::draw_evict_confirm`, Esc/Cancel to back out) — nothing is sent
+  until the operator confirms. On confirm the GUI queues an `EvictReq` in
+  `Net.evict_req` (mirrors the `log_req`/`switch` slots); the net thread drains
+  it once, calls `actions::evict_pod` on the cluster's client, and reports the
+  result in `Net.evict_status` (a top toast it auto-clears after ~3s). The
+  watch sees the pod vanish on a later tick — no optimistic UI. Metaphor: pods
+  are a city's "citizens" / a node's "garrison"; **evict** matches both k8s pod
+  eviction and the 4X "remove an inhabitant" idea, and is honest (a managed pod
+  comes back). Dev verification flags `--evict <substr>` (open the city + raise
+  the confirm on its first pod) and `--evict-go` (auto-confirm — REALLY
+  deletes; verified live: `web-…-7j8fp` deleted, Deployment recreated it 2s
+  later). Still **not** built: image-set / restart / scale-apply / cordon-apply
+  (the planning turn stays preview-only); RBAC-aware disabling of the button;
+  TUI eviction.
 
 ## The pair (hot/warm)
 
@@ -625,9 +653,11 @@ never blocks input.
 ## Deferred (deliberately)
 
 applying staged interventions to the cluster (the planning-turn staging +
-diff UI is built, preview-only; apply needs dry-run + confirm + RBAC) ·
-more interventions (image set, restart/delete, delete) · planning turn in
-the TUI · external services / chaos layers ·
+diff UI is built, preview-only; apply needs dry-run + confirm + RBAC —
+note pod **eviction** now writes directly, outside the planning turn, behind
+its own confirm) · more interventions (image set, restart, scale-apply,
+cordon-apply) · RBAC-aware disabling of the evict control · TUI eviction ·
+planning turn in the TUI · external services / chaos layers ·
 connectivity attention (orphan ingress / harbor with no city) + unmounted-PVC
 island granaries + Job-object attention (failed-Job concern) · Job/CronJob
 city screens · namespace filtering · mouse
