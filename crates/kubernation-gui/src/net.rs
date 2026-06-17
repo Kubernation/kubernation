@@ -437,7 +437,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     });
                 let pair = warm
                     .as_ref()
-                    .map(|w| Arc::new(PairSync::build(&hot_handle.world, &w.observed)));
+                    .map(|w| Arc::new(PairSync::build(&hot_handle.world, &w.observed, &filter)));
 
                 let mut merged = hot_models.attention.clone();
                 if let Some(w) = &warm {

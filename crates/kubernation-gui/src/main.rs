@@ -320,6 +320,7 @@ async fn main() {
             && panel.is_none()
             && almanac.is_none()
             && !picker
+            && !ns_picker
         {
             plan_open = !plan_open;
             plan_just_opened = plan_open;
@@ -1002,7 +1003,13 @@ async fn main() {
 
         // Context picker, drawn on top of everything.
         if picker {
-            let layout = panels::draw_picker(&contexts, &current_ctx, picker_idx);
+            let layout = panels::draw_picker(
+                &contexts,
+                &current_ctx,
+                picker_idx,
+                "SWITCH CONTEXT",
+                "enter switch . j/k move . c or esc cancel",
+            );
             if is_mouse_button_pressed(MouseButton::Left) {
                 for (i, r) in layout.rows.iter().enumerate() {
                     if r.contains(mouse) && i < contexts.len() {
@@ -1026,7 +1033,13 @@ async fn main() {
                     .unwrap_or_else(|| ns_items[0].clone()),
                 NamespaceFilter::All => ns_items[0].clone(),
             };
-            let layout = panels::draw_picker(&ns_items, &current, ns_picker_idx);
+            let layout = panels::draw_picker(
+                &ns_items,
+                &current,
+                ns_picker_idx,
+                "NAMESPACE FILTER",
+                "enter apply . j/k move . esc cancel",
+            );
             if is_mouse_button_pressed(MouseButton::Left) {
                 for (i, r) in layout.rows.iter().enumerate() {
                     if r.contains(mouse) && i < ns_items.len() {

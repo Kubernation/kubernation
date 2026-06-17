@@ -167,7 +167,11 @@ async fn smoke(
             let m_warm = Models::build(&w.world);
             summarize("hot:  ", &hot, &m_hot);
             summarize("warm: ", w, &m_warm);
-            let pair = PairSync::build(&hot.world, &w.world);
+            let pair = PairSync::build(
+                &hot.world,
+                &w.world,
+                &kubernation_core::state::filter::NamespaceFilter::All,
+            );
             println!("pair: {} drifting · {} missing", pair.drifted, pair.missing);
             let mut drifted: Vec<_> = pair
                 .by_workload

@@ -8,6 +8,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **Namespace filter now scopes pair-drift too** (adversarial-review follow-up).
+  `PairSync::build` takes the `NamespaceFilter`, so the hot/warm "pair drift: N
+  workloads differ" concern counts only in-scope namespaces instead of leaking
+  filtered-out ones. The GUI namespace picker now renders its own title
+  ("NAMESPACE FILTER") and hint instead of the context-switcher's, and pressing
+  `t` no longer opens the End-of-Turn review on top of an open namespace picker.
+
 ### Added
 - **Image-set intervention.** The planning turn's last verb: stage a new image
   for a workload's primary container (`kubectl set image`) and commit it through

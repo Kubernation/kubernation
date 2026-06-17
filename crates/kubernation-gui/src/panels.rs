@@ -501,9 +501,17 @@ pub struct PickerLayout {
     pub rows: Vec<Rect>,
 }
 
-/// Modal list of kubeconfig contexts; the dot marks the active one, the
-/// highlight bar the keyboard cursor. Returns row rects for click hits.
-pub fn draw_picker(contexts: &[String], current: &str, idx: usize) -> PickerLayout {
+/// Modal single-select list; the dot marks the active item, the highlight bar
+/// the keyboard cursor. `title`/`hint` chrome it (so the same widget serves the
+/// context switcher and the namespace filter). Returns row rects for click hits.
+pub fn draw_picker(
+    items: &[String],
+    current: &str,
+    idx: usize,
+    title: &str,
+    hint: &str,
+) -> PickerLayout {
+    let contexts = items;
     draw_rectangle(
         0.0,
         0.0,
@@ -517,14 +525,8 @@ pub fn draw_picker(contexts: &[String], current: &str, idx: usize) -> PickerLayo
     let x = (screen_width() - w) / 2.0;
     let y = (screen_height() - h) / 2.0;
     stone_panel(x, y, w, h);
-    text_bold("SWITCH CONTEXT", x + 16.0, y + 26.0, 18.0, STONE_INK);
-    text(
-        "enter switch . j/k move . c or esc cancel",
-        x + 16.0,
-        y + 45.0,
-        13.0,
-        STONE_INK_DIM,
-    );
+    text_bold(ascii(title), x + 16.0, y + 26.0, 18.0, STONE_INK);
+    text(ascii(hint), x + 16.0, y + 45.0, 13.0, STONE_INK_DIM);
     let mut rows = Vec::new();
     let list_y = y + 58.0;
     if contexts.is_empty() {

@@ -183,7 +183,11 @@ mod tests {
         ws.deployment(fx::deployment("demo", "same", 1, 1));
 
         let models = Models::build(&hot);
-        let pair = PairSync::build(&hot, &warm);
+        let pair = PairSync::build(
+            &hot,
+            &warm,
+            &kubernation_core::state::filter::NamespaceFilter::All,
+        );
         let theme = Theme::new(ColorMode::Auto);
         let planned = kubernation_core::state::planned::PlannedWorld::default();
         let ctx = RenderCtx {

@@ -306,7 +306,7 @@ impl App {
         self.pair = self
             .warm
             .as_ref()
-            .map(|w| PairSync::build(&self.hot.world, &w.world));
+            .map(|w| PairSync::build(&self.hot.world, &w.world, &self.ns_filter));
 
         let mut merged = self.models_hot.attention.clone();
         if let Some(mw) = &self.models_warm {

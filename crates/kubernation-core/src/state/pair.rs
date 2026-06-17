@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use k8s_openapi::api::core::v1::PodTemplateSpec;
 
 use super::attention::{Concern, Severity, Target};
+use super::filter::NamespaceFilter;
 use super::model::{WorkloadKind, WorkloadRef};
 use super::observed::ObservedWorld;
 use crate::events::ClusterId;
@@ -153,9 +154,17 @@ pub struct PairSync {
 }
 
 impl PairSync {
-    pub fn build(hot: &ObservedWorld, warm: &ObservedWorld) -> Self {
-        let hot_snap = snapshot(hot);
-        let mut warm_snap = snapshot(warm);
+    /// Compare the two worlds, scoped to `filter` so the pair-drift count
+    /// matches the namespace-filtered attention queue (a `NamespaceFilter::All`
+    /// compares everything).
+    pub fn build(hot: &ObservedWorld, warm: &ObservedWorld, filter: &NamespaceFilter) -> Self {
+        let keep = |s: BTreeMap<WorkloadRef, Snapshot>| -> BTreeMap<WorkloadRef, Snapshot> {
+            s.into_iter()
+                .filter(|(r, _)| filter.matches(&r.namespace))
+                .collect()
+        };
+        let hot_snap = keep(snapshot(hot));
+        let mut warm_snap = keep(snapshot(warm));
         let mut by_workload = HashMap::new();
         let (mut drifted, mut missing) = (0, 0);
 
@@ -266,7 +275,7 @@ mod tests {
         hs.deployment(fx::deployment("demo", "hot-only", 1, 1));
         ws.deployment(fx::deployment("demo", "warm-only", 1, 1));
 
-        let pair = PairSync::build(&hot, &warm);
+        let pair = PairSync::build(&hot, &warm, &NamespaceFilter::All);
         let get = |name: &str| {
             pair.state(&WorkloadRef {
                 kind: WorkloadKind::Deployment,
@@ -318,7 +327,7 @@ mod tests {
         // Different "desired" (tracks node count) but same images → in sync.
         hs.daemonset(fx::daemonset("demo", "agent", 5, 5));
         ws.daemonset(fx::daemonset("demo", "agent", 2, 2));
-        let pair = PairSync::build(&hot, &warm);
+        let pair = PairSync::build(&hot, &warm, &NamespaceFilter::All);
         let st = pair
             .state(&WorkloadRef {
                 kind: WorkloadKind::DaemonSet,
@@ -336,8 +345,29 @@ mod tests {
         let (warm, mut ws) = fx::world();
         hs.deployment(fx::deployment("demo", "web", 3, 3));
         ws.deployment(fx::deployment("demo", "web", 3, 3));
-        let pair = PairSync::build(&hot, &warm);
+        let pair = PairSync::build(&hot, &warm, &NamespaceFilter::All);
         assert_eq!(pair.drifted + pair.missing, 0);
         assert!(pair.concern().is_none());
+    }
+
+    #[test]
+    fn namespace_filter_scopes_pair_drift() {
+        let (hot, mut hs) = fx::world();
+        let (warm, mut ws) = fx::world();
+        // demo/web is in sync; kube-system/coredns drifts (only on hot).
+        hs.deployment(fx::deployment("demo", "web", 1, 1));
+        ws.deployment(fx::deployment("demo", "web", 1, 1));
+        hs.deployment(fx::deployment("kube-system", "coredns", 2, 2));
+
+        // Unfiltered: coredns drift surfaces.
+        let all = PairSync::build(&hot, &warm, &NamespaceFilter::All);
+        assert_eq!(all.missing, 1);
+        assert!(all.concern().is_some());
+
+        // Scoped to demo: the kube-system drift is out of scope → no concern.
+        let demo = PairSync::build(&hot, &warm, &NamespaceFilter::only("demo"));
+        assert_eq!(demo.missing, 0);
+        assert_eq!(demo.drifted, 0);
+        assert!(demo.concern().is_none(), "out-of-ns drift leaked into pair");
     }
 }

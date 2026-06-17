@@ -176,7 +176,10 @@ what makes the interesting logic unit-testable without a cluster.
   `build_world` sited cities from the map's node-tile pod census — so a
   filtered-out workload still got a 0-pop city. Fixed by gating city/road
   siting on the workload being in the (filtered) `workloads` list
-  (`row_of.contains_key(owner)`), a no-op when unfiltered. `ObservedWorld::
+  (`row_of.contains_key(owner)`), effectively a no-op when unfiltered — it
+  additionally drops the transient 0-pop "ghost" city of a workload whose
+  object isn't (yet) in the store (mid-sync / mid-delete), which is a strict
+  improvement. `ObservedWorld::
   namespaces()` feeds the pickers. **TUI:** `N` opens `namespace_picker.rs`
   (multi-select: Space toggles, Enter applies; the status bar shows the active
   scope); filter resets on context switch. **GUI:** a chrome button (always
