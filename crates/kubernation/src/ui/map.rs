@@ -622,6 +622,10 @@ mod tests {
                 pair: None,
                 cluster_label: None,
                 attention: &[],
+                // Leaked default is fine in tests (no staging exercised here).
+                planned: Box::leak(Box::new(
+                    kubernation_core::state::planned::PlannedWorld::default(),
+                )),
             }
         };
     }

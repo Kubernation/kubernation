@@ -185,6 +185,7 @@ mod tests {
         let models = Models::build(&hot);
         let pair = PairSync::build(&hot, &warm);
         let theme = Theme::new(ColorMode::Auto);
+        let planned = kubernation_core::state::planned::PlannedWorld::default();
         let ctx = RenderCtx {
             models: &models,
             world: &hot,
@@ -196,6 +197,7 @@ mod tests {
             pair: Some(&pair),
             cluster_label: Some("HOT"),
             attention: &[],
+            planned: &planned,
         };
         let mut view = WorkloadListView::default();
         let mut term = Terminal::new(TestBackend::new(120, 12)).unwrap();

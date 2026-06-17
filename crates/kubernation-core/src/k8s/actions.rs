@@ -7,6 +7,11 @@
 //! confirm, and every staged intervention is validated with a **server-side
 //! dry-run** (which also enforces RBAC) before any real apply. Kept apart so
 //! the entire write surface is one small, auditable file.
+//!
+//! Committing a planning turn goes through [`commit_interventions`]: it
+//! dry-runs every staged change first and only writes for real if *all* pass,
+//! so a turn the cluster would reject never half-applies. Both frontends call
+//! it, keeping the "decide to write for real" step inside this one file.
 
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use k8s_openapi::api::authorization::v1::{
@@ -126,5 +131,75 @@ pub async fn apply_intervention(
                     .map_err(to_err),
             }
         }
+    }
+}
+
+/// One change's commit result, for the End-of-Turn review to display.
+#[derive(Debug, Clone)]
+pub struct CommitRow {
+    pub label: String,
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// The result of committing a planning turn. `applied` is false when the
+/// server-side dry-run gate blocked the turn — then `rows` carries only the
+/// dry-run failures and *nothing was written*.
+#[derive(Debug, Clone)]
+pub struct CommitOutcome {
+    pub applied: bool,
+    pub rows: Vec<CommitRow>,
+}
+
+/// Commit a planning turn: dry-run every staged intervention first (which also
+/// enforces RBAC), and only if *all* pass apply them for real. All-or-nothing
+/// at the gate — a turn the cluster would reject never half-applies. Returns
+/// per-row outcomes for the review to show.
+pub async fn commit_interventions(client: Client, ivs: &[Intervention]) -> CommitOutcome {
+    let mut dry_fail = Vec::new();
+    for iv in ivs {
+        if let Err(detail) = apply_intervention(client.clone(), iv, true).await {
+            dry_fail.push(CommitRow {
+                label: iv_label(iv),
+                ok: false,
+                detail,
+            });
+        }
+    }
+    if !dry_fail.is_empty() {
+        return CommitOutcome {
+            applied: false,
+            rows: dry_fail,
+        };
+    }
+    let mut rows = Vec::new();
+    for iv in ivs {
+        let r = apply_intervention(client.clone(), iv, false).await;
+        rows.push(CommitRow {
+            label: iv_label(iv),
+            ok: r.is_ok(),
+            detail: r.err().unwrap_or_default(),
+        });
+    }
+    CommitOutcome {
+        applied: true,
+        rows,
+    }
+}
+
+/// Short human label for a staged intervention (commit-result rows).
+pub fn iv_label(iv: &Intervention) -> String {
+    match iv {
+        Intervention::Scale { workload, replicas } => format!(
+            "scale {} {}/{} → {replicas}",
+            workload.kind, workload.namespace, workload.name
+        ),
+        Intervention::Cordon { node, on } => {
+            format!("{} node {node}", if *on { "cordon" } else { "uncordon" })
+        }
+        Intervention::Restart { workload } => format!(
+            "restart {} {}/{}",
+            workload.kind, workload.namespace, workload.name
+        ),
     }
 }

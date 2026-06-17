@@ -49,38 +49,9 @@ pub struct EvictReq {
     pub pod: String,
 }
 
-/// One row of an End-of-Turn commit result, per staged intervention.
-#[derive(Clone)]
-pub struct PlanRow {
-    pub label: String,
-    pub ok: bool,
-    pub detail: String,
-}
-
-/// The result of a commit attempt: `applied` is false when a server-side
-/// dry-run blocked the turn (rows then carry the dry-run failures).
-#[derive(Clone)]
-pub struct PlanOutcome {
-    pub applied: bool,
-    pub rows: Vec<PlanRow>,
-}
-
-/// Short label for a staged intervention (commit-result rows).
-fn iv_label(iv: &Intervention) -> String {
-    match iv {
-        Intervention::Scale { workload, replicas } => format!(
-            "scale {} {}/{} → {replicas}",
-            workload.kind, workload.namespace, workload.name
-        ),
-        Intervention::Cordon { node, on } => {
-            format!("{} node {node}", if *on { "cordon" } else { "uncordon" })
-        }
-        Intervention::Restart { workload } => format!(
-            "restart {} {}/{}",
-            workload.kind, workload.namespace, workload.name
-        ),
-    }
-}
+/// The End-of-Turn commit result now lives in the core write file
+/// (`k8s::actions`), shared with the TUI; the GUI keeps its familiar name.
+pub use kubernation_core::k8s::actions::CommitOutcome as PlanOutcome;
 
 pub struct WorldSnap {
     pub models: Arc<Models>,
@@ -376,52 +347,22 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     evict_set = None;
                 }
 
-                // End-of-Turn commit (hot cluster). Validate every staged
-                // change with a server-side dry-run first (which also enforces
-                // RBAC); only if all pass do we apply for real. Either way the
-                // per-row outcome goes back to the review window.
+                // End-of-Turn commit (hot cluster): the shared write file
+                // dry-runs every staged change (also enforcing RBAC) and only
+                // applies for real if all pass. The per-row outcome goes back
+                // to the review window; the toast summarizes it.
                 let commit = net.plan_req.lock().unwrap().take();
                 if let Some(ivs) = commit {
-                    let mut dry_fail = Vec::new();
-                    for iv in &ivs {
-                        if let Err(e) =
-                            actions::apply_intervention(hot_client.clone(), iv, true).await
-                        {
-                            dry_fail.push(PlanRow {
-                                label: iv_label(iv),
-                                ok: false,
-                                detail: e,
-                            });
-                        }
-                    }
-                    let outcome = if dry_fail.is_empty() {
-                        let mut rows = Vec::new();
-                        for iv in &ivs {
-                            let r =
-                                actions::apply_intervention(hot_client.clone(), iv, false).await;
-                            rows.push(PlanRow {
-                                label: iv_label(iv),
-                                ok: r.is_ok(),
-                                detail: r.err().unwrap_or_default(),
-                            });
-                        }
-                        let n_ok = rows.iter().filter(|r| r.ok).count();
-                        *net.evict_status.lock().unwrap() =
-                            Some(format!("committed {n_ok}/{} change(s)", rows.len()));
-                        PlanOutcome {
-                            applied: true,
-                            rows,
-                        }
+                    let outcome = actions::commit_interventions(hot_client.clone(), &ivs).await;
+                    *net.evict_status.lock().unwrap() = Some(if outcome.applied {
+                        let n_ok = outcome.rows.iter().filter(|r| r.ok).count();
+                        format!("committed {n_ok}/{} change(s)", outcome.rows.len())
                     } else {
-                        *net.evict_status.lock().unwrap() = Some(format!(
+                        format!(
                             "commit blocked — {} change(s) failed dry-run",
-                            dry_fail.len()
-                        ));
-                        PlanOutcome {
-                            applied: false,
-                            rows: dry_fail,
-                        }
-                    };
+                            outcome.rows.len()
+                        )
+                    });
                     *net.plan_outcome.lock().unwrap() = Some(outcome);
                     evict_set = Some(ticks);
                     dirty.store(true, Ordering::Relaxed);

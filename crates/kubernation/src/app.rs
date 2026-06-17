@@ -22,6 +22,7 @@ use crate::ui::context_picker::ContextPicker;
 use crate::ui::logs::LogsView;
 use crate::ui::map::MapView;
 use crate::ui::node_detail::NodeDetailView;
+use crate::ui::plan::{PlanCmd, PlanView};
 use crate::ui::theme::Theme;
 use crate::ui::workloads::WorkloadListView;
 use crate::ui::{
@@ -32,7 +33,7 @@ use kubernation_core::k8s::{actions, client, logs, watch, watch::WorldHandle};
 use kubernation_core::state::attention::{Concern, Severity};
 use kubernation_core::state::model::Models;
 use kubernation_core::state::pair::PairSync;
-use kubernation_core::state::planned::PlannedWorld;
+use kubernation_core::state::planned::{Intervention, PlannedWorld, plan_diff};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -41,6 +42,8 @@ enum Screen {
     City,
     Node,
     Logs,
+    /// The End-of-Turn review — the staged planning-turn diff + commit.
+    Plan,
 }
 
 /// Builds a `RenderCtx` for one world out of disjoint field borrows, so a
@@ -71,6 +74,7 @@ macro_rules! ctx {
                 None
             },
             attention: &$self.attention,
+            planned: &$self.planned,
         }
     }};
 }
@@ -93,8 +97,10 @@ pub struct App {
     pair: Option<PairSync>,
     /// Merged, severity-ordered concerns across both worlds.
     attention: Vec<Concern>,
-    /// Future planning-turn state; intentionally unused in the MVP.
-    _planned: PlannedWorld,
+    /// The staged planning turn (hot cluster only). Preview-only until the
+    /// operator commits it from the End-of-Turn review.
+    planned: PlannedWorld,
+    plan: PlanView,
 
     screens: Vec<Screen>,
     focus: ClusterId,
@@ -118,11 +124,13 @@ pub struct App {
     dirty: bool,
     quit: bool,
     flash: Option<String>,
-    /// Pod awaiting evict confirmation (cluster, namespace, pod) — the TUI's
-    /// only write, gated behind a y/n prompt.
+    /// Pod awaiting evict confirmation (cluster, namespace, pod) — gated
+    /// behind a y/n prompt (one of the TUI's two writes; the other is commit).
     pending_evict: Option<(ClusterId, String, String)>,
     /// RBAC cache: may the user delete pods in (cluster, namespace)?
     evict_perm: HashMap<(ClusterId, String), bool>,
+    /// The staged turn awaits a y/n confirm before it commits to the cluster.
+    pending_commit: bool,
 }
 
 impl App {
@@ -156,7 +164,8 @@ impl App {
             models_warm,
             pair: None,
             attention: Vec::new(),
-            _planned: PlannedWorld::default(),
+            planned: PlannedWorld::default(),
+            plan: PlanView::default(),
             screens: vec![Screen::Map],
             focus: ClusterId::Hot,
             map_hot: MapView::default(),
@@ -180,6 +189,7 @@ impl App {
             flash: None,
             pending_evict: None,
             evict_perm: HashMap::new(),
+            pending_commit: false,
         }
     }
 
@@ -249,6 +259,20 @@ impl App {
                     Ok(msg) => msg,
                     Err(e) => format!("evict failed: {e}"),
                 });
+                true
+            }
+            AppEvent::Committed { outcome } => {
+                self.flash = Some(if outcome.applied {
+                    let n_ok = outcome.rows.iter().filter(|r| r.ok).count();
+                    format!("committed {n_ok}/{} change(s)", outcome.rows.len())
+                } else {
+                    format!(
+                        "commit blocked — {} change(s) failed dry-run",
+                        outcome.rows.len()
+                    )
+                });
+                self.plan.outcome = Some(outcome);
+                self.dirty = true; // the world changed under us
                 true
             }
             AppEvent::Term(TermEvent::Key(key)) if key.kind != KeyEventKind::Release => {
@@ -368,6 +392,21 @@ impl App {
             }
             return;
         }
+        // The commit confirm swallows input the same way (the planning turn's
+        // write gate — y/Enter applies the staged changes, n/Esc/q backs out).
+        if self.pending_commit {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    self.pending_commit = false;
+                    self.spawn_commit();
+                }
+                KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {
+                    self.pending_commit = false;
+                }
+                _ => {}
+            }
+            return;
+        }
         if self.help_open {
             if matches!(
                 key.code,
@@ -404,10 +443,35 @@ impl App {
             }
             return;
         }
+        // The End-of-Turn review owns its keys (so its c/x/D don't hit the
+        // global bindings); a few navigation escapes still work.
+        if self.screens.last() == Some(&Screen::Plan) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Backspace => self.pop_screen(),
+                KeyCode::Char('t') => self.pop_screen(),
+                KeyCode::Char('m') => self.go_home(Screen::Map),
+                KeyCode::Char('w') => self.go_home(Screen::Workloads),
+                KeyCode::Char('?') => self.help_open = true,
+                _ => {
+                    let cmd = {
+                        let ctx = ctx!(self, ClusterId::Hot);
+                        self.plan.handle_key(key, &ctx)
+                    };
+                    if let Some(cmd) = cmd {
+                        self.apply_plan_cmd(cmd);
+                    }
+                }
+            }
+            return;
+        }
 
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.help_open = true,
+            KeyCode::Char('t') => {
+                self.plan.open();
+                self.push_screen(Screen::Plan);
+            }
             KeyCode::Char('m') => self.go_home(Screen::Map),
             KeyCode::Char('w') => self.go_home(Screen::Workloads),
             KeyCode::Char('n') => {
@@ -454,6 +518,8 @@ impl App {
                         let ctx = ctx!(self, source);
                         self.logs.handle_key(key, &ctx)
                     }
+                    // Plan keys are intercepted above; unreachable here.
+                    Screen::Plan => None,
                 };
                 if let Some(a) = action {
                     let source = if screen == Screen::Map {
@@ -564,6 +630,26 @@ impl App {
                     None => {}
                 }
             }
+            Action::Stage(iv) => {
+                if source == ClusterId::Hot {
+                    self.planned.stage(iv);
+                    self.plan.outcome = None; // the staged set changed
+                } else {
+                    self.flash = Some("planning applies to the hot cluster only".into());
+                }
+            }
+            Action::ToggleRestart(r) => {
+                if source == ClusterId::Hot {
+                    if self.planned.restarting(&r) {
+                        self.planned.unstage_restart(&r);
+                    } else {
+                        self.planned.stage_restart(r);
+                    }
+                    self.plan.outcome = None;
+                } else {
+                    self.flash = Some("planning applies to the hot cluster only".into());
+                }
+            }
             Action::SwitchContext(name) => self.switch_context(name).await,
             Action::EdgeReached(edge) => {
                 if self.warm.is_some() {
@@ -617,8 +703,51 @@ impl App {
         }
     }
 
-    /// Run the confirmed pod eviction (the TUI's only write) off the loop,
-    /// reporting the outcome back as an `Evicted` event for the flash.
+    /// Act on a command from the End-of-Turn review (unstage / discard /
+    /// commit). Commit only raises the confirm — `spawn_commit` does the write.
+    fn apply_plan_cmd(&mut self, cmd: PlanCmd) {
+        match cmd {
+            PlanCmd::Unstage(i) => {
+                self.planned.unstage(i);
+                self.plan.outcome = None;
+            }
+            PlanCmd::Discard => {
+                self.planned.clear();
+                self.plan.outcome = None;
+            }
+            PlanCmd::Commit => {
+                let appliable = plan_diff(&self.hot.world, &self.planned)
+                    .iter()
+                    .filter(|c| !c.noop)
+                    .count();
+                if appliable > 0 {
+                    self.pending_commit = true;
+                } else {
+                    self.flash = Some("nothing to commit".into());
+                }
+            }
+        }
+    }
+
+    /// Commit the staged planning turn off the loop: the shared write file
+    /// dry-runs every change (also enforcing RBAC) and only applies for real
+    /// if all pass. The per-row outcome comes back as a `Committed` event.
+    fn spawn_commit(&mut self) {
+        let ivs: Vec<Intervention> = self.planned.interventions().to_vec();
+        if ivs.is_empty() {
+            return;
+        }
+        let client = self.hot_cluster.client.clone();
+        self.flash = Some(format!("committing {} change(s) …", ivs.len()));
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let outcome = actions::commit_interventions(client, &ivs).await;
+            let _ = tx.send(AppEvent::Committed { outcome }).await;
+        });
+    }
+
+    /// Run the confirmed pod eviction off the loop, reporting the outcome
+    /// back as an `Evicted` event for the flash.
     fn spawn_evict(&mut self, cluster: ClusterId, namespace: String, pod: String) {
         let client = match cluster {
             ClusterId::Warm => self
@@ -763,6 +892,11 @@ impl App {
                     let ctx = ctx!(self, self.view_cluster(Screen::Logs));
                     self.logs.render(f, main_a, &ctx);
                 }
+                Screen::Plan => {
+                    // The planning turn is hot-cluster only.
+                    let ctx = ctx!(self, ClusterId::Hot);
+                    self.plan.render(f, main_a, &ctx);
+                }
             }
 
             {
@@ -777,6 +911,13 @@ impl App {
             }
             if let Some((_, ns, pod)) = self.pending_evict.clone() {
                 render_evict_confirm(f, &self.theme, &ns, &pod);
+            }
+            if self.pending_commit {
+                let n = plan_diff(&self.hot.world, &self.planned)
+                    .iter()
+                    .filter(|c| !c.noop)
+                    .count();
+                render_commit_confirm(f, &self.theme, n);
             }
         })?;
         Ok(())
@@ -802,6 +943,28 @@ fn render_evict_confirm(f: &mut Frame, theme: &Theme, ns: &str, pod: &str) {
         .border_style(crit)
         .title(" Evict pod? ")
         .title_style(crit);
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// The TUI commit confirm — the planning turn's write gate. `n` changes apply
+/// to the cluster on `y`, each server-side dry-run validated first.
+fn render_commit_confirm(f: &mut Frame, theme: &Theme, n: usize) {
+    let warn = theme.severity(Severity::Warning);
+    let lines = vec![
+        Line::raw(""),
+        Line::from(format!("  Commit {n} staged change(s) to the cluster?")),
+        Line::raw(""),
+        Line::raw("  Each is server-side dry-run validated first (which also"),
+        Line::raw("  enforces RBAC); only if all pass are they applied."),
+        Line::raw(""),
+        Line::styled("  [y] commit     [n] cancel", warn),
+    ];
+    let area = centered(f.area(), 62, lines.len() as u16 + 2);
+    f.render_widget(Clear, area);
+    let block = Block::bordered()
+        .border_style(warn)
+        .title(" Commit planning turn? ")
+        .title_style(warn);
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 

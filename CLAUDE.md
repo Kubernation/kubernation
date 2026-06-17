@@ -13,12 +13,14 @@ not a wall of dashboards.
 `kubernation-core/src/k8s/actions.rs` — everything else (reflectors, pure
 models, on-demand log tails) is read-only. Two write paths exist, each behind
 an explicit confirm: **pod eviction** (a real `DELETE`, from a pod's evict
-control), and **committing the planning turn** (apply staged Scale/Cordon to
-the cluster). Both are **RBAC-aware**: eviction probes `delete pods` with a
+control), and **committing the planning turn** (apply staged Scale/Cordon/
+Restart to the cluster). Both write paths now exist in **both** frontends (GUI
+and TUI). Both are **RBAC-aware**: eviction probes `delete pods` with a
 `SelfSubjectAccessReview`; the planning turn validates every staged change with
 a **server-side dry-run** (which also enforces RBAC) and only applies if all
-pass. Staging itself still never writes — only Commit does. See the
-"Pod eviction" and "Planning-turn apply" decisions.
+pass (all-or-nothing at the gate, via `actions::commit_interventions`). Staging
+itself still never writes — only Commit does. See the "Pod eviction",
+"Planning-turn apply", and "Planning turn in the TUI" decisions.
 
 The full product brief lives in `kubernation-tui-mvp-prompt.md`. Read it before
 proposing scope changes.
@@ -65,9 +67,10 @@ crates/
                  fixtures.rs  synthetic worlds (feature = "fixtures")
     util.rs      fnv1a64 stable hash, age/bytes formatting
   kubernation/        THE TUI (the product): main/app/events/logging/config
-                 + ui/ components (map, workloads, city, node_detail,
-                 attention_panel, sidebar, status_bar, help, picker,
-                 theme, symbols). `cargo run` = this (default-members).
+                 + ui/ components (map, workloads, city, node_detail, plan
+                 [End-of-Turn review], attention_panel, sidebar, status_bar,
+                 help, picker, theme, symbols). `cargo run` = this
+                 (default-members).
   kubernation-gui/    macroquad windowed client over the same core (promoted
                  from spike): net.rs (tokio thread publishing Models +
                  ObservedWorld snapshots), draw.rs (ISOMETRIC 2:1 diamond
@@ -590,6 +593,28 @@ what makes the interesting logic unit-testable without a cluster.
   Ingress + a `BackoffLimitExceeded` Job both fire, and the Job collapses from
   three lines (2 pods + Job) to one. Still deferred: unmounted-PVC island
   granaries (a *map* feature, not attention).
+- **Planning turn in the TUI** (2026-06-17, roadmap "frontend parity"): the
+  terminal client gained the staging + End-of-Turn + commit flow that was
+  GUI-only. `RenderCtx` now carries `planned: &PlannedWorld` (the one new field
+  threaded through the 4 ctx sites) so the city/node views show staged deltas;
+  staging is gated to the hot world (`source == Hot`) since `PlannedWorld` is
+  hot-only. **City** (`ui/city.rs`): `+`/`−` emit `Action::Stage(Scale)`
+  (skipped for DaemonSets), `R` emits `Action::ToggleRestart`; a header line
+  shows the staged delta or a dim hint. **Node** (`ui/node_detail.rs`): `C`
+  emits `Action::Stage(Cordon{on: !current})`. **`t`** pushes `Screen::Plan`
+  (`ui/plan.rs`, a `PlanView`): the `plan_diff` table with `j/k` nav, `x`
+  unstage, `D` discard, `c`/`Enter` commit; its keys are intercepted before the
+  global bindings so `c`/`x`/`D` don't clash. Commit raises a y/n confirm
+  (`pending_commit`, mirroring `pending_evict`); `spawn_commit` runs
+  `actions::commit_interventions` off the loop and reports an
+  `AppEvent::Committed{outcome}` (flash + per-row RESULT panel). **The commit
+  orchestration (dry-run-all → apply-all) moved from the GUI net thread into
+  the write file** as `commit_interventions` returning `CommitOutcome`/
+  `CommitRow`; the GUI now aliases `PlanOutcome = CommitOutcome` and calls it,
+  so both frontends share the one all-or-nothing gate. Verified live (the
+  shared helper, via the GUI's `--plan --plan-go`: metrics-server 1→3, worker
+  cordoned, web rolled — then reverted); the TUI plan view has a TestBackend
+  snapshot test. The TUI is no longer read-only-plus-evict — it has both writes.
 
 ## The pair (hot/warm)
 
@@ -661,6 +686,9 @@ on 256-color terminals.
 `Ctrl+u/d` half page, `Home/End` west/east continent · `Enter` opens the
 region under the cursor · `l` tail the selected pod's logs (city/node) ·
 `e` evict the selected pod (city/node — real delete, RBAC-gated, y/n confirm) ·
+**planning turn:** `+`/`−` stage scale & `R` toggle restart (city), `C` stage
+cordon (node), `t` open the End-of-Turn review (`x` unstage · `D` discard ·
+`c`/`Enter` commit, y/n confirm) ·
 `Esc` back · `m` map ·
 `w` workloads · `n` next concern · `a` attention panel · `Tab` focus panel ·
 `c` context picker · `1/2/3` overlays (pressure/replicas/namespace) ·
@@ -726,8 +754,7 @@ never blocks input.
 
 ## Deferred (deliberately)
 
-more interventions (image set) · the planning turn in the TUI (staging + diff
-+ commit; the GUI has it, the TUI has evict only) ·
+more interventions (image set) ·
 external services / chaos layers ·
 unmounted-PVC island granaries (the *map* feature; connectivity + failed-Job
 attention are now built) · Job/CronJob

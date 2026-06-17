@@ -53,6 +53,17 @@ const KEYMAP: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "PLANNING TURN",
+        &[
+            ("+ / −", "stage scale ± on the city screen"),
+            ("R", "stage rolling restart (city)"),
+            ("C", "stage cordon / uncordon (node)"),
+            ("t", "End of Turn — review the staged diff"),
+            ("x / D", "(review) unstage row / discard all"),
+            ("c / Enter", "(review) commit — applies (confirm y/n)"),
+        ],
+    ),
+    (
         "MAP OVERLAYS",
         &[
             ("1", "pressure (default)"),

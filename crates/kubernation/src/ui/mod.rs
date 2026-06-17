@@ -5,6 +5,7 @@ pub mod help;
 pub mod logs;
 pub mod map;
 pub mod node_detail;
+pub mod plan;
 pub mod sidebar;
 pub mod status_bar;
 pub mod symbols;
@@ -20,6 +21,7 @@ use kubernation_core::state::attention::Concern;
 use kubernation_core::state::model::{Models, WorkloadRef};
 use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::pair::PairSync;
+use kubernation_core::state::planned::{Intervention, PlannedWorld};
 use theme::Theme;
 
 /// What a component asks the app to do in response to input. (Quit, back,
@@ -41,6 +43,12 @@ pub enum Action {
         pod: String,
     },
     SwitchContext(String),
+    /// Stage a planning-turn intervention (scale / cordon). Preview-only until
+    /// committed from the End-of-Turn review.
+    Stage(Intervention),
+    /// Toggle a staged rolling-restart for a workload (stage if absent,
+    /// unstage if already staged — the app holds the planned world to decide).
+    ToggleRestart(WorkloadRef),
     /// Cursor pushed against a map edge — in pair mode the app crosses to
     /// the other continent.
     EdgeReached(Edge),
@@ -89,6 +97,9 @@ pub struct RenderCtx<'a> {
     pub cluster_label: Option<&'static str>,
     /// Merged severity-ordered concerns across both worlds.
     pub attention: &'a [Concern],
+    /// The staged planning turn (hot-cluster only). Views read it to show
+    /// staged deltas; staging is gated to the hot world in the app.
+    pub planned: &'a PlannedWorld,
 }
 
 /// Common shape for the major views (component pattern per the ratatui

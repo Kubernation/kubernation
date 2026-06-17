@@ -2,6 +2,7 @@ use ratatui_crossterm::crossterm::event::{self, Event as TermEvent};
 use tokio::sync::mpsc;
 
 pub use kubernation_core::events::{ClusterId, WorldDelta};
+use kubernation_core::k8s::actions::CommitOutcome;
 
 /// Everything the app's single event loop selects over (besides ticks):
 /// terminal input and core world-delta notifications, merged into one
@@ -21,6 +22,8 @@ pub enum AppEvent {
     /// A pod eviction finished; the payload is the line to flash (Ok = a
     /// success message, Err = the failure).
     Evicted { result: Result<String, String> },
+    /// An End-of-Turn commit finished; the per-row outcome feeds the review.
+    Committed { outcome: CommitOutcome },
 }
 
 /// Terminal input arrives on a dedicated OS thread feeding the async loop.

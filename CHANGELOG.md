@@ -9,6 +9,24 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **The planning turn comes to the TUI.** The terminal client gains the full
+  staging + commit flow the GUI has: on a **city** screen `+`/`−` stage a scale
+  delta and `R` toggles a rolling restart; on a **node** screen `C` stages a
+  cordon/uncordon — each shown as a staged delta in the header. **`t`** opens
+  the **End of Turn** review (the `plan_diff`), where `x` unstages a row, `D`
+  discards the turn, and `c`/`Enter` commits behind a y/n confirm. Commit runs
+  through the same all-or-nothing dry-run gate as the GUI. The TUI now has both
+  write paths (evict + commit); staging stays preview-only. Keymap/help updated.
+
+### Changed
+- **Commit orchestration moved into the one write file.** The dry-run-all →
+  apply-all-for-real step (with its per-row result) now lives in
+  `k8s::actions::commit_interventions` instead of the GUI's net thread, so both
+  frontends share it and the "decide to write for real" logic stays inside the
+  single auditable write surface. The GUI's `PlanOutcome`/`PlanRow` are now the
+  core `CommitOutcome`/`CommitRow`.
+
+### Added
 - **Deeper attention queue: failed Jobs & broken routes.** Three new pure
   detectors (`state/attention.rs`, unit-tested against fixtures):
   - a **failed Job** surfaces as its own concern — Critical when it hit its

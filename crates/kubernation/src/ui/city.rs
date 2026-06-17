@@ -11,7 +11,10 @@ use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent};
 use super::symbols::{bar, pod_glyph};
 use super::{Action, Component, RenderCtx};
 use kubernation_core::state::attention::Severity;
-use kubernation_core::state::model::{CityModel, RolloutStatus, WorkloadRef, build_city};
+use kubernation_core::state::model::{
+    CityModel, RolloutStatus, WorkloadKind, WorkloadRef, build_city,
+};
+use kubernation_core::state::planned::Intervention;
 use kubernation_core::util::{format_age_opt, truncate};
 
 #[derive(Default)]
@@ -35,9 +38,37 @@ impl CityView {
 }
 
 impl Component for CityView {
-    fn handle_key(&mut self, key: KeyEvent, _ctx: &RenderCtx) -> Option<Action> {
+    fn handle_key(&mut self, key: KeyEvent, ctx: &RenderCtx) -> Option<Action> {
         let len = self.model.as_ref().map(|m| m.pods.len()).unwrap_or(0);
         match key.code {
+            // --- Planning turn: stage scale / restart for this workload ----
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                if let Some(m) = self.model.as_ref()
+                    && m.r.kind != WorkloadKind::DaemonSet
+                {
+                    let cur = ctx.planned.scaled(&m.r).unwrap_or(m.desired);
+                    return Some(Action::Stage(Intervention::Scale {
+                        workload: m.r.clone(),
+                        replicas: cur + 1,
+                    }));
+                }
+            }
+            KeyCode::Char('-') | KeyCode::Char('_') => {
+                if let Some(m) = self.model.as_ref()
+                    && m.r.kind != WorkloadKind::DaemonSet
+                {
+                    let cur = ctx.planned.scaled(&m.r).unwrap_or(m.desired);
+                    return Some(Action::Stage(Intervention::Scale {
+                        workload: m.r.clone(),
+                        replicas: (cur - 1).max(0),
+                    }));
+                }
+            }
+            KeyCode::Char('R') => {
+                if let Some(m) = self.model.as_ref() {
+                    return Some(Action::ToggleRestart(m.r.clone()));
+                }
+            }
             KeyCode::Down | KeyCode::Char('j') if len > 0 => {
                 let i = self.pods.selected().unwrap_or(0);
                 self.pods.select(Some((i + 1).min(len - 1)));
@@ -114,7 +145,8 @@ impl Component for CityView {
             return;
         };
 
-        let head_h = if ctx.pair.is_some() { 5 } else { 4 };
+        // Header carries an extra line for the plan/hint and one for pair.
+        let head_h = if ctx.pair.is_some() { 6 } else { 5 };
         let [head_a, mid_a, ev_a] = Layout::vertical([
             Constraint::Length(head_h),
             Constraint::Min(6),
@@ -188,6 +220,31 @@ impl Component for CityView {
                 ]),
                 None => Line::styled("pair      unknown", theme.dim()),
             });
+        }
+        // Planning turn: the staged delta, or a dim hint if nothing's staged.
+        let staged_scale = ctx.planned.scaled(&m.r);
+        let restarting = ctx.planned.restarting(&m.r);
+        if staged_scale.is_some() || restarting {
+            let warn = theme.severity(Severity::Warning);
+            let mut spans = vec![Span::styled("plan      ", theme.title())];
+            if let Some(rep) = staged_scale {
+                spans.push(Span::styled(format!("scale {} → {rep}", m.desired), warn));
+            }
+            if restarting {
+                if staged_scale.is_some() {
+                    spans.push(Span::raw(" · "));
+                }
+                spans.push(Span::styled("rolling restart", warn));
+            }
+            spans.push(Span::styled("  (t: end of turn)", theme.dim()));
+            lines.push(Line::from(spans));
+        } else {
+            let hint = if m.r.kind == WorkloadKind::DaemonSet {
+                "plan      R restart · t end of turn"
+            } else {
+                "plan      +/− scale · R restart · t end of turn"
+            };
+            lines.push(Line::styled(hint, theme.dim()));
         }
         f.render_widget(Paragraph::new(lines).block(head_block), head_a);
 
@@ -339,6 +396,7 @@ mod tests {
 
         let models = Models::build(&world);
         let theme = Theme::new(ColorMode::Auto);
+        let planned = kubernation_core::state::planned::PlannedWorld::default();
         let ctx = RenderCtx {
             models: &models,
             world: &world,
@@ -350,6 +408,7 @@ mod tests {
             pair: None,
             cluster_label: None,
             attention: &[],
+            planned: &planned,
         };
         let mut view = CityView::default();
         view.open(WorkloadRef {

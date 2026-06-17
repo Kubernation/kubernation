@@ -12,6 +12,7 @@ use super::symbols::{bar, node_glyph, pod_glyph};
 use super::{Action, Component, RenderCtx};
 use kubernation_core::state::attention::Severity;
 use kubernation_core::state::model::{MetricSource, NodeDetailModel, build_node_detail};
+use kubernation_core::state::planned::Intervention;
 use kubernation_core::util::{format_age_opt, human_bytes};
 
 #[derive(Default)]
@@ -35,9 +36,17 @@ impl NodeDetailView {
 }
 
 impl Component for NodeDetailView {
-    fn handle_key(&mut self, key: KeyEvent, _ctx: &RenderCtx) -> Option<Action> {
+    fn handle_key(&mut self, key: KeyEvent, ctx: &RenderCtx) -> Option<Action> {
         let len = self.model.as_ref().map(|m| m.pods.len()).unwrap_or(0);
         match key.code {
+            // --- Planning turn: stage a cordon/uncordon for this node ------
+            KeyCode::Char('C') => {
+                if let Some(m) = self.model.as_ref() {
+                    let node = m.tile.name.clone();
+                    let cur = ctx.planned.cordoned(&node).unwrap_or(m.tile.cordoned);
+                    return Some(Action::Stage(Intervention::Cordon { node, on: !cur }));
+                }
+            }
             KeyCode::Down | KeyCode::Char('j') if len > 0 => {
                 let i = self.pods.selected().unwrap_or(0);
                 self.pods.select(Some((i + 1).min(len - 1)));
@@ -119,7 +128,7 @@ impl Component for NodeDetailView {
         let t = &m.tile;
 
         let [head_a, pods_a] =
-            Layout::vertical([Constraint::Length(6), Constraint::Min(5)]).areas(area);
+            Layout::vertical([Constraint::Length(7), Constraint::Min(5)]).areas(area);
 
         // --- Header -------------------------------------------------------
         let mut state_spans = vec![
@@ -182,11 +191,28 @@ impl Component for NodeDetailView {
             .collect::<Vec<_>>()
             .join(" ");
 
+        // Planning turn: the staged cordon delta, or a dim hint.
+        let plan_line = match ctx.planned.cordoned(&t.name) {
+            Some(on) => Line::from(vec![
+                Span::styled("plan  ", theme.title()),
+                Span::styled(
+                    if on {
+                        "cordon (staged)"
+                    } else {
+                        "uncordon (staged)"
+                    },
+                    theme.severity(Severity::Warning),
+                ),
+                Span::styled("  (t: end of turn)", theme.dim()),
+            ]),
+            None => Line::styled("plan  C cordon/uncordon · t end of turn", theme.dim()),
+        };
         let head = vec![
             Line::from(state_spans),
             gauges,
             Line::styled(terrain, theme.dim()),
             Line::styled(conditions, theme.dim()),
+            plan_line,
         ];
         let title = match ctx.cluster_label {
             Some(l) => format!(" NODE {} — {l} ", t.name),
