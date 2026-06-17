@@ -576,12 +576,28 @@ what makes the interesting logic unit-testable without a cluster.
   `stone_well`); meaning colors (red/yellow attention, cyan structures, sync)
   are unchanged. **The Kenney sprite set + `sprites.rs` + `--tileset` were
   removed** — the map is now 100% original geometry, satisfying the
-  de-trademark posture (evoke the genre, clone nothing). Minimap stays a
-  top-down chart (its viewport box inverse-projects the 4 screen corners).
+  de-trademark posture (evoke the genre, clone nothing). The minimap was later
+  reprojected to match (see "Isometric minimap").
   `cargo test` round-trips the hit-test; `--zoom`/`--center`/`--screenshot`
   verify framing headlessly. Deferred: chunkier landmasses depend on real
   multi-node zones (the dev cluster has 1 node/zone → thin diagonal bands);
-  per-tile sprite art if ever wanted; iso minimap.
+  per-tile sprite art if ever wanted.
+- **Isometric minimap** (2026-06-17, roadmap "polish — zoom LOD + iso minimap"):
+  the overview minimap (`draw.rs` `minimap_layout`/`draw_minimap`/
+  `MinimapLayout::{pt,world_cell}`) was reprojected from the top-down chart to
+  the same iso 2:1 diamond as the main map. `MinimapLayout` now holds per-cell
+  half-extents `hw/hh` (fit so the scene's iso AABB `(W+H)·hw × (W+H)·hh` fills
+  ~220px wide) + an `offx` placing the diamond's west tip at the panel's left;
+  `pt(wx,wy)` is the scaled-down `to_screen`, `world_cell` its floor-inverse
+  (round-trip-tested, like the main `cell_at`). Land is drawn as one iso
+  parallelogram per province (health-tinted, 2 triangles), islands likewise; the
+  per-row coast carving is dropped (a minimap is an overview). The viewport
+  indicator became a **sheared parallelogram**: the 4 screen corners are
+  inverse-projected to continuous world coords, clamped to `[0,bounds]`, and
+  re-projected through `pt` — so it tracks the iso view instead of an AABB box.
+  The **zoom LOD** half (World/Regional/Local `Scale` tiers, `lod(zoom)`) was
+  already built (see "GUI cartographic scale tiers"). Verified live at two
+  zooms. The TUI minimap stays its own compact node-cell chart.
 - **Pod eviction — the first mutation** (2026-06-17, user's explicit call to
   "add the ability to delete pods", choosing **real live deletion** labeled
   **"evict"**): the project's first and only cluster *write*, a deliberate,

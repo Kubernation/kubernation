@@ -1,8 +1,8 @@
 //! The world painter: an isometric (2:1 diamond) projection of the
 //! rectangular world grid, all original procedural geometry — dithered
 //! terrain diamonds, inked shorelines, procedural settlements with classic-4X
-//! population boxes + serif name banners, namespace islands, and the
-//! (top-down) minimap. All geometry comes from `kubernation_core::state::world`.
+//! population boxes + serif name banners, namespace islands, and an isometric
+//! minimap. All geometry comes from `kubernation_core::state::world`.
 //!
 //! Rendering is a back-to-front two-pass painter's algorithm (all terrain,
 //! then settlements/labels) so south-east tiles and tall buildings overlap
@@ -1421,32 +1421,56 @@ fn draw_struct_mark(glyph: char, p: Vec2, z: f32, color: Color) {
 pub struct MinimapLayout {
     pub frame: Rect,
     pub inner: Rect,
-    scale_x: f32,
-    scale_y: f32,
+    /// Per-cell iso half-extents on the minimap (2:1, like the main map).
+    hw: f32,
+    hh: f32,
+    /// Horizontal shift so the diamond's west tip lands at `inner.x`.
+    offx: f32,
+    bounds: (u16, u16),
 }
 
 impl MinimapLayout {
+    /// Absolute world cell (wx, wy) → minimap screen point, under the same iso
+    /// 2:1 projection as the main map (just scaled down).
+    fn pt(&self, wx: f32, wy: f32) -> Vec2 {
+        vec2(
+            self.inner.x + self.offx + (wx - wy) * self.hw,
+            self.inner.y + (wx + wy) * self.hh,
+        )
+    }
+
+    /// Inverse: minimap click → the world cell under it (iso un-projection).
     pub fn world_cell(&self, screen: Vec2, bounds: (u16, u16)) -> Option<(u16, u16)> {
-        if !self.inner.contains(screen) {
+        if !self.frame.contains(screen) {
             return None;
         }
-        let wx = ((screen.x - self.inner.x) / self.scale_x) as u16;
-        let wy = ((screen.y - self.inner.y) / self.scale_y) as u16;
-        Some((wx.min(bounds.0 - 1), wy.min(bounds.1 - 1)))
+        let a = (screen.x - self.inner.x - self.offx) / self.hw; // wx - wy
+        let b = (screen.y - self.inner.y) / self.hh; // wx + wy
+        let wx = (a + b) * 0.5;
+        let wy = (b - a) * 0.5;
+        (wx >= 0.0 && wy >= 0.0 && wx < bounds.0 as f32 && wy < bounds.1 as f32)
+            .then_some((wx as u16, wy as u16))
     }
 }
 
 pub fn minimap_layout(bounds: (u16, u16)) -> MinimapLayout {
-    let scale = (220.0 / bounds.0.max(1) as f32).min(3.0);
-    let mw = bounds.0 as f32 * scale;
-    let mh = (bounds.1 as f32 * scale * (TILE_H / TILE_W)).min(190.0);
-    let x0 = screen_width() - mw - 14.0;
-    let y0 = 44.0;
+    let (w, h) = (bounds.0 as f32, bounds.1 as f32);
+    let span = (w + h).max(1.0);
+    // The iso scene is a diamond whose AABB is span·hw wide × span·hh tall
+    // (2:1). Fit the width to ~220px, capping per-cell size for tiny scenes.
+    let hw = (220.0 / span).min(6.0);
+    let hh = hw * (TILE_H / TILE_W);
+    let mw = span * hw;
+    let mh = span * hh;
+    let x0 = screen_width() - mw - 16.0;
+    let y0 = 46.0;
     MinimapLayout {
-        frame: Rect::new(x0 - 4.0, y0 - 4.0, mw + 8.0, mh + 8.0),
+        frame: Rect::new(x0 - 6.0, y0 - 6.0, mw + 12.0, mh + 12.0),
         inner: Rect::new(x0, y0, mw, mh),
-        scale_x: scale,
-        scale_y: mh / bounds.1.max(1) as f32,
+        hw,
+        hh,
+        offx: h * hw,
+        bounds,
     }
 }
 
@@ -1455,66 +1479,65 @@ pub fn draw_minimap(worlds: &[SceneWorld], cam: &Camera, ml: &MinimapLayout) {
     draw_rectangle_lines(
         ml.frame.x, ml.frame.y, ml.frame.w, ml.frame.h, 2.0, PARCHMENT,
     );
-    draw_rectangle(ml.inner.x, ml.inner.y, ml.inner.w, ml.inner.h, OCEAN);
+    draw_rectangle(ml.frame.x, ml.frame.y, ml.frame.w, ml.frame.h, OCEAN);
+
+    // Fill the iso parallelogram of a w×h cell block at absolute (x, y).
+    let quad = |x: f32, y: f32, w: f32, h: f32, col: Color| {
+        let a = ml.pt(x, y);
+        let b = ml.pt(x + w, y);
+        let c = ml.pt(x + w, y + h);
+        let d = ml.pt(x, y + h);
+        draw_triangle(a, b, c, col);
+        draw_triangle(a, c, d, col);
+    };
+
     for sw in worlds {
-        let ox = sw.off as f32 * ml.scale_x;
+        let off = sw.off as f32;
         for cont in &sw.world.continents {
-            // Carve the same noise coastline as the main map, row by row,
-            // so the chart silhouette matches the land you're exploring.
-            let coast = Coast::new(cont);
             for p in &cont.provinces {
-                for row in p.y..p.y + p.h {
-                    let (li, lw) = coast.land_span(row as i32, p.w as f32);
-                    if lw <= 0.0 {
-                        continue;
-                    }
-                    draw_rectangle(
-                        ml.inner.x + ox + (p.x as f32 + li) * ml.scale_x,
-                        ml.inner.y + row as f32 * ml.scale_y,
-                        lw * ml.scale_x,
-                        ml.scale_y + 0.6,
-                        terrain(p.tile.health),
-                    );
-                }
+                quad(
+                    off + p.x as f32,
+                    p.y as f32,
+                    p.w as f32,
+                    p.h as f32,
+                    terrain(p.tile.health),
+                );
             }
         }
         for isl in &sw.world.islands {
-            draw_rectangle(
-                ml.inner.x + ox + isl.x as f32 * ml.scale_x,
-                ml.inner.y + isl.y as f32 * ml.scale_y,
-                isl.w as f32 * ml.scale_x,
-                isl.h as f32 * ml.scale_y,
+            quad(
+                off + isl.x as f32,
+                isl.y as f32,
+                isl.w as f32,
+                isl.h as f32,
                 SAND,
             );
         }
     }
-    // Viewport indicator: the visible region is a sheared parallelogram of
-    // cells under iso, so inverse-project the four screen corners and box
-    // their AABB onto the (top-down) chart.
+
+    // Viewport indicator: inverse-project the four screen corners to continuous
+    // world coords, clamp to the world, and re-project onto the minimap — a
+    // sheared parallelogram that matches the iso view (not an AABB box).
     let (hw, hh) = cam.cell_px();
-    let inv = |sx: f32, sy: f32| {
-        let a = (sx + cam.pos.x) / hw;
-        let b = (sy + cam.pos.y) / hh;
-        ((a + b) * 0.5, (b - a) * 0.5)
+    let (cw, ch) = (ml.bounds.0 as f32, ml.bounds.1 as f32);
+    let corner = |sx: f32, sy: f32| {
+        let a = (sx + cam.pos.x) / hw; // wx - wy
+        let b = (sy + cam.pos.y) / hh; // wx + wy
+        ml.pt(
+            ((a + b) * 0.5).clamp(0.0, cw),
+            ((b - a) * 0.5).clamp(0.0, ch),
+        )
     };
-    let cs = [
-        inv(0.0, 0.0),
-        inv(screen_width(), 0.0),
-        inv(0.0, screen_height()),
-        inv(screen_width(), screen_height()),
+    let pts = [
+        corner(0.0, 0.0),
+        corner(screen_width(), 0.0),
+        corner(screen_width(), screen_height()),
+        corner(0.0, screen_height()),
     ];
-    let minx = cs.iter().map(|c| c.0).fold(f32::MAX, f32::min).max(0.0);
-    let maxx = cs.iter().map(|c| c.0).fold(f32::MIN, f32::max);
-    let miny = cs.iter().map(|c| c.1).fold(f32::MAX, f32::min).max(0.0);
-    let maxy = cs.iter().map(|c| c.1).fold(f32::MIN, f32::max);
-    draw_rectangle_lines(
-        ml.inner.x + minx * ml.scale_x,
-        ml.inner.y + miny * ml.scale_y,
-        ((maxx - minx) * ml.scale_x).min(ml.inner.w),
-        ((maxy - miny) * ml.scale_y).min(ml.inner.h),
-        2.0,
-        INK,
-    );
+    for i in 0..4 {
+        let (p, q) = (pts[i], pts[(i + 1) % 4]);
+        draw_line(p.x, p.y, q.x, q.y, 1.5, INK);
+    }
 }
 
 #[cfg(test)]
@@ -1556,5 +1579,36 @@ mod tests {
         let cells = [(0, 0), (1, 0), (0, 1), (7, 3), (59, 49), (25, 10)];
         roundtrip(1.7, vec2(-123.0, 45.0), bounds, &cells);
         roundtrip(0.43, vec2(311.0, -88.0), bounds, &cells);
+    }
+
+    // The minimap shares the iso convention: a click on a cell's diamond must
+    // resolve back to that cell (so minimap click-to-jump lands right). Build
+    // the layout directly to avoid the macroquad screen_width() dependency.
+    #[test]
+    fn minimap_iso_roundtrips() {
+        let bounds = (18u16, 7u16);
+        let (w, h) = (bounds.0 as f32, bounds.1 as f32);
+        let span = w + h;
+        let hw = (220.0 / span).min(6.0);
+        let hh = hw * (TILE_H / TILE_W);
+        let (mw, mh) = (span * hw, span * hh);
+        let ml = MinimapLayout {
+            frame: Rect::new(-6.0, -6.0, mw + 12.0, mh + 12.0),
+            inner: Rect::new(0.0, 0.0, mw, mh),
+            hw,
+            hh,
+            offx: h * hw,
+            bounds,
+        };
+        for wx in 0..bounds.0 {
+            for wy in 0..bounds.1 {
+                let center = ml.pt(wx as f32 + 0.5, wy as f32 + 0.5);
+                assert_eq!(
+                    ml.world_cell(center, bounds),
+                    Some((wx, wy)),
+                    "minimap cell ({wx},{wy}) center misrouted"
+                );
+            }
+        }
     }
 }

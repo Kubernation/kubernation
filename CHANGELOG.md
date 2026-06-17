@@ -8,6 +8,16 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+- **Isometric minimap (GUI).** The overview minimap was reprojected from a
+  top-down chart to the same 2:1 isometric diamond as the main map: landmasses
+  are drawn as iso parallelograms (one per province, health-tinted) and the
+  viewport indicator is now a *sheared parallelogram* (the inverse-projected,
+  clamped screen corners) instead of an AABB box — so the chart reads as a
+  scaled-down view of the world you're exploring. Click-to-jump un-projects the
+  iso click (round-trip-tested). The zoom level-of-detail tiers (World /
+  Regional / Local generalization) were already in place.
+
 ### Fixed
 - **GUI image editor input hygiene** (adversarial-review follow-up). Opening
   the city window's image field now flushes macroquad's stray char queue (so
