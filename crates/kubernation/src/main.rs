@@ -4,13 +4,13 @@
 //! With `--warm`, the standby cluster appears as a second archipelago
 //! east of the hot one, with sync chips on every city.
 //!
-//!   make gui            # hot only
-//!   make gui-pair       # hot + warm
+//!   make run            # hot only
+//!   make pair           # hot + warm
 //!
 //! Controls: WASD/arrows or right-drag pan · wheel zoom · hover for
 //! tooltips · click to inspect (city / province window) · ]/[ sail
-//! between cities · N fly to the next concern · ?/F1 Almanac (in-app
-//! reference) · Esc close · Q quit.
+//! between cities · N fly to the next concern · L tail its logs ·
+//! `:` resource browser · ?/F1 Almanac (in-app reference) · Esc close · Q quit.
 
 mod advisor;
 mod almanac;
@@ -18,6 +18,7 @@ mod browse;
 mod city;
 mod draw;
 mod inspect;
+mod logging;
 mod logo;
 mod menu;
 mod net;
@@ -65,6 +66,9 @@ struct Args {
     /// Path to kubeconfig
     #[arg(long)]
     kubeconfig: Option<PathBuf>,
+    /// Log level for the file log (RUST_LOG overrides it)
+    #[arg(long, default_value = "info")]
+    log_level: String,
     /// Project a CRD's instances onto the map (repeatable)
     #[arg(long = "project", value_name = "CRD")]
     project: Vec<String>,
@@ -172,6 +176,10 @@ fn window_conf() -> Conf {
 #[macroquad::main(window_conf)]
 async fn main() {
     let args = Args::parse();
+    // Capture core's tracing diagnostics to a file (the window has no console).
+    if let Err(e) = logging::init(&args.log_level) {
+        eprintln!("kubernation: could not open the log file: {e}");
+    }
     text::init();
     logo::init();
     let shot = args.screenshot.clone();
@@ -233,6 +241,10 @@ async fn main() {
     let mut log_window = kubernation_core::k8s::logs::LogWindow::default();
     let mut log_filter = String::new();
     let mut log_filter_active = false;
+    // Scrollback: `log_follow` sticks to the tail; otherwise `log_scroll` is the
+    // top visible line (draw_logs clamps it to the fetched/filtered length).
+    let mut log_scroll: usize = 0;
+    let mut log_follow = true;
     let mut concern_logs_armed = false;
     let mut auto_tail = args.tail;
     // The Almanac (in-app reference) — a modal window; None = closed.
@@ -618,7 +630,37 @@ async fn main() {
                         toast = Some((export_to_file(&tail.text, &fname), get_time() + 4.0));
                     }
                 }
+                // Scrollback: wheel + j/k scroll, g top, f back to following.
+                // (draw_logs clamps log_scroll to the fetched/filtered length.)
+                let (_, wheel) = mouse_wheel();
+                if wheel != 0.0 {
+                    log_follow = false;
+                    if wheel > 0.0 {
+                        log_scroll = log_scroll.saturating_sub(3);
+                    } else {
+                        log_scroll += 3;
+                    }
+                }
+                if is_key_pressed(KeyCode::J) || is_key_pressed(KeyCode::Down) {
+                    log_follow = false;
+                    log_scroll += 1;
+                }
+                if is_key_pressed(KeyCode::K) || is_key_pressed(KeyCode::Up) {
+                    log_follow = false;
+                    log_scroll = log_scroll.saturating_sub(1);
+                }
+                if is_key_pressed(KeyCode::G) {
+                    log_follow = false;
+                    log_scroll = 0;
+                }
+                if is_key_pressed(KeyCode::F) {
+                    log_follow = true;
+                }
             }
+        } else {
+            // Overlay closed — next open starts at the tail, following.
+            log_scroll = 0;
+            log_follow = true;
         }
         // While the context picker is open it swallows navigation.
         if picker {
@@ -749,6 +791,7 @@ async fn main() {
             && !panel_modal
             && !plan_open
             && open_menu.is_none()
+            && !log_open
         {
             let pan = 14.0;
             if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) {
@@ -1391,6 +1434,8 @@ async fn main() {
                         log_previous,
                         log_timestamps,
                         log_window,
+                        &mut log_scroll,
+                        &mut log_follow,
                     );
                 }
                 draw_attention_strip(&s.attention, paired, concern_idx, panels::map_width());

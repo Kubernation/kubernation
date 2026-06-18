@@ -17,7 +17,12 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   unchanged. `make smoke` (the CI gate) is now a UI-free core example
   (`examples/smoke.rs`), and `make perf-test` times the core `Models::build`
   rebuild (~1ms at 100 nodes / 1000 pods). Lost: headless/SSH operation and the
-  TUI's render snapshot tests (the logic stays tested in core).
+  TUI's render snapshot tests (the logic stays tested in core). A follow-up
+  caught + fixed two regressions the removal introduced: **file logging was
+  restored** (core's `tracing` diagnostics had no subscriber after the TUI took
+  it; now written to `~/.local/state/kubernation/kubernation.log`, `RUST_LOG` /
+  `--log-level`), and the **log overlay regained scrollback** (`j/k`/`g` scroll,
+  `f` follow, wheel) — `s`'s larger history windows were otherwise unreachable.
 
 ### Added
 - **One key from a concern to its logs (`L`).** The attention queue parks you on

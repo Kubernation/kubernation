@@ -256,6 +256,7 @@ pub(crate) fn observed_for(
 /// reflects the `--previous` toggle, `filter_active` the live filter editor,
 /// `timestamps`/`window` the ts and history-window state (for the title; the
 /// fetched lines already carry inline timestamps when on).
+#[allow(clippy::too_many_arguments)]
 pub fn draw_logs(
     tail: &LogTail,
     filter: &str,
@@ -263,6 +264,11 @@ pub fn draw_logs(
     previous: bool,
     timestamps: bool,
     window: kubernation_core::k8s::logs::LogWindow,
+    // Scrollback: when `follow`, pin to the tail; else `scroll` is the top
+    // visible line. Clamped here against the fetched/filtered length and
+    // written back so the caller's state stays in range.
+    scroll: &mut usize,
+    follow: &mut bool,
 ) {
     let w = (screen_width() * 0.72).min(940.0);
     let h = (screen_height() - STRIP_H - CHROME_H - 40.0).max(200.0);
@@ -291,7 +297,7 @@ pub fn draw_logs(
     };
     text_bold(ascii(&title), x + 14.0, y + 22.0, 16.0, PARCHMENT);
     text(
-        "Esc · / filter (!excl) · p prev · T ts · s window · c copy · w export · live",
+        "Esc · / filter · p prev · T ts · s window · j/k/g scroll · f follow · c copy · w export",
         x + 14.0,
         y + 40.0,
         12.0,
@@ -362,12 +368,20 @@ pub fn draw_logs(
         return;
     }
 
-    // Show the tail end that fits — newest lines are most useful.
+    // Window: `follow` pins to the tail (newest), else `scroll` is the top
+    // visible line — clamped against the fitted row count and written back.
     let rows = (((y + h - 12.0) - body_top) / line_h).floor().max(1.0) as usize;
-    let start = all.len().saturating_sub(rows);
+    let max_top = all.len().saturating_sub(rows);
+    if *follow {
+        *scroll = max_top;
+    } else {
+        *scroll = (*scroll).min(max_top);
+    }
+    let start = *scroll;
+    let end = (start + rows).min(all.len());
     let plain = Color::new(0.80, 0.84, 0.80, 1.0);
     let mut ly = body_top;
-    for raw in &all[start..] {
+    for raw in &all[start..end] {
         // Bound to the panel width (no clipping in macroquad).
         let s = fit_width(raw, 13.0, body_w);
         // Tint by guessed severity so an error stands out (text unchanged).
@@ -380,14 +394,16 @@ pub fn draw_logs(
         text(ascii(&s), x + 14.0, ly, 13.0, color);
         ly += line_h;
     }
-    if start > 0 {
-        text(
-            ascii(&format!("… {start} earlier lines",)),
-            x + w - 170.0,
-            y + 22.0,
-            12.0,
-            DIM,
-        );
+    // Position readout: hidden-above count, or "following" at the tail.
+    let pos = if start > 0 {
+        format!("↑ {start} earlier")
+    } else if *follow {
+        "following".to_string()
+    } else {
+        String::new()
+    };
+    if !pos.is_empty() {
+        text(ascii(&pos), x + w - 170.0, y + 22.0, 12.0, DIM);
     }
 }
 

@@ -417,7 +417,8 @@ what makes the interesting logic unit-testable without a cluster.
   region under the cursor. Geometry is pure (`state/world.rs`) with
   placement-stability tests.
 - **Custom-resource projections** (2026-06-12): `--project <crd-name>`
-  (repeatable) or config `projections = [...]` resolves CRDs once at
+  (repeatable; the config `projections = [...]` form went with the TUI —
+  CLI flag only now) resolves CRDs once at
   connect (LIST, no CRD watch), spawns `DynamicObject` reflectors, and
   renders instances as `✦` structures on namespace islands. CRDs missing
   on a cluster are skipped with a log line — a pair may project
@@ -1002,7 +1003,8 @@ what makes the interesting logic unit-testable without a cluster.
 
 ## The pair (hot/warm)
 
-`--warm <context>` (or config `warm_context`) attaches a second cluster:
+`--warm <context>` attaches a second cluster (the config `warm_context` form
+went with the TUI — CLI flag only now):
 
 - **Two continents:** the map splits left (HOT) / right (WARM) with a `║`
   divider and a banner per side; `h`/`l` pushed past a map edge crosses to
