@@ -38,6 +38,16 @@ impl Component for WorkloadListView {
                     return Some(Action::OpenWorkload(row.r.clone()));
                 }
             }
+            // `y` inspects the selected workload's YAML.
+            KeyCode::Char('y') => {
+                if let Some(row) = self
+                    .state
+                    .selected()
+                    .and_then(|i| ctx.models.workloads.get(i))
+                {
+                    return Some(Action::InspectWorkload(row.r.clone()));
+                }
+            }
             _ => {}
         }
         None

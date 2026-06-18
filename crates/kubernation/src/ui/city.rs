@@ -171,6 +171,18 @@ impl Component for CityView {
                     });
                 }
             }
+            // `y` inspects the selected pod's YAML, else the workload's.
+            KeyCode::Char('y') => {
+                if let Some(m) = self.model.as_ref() {
+                    if let Some(pod) = self.pods.selected().and_then(|i| m.pods.get(i)) {
+                        return Some(Action::InspectPod {
+                            namespace: m.r.namespace.clone(),
+                            pod: pod.name.clone(),
+                        });
+                    }
+                    return Some(Action::InspectWorkload(m.r.clone()));
+                }
+            }
             _ => {}
         }
         None

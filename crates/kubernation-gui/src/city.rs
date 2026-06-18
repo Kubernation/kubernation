@@ -362,6 +362,7 @@ pub fn draw_city(
     for p in city.pods.iter().take(max_rows) {
         let rect = Rect::new(left_x, ly, left_w, row_h);
         let evict_btn = Rect::new(left_x + left_w - 52.0, ly + 1.0, 50.0, row_h - 2.0);
+        let yaml_btn = Rect::new(left_x + left_w - 104.0, ly + 1.0, 48.0, row_h - 2.0);
         let row_hover = rect.contains(mouse);
         if row_hover {
             draw_rectangle(
@@ -402,7 +403,9 @@ pub fn draw_city(
         if row_hover && image_edit.is_none() {
             if crate::window::evict_button(evict_btn, mouse, click, evict_perm) {
                 act.evict = Some((r.namespace.clone(), p.name.clone()));
-            } else if click && !evict_btn.contains(mouse) {
+            } else if crate::window::row_button(yaml_btn, mouse, click, "yaml") {
+                act.inspect = Some((r.namespace.clone(), p.name.clone()));
+            } else if click && !evict_btn.contains(mouse) && !yaml_btn.contains(mouse) {
                 act.log = Some((r.namespace.clone(), p.name.clone()));
             }
         }
@@ -418,7 +421,7 @@ pub fn draw_city(
         );
     }
     text(
-        "click a pod to tail logs · hover a pod to evict",
+        "click a pod to tail logs · hover for yaml / evict · y: workload yaml",
         left_x,
         col_bottom + 0.0,
         12.0,

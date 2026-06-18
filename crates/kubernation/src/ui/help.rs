@@ -22,6 +22,7 @@ const KEYMAP: &[(&str, &[(&str, &str)])] = &[
                 "filter (substring) · toggle previous container",
             ),
             ("e", "evict the selected pod — deletes it (confirm y/n)"),
+            ("y", "inspect YAML (selected pod, else the workload / node)"),
             ("Esc / Backspace", "back"),
         ],
     ),

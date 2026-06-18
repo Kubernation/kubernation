@@ -92,6 +92,22 @@ impl Component for NodeDetailView {
                     });
                 }
             }
+            // `y` inspects the selected garrison pod's YAML, else the node's.
+            KeyCode::Char('y') => {
+                if let Some(p) = self
+                    .pods
+                    .selected()
+                    .and_then(|i| self.model.as_ref()?.pods.get(i))
+                {
+                    return Some(Action::InspectPod {
+                        namespace: p.namespace.clone(),
+                        pod: p.name.clone(),
+                    });
+                }
+                if let Some(name) = self.current.clone() {
+                    return Some(Action::InspectNode(name));
+                }
+            }
             _ => {}
         }
         None

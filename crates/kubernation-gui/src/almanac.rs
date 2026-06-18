@@ -496,6 +496,7 @@ fn page_controls(cx: &mut Ctx) {
     cx.key("Click land / city", "open the node or city panel");
     cx.key("Click a harbor / gate", "open the city it serves");
     cx.key("Click a pod row", "tail that pod's logs");
+    cx.key("y · pod row yaml", "inspect YAML — workload/node, or a pod");
     cx.key("Hover", "tooltip for whatever is under the cursor");
     cx.heading("Plan & cluster");
     cx.key("t", "open the End-of-Turn review (staged changes)");

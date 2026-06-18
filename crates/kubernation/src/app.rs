@@ -19,6 +19,7 @@ use crate::events::{AppEvent, ClusterId, WorldDelta};
 use crate::ui::attention_panel::AttentionPanel;
 use crate::ui::city::CityView;
 use crate::ui::context_picker::ContextPicker;
+use crate::ui::inspect::InspectView;
 use crate::ui::logs::LogsView;
 use crate::ui::map::MapView;
 use crate::ui::namespace_picker::NamespacePicker;
@@ -44,6 +45,8 @@ enum Screen {
     City,
     Node,
     Logs,
+    /// The read-only YAML inspector ("dossier").
+    Inspect,
     /// The End-of-Turn review — the staged planning-turn diff + commit.
     Plan,
 }
@@ -116,6 +119,8 @@ pub struct App {
     logs: LogsView,
     log_gen: u64,
     last_log_fetch: Instant,
+    inspect: InspectView,
+    inspect_cluster: ClusterId,
     attention_panel: AttentionPanel,
     picker: ContextPicker,
     ns_picker: NamespacePicker,
@@ -184,6 +189,8 @@ impl App {
             logs: LogsView::default(),
             log_gen: 0,
             last_log_fetch: Instant::now(),
+            inspect: InspectView::default(),
+            inspect_cluster: ClusterId::Hot,
             attention_panel,
             picker: ContextPicker::default(),
             ns_picker: NamespacePicker::default(),
@@ -360,6 +367,19 @@ impl App {
         }
     }
 
+    /// The observed (raw object) world for a cluster — used by the inspector to
+    /// serialize the in-store object.
+    fn observed_for(&self, id: ClusterId) -> &kubernation_core::state::observed::ObservedWorld {
+        match id {
+            ClusterId::Warm => self
+                .warm
+                .as_ref()
+                .map(|h| &h.world)
+                .unwrap_or(&self.hot.world),
+            ClusterId::Hot => &self.hot.world,
+        }
+    }
+
     fn map_for(&mut self, id: ClusterId) -> &mut MapView {
         match id {
             ClusterId::Hot => &mut self.map_hot,
@@ -374,6 +394,7 @@ impl App {
             Screen::City => self.city_cluster,
             Screen::Node => self.node_cluster,
             Screen::Logs => self.logs.cluster,
+            Screen::Inspect => self.inspect_cluster,
             _ => self.focus,
         };
         // Never hand out Warm when no warm world exists.
@@ -552,6 +573,10 @@ impl App {
                         let ctx = ctx!(self, source);
                         self.logs.handle_key(key, &ctx)
                     }
+                    Screen::Inspect => {
+                        let ctx = ctx!(self, source);
+                        self.inspect.handle_key(key, &ctx)
+                    }
                     // Plan keys are intercepted above; unreachable here.
                     Screen::Plan => None,
                 };
@@ -630,6 +655,42 @@ impl App {
                 self.fetch_logs();
             }
             Action::RefetchLogs => self.fetch_logs(),
+            Action::InspectPod { namespace, pod } => {
+                if let Some(y) = kubernation_core::state::inspect::pod_yaml(
+                    self.observed_for(source),
+                    &namespace,
+                    &pod,
+                ) {
+                    self.inspect.open(format!("pod {namespace}/{pod}"), y);
+                    self.inspect_cluster = source;
+                    self.push_screen(Screen::Inspect);
+                } else {
+                    self.flash = Some(format!("no object for pod {namespace}/{pod}"));
+                }
+            }
+            Action::InspectWorkload(r) => {
+                if let Some(y) =
+                    kubernation_core::state::inspect::workload_yaml(self.observed_for(source), &r)
+                {
+                    self.inspect
+                        .open(format!("{} {}/{}", r.kind, r.namespace, r.name), y);
+                    self.inspect_cluster = source;
+                    self.push_screen(Screen::Inspect);
+                } else {
+                    self.flash = Some(format!("no object for {}", r.name));
+                }
+            }
+            Action::InspectNode(name) => {
+                if let Some(y) =
+                    kubernation_core::state::inspect::node_yaml(self.observed_for(source), &name)
+                {
+                    self.inspect.open(format!("node {name}"), y);
+                    self.inspect_cluster = source;
+                    self.push_screen(Screen::Inspect);
+                } else {
+                    self.flash = Some(format!("no object for node {name}"));
+                }
+            }
             Action::EvictPod { namespace, pod } => {
                 // RBAC gate (cached per namespace): only raise the confirm if
                 // the user may delete pods there; otherwise say why.
@@ -941,6 +1002,10 @@ impl App {
                 Screen::Logs => {
                     let ctx = ctx!(self, self.view_cluster(Screen::Logs));
                     self.logs.render(f, main_a, &ctx);
+                }
+                Screen::Inspect => {
+                    let ctx = ctx!(self, self.view_cluster(Screen::Inspect));
+                    self.inspect.render(f, main_a, &ctx);
                 }
                 Screen::Plan => {
                     // The planning turn is hot-cluster only.

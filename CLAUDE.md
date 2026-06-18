@@ -66,13 +66,15 @@ crates/
                  attention.rs PURE detectors → severity-ordered concerns
                  advisor.rs   PURE cluster-wide rollups (Health/Storage/
                               Network) for the advisor screens
+                 inspect.rs   PURE read-only YAML of an in-store object
+                              (workload/node/pod) — the inspector "dossier"
                  fixtures.rs  synthetic worlds (feature = "fixtures")
     util.rs      fnv1a64 stable hash, age/bytes formatting
   kubernation/        THE TUI (the product): main/app/events/logging/config
                  + ui/ components (map, workloads, city, node_detail, plan
-                 [End-of-Turn review], attention_panel, sidebar, status_bar,
-                 help, picker, theme, symbols). `cargo run` = this
-                 (default-members).
+                 [End-of-Turn review], inspect [YAML dossier], attention_panel,
+                 sidebar, status_bar, help, picker, theme, symbols). `cargo run`
+                 = this (default-members).
   kubernation-gui/    macroquad windowed client over the same core (promoted
                  from spike): net.rs (tokio thread publishing Models +
                  ObservedWorld snapshots), draw.rs (ISOMETRIC 2:1 diamond
@@ -85,7 +87,8 @@ crates/
                  World/Help), window.rs (reusable modal chrome for drill-downs),
                  almanac.rs (the in-app reference / field guide), advisor.rs (the
                  4X advisor screens — Health/Storage/Network, on window.rs over
-                 core's advisor reports),
+                 core's advisor reports), inspect.rs (the read-only YAML
+                 inspector window, on window.rs over core's inspect),
                  city.rs / node.rs (the 4X city + province drill-down
                  windows, on window.rs), plan.rs (the End-of-Turn review),
                  text.rs (bundled sans + serif fonts), theme.rs. See the
@@ -790,6 +793,30 @@ what makes the interesting logic unit-testable without a cluster.
   Verified live on kind (4 nodes healthy, 2 failing pods, 1 understrength
   workload, stuck-pvc pending). Deferred: a TUI advisor view; advisor-driven
   navigation (click a row → fly there).
+- **Object inspector (read-only YAML)** (2026-06-17, user: "narrow the gap with
+  k9s", chose the inspector first of the candidate borrows): a k9s-style `y`
+  YAML "dossier" of a single resource, in **both** frontends. Core
+  `state/inspect.rs` is pure (`clean_yaml<T: Serialize>` → `serde_yaml` after
+  dropping `metadata.managedFields` + the last-applied annotation; plus
+  `workload_yaml`/`node_yaml`/`pod_yaml` that resolve an object **from the
+  reflector store** — no fetch, no client) and unit-tested. It is deliberately
+  **least-privilege**: only the *watched* kinds are inspectable, so Secrets/
+  ConfigMaps are still never read (unlike k9s, which can `y` any object). Added
+  the one dep `serde_yaml`. **GUI** (`gui/inspect.rs`): a scrollable modal on
+  `window.rs`; opened by `y` on a city/node window (workload/node) or a pod
+  row's new `yaml` button (`window::row_button`, `WinAction.inspect`); wired
+  like the Almanac modal (it sits over its panel; Esc closes it first). **TUI**
+  (`ui/inspect.rs`): a `Screen::Inspect` scroll view; `y` returns
+  `Action::Inspect{Pod,Workload,Node}` from the city/node/workload-list views,
+  and `app.rs` resolves the YAML via `observed_for(cluster)` (a new accessor for
+  the handle's `ObservedWorld`) and pushes the screen. The pure builders are
+  reused across both frontends. Dev flag `--yaml` (with `--inspect`); verified
+  live (the GUI shows web's Deployment + worker2's Node YAML, managedFields
+  stripped). This is the first of the "narrow the k9s gap" borrows; candidates
+  not yet built: a `:`-style arbitrary-resource browser (reusing the dynamic
+  reflectors), port-forward, workload-list sort/filter. Exec/shell is
+  deliberately **not** planned (the macroquad GUI can't host a PTY, and
+  arbitrary exec breaks the read-by-default / one-write-file posture).
 
 ## The pair (hot/warm)
 
@@ -863,6 +890,8 @@ region under the cursor · `l` tail the selected pod's logs (city/node) ·
 **in the log view:** `/` filter (case-insensitive substring), `p` toggle
 the previous-container tail, `j/k`/`g`/`G`/`f` scroll/follow ·
 `e` evict the selected pod (city/node — real delete, RBAC-gated, y/n confirm) ·
+`y` inspect YAML — the read-only dossier (selected pod, else the workload/node;
+also `y` on a workload-list row) ·
 **planning turn:** `+`/`−` stage scale, `R` toggle restart & `i` set image
 (city), `C` stage cordon (node), `t` open the End-of-Turn review (`x` unstage ·
 `D` discard · `c`/`Enter` commit, y/n confirm) ·

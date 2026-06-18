@@ -8,6 +8,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Object inspector — read-only YAML (`y`), a k9s-style "dossier".** Inspect the
+  full YAML of a workload, node, or pod in a scrollable modal — the GUI opens it
+  with `y` on a city/node window (workload/node) or a pod row's **`yaml`** button;
+  the TUI with `y` on a city/node (selected pod, else the workload/node) or a
+  workload-list row. The document is serialized from the object already in the
+  reflector store (no fetch), with `managedFields` and the last-applied
+  annotation stripped for readability. It stays **least-privilege** — only the
+  watched kinds are inspectable, so Secrets/ConfigMaps are still never read. Pure,
+  unit-tested core (`kubernation-core` `state/inspect.rs`); both frontends.
+
 ### Docs
 - **Regenerated the GUI screenshots** to reflect the current chrome — the
   dropdown menu bar, the docked right column (WORLD/STATUS/SELECTION), the map

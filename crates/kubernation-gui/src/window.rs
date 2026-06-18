@@ -44,6 +44,8 @@ pub struct WinAction {
     /// A pod the operator asked to evict: (namespace, pod). The caller confirms
     /// before anything is written.
     pub evict: Option<(String, String)>,
+    /// A pod whose YAML to inspect: (namespace, pod).
+    pub inspect: Option<(String, String)>,
     /// An intervention the operator staged from this window (planning turn).
     pub stage: Option<Intervention>,
     /// Toggle a staged rolling-restart for this workload (stage if absent,
@@ -139,6 +141,29 @@ pub fn draw_window(title: &str, size: Vec2, buttons: &[&str], active: usize) -> 
         buttons: rects,
         close,
     }
+}
+
+/// A small hover-revealed row button (e.g. the `yaml` affordance on pod rows),
+/// in the structure-cyan ink. Returns true if clicked this frame.
+pub fn row_button(r: Rect, mouse: Vec2, click: bool, label: &str) -> bool {
+    let hot = r.contains(mouse);
+    draw_rectangle(
+        r.x,
+        r.y,
+        r.w,
+        r.h,
+        if hot { lighter(PLATE, 1.9) } else { PLATE },
+    );
+    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, STRUCT);
+    let tm = text_size(label, 12.0);
+    text(
+        label,
+        r.x + (r.w - tm.width) / 2.0,
+        r.y + r.h / 2.0 + 4.0,
+        12.0,
+        STRUCT,
+    );
+    hot && click
 }
 
 /// A per-pod evict button, revealed on row hover. RBAC-aware via `allowed`:

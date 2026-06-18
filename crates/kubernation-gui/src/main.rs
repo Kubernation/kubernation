@@ -15,6 +15,7 @@ mod advisor;
 mod almanac;
 mod city;
 mod draw;
+mod inspect;
 mod logo;
 mod menu;
 mod net;
@@ -35,6 +36,7 @@ use draw::{
     Camera, Overlay, SceneWorld, draw_sea, draw_selection, draw_world, locate, minimap_layout,
     scene, scene_size,
 };
+use inspect::Inspector;
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::Target;
 use kubernation_core::state::filter::NamespaceFilter;
@@ -137,6 +139,10 @@ struct Args {
     /// (development verification of the advisor windows)
     #[arg(long, value_name = "NAME")]
     advisor: Option<String>,
+    /// With --inspect, also open the object inspector (YAML) on the inspected
+    /// city/node (development verification of the inspector)
+    #[arg(long)]
+    yaml: bool,
 }
 
 fn window_conf() -> Conf {
@@ -216,6 +222,8 @@ async fn main() {
     let mut almanac: Option<Almanac> = None;
     // The advisor screens (Health / Storage / Network) — a modal window.
     let mut advisor: Option<Advisor> = None;
+    // The object inspector (read-only YAML dossier) — a modal window.
+    let mut inspector: Option<Inspector> = None;
     // The planning turn: staged interventions (preview-only) + the open
     // End-of-Turn review modal.
     let mut planned = kubernation_core::state::planned::PlannedWorld::default();
@@ -354,6 +362,7 @@ async fn main() {
         // When a log overlay or a text editor is open, `/` is text instead.
         let mut almanac_just_opened = false;
         let mut advisor_just_opened = false;
+        let mut inspector_just_opened = false;
         if (is_key_pressed(KeyCode::F1) || is_key_pressed(KeyCode::Slash))
             && !log_open
             && !typing
@@ -377,6 +386,37 @@ async fn main() {
         {
             plan_open = !plan_open;
             plan_just_opened = plan_open;
+        }
+        // `y` inspects the open city/node window's object (read-only YAML).
+        if is_key_pressed(KeyCode::Y)
+            && !typing
+            && inspector.is_none()
+            && almanac.is_none()
+            && advisor.is_none()
+            && !plan_open
+            && pending_evict.is_none()
+            && !pending_commit
+            && let Some(s) = snap.as_ref()
+        {
+            let obs = &s.hot.observed;
+            let doc = match &panel {
+                Some(Panel::City(_, r)) => kubernation_core::state::inspect::workload_yaml(obs, r)
+                    .map(|y| {
+                        (
+                            inspect::title(&r.kind.to_string(), &r.namespace, &r.name),
+                            y,
+                        )
+                    }),
+                Some(Panel::Node(_, name)) => {
+                    kubernation_core::state::inspect::node_yaml(obs, name)
+                        .map(|y| (inspect::title("node", "", name), y))
+                }
+                None => None,
+            };
+            if let Some((title, yaml)) = doc {
+                inspector = Some(Inspector::new(title, yaml));
+                inspector_just_opened = true;
+            }
         }
         if is_key_pressed(KeyCode::Escape) {
             if pending_commit {
@@ -405,6 +445,9 @@ async fn main() {
             } else if open_menu.is_some() {
                 // Esc dismisses an open dropdown before it can quit the app.
                 open_menu = None;
+            } else if inspector.is_some() {
+                // The inspector sits on top of its panel — close it first.
+                inspector = None;
             } else if panel.is_some() {
                 panel = None;
             } else {
@@ -532,6 +575,13 @@ async fn main() {
             }
             if is_key_pressed(KeyCode::Right) {
                 a.cycle(1);
+            }
+        }
+        // The inspector swallows the wheel to scroll its YAML.
+        if let Some(i) = inspector.as_mut() {
+            let (_, wheel) = mouse_wheel();
+            if wheel.abs() > 0.0 {
+                i.scroll_by(wheel);
             }
         }
 
@@ -800,6 +850,28 @@ async fn main() {
                             }
                         }
                     }
+                    // --yaml: also open the inspector on the inspected object.
+                    if args.yaml {
+                        let obs = &s.hot.observed;
+                        let doc = match &panel {
+                            Some(Panel::City(_, r)) => {
+                                kubernation_core::state::inspect::workload_yaml(obs, r).map(|y| {
+                                    (
+                                        inspect::title(&r.kind.to_string(), &r.namespace, &r.name),
+                                        y,
+                                    )
+                                })
+                            }
+                            Some(Panel::Node(_, name)) => {
+                                kubernation_core::state::inspect::node_yaml(obs, name)
+                                    .map(|y| (inspect::title("node", "", name), y))
+                            }
+                            None => None,
+                        };
+                        if let Some((title, yaml)) = doc {
+                            inspector = Some(Inspector::new(title, yaml));
+                        }
+                    }
                     inspected = true;
                 }
 
@@ -914,7 +986,8 @@ async fn main() {
                 let click = is_mouse_button_pressed(MouseButton::Left)
                     && !panel_just_opened
                     && !log_open
-                    && pending_evict.is_none();
+                    && pending_evict.is_none()
+                    && inspector.is_none();
                 let mut close_panel = false;
                 if plan_open {
                     let outcome = net.plan_outcome();
@@ -991,6 +1064,17 @@ async fn main() {
                                 pending_evict = Some((*cid, ns, pod));
                                 evict_just_opened = true;
                             }
+                            if let Some((ns, pod)) = act.inspect
+                                && let Some(y) = kubernation_core::state::inspect::pod_yaml(
+                                    &s.hot.observed,
+                                    &ns,
+                                    &pod,
+                                )
+                            {
+                                inspector =
+                                    Some(Inspector::new(inspect::title("pod", &ns, &pod), y));
+                                inspector_just_opened = true;
+                            }
                             close_panel = act.close;
                         }
                         Some(Panel::Node(nid, nname)) => {
@@ -1023,6 +1107,17 @@ async fn main() {
                             if let Some((ns, pod)) = act.evict {
                                 pending_evict = Some((*nid, ns, pod));
                                 evict_just_opened = true;
+                            }
+                            if let Some((ns, pod)) = act.inspect
+                                && let Some(y) = kubernation_core::state::inspect::pod_yaml(
+                                    &s.hot.observed,
+                                    &ns,
+                                    &pod,
+                                )
+                            {
+                                inspector =
+                                    Some(Inspector::new(inspect::title("pod", &ns, &pod), y));
+                                inspector_just_opened = true;
                             }
                             close_panel = act.close;
                         }
@@ -1237,6 +1332,18 @@ async fn main() {
                 .map(|a| a.draw(snap.as_deref(), mouse, click));
             if let Some(AdvisorAction::Close) = action {
                 advisor = None;
+            }
+        }
+
+        // The object inspector (YAML dossier), drawn on top of its panel.
+        if inspector.is_some() {
+            let click = is_mouse_button_pressed(MouseButton::Left) && !inspector_just_opened;
+            if inspector
+                .as_mut()
+                .map(|i| i.draw(mouse, click))
+                .unwrap_or(false)
+            {
+                inspector = None;
             }
         }
 

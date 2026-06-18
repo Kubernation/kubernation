@@ -1385,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "kubernation"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "clap",
  "color-eyre",
@@ -1401,7 +1401,7 @@ dependencies = [
 
 [[package]]
 name = "kubernation-core"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "color-eyre",
  "futures",
@@ -1409,13 +1409,14 @@ dependencies = [
  "kube",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "kubernation-gui"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "clap",
  "image",

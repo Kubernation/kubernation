@@ -2,6 +2,7 @@ pub mod attention_panel;
 pub mod city;
 pub mod context_picker;
 pub mod help;
+pub mod inspect;
 pub mod logs;
 pub mod map;
 pub mod namespace_picker;
@@ -46,6 +47,14 @@ pub enum Action {
     },
     /// Re-fetch the open log tail now (e.g. the `--previous` toggle flipped).
     RefetchLogs,
+    /// Open the read-only YAML inspector. The app resolves the object from the
+    /// observed store; cluster is the active view's.
+    InspectPod {
+        namespace: String,
+        pod: String,
+    },
+    InspectWorkload(WorkloadRef),
+    InspectNode(String),
     SwitchContext(String),
     /// Scope the whole world to these namespaces (the namespace-filter picker).
     SetNamespaceFilter(NamespaceFilter),
