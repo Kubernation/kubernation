@@ -9,6 +9,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Logs: severity coloring + a smarter filter (both frontends).** Log lines are
+  now tinted by guessed severity — ERROR/FATAL/PANIC red, WARN yellow, DEBUG dim
+  — recognised from klog headers (`E0617…`), structured `level=`/`"level":`
+  fields, and uppercase plaintext markers; it's a render-only hint, the text is
+  never altered. The `/` filter gained **AND of terms** and a leading **`!` to
+  exclude** (subtractive triage, e.g. `error !readiness`). The shared logic lives
+  in a pure, unit-tested `kubernation-core` `state/logline.rs`. (First slice of a
+  log-UX pass; more — timestamps, history window, container picker — to follow.)
 - **Resource browser (`:any kind`) — a k9s-style escape hatch, both frontends.**
   Press **`:`** to open a picker of every resource kind the cluster serves
   (built-ins + CRDs, via discovery), pick one, and see a generic table

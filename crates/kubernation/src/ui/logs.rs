@@ -4,12 +4,15 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{Action, Component, RenderCtx};
 use crate::events::ClusterId;
+use kubernation_core::state::attention::Severity;
+use kubernation_core::state::logline::{self, FilterExpr, Level};
 
 #[derive(Default)]
 pub struct LogsView {
@@ -92,16 +95,14 @@ impl LogsView {
         format!("{}-{}{prev}.log", self.namespace, self.pod)
     }
 
-    /// Lines currently shown — all of them, or only those matching the filter.
+    /// Lines currently shown — all of them, or those matching the filter
+    /// expression (space-separated AND of substrings; `!term` excludes).
     fn visible(&self) -> Vec<&String> {
-        if self.filter.is_empty() {
+        let expr = FilterExpr::parse(&self.filter);
+        if expr.is_empty() {
             return self.lines.iter().collect();
         }
-        let needle = self.filter.to_lowercase();
-        self.lines
-            .iter()
-            .filter(|l| l.to_lowercase().contains(&needle))
-            .collect()
+        self.lines.iter().filter(|l| expr.matches(l)).collect()
     }
 
     fn max_scroll_for(&self, visible_len: usize) -> u16 {
@@ -216,7 +217,19 @@ impl Component for LogsView {
                 theme.dim(),
             )]
         } else {
-            visible.iter().map(|l| Line::raw((*l).clone())).collect()
+            // Color each line by its guessed severity (a hint — text unchanged).
+            visible
+                .iter()
+                .map(|l| {
+                    let style = match logline::classify(l) {
+                        Level::Error => theme.severity(Severity::Critical),
+                        Level::Warn => theme.severity(Severity::Warning),
+                        Level::Debug => theme.dim(),
+                        Level::Info | Level::Plain => Style::default(),
+                    };
+                    Line::styled((*l).clone(), style)
+                })
+                .collect()
         };
 
         // The filter sits on the top border so the body's scroll math is
@@ -353,6 +366,25 @@ mod tests {
         assert!(!text.contains("line one"), "non-match shown:\n{text}");
         assert!(text.contains("filter: error"), "filter chrome:\n{text}");
         assert!(text.contains("(2/4)"), "match count:\n{text}");
+    }
+
+    #[test]
+    fn filter_exclude_term_hides_matching_lines() {
+        let mut view = LogsView::default();
+        view.open(ClusterId::Hot, "demo".into(), "web".into());
+        view.set_result(Ok("keep me\nGET /readiness 200\nalso keep".into()));
+        assert!(view.handle_key(key('/'), &dummy_ctx()).is_none());
+        for c in "!readiness".chars() {
+            view.filter_input(key(c));
+        }
+        view.filter_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let text = render_to_string(&mut view);
+        assert!(text.contains("keep me"), "kept line missing:\n{text}");
+        assert!(text.contains("also keep"));
+        // The excluded body line is gone (note: the filter chrome itself shows
+        // "!readiness", so assert on the line's distinctive content).
+        assert!(!text.contains("GET /"), "excluded line shown:\n{text}");
+        assert!(text.contains("(2/3)"), "count reflects exclusion:\n{text}");
     }
 
     #[test]

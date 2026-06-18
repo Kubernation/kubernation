@@ -5,6 +5,7 @@
 
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::Concern;
+use kubernation_core::state::logline::{self, FilterExpr, Level};
 use kubernation_core::state::model::{NodeHealth, PodState, WorkloadRef};
 use kubernation_core::state::world::{CoastKind, Region};
 use macroquad::prelude::*;
@@ -300,16 +301,13 @@ pub fn draw_logs(tail: &LogTail, filter: &str, filter_active: bool, previous: bo
         return;
     }
 
-    // Apply the substring filter (case-insensitive) over the fetched tail.
-    let needle = filter.to_lowercase();
+    // Apply the filter expression (space-separated AND; `!term` excludes).
+    let expr = FilterExpr::parse(filter);
     let total = tail.text.lines().count();
-    let all: Vec<&str> = if needle.is_empty() {
+    let all: Vec<&str> = if expr.is_empty() {
         tail.text.lines().collect()
     } else {
-        tail.text
-            .lines()
-            .filter(|l| l.to_lowercase().contains(&needle))
-            .collect()
+        tail.text.lines().filter(|l| expr.matches(l)).collect()
     };
 
     // The live filter editor / active-filter summary, on the right of the
@@ -346,16 +344,18 @@ pub fn draw_logs(tail: &LogTail, filter: &str, filter_active: bool, previous: bo
     // Show the tail end that fits — newest lines are most useful.
     let rows = (((y + h - 12.0) - body_top) / line_h).floor().max(1.0) as usize;
     let start = all.len().saturating_sub(rows);
+    let plain = Color::new(0.80, 0.84, 0.80, 1.0);
     let mut ly = body_top;
     for raw in &all[start..] {
         let s = truncate_str(raw, 150);
-        text(
-            ascii(&s),
-            x + 14.0,
-            ly,
-            13.0,
-            Color::new(0.80, 0.84, 0.80, 1.0),
-        );
+        // Tint by guessed severity so an error stands out (text unchanged).
+        let color = match logline::classify(raw) {
+            Level::Error => CRIT,
+            Level::Warn => WARN,
+            Level::Debug => DIM,
+            Level::Info | Level::Plain => plain,
+        };
+        text(ascii(&s), x + 14.0, ly, 13.0, color);
         ly += line_h;
     }
     if start > 0 {
