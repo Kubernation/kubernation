@@ -154,6 +154,12 @@ pub fn build(
     // line — and its failing pods fold under it (the pod loop below defers to
     // `covered_jobs`), keeping it one concern, not one-per-failed-pod.
     let mut covered_jobs: HashSet<(String, String)> = HashSet::new();
+    // A Job has no city screen, so the `L` jump is the only path to its failed
+    // pods' logs. Collect a representative pod per Job during the pod loop
+    // (which classifies them) and patch the Job concerns afterward; record where
+    // each Job concern landed so we can attach its probe.
+    let mut job_probes: HashMap<(String, String), LogProbe> = HashMap::new();
+    let mut job_concern_idx: Vec<(usize, (String, String))> = Vec::new();
     for job in world.jobs.state() {
         let ns = job.metadata.namespace.clone().unwrap_or_default();
         if !filter.matches(&ns) {
@@ -188,13 +194,14 @@ pub fn build(
             continue;
         };
         covered_jobs.insert((ns.clone(), name.clone()));
+        job_concern_idx.push((concerns.len(), (ns.clone(), name.clone())));
         concerns.push(Concern {
             cluster: ClusterId::Hot,
             severity,
             title: format!("job {ns}/{name} — {msg}"),
             detail: String::new(),
             target: Target::WorkloadList,
-            probe: None,
+            probe: None, // filled in after the pod loop if a failed pod exists
             key: format!("j:{ns}/{name}"),
         });
     }
@@ -255,8 +262,21 @@ pub fn build(
             }
             None => {
                 // Bare pod, or Job-owned. A pod whose Job already has its own
-                // concern folds under it (no per-pod spam for a failed Job).
-                if job_owner(pod).is_some_and(|j| covered_jobs.contains(&(ns.clone(), j))) {
+                // concern folds under it (no per-pod spam for a failed Job) —
+                // but lend that Job concern a log probe so the `L` jump can
+                // still reach the failed batch pod's logs (preferring a
+                // crash-looper, like the workload path).
+                if let Some(j) = job_owner(pod)
+                    && covered_jobs.contains(&(ns.clone(), j.clone()))
+                {
+                    if let Some(p) = pod_probe {
+                        let slot = job_probes
+                            .entry((ns.clone(), j))
+                            .or_insert_with(|| p.clone());
+                        if p.previous && !slot.previous {
+                            *slot = p;
+                        }
+                    }
                     continue;
                 }
                 let (severity, msg) = agg.primary().expect("agg.any() checked");
@@ -275,6 +295,13 @@ pub fn build(
                     key: format!("b:{ns}/{name}"),
                 });
             }
+        }
+    }
+
+    // Attach each Job concern's representative failed pod (so `L` reaches it).
+    for (i, key) in job_concern_idx {
+        if let Some(p) = job_probes.remove(&key) {
+            concerns[i].probe = Some(p);
         }
     }
 
@@ -889,12 +916,20 @@ mod tests {
         }
         let cs = concerns(&world);
         // One Job concern — no per-pod (b:) spam for the Job's own pods.
-        assert_eq!(
-            cs.iter().filter(|c| c.key.starts_with("j:")).count(),
-            1,
-            "{cs:?}"
-        );
+        let job: Vec<&Concern> = cs.iter().filter(|c| c.key.starts_with("j:")).collect();
+        assert_eq!(job.len(), 1, "{cs:?}");
         assert!(!cs.iter().any(|c| c.key.starts_with("b:")), "{cs:?}");
+        // …but the folded pod lends the Job concern a log probe, so `L` can
+        // reach the failed batch pod's last words.
+        let p = job[0]
+            .probe
+            .as_ref()
+            .expect("job concern carries a log probe from its failed pod");
+        assert!(p.pod.starts_with("doomed-"));
+        assert!(
+            p.previous,
+            "a crash-looping job pod opens its previous container"
+        );
     }
 
     #[test]

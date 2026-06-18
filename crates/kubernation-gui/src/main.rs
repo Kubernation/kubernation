@@ -798,6 +798,11 @@ async fn main() {
         if let Some(s) = snap.as_ref() {
             let worlds = scene(s);
             let bounds = scene_size(&worlds);
+            // Keep the focused-concern index in range as the queue shrinks, so
+            // the strip highlight and the `L` jump always point at the same row.
+            if !s.attention.is_empty() {
+                concern_idx = concern_idx.min(s.attention.len() - 1);
+            }
 
             // Menu "Fit view" deferred from the chrome draw (bounds wasn't in
             // scope there).
@@ -972,31 +977,6 @@ async fn main() {
                         }
                     }
                 }
-                // `L` tails the focused concern's offending pod directly (the
-                // "city in trouble → and here's why" jump). Concerns without a
-                // log-worthy pod (replica gaps, nodes, …) carry no probe.
-                if is_key_pressed(KeyCode::L) && !s.attention.is_empty() {
-                    let c = &s.attention[concern_idx.min(s.attention.len() - 1)];
-                    if let Some(p) = &c.probe {
-                        log_previous = p.previous;
-                        log_timestamps = args.log_timestamps;
-                        log_window = kubernation_core::k8s::logs::LogWindow::default();
-                        log_filter = String::new();
-                        log_filter_active = false;
-                        net.request_logs(LogReq {
-                            cluster: c.cluster,
-                            namespace: p.namespace.clone(),
-                            pod: p.pod.clone(),
-                            previous: log_previous,
-                            timestamps: log_timestamps,
-                            window: log_window,
-                        });
-                        log_open = true;
-                        auto_tail = false;
-                    } else {
-                        toast = Some(("this concern has no pod to tail".into(), get_time() + 2.5));
-                    }
-                }
                 if is_key_pressed(KeyCode::Enter)
                     && let Some(sel) = selected
                 {
@@ -1112,6 +1092,49 @@ async fn main() {
                     }
                 }
             } // end world navigation (suspended while the picker is open)
+
+            // `L` tails the focused concern's offending pod directly (the "city
+            // in trouble → and here's why" jump). Unlike map navigation it works
+            // even with a city/node panel open — matching the TUI's global `L`,
+            // so the `N`-then-`L` flow works — but not while another overlay owns
+            // input. Concerns with no log-worthy pod (replica gaps, nodes, …)
+            // carry no probe.
+            if is_key_pressed(KeyCode::L)
+                && !s.attention.is_empty()
+                && !typing
+                && !log_open
+                && !picker
+                && !ns_picker
+                && almanac.is_none()
+                && advisor.is_none()
+                && browser.is_none()
+                && inspector.is_none()
+                && !plan_open
+                && open_menu.is_none()
+                && pending_evict.is_none()
+                && !pending_commit
+            {
+                let c = &s.attention[concern_idx.min(s.attention.len() - 1)];
+                if let Some(p) = &c.probe {
+                    log_previous = p.previous;
+                    log_timestamps = args.log_timestamps;
+                    log_window = kubernation_core::k8s::logs::LogWindow::default();
+                    log_filter = String::new();
+                    log_filter_active = false;
+                    net.request_logs(LogReq {
+                        cluster: c.cluster,
+                        namespace: p.namespace.clone(),
+                        pod: p.pod.clone(),
+                        previous: log_previous,
+                        timestamps: log_timestamps,
+                        window: log_window,
+                    });
+                    log_open = true;
+                    auto_tail = false;
+                } else {
+                    toast = Some(("this concern has no pod to tail".into(), get_time() + 2.5));
+                }
+            }
         }
 
         // ---- draw ---------------------------------------------------------
@@ -1175,13 +1198,15 @@ async fn main() {
                 };
                 panels::draw_map_title(&map_title, view_sub.as_deref(), panels::map_width());
 
-                // Hover tooltip over the map (not the column / chrome / strip).
+                // Hover tooltip over the map (not the column / chrome / strip /
+                // an open overlay — incl. a panel-less concern-`L` log).
                 if !picker
                     && almanac.is_none()
                     && advisor.is_none()
                     && browser.is_none()
                     && !panel_modal
                     && !plan_open
+                    && !log_open
                     && open_menu.is_none()
                     && drag_anchor.is_none()
                     && !minimap_drag

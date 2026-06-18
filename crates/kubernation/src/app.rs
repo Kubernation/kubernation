@@ -600,19 +600,23 @@ impl App {
                 }
             }
             // `L` tails the focused concern's offending pod straight away (the
-            // "next unit needing orders → and here's why" jump).
-            KeyCode::Char('L') => {
-                let act = self
+            // "next unit needing orders → and here's why" jump). With nothing
+            // `n`-parked yet, it acts on the top concern — the one the collapsed
+            // panel already highlights with its `[L]ogs` hint.
+            KeyCode::Char('L') if !self.attention.is_empty() => {
+                let i = self
                     .attention_panel
-                    .current(&self.attention)
-                    .map(|c| (c.cluster, crate::ui::attention_panel::logs_action_for(c)));
-                match act {
-                    Some((source, Some(a))) => self.apply(a, source).await,
-                    Some((_, None)) => self.flash = Some("this concern has no pod to tail".into()),
-                    None if !self.attention.is_empty() => {
-                        self.flash = Some("press n to focus a concern, then L for its logs".into())
-                    }
-                    None => {}
+                    .cycle
+                    .unwrap_or(0)
+                    .min(self.attention.len() - 1);
+                self.attention_panel.cycle = Some(i);
+                let routed = {
+                    let c = &self.attention[i];
+                    (c.cluster, crate::ui::attention_panel::logs_action_for(c))
+                };
+                match routed {
+                    (source, Some(a)) => self.apply(a, source).await,
+                    (_, None) => self.flash = Some("this concern has no pod to tail".into()),
                 }
             }
             KeyCode::Char('a') => self.attention_panel.expanded = !self.attention_panel.expanded,
