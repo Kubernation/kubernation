@@ -696,14 +696,16 @@ impl App {
                 }
             }
             Action::CopyText(text) => {
-                // OSC 52 is fire-and-forget (no ack) and some terminals cap or
-                // disable it, so don't over-claim — say "sent", and `w` exports
-                // reliably.
+                // Prefer the OS clipboard tool (reliable locally — e.g. pbcopy);
+                // also emit OSC 52 for remote/SSH terminals that support it.
+                let n = text.lines().count();
+                let ok = os_clipboard_copy(&text);
                 copy_osc52(&text);
-                self.flash = Some(format!(
-                    "sent {} lines to clipboard (OSC 52) · w exports to a file",
-                    text.lines().count()
-                ));
+                self.flash = Some(if ok {
+                    format!("copied {n} lines to clipboard")
+                } else {
+                    format!("sent {n} lines via OSC 52 · w exports to a file")
+                });
             }
             Action::ExportText { text, filename } => {
                 self.flash = Some(export_to_file(&text, &filename));
@@ -1158,6 +1160,44 @@ fn export_to_file(text: &str, filename: &str) -> String {
         Ok(()) => format!("exported → {}", path.display()),
         Err(e) => format!("export failed: {e}"),
     }
+}
+
+/// Copy `text` to the OS clipboard by piping to the platform tool (macOS
+/// `pbcopy`, Linux `wl-copy`/`xclip`/`xsel`, Windows `clip`). Returns true on
+/// success — reliable locally where OSC 52 is unsupported (e.g. Terminal.app).
+fn os_clipboard_copy(text: &str) -> bool {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let candidates: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+        &[("pbcopy", &[])]
+    } else if cfg!(target_os = "windows") {
+        &[("clip", &[])]
+    } else {
+        &[
+            ("wl-copy", &[]),
+            ("xclip", &["-selection", "clipboard"]),
+            ("xsel", &["--clipboard", "--input"]),
+        ]
+    };
+    for (cmd, args) in candidates {
+        let Ok(mut child) = Command::new(cmd)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+            // Drop stdin to send EOF before waiting.
+        }
+        if child.wait().map(|s| s.success()).unwrap_or(false) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Copy `text` to the terminal's clipboard via OSC 52 (works over SSH on

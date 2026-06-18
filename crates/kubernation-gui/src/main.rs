@@ -495,11 +495,8 @@ async fn main() {
                 if is_key_pressed(KeyCode::C) {
                     let tail = net.log_tail();
                     if !tail.text.is_empty() {
-                        macroquad::miniquad::window::clipboard_set(&tail.text);
-                        toast = Some((
-                            format!("copied {} log lines", tail.text.lines().count()),
-                            get_time() + 3.0,
-                        ));
+                        let msg = clipboard_copy(&tail.text, tail.text.lines().count());
+                        toast = Some((msg, get_time() + 3.0));
                     }
                 }
                 if is_key_pressed(KeyCode::W) {
@@ -610,11 +607,8 @@ async fn main() {
             }
             if is_key_pressed(KeyCode::C) {
                 let text = i.text();
-                macroquad::miniquad::window::clipboard_set(&text);
-                toast = Some((
-                    format!("copied {} lines", text.lines().count()),
-                    get_time() + 3.0,
-                ));
+                let msg = clipboard_copy(&text, text.lines().count());
+                toast = Some((msg, get_time() + 3.0));
             }
             if is_key_pressed(KeyCode::W) {
                 toast = Some((export_to_file(&i.text(), &i.filename()), get_time() + 4.0));
@@ -1484,6 +1478,56 @@ async fn main() {
         }
 
         next_frame().await;
+    }
+}
+
+/// Copy `text` to the OS clipboard by piping to the platform tool (macOS
+/// `pbcopy`, Linux `wl-copy`/`xclip`/`xsel`, Windows `clip`). Returns true on
+/// success. This is more reliable than the windowing layer's clipboard, which
+/// is a no-op or flaky on some platforms.
+fn os_clipboard_copy(text: &str) -> bool {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let candidates: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+        &[("pbcopy", &[])]
+    } else if cfg!(target_os = "windows") {
+        &[("clip", &[])]
+    } else {
+        &[
+            ("wl-copy", &[]),
+            ("xclip", &["-selection", "clipboard"]),
+            ("xsel", &["--clipboard", "--input"]),
+        ]
+    };
+    for (cmd, args) in candidates {
+        let Ok(mut child) = Command::new(cmd)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+            // Drop stdin to send EOF before waiting.
+        }
+        if child.wait().map(|s| s.success()).unwrap_or(false) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Copy to the clipboard, falling back to the windowing layer if no CLI tool
+/// is present. Returns the toast message.
+fn clipboard_copy(text: &str, lines: usize) -> String {
+    if os_clipboard_copy(text) {
+        format!("copied {lines} lines")
+    } else {
+        macroquad::miniquad::window::clipboard_set(text);
+        format!("copied {lines} lines (fallback)")
     }
 }
 

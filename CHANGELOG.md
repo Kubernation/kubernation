@@ -84,6 +84,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   navigable, open ocean included (the click resolves to the nearest cell).
 
 ### Fixed
+- **Clipboard copy now actually works (user-reported).** Both frontends now
+  copy by piping to the OS clipboard tool (macOS `pbcopy`, Linux
+  `wl-copy`/`xclip`/`xsel`, Windows `clip`) — reliable locally. The GUI's
+  windowing-layer clipboard and the TUI's OSC 52 (unsupported by e.g.
+  Terminal.app) were silently failing while the toast reported success. OSC 52
+  is still emitted in the TUI as a fallback for remote/SSH terminals, and the
+  windowing clipboard as a GUI fallback; the toast/flash now reflects which
+  path was used.
 - **Copy/export review follow-ups (adversarial).** The TUI `c`/`w` keys now
   actually reach the log / inspector views — they were shadowed by the global
   `c` (context picker) and `w` (workloads) bindings, so TUI copy/export was a
