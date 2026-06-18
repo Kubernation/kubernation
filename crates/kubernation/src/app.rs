@@ -517,6 +517,10 @@ impl App {
             return;
         }
 
+        // On the log / inspector overlays, `c`/`w` are copy / export (handled by
+        // the view in the `_` arm below), not the global context / workloads
+        // bindings — so those two globals defer there.
+        let text_view = matches!(self.screens.last(), Some(Screen::Logs | Screen::Inspect));
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.help_open = true,
@@ -525,7 +529,7 @@ impl App {
                 self.push_screen(Screen::Plan);
             }
             KeyCode::Char('m') => self.go_home(Screen::Map),
-            KeyCode::Char('w') => self.go_home(Screen::Workloads),
+            KeyCode::Char('w') if !text_view => self.go_home(Screen::Workloads),
             KeyCode::Char('n') => {
                 if let Some((source, a)) = self.attention_panel.next_action(&self.attention) {
                     self.apply(a, source).await;
@@ -533,7 +537,7 @@ impl App {
             }
             KeyCode::Char('a') => self.attention_panel.expanded = !self.attention_panel.expanded,
             KeyCode::Tab if self.attention_panel.expanded => self.attention_panel.focused = true,
-            KeyCode::Char('c') => self.picker.open_with(
+            KeyCode::Char('c') if !text_view => self.picker.open_with(
                 &self.hot.world.meta.all_contexts,
                 &self.hot.world.meta.context,
             ),
@@ -692,8 +696,14 @@ impl App {
                 }
             }
             Action::CopyText(text) => {
+                // OSC 52 is fire-and-forget (no ack) and some terminals cap or
+                // disable it, so don't over-claim — say "sent", and `w` exports
+                // reliably.
                 copy_osc52(&text);
-                self.flash = Some(format!("copied {} lines (OSC 52)", text.lines().count()));
+                self.flash = Some(format!(
+                    "sent {} lines to clipboard (OSC 52) · w exports to a file",
+                    text.lines().count()
+                ));
             }
             Action::ExportText { text, filename } => {
                 self.flash = Some(export_to_file(&text, &filename));

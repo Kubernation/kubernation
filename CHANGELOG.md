@@ -84,6 +84,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   navigable, open ocean included (the click resolves to the nearest cell).
 
 ### Fixed
+- **Copy/export review follow-ups (adversarial).** The TUI `c`/`w` keys now
+  actually reach the log / inspector views — they were shadowed by the global
+  `c` (context picker) and `w` (workloads) bindings, so TUI copy/export was a
+  no-op; those two globals now defer to the view on the Logs / Inspect screens.
+  The OSC 52 copy flash no longer over-claims success (it says "sent … (OSC 52)"
+  and points at `w` to export, since OSC 52 is fire-and-forget and some
+  terminals cap or disable it).
 - **Inspector: long YAML lines no longer overflow the window** (user-reported).
   macroquad has no scissor, so a long line (a uid, a long label/annotation
   value, an image ref) ran past the right edge; each line is now clipped to the
