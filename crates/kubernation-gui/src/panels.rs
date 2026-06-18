@@ -43,16 +43,27 @@ pub fn map_width() -> f32 {
 pub fn draw_map_title(title: &str, subtitle: Option<&str>, map_w: f32) {
     let fs = 21.0;
     let sub_fs = 13.0;
-    let tw = name_text_size(title, fs).width;
+    let pad = 24.0;
     let sub = subtitle.unwrap_or("");
     let sw = if sub.is_empty() {
         0.0
     } else {
         text_size(sub, sub_fs).width + 12.0
     };
-    let pad = 24.0;
-    let bw = tw + sw + pad * 2.0;
-    let bx = (map_w / 2.0 - bw / 2.0).max(2.0);
+    // Keep the cartouche inside the play area: truncate the (serif) title to the
+    // width left after padding + the subtitle, so a long context / narrow window
+    // can't overdraw the right column. The realm readout does the same.
+    let max_bw = (map_w - 6.0).max(60.0);
+    let avail_title = (max_bw - pad * 2.0 - sw).max(0.0);
+    let mut title = title.to_string();
+    let mut tw = name_text_size(&title, fs).width;
+    if tw > avail_title && avail_title > 0.0 {
+        let budget = ((title.chars().count() as f32) * (avail_title / tw)) as usize;
+        title = truncate_str(&title, budget.max(3));
+        tw = name_text_size(&title, fs).width;
+    }
+    let bw = (tw + sw + pad * 2.0).min(max_bw);
+    let bx = (map_w / 2.0 - bw / 2.0).clamp(2.0, (map_w - bw - 2.0).max(2.0));
     let by = CHROME_H + 5.0;
     let bh = 27.0;
     stone_panel(bx, by, bw, bh);

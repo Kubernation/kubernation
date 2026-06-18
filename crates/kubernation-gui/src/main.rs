@@ -833,13 +833,17 @@ async fn main() {
 
                 // Cartographic title cartouche over the top of the map (a
                 // centered modal's scrim dims it, like the rest of the board).
+                // In pair mode it spans both continents, so it names the pair
+                // generically rather than the hot context (the per-side HOT/WARM
+                // banners label each continent).
                 let view_sub =
                     (overlay != Overlay::Terrain).then(|| format!("{} view", overlay.label()));
-                panels::draw_map_title(
-                    &format!("Cluster Map — {current_ctx}"),
-                    view_sub.as_deref(),
-                    panels::map_width(),
-                );
+                let map_title = if paired {
+                    "Cluster Map — Hot / Warm pair".to_string()
+                } else {
+                    format!("Cluster Map — {current_ctx}")
+                };
+                panels::draw_map_title(&map_title, view_sub.as_deref(), panels::map_width());
 
                 // Hover tooltip over the map (not the column / chrome / strip).
                 if !picker

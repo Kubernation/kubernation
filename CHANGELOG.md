@@ -44,6 +44,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   navigable, open ocean included (the click resolves to the nearest cell).
 
 ### Fixed
+- **Map-title review follow-ups (2 adversarial findings).** The title cartouche
+  is now bounded to the play area — the (serif) title truncates and the box is
+  clamped so a long context name or a narrow window can't overdraw the right
+  column (only the left edge was clamped before, like the realm readout already
+  guards). In pair mode the centered title names the pair generically ("Hot /
+  Warm pair") instead of labeling both continents with the hot context (the
+  per-side HOT/WARM banners disambiguate each).
 - **Menu-bar review follow-ups (4 adversarial findings).** Clicking one menu
   title while another is open now *switches* to it instead of closing the whole
   bar (the toggle keys off the pre-slide open state, not the value the
