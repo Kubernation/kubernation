@@ -23,6 +23,10 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   it; now written to `~/.local/state/kubernation/kubernation.log`, `RUST_LOG` /
   `--log-level`), and the **log overlay regained scrollback** (`j/k`/`g` scroll,
   `f` follow, wheel) — `s`'s larger history windows were otherwise unreachable.
+  To backfill the lost render coverage: a **`make gui-smoke`** render-smoke gate
+  (every overlay/modal state through `--screenshot`, fail on panic) plus a policy
+  of testing each view's pure draw-decision fn (`panels::region_lines` is the
+  first).
 
 ### Added
 - **One key from a concern to its logs (`L`).** The attention queue parks you on

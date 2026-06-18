@@ -1000,6 +1000,24 @@ what makes the interesting logic unit-testable without a cluster.
   tests) and the privilege/write posture is unchanged (one file, `actions.rs`).
   `kubernation-core` is untouched and still UI-dep-free. Decision-log entries
   above that describe "both frontends / the TUI does X" are historical record.
+- **GUI testability policy** (2026-06-18, after the removal's reassessment): the
+  removal deleted the TUI's ~21 TestBackend render snapshots, leaving the sole
+  frontend largely render-untested (macroquad is immediate-mode + GL — not
+  unit-testable). Recorded choice, two parts. **(A) Pure draw-decision fns —
+  policy.** Push the *decisions* a view makes (caps, truncation, severity→role,
+  HOT/WARM tagging, what-to-show) into pure functions that return assert-able
+  data (no GL calls), and unit-test them against `fixtures.rs` — exactly the
+  `state/logline.rs` philosophy. The template is `panels::region_lines`
+  (`-> Vec<(String, Color)>`, the tooltip/SELECTION text), now unit-tested
+  (`region_lines_name_the_workload_under_a_city`) via a `fixtures`-feature
+  dev-dep on core. **Every new GUI view ships such a test** (restores the old
+  "new views ship with a test" convention). **(B) Render-smoke — crash gate.**
+  `make gui-smoke` (`hack/gui-smoke.sh`) drives all ~16 overlay/modal/map states
+  through `--screenshot` and fails on any panic or blank image; needs a display
+  (local, not the headless CI `make smoke`). Catches crashes, not wrong output —
+  A is the durable answer. (Considered + deferred: golden-image pixel diffs —
+  they need a deterministic `--fixture` launch path that doesn't exist; do A
+  first, it's deterministic by construction.)
 
 ## The pair (hot/warm)
 
@@ -1091,6 +1109,7 @@ make dev        # kind-up + samples + run the windowed client (standard loop)
 make run        # the windowed client (macroquad) against the dev cluster
 make smoke      # headless connect + world summary, exit (CI gate; core example)
 make lint test  # fmt --check, clippy -D warnings, cargo test
+make gui-smoke  # render every overlay/modal state, fail on panic (needs display)
 make kind-down
 
 make perf-up    # kwok-simulated 100-node / 1000-pod cluster (needs kwokctl)
@@ -1118,8 +1137,10 @@ dropped — add one to the GUI's `main` if a log file is ever wanted.
   before any commit.
 - New state logic ships with unit tests against `state/fixtures.rs` (the
   interesting logic lives in pure core, where it's testable without a cluster
-  or a display). GUI rendering is verified by the headless `--screenshot` dev
-  flags + review, not unit tests (macroquad isn't unit-testable).
+  or a display). **New GUI views ship a pure draw-decision fn + test too** (the
+  `panels::region_lines` pattern — see the "GUI testability policy" decision);
+  macroquad rendering itself isn't unit-testable, so `make gui-smoke` is the
+  crash gate over the `--screenshot` states.
 - Commit in working states with descriptive messages; the user reviews
   commits.
 - **Versioning (semver):** one workspace version is the source of truth

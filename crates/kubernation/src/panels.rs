@@ -713,3 +713,50 @@ pub fn draw_picker(
     }
     PickerLayout { rows }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::draw::scene;
+    use crate::net::{Snapshot, WorldSnap};
+    use kubernation_core::state::fixtures as fx;
+    use kubernation_core::state::model::Models;
+    use std::sync::Arc;
+
+    /// The tooltip / SELECTION text is pure draw-decision logic — testable
+    /// without a GL context (it formats strings + picks colors, no macroquad
+    /// calls). This is the Option-A pattern: every GUI view's *decisions*
+    /// should live in a fn like this, asserted against a fixture world.
+    #[test]
+    fn region_lines_name_the_workload_under_a_city() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.deployment(fx::deployment("demo", "web", 1, 1));
+        s.replicaset(fx::replicaset("demo", "web-rs", "web"));
+        s.pod(fx::pod_owned(
+            fx::pod("demo", "web-rs-1", Some("n1")),
+            "ReplicaSet",
+            "web-rs",
+        ));
+        let models = Arc::new(Models::build(&world));
+        let (cx, cy) = {
+            let c = models.world.cities().next().expect("a city was sited");
+            (c.x, c.y)
+        };
+        let snap = Snapshot {
+            hot: WorldSnap {
+                models,
+                observed: world,
+            },
+            warm: None,
+            pair: None,
+            attention: Arc::new(Vec::new()),
+        };
+        let worlds = scene(&snap);
+        let lines = region_lines(&worlds[0], (cx, cy), &snap);
+        assert!(
+            lines.iter().any(|(t, _)| t.contains("web")),
+            "the SELECTION/tooltip lines should name the workload: {lines:?}"
+        );
+    }
+}

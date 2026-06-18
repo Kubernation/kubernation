@@ -5,7 +5,7 @@ PERF_KCTX    := kwok-$(PERF_CLUSTER)
 WARM_CLUSTER ?= kubernation-warm
 WARM_KCTX    := kind-$(WARM_CLUSTER)
 
-.PHONY: dev kind-up samples run smoke kind-down lint test \
+.PHONY: dev kind-up samples run smoke gui-smoke kind-down lint test \
         perf-up perf perf-test perf-down \
         warm-up warm-drift pair warm-down
 
@@ -96,3 +96,9 @@ lint:
 ## test: unit tests (core logic + GUI render helpers)
 test:
 	cargo test --workspace
+
+## gui-smoke: render every overlay/modal/map state via --screenshot and fail on
+## any panic or blank image (needs a display + dev cluster; local, not CI)
+gui-smoke:
+	cargo build --release
+	hack/gui-smoke.sh $(KCTX)
