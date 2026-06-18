@@ -29,6 +29,18 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   first).
 
 ### Added
+- **Blast-radius highlighting (`B`).** Select a node or workload (or focus a
+  concern) and press **`B`** to light up its dependency fan-out on the map —
+  pulsing lines spread from the troubled subject to every affected city, harbor
+  (Service), and gate (Ingress), with a count in a banner. A *node* cascades
+  node → hosted workloads → their Services → Ingresses ("if this province falls,
+  these cities lose citizens and their routes go dark"); a *workload* walks to
+  its own Services + Ingresses. It's the SRE practice of topology-driven impact
+  isolation — and Kubernation already owns the topology, so it's a pure graph
+  walk (no traffic data / service mesh needed). We deliberately don't invent
+  app-level "who calls whom" edges, so a workload with no Service has an honestly
+  empty radius. Pure + unit-tested; verified live on kind (a node → 12 affected;
+  `web` → its Service + Ingress).
 - **Live cpu/mem trend sparklines.** Metrics-server samples now accumulate into a
   bounded history ring, and the node ("province") window draws a small trend
   sparkline under each cpu/mem gauge — usage ÷ allocatable over the last ~15

@@ -212,6 +212,7 @@ Mouse-first, with a classic-4X menu bar and a few keys (the in-app **Almanac**,
 | hover a pod row → **fwd** | port-forward it to `127.0.0.1` (RBAC-gated; stop from the FORWARDS column) |
 | `y` | inspect YAML (the read-only dossier) |
 | `N` · `L` | next concern · tail that concern's offending pod |
+| `B` | blast radius — highlight what a selected node/city (or focused concern) affects |
 | `:` | resource browser — any kind |
 | `Esc` | close the topmost overlay |
 | `?` / `F1` | the Almanac (legend · controls · how to read state) |
@@ -303,7 +304,8 @@ RBAC-gated **port-forward**; everything else reads. Built well past the MVP: the
 isometric world map, hot/warm cluster pairs, metrics-server live usage (with
 cpu/mem trend sparklines), the
 minimap + map overlays, pod log tailing (severity coloring, timestamps, filters,
-concern→logs), the connectivity / storage / batch map layers, the resource
+concern→logs), blast-radius impact highlighting, the connectivity / storage /
+batch map layers, the resource
 browser (`:any kind`), the read-only YAML inspector, the in-app Almanac, the
 advisor screens, the city + province drill-down windows, and the **planning
 turn** — staging interventions, previewing the diff, and committing it

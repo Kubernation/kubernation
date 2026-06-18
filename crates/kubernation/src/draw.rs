@@ -12,7 +12,8 @@
 
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::Severity;
-use kubernation_core::state::model::NodeHealth;
+use kubernation_core::state::blast::{Affected, BlastRadius, Subject};
+use kubernation_core::state::model::{NodeHealth, WorkloadRef};
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::world::{City, CoastKind, Continent, Island, Province, WorldModel};
 use macroquad::prelude::*;
@@ -666,6 +667,94 @@ pub fn draw_selection(cam: &Camera, sel: (u16, u16)) {
     let c = cam.to_screen(sel.0 as f32 + 0.5, sel.1 as f32 + 0.5); // diamond center
     let pulse = 1.0 + (t * 5.0).sin() * 0.12;
     stroke_diamond(c, hw * pulse, hh * pulse, 2.5, INK);
+}
+
+/// The local cell of the coast marker for a specific (kind, namespace, name)
+/// route hanging off workload `via` — a Service can front several workloads
+/// (one marker each), so we highlight only the affected workload's mark.
+fn coast_cell(
+    w: &WorldModel,
+    kind: CoastKind,
+    ns: &str,
+    name: &str,
+    via: &WorkloadRef,
+) -> Option<(u16, u16)> {
+    for cont in &w.continents {
+        for m in &cont.coast {
+            if m.kind == kind && m.name == name && m.workload.namespace == ns && &m.workload == via
+            {
+                return Some((m.x, m.y));
+            }
+        }
+    }
+    None
+}
+
+/// Paint a blast radius over one world: pulsing lines spread from the troubled
+/// subject to each affected city / harbor / gate (fading by hop), a warning
+/// diamond on each, and a bold crisis ring on the source. `cam` must already be
+/// shifted for this scene (`cam.shifted(sw.off)`), since the lookups are local.
+/// Returns `Some(n)` = `n` affected resources actually placed on the map, or
+/// `None` when the subject itself has no on-map position (e.g. a DaemonSet —
+/// rendered as a road, not a city — so nothing is drawn); the banner uses this
+/// so the count never overstates what's shown.
+pub fn draw_blast(cam: &Camera, sw: &SceneWorld, blast: &BlastRadius) -> Option<usize> {
+    let w = sw.world;
+    let (hw, hh) = cam.cell_px();
+    let t = get_time() as f32;
+
+    let center = |p: (u16, u16)| cam.to_screen(p.0 as f32 + 0.5, p.1 as f32 + 0.5);
+    let src = match &blast.subject {
+        Subject::Workload(wr) => w.city_pos(wr).or_else(|| w.structure_pos(wr)),
+        Subject::Node(n) => w.province_pos(n),
+    };
+    let src = src?;
+    let sc = center(src);
+
+    // Resolve each affected resource to its on-map cell + hop (silently skipping
+    // any with no position — a DaemonSet city, a marker dropped by COAST_CAP).
+    let mut targets: Vec<(Vec2, u8)> = Vec::new();
+    for it in &blast.items {
+        let cell = match &it.item {
+            Affected::Workload(wr) => w.city_pos(wr).or_else(|| w.structure_pos(wr)),
+            Affected::Service {
+                namespace,
+                name,
+                via,
+            } => coast_cell(w, CoastKind::Harbor, namespace, name, via),
+            Affected::Ingress {
+                namespace,
+                name,
+                via,
+            } => coast_cell(w, CoastKind::Gate, namespace, name, via),
+        };
+        if let Some(p) = cell {
+            targets.push((center(p), it.hop));
+        }
+    }
+
+    // Spreading lines (under the halos), pulsing, fading with hop distance.
+    let pulse = 0.55 + ((t * 4.0).sin() * 0.5 + 0.5) * 0.45;
+    for (tc, hop) in &targets {
+        let a = (0.7 - (*hop as f32) * 0.14).max(0.22) * pulse;
+        draw_line(
+            sc.x,
+            sc.y,
+            tc.x,
+            tc.y,
+            1.5,
+            Color::new(WARN.r, WARN.g, WARN.b, a),
+        );
+    }
+    // Warning diamonds on the affected (hop 1 = crisis red, further = amber).
+    for (tc, hop) in &targets {
+        let col = if *hop <= 1 { CRIT } else { WARN };
+        stroke_diamond(*tc, hw * 1.05, hh * 1.05, 2.0, col);
+    }
+    // The source: a bold pulsing crisis ring.
+    let p = 1.0 + (t * 5.0).sin() * 0.15;
+    stroke_diamond(sc, hw * 1.3 * p, hh * 1.3 * p, 3.0, CRIT);
+    Some(targets.len())
 }
 
 /// Cheap 4-corner screen-AABB cull for a province footprint; true = offscreen.

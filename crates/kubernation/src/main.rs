@@ -37,12 +37,13 @@ use almanac::{Almanac, AlmanacAction};
 use browse::{BrowseAction, Browser};
 use clap::Parser;
 use draw::{
-    Camera, Overlay, SceneWorld, draw_sea, draw_selection, draw_world, locate, minimap_layout,
-    scene, scene_size,
+    Camera, Overlay, SceneWorld, draw_blast, draw_sea, draw_selection, draw_world, locate,
+    minimap_layout, scene, scene_size,
 };
 use inspect::Inspector;
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::Target;
+use kubernation_core::state::blast::{Subject, blast_radius};
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::world::Region;
 use macroquad::prelude::*;
@@ -117,6 +118,10 @@ struct Args {
     /// on the map (so the FORWARDS column section shows) — dev verification
     #[arg(long, value_name = "SUBSTR")]
     forward: Option<String>,
+    /// Select the first node/city matching SUBSTR and turn on the blast-radius
+    /// overlay (dev verification of the dependency fan-out highlight)
+    #[arg(long, value_name = "SUBSTR")]
+    blast: Option<String>,
     /// Hold the intro splash (the full Kubernation scene) — replays it, and
     /// with --screenshot captures it (development verification / demo)
     #[arg(long)]
@@ -212,6 +217,18 @@ async fn main() {
     let mut panel: Option<Panel> = None;
     let mut concern_idx: usize = 0;
     let mut city_idx: usize = 0;
+    // Blast-radius overlay: when on, highlight the dependency fan-out of the
+    // selected tile (else the focused concern's subject). Toggled with `B`.
+    let mut blast_on = args.blast.is_some();
+    let mut blast_armed = args.blast.is_some();
+    // Memoized blast radius: (cluster, subject, result), recomputed only when
+    // the subject or the snapshot changes (keyed by the snapshot's Arc pointer).
+    let mut blast_cache: Option<(
+        ClusterId,
+        Subject,
+        kubernation_core::state::blast::BlastRadius,
+    )> = None;
+    let mut blast_cache_snap: usize = 0;
     let mut frames_synced: u32 = 0;
     let mut prev_had_snap = false;
     let mut inspected = false;
@@ -1175,6 +1192,39 @@ async fn main() {
                         }
                     }
                 }
+
+                // Development verification: select the first node (preferred,
+                // for the multi-hop cascade) or city matching --blast, so the
+                // overlay (already on via `blast_on`) has a subject to fan out.
+                if let Some(needle) = &args.blast
+                    && blast_armed
+                {
+                    blast_armed = false;
+                    'bl: for sw in &worlds {
+                        for cont in &sw.world.continents {
+                            for p in &cont.provinces {
+                                if p.tile.name.contains(needle.as_str()) {
+                                    let global = (p.x + sw.off, p.y);
+                                    selected = Some(global);
+                                    cam.jump_to(global);
+                                    break 'bl;
+                                }
+                            }
+                        }
+                    }
+                    if selected.is_none() {
+                        'bc: for sw in &worlds {
+                            for c in sw.world.cities() {
+                                if c.r.name.contains(needle.as_str()) {
+                                    let global = (c.x + sw.off, c.y);
+                                    selected = Some(global);
+                                    cam.jump_to(global);
+                                    break 'bc;
+                                }
+                            }
+                        }
+                    }
+                }
             } // end world navigation (suspended while the picker is open)
 
             // `L` tails the focused concern's offending pod directly (the "city
@@ -1219,6 +1269,28 @@ async fn main() {
                     toast = Some(("this concern has no pod to tail".into(), get_time() + 2.5));
                 }
             }
+
+            // `B` toggles the blast-radius overlay — the dependency fan-out of
+            // the selected tile (else the focused concern's subject). A
+            // lightweight map decoration, so it lives outside the nav-suspend
+            // block but is still gated off while an overlay owns input.
+            if is_key_pressed(KeyCode::B)
+                && !typing
+                && !log_open
+                && !picker
+                && !ns_picker
+                && almanac.is_none()
+                && advisor.is_none()
+                && browser.is_none()
+                && inspector.is_none()
+                && !plan_open
+                && open_menu.is_none()
+                && !panel_modal
+                && pending_evict.is_none()
+                && !pending_commit
+            {
+                blast_on = !blast_on;
+            }
         }
 
         // ---- draw ---------------------------------------------------------
@@ -1252,6 +1324,61 @@ async fn main() {
                 }
                 if let Some(sel) = selected {
                     draw_selection(&cam, sel);
+                }
+
+                // Blast-radius overlay: the dependency fan-out of the selected
+                // tile (a city/node), else the focused concern's subject. Drawn
+                // over the world; recomputed each frame (cheap for real sizes).
+                if blast_on {
+                    let subject: Option<(ClusterId, Subject)> = selected
+                        .and_then(|cell| locate(&worlds, cell))
+                        .and_then(|(sw, local)| match sw.world.region_at(local.0, local.1) {
+                            Region::City(_, c) => Some((sw.id, Subject::Workload(c.r.clone()))),
+                            Region::Province(p) => {
+                                Some((sw.id, Subject::Node(p.tile.name.clone())))
+                            }
+                            _ => None,
+                        })
+                        .or_else(|| {
+                            (!s.attention.is_empty())
+                                .then(|| &s.attention[concern_idx.min(s.attention.len() - 1)])
+                                .and_then(|c| match &c.target {
+                                    Target::Workload(wr) => {
+                                        Some((c.cluster, Subject::Workload(wr.clone())))
+                                    }
+                                    Target::Node(n) => Some((c.cluster, Subject::Node(n.clone()))),
+                                    Target::WorkloadList => None,
+                                })
+                        });
+                    let mut affected = None;
+                    if let Some((cid, subj)) = &subject {
+                        // Memoize the (expensive-ish) topology walk: recompute
+                        // only when the subject or the world snapshot changes,
+                        // not every frame while the overlay is held on.
+                        let snap_ptr = std::sync::Arc::as_ptr(s) as usize;
+                        let stale = blast_cache
+                            .as_ref()
+                            .map(|(c, sb, _)| c != cid || sb != subj)
+                            .unwrap_or(true)
+                            || blast_cache_snap != snap_ptr;
+                        if stale {
+                            let obs = match cid {
+                                ClusterId::Hot => Some(&s.hot.observed),
+                                ClusterId::Warm => s.warm.as_ref().map(|w| &w.observed),
+                            };
+                            blast_cache =
+                                obs.map(|obs| (*cid, subj.clone(), blast_radius(obs, subj)));
+                            blast_cache_snap = snap_ptr;
+                        }
+                        if let Some((_, _, blast)) = &blast_cache
+                            && let Some(sw) = worlds.iter().find(|w| w.id == *cid)
+                        {
+                            affected = draw_blast(&cam.shifted(sw.off), sw, blast);
+                        }
+                    } else {
+                        blast_cache = None;
+                    }
+                    panels::draw_blast_banner(affected, panels::map_width());
                 }
 
                 // The docked right column (WORLD / STATUS / SELECTION) — always
@@ -1864,7 +1991,7 @@ async fn main() {
             // Resolve the default port (a get + maybe a Service LIST) + bind +
             // appear in net.forwards() — a few net ticks (250ms each).
             180
-        } else if args.plan_go {
+        } else if args.plan_go || args.blast.is_some() {
             120
         } else if args.browse.is_some() {
             // Discovery (per-group enumeration) and, with a kind, a LIST need a

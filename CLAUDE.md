@@ -1092,6 +1092,40 @@ what makes the interesting logic unit-testable without a cluster.
   idle dev cluster the node trace hugs the floor (cpu ~5%) — honest, since it's
   capacity-relative. Deferred: per-pod sparklines (noisier, the rows are cramped),
   a selectable time window.
+- **Blast-radius highlighting** (2026-06-18, user picked it from an AIM SRE
+  review — chosen because Kubernation *already owns the topology* the SRE canon
+  says you need for impact isolation, so it's uniquely enabled): press **`B`** to
+  light up the dependency fan-out of a subject on the map. **Core
+  (`state/blast.rs`, pure + unit-tested):** `blast_radius(world, Subject)` walks
+  the observed topology — a **Node** cascades node → hosted workloads (pods'
+  `node_name` → `OwnerIndex`) → their Services → Ingresses; a **Workload** walks
+  its Services → Ingresses. Reuses `build_exposure` (the selector/ingress-backend
+  resolver). Returns `Affected` (Workload/Service/Ingress) items with a **hop**
+  distance, deduped to the min hop. It **deliberately invents no app-level
+  "who-calls-whom" edges** — those need a service mesh / eBPF and a wrong
+  dependency is worse than a missing one, so a workload with no Service has an
+  honestly empty radius (the read-by-default, don't-fabricate posture). **GUI
+  (`draw::draw_blast`):** for the subject's world, pulsing lines spread from the
+  source to each affected cell (faded by hop), a warning diamond on each (hop 1 =
+  CRIT red, further = WARN amber), a bold crisis ring on the source; `coast_cells`
+  resolves Service/Ingress `Affected` to their harbor/gate marks. The subject is
+  the **selected tile** (city→Workload, province→Node) else the **focused
+  concern's** target, in that subject's cluster's `ObservedWorld` (pair-aware);
+  recomputed each frame while on (cheap for real sizes — `build_exposure` over a
+  small store). `panels::draw_blast_banner` shows the affected count. Dev flag
+  `--blast <substr>` (selects a node — preferred, for the cascade — else a city);
+  gui-smoke `blast-node`/`blast-workload` states. Verified live on kind: a node →
+  12 affected (cascade through cities + coast), `web` → its Service + Ingress.
+  Complements the attention queue (which says *what's wrong*) by showing *what
+  else is affected*. **Review fixes:** `Affected::Service`/`Ingress` carry a
+  `via` workload so a Service fronting several workloads highlights only the
+  affected one's harbor (not healthy siblings on other nodes); the banner counts
+  what's actually *placed* on the map (`draw_blast` returns the drawn count, so a
+  DaemonSet subject — a road, not a city, with no on-map source — reads as "not
+  shown" rather than a phantom count); and the walk is **memoized** (recomputed
+  only when the subject or snapshot changes, not every frame while held on).
+  Deferred: true downstream consumers (needs Hubble/mesh), a blast list in the
+  SELECTION column.
 
 ## The pair (hot/warm)
 
@@ -1167,7 +1201,8 @@ change. Summary:
   container · `T` timestamps · `s` history window (500 / 2k / since 1h) ·
   `c` copy · `w` export · lines tinted by guessed severity.
 - **Attention:** `N` fly to the next concern · `L` tail the focused concern's
-  offending pod's logs.
+  offending pod's logs · `B` blast radius (highlight what a selected node/city —
+  or the focused concern — affects: cities → harbors → gates).
 - **Resource browser:** `:` (any kind — pick → table → click a row's YAML).
 - **Planning turn:** city window steppers stage scale / restart / image, the
   province window stages cordon; **Orders ▸ End of Turn** reviews + commits

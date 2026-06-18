@@ -32,6 +32,8 @@ STATES=(
   "concern-logs|--concern-logs"
   "namespace-scope|--namespace kubernation-demo"
   "forward|--forward web"
+  "blast-node|--blast kubernation-worker"
+  "blast-workload|--blast web"
 )
 
 fail=0

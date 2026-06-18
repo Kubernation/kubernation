@@ -714,6 +714,28 @@ pub fn draw_picker(
     PickerLayout { rows }
 }
 
+/// A small banner announcing the blast-radius overlay is active — the affected
+/// count, or a hint when no subject resolves. Sits just above the attention
+/// strip, left of the play area.
+pub fn draw_blast_banner(affected: Option<usize>, _map_w: f32) {
+    let msg = match affected {
+        Some(0) => "BLAST RADIUS · nothing downstream derivable · B to clear".to_string(),
+        Some(n) => format!("BLAST RADIUS · {n} affected · B to clear"),
+        None => "BLAST RADIUS · select a city/node or focus a concern · B".to_string(),
+    };
+    let fs = 13.0;
+    let bw = text_size(&msg, fs).width + 20.0;
+    let bx = 6.0;
+    let by = screen_height() - STRIP_H - 26.0;
+    stone_panel(bx, by, bw, 22.0);
+    let col = if affected.unwrap_or(0) > 0 {
+        STONE_CRIT
+    } else {
+        STONE_INK
+    };
+    text(&msg, bx + 10.0, by + 15.0, fs, col);
+}
+
 /// Map a value series to polyline points inside `rect` — x runs oldest→newest
 /// left to right, y is bottom (0) to top (`max`), each value clamped to
 /// `[0, max]`. Empty series or a non-positive `max` yields no points. Pure +

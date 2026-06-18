@@ -493,6 +493,10 @@ fn page_controls(cx: &mut Ctx) {
     cx.key("] / [", "sail to the next / previous city");
     cx.key("N", "fly to the next concern");
     cx.key("L", "tail the focused concern's offending pod");
+    cx.key(
+        "B",
+        "blast radius — highlight what a selected node/city (or focused concern) affects",
+    );
     cx.heading("Inspect");
     cx.key("Click land / city", "open the node or city panel");
     cx.key("Click a harbor / gate", "open the city it serves");
