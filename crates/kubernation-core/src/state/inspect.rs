@@ -68,6 +68,32 @@ pub fn node_yaml(world: &ObservedWorld, name: &str) -> Option<String> {
         .map(|o| clean_yaml(&*o))
 }
 
+/// YAML for any browsed `DynamicObject` (the resource browser). A **Secret**'s
+/// `data` / `stringData` values are redacted (keys + byte sizes shown, values
+/// masked) to keep the "never read Secret contents" posture; every other kind
+/// — including ConfigMaps — is shown in full.
+pub fn dynamic_yaml(obj: &kube::core::DynamicObject) -> String {
+    let is_secret = obj
+        .types
+        .as_ref()
+        .is_some_and(|t| t.kind == "Secret" && t.api_version == "v1");
+    if !is_secret {
+        return clean_yaml(obj);
+    }
+    let mut o = obj.clone();
+    for key in ["data", "stringData"] {
+        if let Some(serde_json::Value::Object(m)) = o.data.get_mut(key) {
+            for v in m.values_mut() {
+                let bytes = v.as_str().map(|s| s.len()).unwrap_or(0);
+                *v = serde_json::Value::String(format!(
+                    "\u{2022}\u{2022}\u{2022}\u{2022} ({bytes} bytes)"
+                ));
+            }
+        }
+    }
+    clean_yaml(&o)
+}
+
 /// YAML for a pod object.
 pub fn pod_yaml(world: &ObservedWorld, namespace: &str, name: &str) -> Option<String> {
     world
@@ -131,6 +157,45 @@ mod tests {
         assert!(pod_yaml(&world, "demo", "nope").is_none());
         assert!(node_yaml(&world, "n1").unwrap().contains("kind: Node"));
         assert!(node_yaml(&world, "ghost").is_none());
+    }
+
+    #[test]
+    fn dynamic_yaml_redacts_only_secret_values() {
+        use kube::core::{DynamicObject, ObjectMeta, TypeMeta};
+        let secret = DynamicObject {
+            types: Some(TypeMeta {
+                api_version: "v1".into(),
+                kind: "Secret".into(),
+            }),
+            metadata: ObjectMeta {
+                name: Some("creds".into()),
+                namespace: Some("demo".into()),
+                ..Default::default()
+            },
+            data: serde_json::json!({ "type": "Opaque", "data": { "password": "c2VjcmV0" } }),
+        };
+        let y = dynamic_yaml(&secret);
+        assert!(y.contains("kind: Secret"));
+        assert!(y.contains("password:"), "key shown: {y}");
+        assert!(!y.contains("c2VjcmV0"), "value redacted: {y}");
+        assert!(y.contains("bytes)"), "placeholder shown: {y}");
+
+        // A ConfigMap is NOT a secret — shown in full.
+        let cm = DynamicObject {
+            types: Some(TypeMeta {
+                api_version: "v1".into(),
+                kind: "ConfigMap".into(),
+            }),
+            metadata: ObjectMeta {
+                name: Some("cfg".into()),
+                ..Default::default()
+            },
+            data: serde_json::json!({ "data": { "key": "plainvalue" } }),
+        };
+        assert!(
+            dynamic_yaml(&cm).contains("plainvalue"),
+            "configmap in full"
+        );
     }
 
     #[test]

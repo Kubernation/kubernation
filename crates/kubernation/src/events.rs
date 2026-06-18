@@ -24,6 +24,12 @@ pub enum AppEvent {
     Evicted { result: Result<String, String> },
     /// An End-of-Turn commit finished; the per-row outcome feeds the review.
     Committed { outcome: CommitOutcome },
+    /// Resource discovery finished — the browsable kinds.
+    Kinds(Vec<kubernation_core::k8s::browse::KindEntry>),
+    /// A resource-browser LIST finished (Ok = objects, Err = message).
+    BrowseRows {
+        result: Result<Vec<kubernation_core::k8s::browse::Object>, String>,
+    },
 }
 
 /// Terminal input arrives on a dedicated OS thread feeding the async loop.

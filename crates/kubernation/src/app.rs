@@ -17,6 +17,7 @@ use tokio::time::MissedTickBehavior;
 use crate::config::Config;
 use crate::events::{AppEvent, ClusterId, WorldDelta};
 use crate::ui::attention_panel::AttentionPanel;
+use crate::ui::browse::{BrowseView, ResourcePicker};
 use crate::ui::city::CityView;
 use crate::ui::context_picker::ContextPicker;
 use crate::ui::inspect::InspectView;
@@ -31,7 +32,7 @@ use crate::ui::{
     Action, Component, Edge, OverlayMode, RenderCtx, centered, help, sidebar, status_bar,
 };
 use kubernation_core::k8s::client::Cluster;
-use kubernation_core::k8s::{actions, client, logs, watch, watch::WorldHandle};
+use kubernation_core::k8s::{actions, browse, client, logs, watch, watch::WorldHandle};
 use kubernation_core::state::attention::{Concern, Severity};
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::model::Models;
@@ -47,6 +48,8 @@ enum Screen {
     Logs,
     /// The read-only YAML inspector ("dossier").
     Inspect,
+    /// The resource browser's generic table for one kind.
+    Browse,
     /// The End-of-Turn review — the staged planning-turn diff + commit.
     Plan,
 }
@@ -121,6 +124,13 @@ pub struct App {
     last_log_fetch: Instant,
     inspect: InspectView,
     inspect_cluster: ClusterId,
+    /// Resource browser: discovered kinds (cached), the `:` picker, and the
+    /// generic table for the kind currently being browsed (hot cluster).
+    kinds: Vec<browse::KindEntry>,
+    kinds_loading: bool,
+    resource_picker: ResourcePicker,
+    browse: BrowseView,
+    browse_kind: Option<browse::KindEntry>,
     attention_panel: AttentionPanel,
     picker: ContextPicker,
     ns_picker: NamespacePicker,
@@ -191,6 +201,11 @@ impl App {
             last_log_fetch: Instant::now(),
             inspect: InspectView::default(),
             inspect_cluster: ClusterId::Hot,
+            kinds: Vec::new(),
+            kinds_loading: false,
+            resource_picker: ResourcePicker::default(),
+            browse: BrowseView::default(),
+            browse_kind: None,
             attention_panel,
             picker: ContextPicker::default(),
             ns_picker: NamespacePicker::default(),
@@ -288,6 +303,18 @@ impl App {
                 });
                 self.plan.outcome = Some(outcome);
                 self.dirty = true; // the world changed under us
+                true
+            }
+            AppEvent::Kinds(kinds) => {
+                self.kinds = kinds;
+                self.kinds_loading = false;
+                if self.resource_picker.open {
+                    self.resource_picker.set_kinds(self.kinds.clone());
+                }
+                true
+            }
+            AppEvent::BrowseRows { result } => {
+                self.browse.set_result(result);
                 true
             }
             AppEvent::Term(TermEvent::Key(key)) if key.kind != KeyEventKind::Release => {
@@ -395,6 +422,7 @@ impl App {
             Screen::Node => self.node_cluster,
             Screen::Logs => self.logs.cluster,
             Screen::Inspect => self.inspect_cluster,
+            Screen::Browse => ClusterId::Hot,
             _ => self.focus,
         };
         // Never hand out Warm when no warm world exists.
@@ -456,6 +484,13 @@ impl App {
         }
         if self.ns_picker.open {
             if let Some(a) = self.ns_picker.handle_key(key) {
+                self.apply(a, ClusterId::Hot).await;
+            }
+            return;
+        }
+        // The `:` kind picker captures all keys (chars type into its filter).
+        if self.resource_picker.open {
+            if let Some(a) = self.resource_picker.handle_key(key) {
                 self.apply(a, ClusterId::Hot).await;
             }
             return;
@@ -544,6 +579,8 @@ impl App {
             KeyCode::Char('N') => self
                 .ns_picker
                 .open_with(self.hot.world.namespaces(), &self.ns_filter),
+            // `:` opens the resource browser — discover kinds if needed.
+            KeyCode::Char(':') => self.open_browser(),
             KeyCode::Char('1') => self.overlay = OverlayMode::Pressure,
             KeyCode::Char('2') => self.overlay = OverlayMode::ReplicaHealth,
             KeyCode::Char('3') => self.overlay = OverlayMode::Namespace,
@@ -580,6 +617,10 @@ impl App {
                     Screen::Inspect => {
                         let ctx = ctx!(self, source);
                         self.inspect.handle_key(key, &ctx)
+                    }
+                    Screen::Browse => {
+                        let ctx = ctx!(self, ClusterId::Hot);
+                        self.browse.handle_key(key, &ctx)
                     }
                     // Plan keys are intercepted above; unreachable here.
                     Screen::Plan => None,
@@ -709,6 +750,40 @@ impl App {
             }
             Action::ExportText { text, filename } => {
                 self.flash = Some(export_to_file(&text, &filename));
+            }
+            Action::ListSelectedKind => {
+                if let Some(kind) = self.resource_picker.selected_kind() {
+                    self.browse.open(&kind);
+                    self.browse_kind = Some(kind.clone());
+                    self.push_screen(Screen::Browse);
+                    self.spawn_list(kind);
+                }
+            }
+            Action::RefreshBrowse => {
+                if let Some(kind) = self.browse_kind.clone() {
+                    self.browse.set_loading();
+                    self.spawn_list(kind);
+                }
+            }
+            Action::InspectSelected => {
+                if let Some(obj) = self.browse.selected_object() {
+                    let kind = obj
+                        .types
+                        .as_ref()
+                        .map(|t| t.kind.clone())
+                        .unwrap_or_default();
+                    let ns = obj.metadata.namespace.clone().unwrap_or_default();
+                    let name = obj.metadata.name.clone().unwrap_or_default();
+                    let title = if ns.is_empty() {
+                        format!("{kind} {name}")
+                    } else {
+                        format!("{kind} {ns}/{name}")
+                    };
+                    self.inspect
+                        .open(title, kubernation_core::state::inspect::dynamic_yaml(&obj));
+                    self.inspect_cluster = ClusterId::Hot;
+                    self.push_screen(Screen::Inspect);
+                }
             }
             Action::EvictPod { namespace, pod } => {
                 // RBAC gate (cached per namespace): only raise the confirm if
@@ -888,6 +963,35 @@ impl App {
         });
     }
 
+    /// Open the resource browser: ensure kind discovery is running, open the
+    /// `:` picker (it fills in when discovery lands).
+    fn open_browser(&mut self) {
+        if self.kinds.is_empty() && !self.kinds_loading {
+            self.spawn_discover();
+        }
+        self.resource_picker
+            .open_with(self.kinds.clone(), self.kinds.is_empty());
+    }
+
+    fn spawn_discover(&mut self) {
+        self.kinds_loading = true;
+        let client = self.hot_cluster.client.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let kinds = browse::discover(&client).await;
+            let _ = tx.send(AppEvent::Kinds(kinds)).await;
+        });
+    }
+
+    fn spawn_list(&mut self, kind: browse::KindEntry) {
+        let client = self.hot_cluster.client.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = browse::list_kind(&client, &kind).await;
+            let _ = tx.send(AppEvent::BrowseRows { result }).await;
+        });
+    }
+
     /// Kick off an async tail of the currently-open log target. Tagged with
     /// a generation so a stale result (after the user moves on) is dropped.
     fn fetch_logs(&mut self) {
@@ -1026,6 +1130,10 @@ impl App {
                     let ctx = ctx!(self, self.view_cluster(Screen::Inspect));
                     self.inspect.render(f, main_a, &ctx);
                 }
+                Screen::Browse => {
+                    let ctx = ctx!(self, ClusterId::Hot);
+                    self.browse.render(f, main_a, &ctx);
+                }
                 Screen::Plan => {
                     // The planning turn is hot-cluster only.
                     let ctx = ctx!(self, ClusterId::Hot);
@@ -1045,6 +1153,9 @@ impl App {
             }
             if self.ns_picker.open {
                 self.ns_picker.render(f, &self.theme);
+            }
+            if self.resource_picker.open {
+                self.resource_picker.render(f, &self.theme);
             }
             if let Some((_, ns, pod)) = self.pending_evict.clone() {
                 render_evict_confirm(f, &self.theme, &ns, &pod);

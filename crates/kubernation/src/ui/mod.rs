@@ -1,4 +1,5 @@
 pub mod attention_panel;
+pub mod browse;
 pub mod city;
 pub mod context_picker;
 pub mod help;
@@ -55,6 +56,12 @@ pub enum Action {
     },
     InspectWorkload(WorkloadRef),
     InspectNode(String),
+    /// Resource browser: LIST the kind selected in the `:` picker, inspect the
+    /// selected object's YAML, or re-LIST the current kind. Payload-free (the
+    /// app reads the selection from the picker / browse view).
+    ListSelectedKind,
+    InspectSelected,
+    RefreshBrowse,
     /// Copy text to the system clipboard (the app sends OSC 52).
     CopyText(String),
     /// Export text to a file in the working directory.

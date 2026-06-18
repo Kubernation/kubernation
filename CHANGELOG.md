@@ -9,6 +9,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Resource browser (`:any kind`) — a k9s-style escape hatch.** Press **`:`**
+  to open a filterable picker of every resource kind the cluster serves
+  (built-ins + CRDs, via discovery), pick one, and see a generic table
+  (namespace · name · age) of its objects — LISTed on demand (fetch-not-watch),
+  `r` to refresh. **Enter** drills into the YAML inspector (the same dossier).
+  **Least-privilege preserved:** a Secret's `data`/`stringData` values are
+  **redacted** (keys + byte sizes shown, values masked); ConfigMaps and every
+  other kind are shown in full. Pure, unit-tested core
+  (`kubernation-core` `k8s/browse.rs` + `state/inspect::dynamic_yaml`);
+  discovery + list verified live on kind (70 kinds). _(TUI in this release; the
+  GUI browser lands alongside.)_
 - **Copy + export for logs and YAML.** In the log overlay and the object
   inspector, **`c`** copies the whole buffer to the system clipboard and **`w`**
   exports it to a file in the working directory (logs → `.log`, YAML → `.yaml`),
