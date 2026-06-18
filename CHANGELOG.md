@@ -28,6 +28,12 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   cached, so the ~2s poll no longer re-issues a pod GET each time. (Completes the
   Tier-0 log-UX pass; container picker / concern→logs / multi-pod tailing are
   later tiers.)
+- **Logs: graceful errors + no overflow.** Asking for the *previous* container
+  on a pod that never restarted now shows a one-line "no previous container —
+  press p for the live tail" instead of a raw `ApiError(Status{…})` dump (and
+  403/404 are classified too). In the GUI, long unbroken lines (a SHA, a verbose
+  error) are truncated to the panel width with `…` instead of running off the
+  edge (macroquad has no clipping).
 - **Resource browser (`:any kind`) — a k9s-style escape hatch, both frontends.**
   Press **`:`** to open a picker of every resource kind the cluster serves
   (built-ins + CRDs, via discovery), pick one, and see a generic table

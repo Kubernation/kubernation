@@ -301,9 +301,11 @@ pub fn draw_logs(
 
     let body_top = y + 64.0;
     let line_h = 15.0;
+    // Inner width available to a body line (left + right margin off the panel).
+    let body_w = w - 28.0;
     if let Some(err) = &tail.error {
         text(
-            ascii(&format!("error: {err}")),
+            ascii(&fit_width(&format!("error: {err}"), 14.0, body_w)),
             x + 14.0,
             body_top,
             14.0,
@@ -347,7 +349,11 @@ pub fn draw_logs(
 
     if all.is_empty() {
         text(
-            ascii(&format!("(no lines match \"{filter}\")")),
+            ascii(&fit_width(
+                &format!("(no lines match \"{filter}\")"),
+                14.0,
+                body_w,
+            )),
             x + 14.0,
             body_top,
             14.0,
@@ -362,7 +368,8 @@ pub fn draw_logs(
     let plain = Color::new(0.80, 0.84, 0.80, 1.0);
     let mut ly = body_top;
     for raw in &all[start..] {
-        let s = truncate_str(raw, 150);
+        // Bound to the panel width (no clipping in macroquad).
+        let s = fit_width(raw, 13.0, body_w);
         // Tint by guessed severity so an error stands out (text unchanged).
         let color = match logline::classify(raw) {
             Level::Error => CRIT,
@@ -391,6 +398,34 @@ pub(crate) fn truncate_str(s: &str, max: usize) -> String {
         let cut: String = s.chars().take(max - 1).collect();
         format!("{cut}~")
     }
+}
+
+/// Truncate `s` (appending `…`) to fit within `max_w` pixels at font `size`.
+/// macroquad has no clipping, so a long unbroken line would otherwise run past
+/// the panel edge; a char-count cap can't bound a proportional font. Binary
+/// searches the longest char prefix that fits.
+pub(crate) fn fit_width(s: &str, size: f32, max_w: f32) -> String {
+    if max_w <= 0.0 {
+        return String::new();
+    }
+    if text_size(s, size).width <= max_w {
+        return s.to_string();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2); // upper-biased so it makes progress
+        let mut cand: String = chars[..mid].iter().collect();
+        cand.push('…');
+        if text_size(&cand, size).width <= max_w {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let mut out: String = chars[..lo].iter().collect();
+    out.push('…');
+    out
 }
 
 // --- attention strip ------------------------------------------------------

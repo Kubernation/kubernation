@@ -92,7 +92,32 @@ pub async fn tail(
         ..Default::default()
     };
     opts.window.apply(&mut lp);
-    api.logs(pod, &lp).await.map_err(|e| e.to_string())
+    api.logs(pod, &lp)
+        .await
+        .map_err(|e| classify_log_err(e, pod, opts.previous))
+}
+
+/// Turn a kube error into a short, operator-legible line for the overlay.
+/// The common one is asking for the *previous* container on a pod that hasn't
+/// restarted — the server returns a verbose 400 (`previous terminated container
+/// "x" in pod "y" not found: BadRequest (Status { … })`) that both reads badly
+/// and (in the GUI) overran the window; collapse it to a one-liner.
+fn classify_log_err(e: kube::Error, pod: &str, previous: bool) -> String {
+    if let kube::Error::Api(status) = &e {
+        let msg = status.message.to_lowercase();
+        if previous && (msg.contains("previous terminated container") || msg.contains("not found"))
+        {
+            return format!(
+                "{pod} has no previous container (it hasn't restarted) — press p for the live tail"
+            );
+        }
+        match status.code {
+            403 => return format!("forbidden — you can't read logs for {pod}"),
+            404 => return format!("{pod} not found (it may have been deleted)"),
+            _ => {}
+        }
+    }
+    e.to_string()
 }
 
 /// First container name of a pod, so logs work on multi-container pods
