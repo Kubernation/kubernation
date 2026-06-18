@@ -45,6 +45,11 @@ pub struct WinAction {
     /// A pod the operator asked to evict: (namespace, pod). The caller confirms
     /// before anything is written.
     pub evict: Option<(String, String)>,
+    /// A pod the operator asked to port-forward: (namespace, pod). The net
+    /// thread resolves the port + binds the listener.
+    pub forward: Option<(String, String)>,
+    /// A live forward the operator asked to stop, by its local port.
+    pub stop_forward: Option<u16>,
     /// A pod whose YAML to inspect: (namespace, pod).
     pub inspect: Option<(String, String)>,
     /// An intervention the operator staged from this window (planning turn).
@@ -194,6 +199,74 @@ pub fn evict_button(r: Rect, mouse: Vec2, click: bool, allowed: Option<bool>) ->
         tc,
     );
     on && click && allowed == Some(true)
+}
+
+/// What a click on a per-pod forward button asks for.
+pub enum ForwardBtn {
+    /// Start a new forward for this pod.
+    Start,
+    /// Stop the live forward (its local port is known to the caller).
+    Stop,
+}
+
+/// A per-pod port-forward button, revealed on row hover. State-aware:
+/// `active = Some(local_port)` → a green "stop :PORT" (hover shows "stop");
+/// otherwise RBAC-gated like evict (`Some(true)` enabled "fwd", `Some(false)`
+/// "locked", `None` probing "…"). Returns the requested action when clicked.
+pub fn forward_button(
+    r: Rect,
+    mouse: Vec2,
+    click: bool,
+    allowed: Option<bool>,
+    active: Option<u16>,
+) -> Option<ForwardBtn> {
+    let on = r.contains(mouse);
+    if let Some(port) = active {
+        let fill = if on { GOOD } else { darker(GOOD, 0.5) };
+        draw_rectangle(r.x, r.y, r.w, r.h, fill);
+        draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, GOOD);
+        // At rest show the port; on hover show the action.
+        let label = if on {
+            "stop".to_string()
+        } else {
+            format!(":{port}")
+        };
+        let tc = if on { INK } else { lighter(GOOD, 1.4) };
+        let tm = text_size(&label, 12.0);
+        text(
+            &label,
+            r.x + (r.w - tm.width) / 2.0,
+            r.y + r.h - 4.0,
+            12.0,
+            tc,
+        );
+        return (on && click).then_some(ForwardBtn::Stop);
+    }
+    let (fill, border, tc, label) = match allowed {
+        Some(true) => (
+            if on {
+                darker(GOOD, 0.7)
+            } else {
+                darker(GOOD, 0.45)
+            },
+            GOOD,
+            if on { INK } else { lighter(GOOD, 1.3) },
+            "fwd",
+        ),
+        Some(false) => (darker(PLATE, 1.3), DIM, DIM, "locked"),
+        None => (darker(PLATE, 1.3), DIM, DIM, "..."),
+    };
+    draw_rectangle(r.x, r.y, r.w, r.h, fill);
+    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, border);
+    let tm = text_size(label, 12.0);
+    text(
+        label,
+        r.x + (r.w - tm.width) / 2.0,
+        r.y + r.h - 4.0,
+        12.0,
+        tc,
+    );
+    (on && click && allowed == Some(true)).then_some(ForwardBtn::Start)
 }
 
 /// A little book/scroll glyph for the title bar.

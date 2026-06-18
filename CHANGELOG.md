@@ -29,6 +29,18 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   first).
 
 ### Added
+- **Port-forward a pod to `127.0.0.1` (`kubectl port-forward`, in the GUI).**
+  Hover a pod in a city's CITIZENS or a node's GARRISON list and click **fwd** to
+  open a local tunnel; the **FORWARDS** section of the right column lists every
+  live forward (`:local>pod ns/pod`) with an **x** to stop it. The default port
+  is resolved for you — the pod's declared `containerPort`, else a numeric
+  `targetPort` of a Service that selects it. It's **not a cluster write** (so it
+  stays out of the one write file), but it's gated like one: RBAC-pre-checked
+  (`create pods/portforward` via `SelfSubjectAccessReview` — the button shows
+  *locked* without it), explicit, and individually stoppable. Tunnels tear down
+  cleanly on stop and on a context switch (the listener + every in-flight
+  connection abort together). Port resolution is pure + unit-tested; the tunnel
+  was verified live (HTTP 200 through a forward to `web`, then torn down).
 - **One key from a concern to its logs (`L`).** The attention queue parks you on
   "the city in trouble"; **`L`** now tails the offending pod's logs directly
   instead of a hunt through the pod list — auto-opening on the *previous*

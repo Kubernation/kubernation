@@ -11,9 +11,13 @@ repository.workspace = true
 fixtures = []
 
 [dependencies]
-kube = { version = "3.1", features = ["client", "runtime"] }
+# `ws` adds the SPDY/WebSocket upgrade `Api::portforward` needs (it is the
+# *only* reason that feature is on — exec/attach stay deliberately unbuilt).
+kube = { version = "3.1", features = ["client", "runtime", "ws"] }
 k8s-openapi = { version = "0.27", features = ["v1_33"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# `net` + `io-util` back the port-forward local listener and the bidirectional
+# byte pump (`TcpListener`, `copy_bidirectional`).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 futures = "0.3"
 color-eyre = "0.6"
 tracing = "0.1"

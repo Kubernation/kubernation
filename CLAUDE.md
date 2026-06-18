@@ -22,9 +22,14 @@ pods` with a `SelfSubjectAccessReview`; the planning turn validates every staged
 change with a **server-side dry-run** (which also enforces RBAC) and only applies
 if all pass (all-or-nothing at the gate, via `actions::commit_interventions`).
 Staging itself still never writes — only Commit does. See the "Pod eviction" and
-"Planning-turn apply" decisions. (Decision-log entries written before 2026-06-18
-that say "both frontends / GUI and TUI" are historical — the logic they describe
-now lives only in the GUI + core; the shared write file `actions.rs` is unchanged.)
+"Planning-turn apply" decisions. One **active-but-non-mutating** capability,
+**port-forward** (`k8s/portforward.rs`), sits *beside* the write file rather than
+in it (it changes nothing on the cluster) but is gated in the same spirit:
+RBAC-pre-checked (`create pods/portforward`), explicit, and individually
+stoppable. See the "Port-forward" decision. (Decision-log entries written before
+2026-06-18 that say "both frontends / GUI and TUI" are historical — the logic
+they describe now lives only in the GUI + core; the shared write file
+`actions.rs` is unchanged.)
 
 The full product brief lives in `kubernation-tui-mvp-prompt.md` (written for the
 original TUI; the world model + write posture carried over to the GUI). Read it
@@ -60,7 +65,9 @@ crates/
                  metrics.k8s.io) and logs.rs (on-demand pod log tail) sit
                  beside the reflectors — both are fetch-not-watch; browse.rs
                  (discover any kind + LIST DynamicObjects on demand — the
-                 resource browser's data, also fetch-not-watch)
+                 resource browser's data, also fetch-not-watch); portforward.rs
+                 (local TCP listener tunneling to a pod port — active but
+                 non-mutating, RBAC-gated; sits beside actions.rs, not in it)
     state/       observed.rs  ObservedWorld (reflector stores + event ring
                               + dynamic custom-resource stores)
                  world.rs     PURE world geometry: continents/provinces/
@@ -826,10 +833,10 @@ what makes the interesting logic unit-testable without a cluster.
   reused across both frontends. Dev flag `--yaml` (with `--inspect`); verified
   live (the GUI shows web's Deployment + worker2's Node YAML, managedFields
   stripped). This is the first of the "narrow the k9s gap" borrows; the
-  `:`-style resource browser followed (see next), and candidates not yet built:
-  port-forward, workload-list sort/filter. Exec/shell is deliberately **not**
-  planned (the macroquad GUI can't host a PTY, and arbitrary exec breaks the
-  read-by-default / one-write-file posture).
+  `:`-style resource browser and **port-forward** followed (see those decisions),
+  and candidates not yet built: workload-list sort/filter. Exec/shell is
+  deliberately **not** planned (the macroquad GUI can't host a PTY, and arbitrary
+  exec breaks the read-by-default / one-write-file posture).
 - **Resource browser (`:any kind`)** (2026-06-17, the second k9s-gap borrow,
   user "let's work on resource browser (:any kind)"; chose **both frontends** +
   **redact Secret values**): a k9s-style escape hatch to *any* kind, not just the
@@ -1018,6 +1025,40 @@ what makes the interesting logic unit-testable without a cluster.
   A is the durable answer. (Considered + deferred: golden-image pixel diffs —
   they need a deterministic `--fixture` launch path that doesn't exist; do A
   first, it's deterministic by construction.)
+- **Port-forward** (2026-06-18, user "sure, port forward" — the first SOON-tier
+  item after the TUI removal, chosen because the removal most directly unlocked
+  it and it fits the gated posture): a `kubectl port-forward` equivalent in the
+  GUI. **Not a cluster mutation** (it writes nothing), so it lives in
+  `k8s/portforward.rs` *beside* the one write file rather than in it — but it's
+  an **active capability** gated in the same spirit: RBAC-pre-checked
+  (`create pods/portforward` via a `SelfSubjectAccessReview`, `can_forward` — the
+  button shows *locked* without it; the apiserver is the real gate, the SSAR is
+  for UX), explicit (a click), and individually stoppable. **Core:**
+  `portforward::start` binds `127.0.0.1:0`, returns a `Forward` whose `Drop`
+  aborts the accept-loop task — which **owns a `JoinSet` of the per-connection
+  tunnels**, so the drop tears down in-flight connections too ("stop" means
+  stop); each accepted socket is pumped to a fresh `Api::portforward` upgrade via
+  `copy_bidirectional`. (We deliberately *don't* await `take_error` after the
+  copy — it isn't guaranteed to resolve and could leave a per-conn task unreaped.)
+  `default_port` resolves the target as the pod's `containerPort` else a numeric
+  Service `targetPort` selecting it — the container-port path needs no Service
+  LIST, so a `list services` denial can't mask a usable port; the two resolvers
+  are pure + unit-tested. Needs kube's **`ws`** feature (the SPDY upgrade) +
+  tokio `net`/`io-util` — the only reason `ws` is on (exec/attach stay unbuilt).
+  **GUI:** a hover-revealed green **fwd** button on city CITIZENS / node GARRISON
+  pod rows (beside yaml/evict; RBAC-gated; flips to **stop :PORT** when that pod
+  is forwarded). The net thread holds the private `Forward` handles in a `Vec`
+  paired with a public `ForwardInfo` mirror (`forward_req`/`forward_stop`/
+  `forwards` slots + a `forward_perm` RBAC cache, mirroring evict); a hot-context
+  switch drops the hot forwards (warm survives) and clears the cache. The right
+  column's **FORWARDS** section lists live forwards (`:local>pod ns/pod`) with an
+  **x** to stop — the always-visible home; the per-row stop covers the
+  window-open case. Dev flag `--forward <substr>` (starts a forward, stays on the
+  map so the column section is captured). Verified live on kind: a tunnel to
+  `web` served **HTTP 200** then tore down on stop; the SSAR matches
+  `kubectl auth can-i create pods/portforward` (admin yes → enabled, unprivileged
+  no → locked). Deferred: a manual port-entry field (when neither resolver finds
+  a port), forwarding a non-default port, UDP.
 
 ## The pair (hot/warm)
 
@@ -1098,6 +1139,10 @@ change. Summary:
 - **Planning turn:** city window steppers stage scale / restart / image, the
   province window stages cordon; **Orders ▸ End of Turn** reviews + commits
   (confirm modal). **Evict** a pod from its row (real delete, RBAC-gated, confirm).
+- **Port-forward:** hover a pod row → **fwd** opens a `127.0.0.1` tunnel to it
+  (RBAC-gated; default port = its containerPort or selecting-Service targetPort);
+  the right column's **FORWARDS** section lists live forwards with an **x** to
+  stop. Not a cluster write, but gated like one.
 - **Esc** closes the topmost overlay · the menus carry switch-context, fit, the
   map overlay (terrain/pressure/replicas/namespace), namespace filter, advisors,
   Almanac, quit.

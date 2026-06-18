@@ -19,7 +19,7 @@ use crate::net::Snapshot;
 use crate::panels::{observed_for, pod_color, truncate_str};
 use crate::text::{text, text_bold, text_size};
 use crate::theme::*;
-use crate::window::{WinAction, draw_window};
+use crate::window::{ForwardBtn, WinAction, draw_window};
 
 const W: f32 = 900.0;
 const H: f32 = 580.0;
@@ -181,6 +181,7 @@ pub fn draw_node(
         let rect = Rect::new(left_x, ly, left_w, row_h);
         let evict_btn = Rect::new(left_x + left_w - 52.0, ly + 1.0, 50.0, row_h - 2.0);
         let yaml_btn = Rect::new(left_x + left_w - 104.0, ly + 1.0, 48.0, row_h - 2.0);
+        let fwd_btn = Rect::new(left_x + left_w - 156.0, ly + 1.0, 48.0, row_h - 2.0);
         let row_hover = rect.contains(mouse);
         if row_hover {
             draw_rectangle(
@@ -211,11 +212,27 @@ pub fn draw_node(
         // Per-pod RBAC: garrison pods can span namespaces.
         if row_hover {
             let perm = net.evict_allowed(id, &p.namespace);
-            if crate::window::evict_button(evict_btn, mouse, click, perm) {
+            let fwd_perm = net.forward_allowed(id, &p.namespace);
+            let fwd_active = net
+                .forward_for(id, &p.namespace, &p.name)
+                .map(|f| f.local_port);
+            let fwd = crate::window::forward_button(fwd_btn, mouse, click, fwd_perm, fwd_active);
+            let ev = crate::window::evict_button(evict_btn, mouse, click, perm);
+            let ya = crate::window::row_button(yaml_btn, mouse, click, "yaml");
+            if let Some(fb) = fwd {
+                match fb {
+                    ForwardBtn::Start => act.forward = Some((p.namespace.clone(), p.name.clone())),
+                    ForwardBtn::Stop => act.stop_forward = fwd_active,
+                }
+            } else if ev {
                 act.evict = Some((p.namespace.clone(), p.name.clone()));
-            } else if crate::window::row_button(yaml_btn, mouse, click, "yaml") {
+            } else if ya {
                 act.inspect = Some((p.namespace.clone(), p.name.clone()));
-            } else if click && !evict_btn.contains(mouse) && !yaml_btn.contains(mouse) {
+            } else if click
+                && !fwd_btn.contains(mouse)
+                && !evict_btn.contains(mouse)
+                && !yaml_btn.contains(mouse)
+            {
                 act.log = Some((
                     p.namespace.clone(),
                     p.name.clone(),
@@ -235,7 +252,7 @@ pub fn draw_node(
         );
     }
     text(
-        "click a pod to tail logs · hover for yaml / evict · y: node yaml",
+        "click a pod = logs · hover: fwd / yaml / evict · y: node yaml",
         left_x,
         col_bottom,
         12.0,
@@ -297,6 +314,8 @@ pub fn draw_node(
     if click
         && act.log.is_none()
         && act.evict.is_none()
+        && act.forward.is_none()
+        && act.stop_forward.is_none()
         && (win.close.contains(mouse) || !win.frame.contains(mouse))
     {
         act.close = true;

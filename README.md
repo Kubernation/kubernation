@@ -209,6 +209,7 @@ Mouse-first, with a classic-4X menu bar and a few keys (the in-app **Almanac**,
 | `F` · `]`/`[` | fit the world · sail to next / previous city |
 | click land / city / harbor | open the node / city drill-down window |
 | click a pod row | tail its logs (overlay) |
+| hover a pod row → **fwd** | port-forward it to `127.0.0.1` (RBAC-gated; stop from the FORWARDS column) |
 | `y` | inspect YAML (the read-only dossier) |
 | `N` · `L` | next concern · tail that concern's offending pod |
 | `:` | resource browser — any kind |
@@ -289,14 +290,16 @@ architecture and decisions live in [CLAUDE.md](CLAUDE.md).
 ## Configuration
 
 The client is driven by CLI flags — `--context`, `--kubeconfig`, `--warm`,
-`--project` (repeatable). The headless `make smoke` check is a separate, UI-free
-core example. (The removed TUI had a `config.toml` and a log file; the windowed
-client has neither yet.)
+`--project` (repeatable), `--log-level`. Diagnostics are written to
+`~/.local/state/kubernation/kubernation.log` (`RUST_LOG` also honored). The
+headless `make smoke` check is a separate, UI-free core example. (The removed
+TUI also had a `config.toml`; the windowed client has no config file yet.)
 
 ## Status
 
 Near observe-only — two gated writes (confirmed **pod eviction** and a
-**committed planning turn**); everything else reads. Built well past the MVP: the
+**committed planning turn**) plus one active-but-non-mutating capability,
+RBAC-gated **port-forward**; everything else reads. Built well past the MVP: the
 isometric world map, hot/warm cluster pairs, metrics-server live usage, the
 minimap + map overlays, pod log tailing (severity coloring, timestamps, filters,
 concern→logs), the connectivity / storage / batch map layers, the resource

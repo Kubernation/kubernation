@@ -21,7 +21,7 @@ use crate::net::Snapshot;
 use crate::panels::{observed_for, pod_color, truncate_str};
 use crate::text::{text, text_bold, text_size};
 use crate::theme::*;
-use crate::window::{WinAction, draw_window};
+use crate::window::{ForwardBtn, WinAction, draw_window};
 
 const W: f32 = 920.0;
 const H: f32 = 600.0;
@@ -355,14 +355,17 @@ pub fn draw_city(
     let census_rows = city.pods.len().min(census_cap).div_ceil(cols);
     ly += census_rows as f32 * (chip + 3.0) + 8.0;
 
-    // Detailed pod list (clickable → tail logs; hover → RBAC-aware evict).
+    // Detailed pod list (clickable → tail logs; hover → RBAC-aware evict +
+    // port-forward).
     let evict_perm = net.evict_allowed(id, &r.namespace);
+    let fwd_perm = net.forward_allowed(id, &r.namespace);
     let row_h = 18.0;
     let max_rows = (((col_bottom - ly) / row_h) as usize).saturating_sub(1);
     for p in city.pods.iter().take(max_rows) {
         let rect = Rect::new(left_x, ly, left_w, row_h);
         let evict_btn = Rect::new(left_x + left_w - 52.0, ly + 1.0, 50.0, row_h - 2.0);
         let yaml_btn = Rect::new(left_x + left_w - 104.0, ly + 1.0, 48.0, row_h - 2.0);
+        let fwd_btn = Rect::new(left_x + left_w - 156.0, ly + 1.0, 48.0, row_h - 2.0);
         let row_hover = rect.contains(mouse);
         if row_hover {
             draw_rectangle(
@@ -397,15 +400,31 @@ pub fn draw_city(
             INK
         };
         text(ascii(&label), left_x + 16.0, ly + 13.0, 13.0, col);
-        // Evict affordance: revealed on row hover, disabled without RBAC.
-        // Suppressed while the image editor is open so a stray pod click can't
-        // open logs on top of (and orphan) the editor.
+        // Hover affordances: forward / yaml / evict (all RBAC-aware where it
+        // applies), drawn together so hovering reveals the whole set. A plain
+        // click elsewhere on the row tails logs. Suppressed while the image
+        // editor is open so a stray pod click can't orphan the editor.
         if row_hover && image_edit.is_none() {
-            if crate::window::evict_button(evict_btn, mouse, click, evict_perm) {
+            let fwd_active = net
+                .forward_for(id, &r.namespace, &p.name)
+                .map(|f| f.local_port);
+            let fwd = crate::window::forward_button(fwd_btn, mouse, click, fwd_perm, fwd_active);
+            let ev = crate::window::evict_button(evict_btn, mouse, click, evict_perm);
+            let ya = crate::window::row_button(yaml_btn, mouse, click, "yaml");
+            if let Some(fb) = fwd {
+                match fb {
+                    ForwardBtn::Start => act.forward = Some((r.namespace.clone(), p.name.clone())),
+                    ForwardBtn::Stop => act.stop_forward = fwd_active,
+                }
+            } else if ev {
                 act.evict = Some((r.namespace.clone(), p.name.clone()));
-            } else if crate::window::row_button(yaml_btn, mouse, click, "yaml") {
+            } else if ya {
                 act.inspect = Some((r.namespace.clone(), p.name.clone()));
-            } else if click && !evict_btn.contains(mouse) && !yaml_btn.contains(mouse) {
+            } else if click
+                && !fwd_btn.contains(mouse)
+                && !evict_btn.contains(mouse)
+                && !yaml_btn.contains(mouse)
+            {
                 act.log = Some((
                     r.namespace.clone(),
                     p.name.clone(),
@@ -425,7 +444,7 @@ pub fn draw_city(
         );
     }
     text(
-        "click a pod to tail logs · hover for yaml / evict · y: workload yaml",
+        "click a pod = logs · hover: fwd / yaml / evict · y: workload yaml",
         left_x,
         col_bottom + 0.0,
         12.0,
@@ -529,10 +548,12 @@ pub fn draw_city(
     }
 
     // Close: the X, or a click anywhere outside the frame (when not acting on
-    // a pod — tailing logs or evicting).
+    // a pod — tailing logs, evicting, or (un)forwarding).
     if click
         && act.log.is_none()
         && act.evict.is_none()
+        && act.forward.is_none()
+        && act.stop_forward.is_none()
         && (win.close.contains(mouse) || !win.frame.contains(mouse))
     {
         act.close = true;

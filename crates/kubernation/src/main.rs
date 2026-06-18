@@ -47,7 +47,7 @@ use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::world::Region;
 use macroquad::prelude::*;
 use menu::{MenuAction, MenuCtx};
-use net::{EvictReq, LogReq};
+use net::{EvictReq, ForwardReq, LogReq};
 use panels::{
     Panel, draw_attention_strip, draw_commit_confirm, draw_evict_confirm, draw_logs, draw_tooltip,
 };
@@ -113,6 +113,10 @@ struct Args {
     /// development verification of the write path
     #[arg(long)]
     evict_go: bool,
+    /// Start a port-forward on the first matching workload's first pod and stay
+    /// on the map (so the FORWARDS column section shows) — dev verification
+    #[arg(long, value_name = "SUBSTR")]
+    forward: Option<String>,
     /// Hold the intro splash (the full Kubernation scene) — replays it, and
     /// with --screenshot captures it (development verification / demo)
     #[arg(long)]
@@ -207,6 +211,8 @@ async fn main() {
     let mut frames_synced: u32 = 0;
     let mut prev_had_snap = false;
     let mut inspected = false;
+    // Fire the --forward dev verification once.
+    let mut forward_armed = args.forward.is_some();
     let mut drag_anchor: Option<Vec2> = None;
     let mut picker = false;
     let mut picker_idx = 0usize;
@@ -1135,6 +1141,36 @@ async fn main() {
                         }
                     }
                 }
+
+                // Development verification: start a port-forward on the first
+                // matching workload's first pod, staying on the map so the
+                // FORWARDS column section is captured.
+                if let Some(needle) = &args.forward
+                    && net.forwards().is_empty()
+                    && forward_armed
+                {
+                    forward_armed = false;
+                    'fw: for sw in &worlds {
+                        for c in sw.world.cities() {
+                            if c.r.name.contains(needle.as_str())
+                                && let Some(obs) = panels::observed_for(s, sw.id)
+                                && let Some(city) =
+                                    kubernation_core::state::model::build_city(obs, &c.r)
+                                && let Some(p0) = city.pods.first()
+                            {
+                                let global = (c.x + sw.off, c.y);
+                                selected = Some(global);
+                                cam.jump_to(global);
+                                net.request_forward(ForwardReq {
+                                    cluster: sw.id,
+                                    namespace: c.r.namespace.clone(),
+                                    pod: p0.name.clone(),
+                                });
+                                break 'fw;
+                            }
+                        }
+                    }
+                }
             } // end world navigation (suspended while the picker is open)
 
             // `L` tails the focused concern's offending pod directly (the "city
@@ -1226,7 +1262,37 @@ async fn main() {
                     .flatten()
                     .and_then(|cell| locate(&worlds, cell));
                 let sidebar_sel = selected.and_then(|cell| locate(&worlds, cell)).or(hovered);
-                sidebar::draw_sidebar(&worlds, &cam, s, sidebar_sel, &ns_filter_now, &ml, overlay);
+                // The FORWARDS section's stop buttons act only when no modal is
+                // up (the column is dimmed behind a scrim otherwise).
+                let forwards = net.forwards();
+                let sidebar_interactive = !picker
+                    && almanac.is_none()
+                    && advisor.is_none()
+                    && browser.is_none()
+                    && !panel_modal
+                    && !plan_open
+                    && !log_open
+                    && open_menu.is_none()
+                    && inspector.is_none()
+                    && pending_evict.is_none()
+                    && !pending_commit;
+                let sidebar_click =
+                    is_mouse_button_pressed(MouseButton::Left) && sidebar_interactive;
+                if let Some(lp) = sidebar::draw_sidebar(
+                    &worlds,
+                    &cam,
+                    s,
+                    sidebar_sel,
+                    &ns_filter_now,
+                    &ml,
+                    overlay,
+                    &forwards,
+                    mouse,
+                    sidebar_click,
+                    sidebar_interactive,
+                ) {
+                    net.stop_forward(lp);
+                }
 
                 // Cartographic title cartouche over the top of the map (a
                 // centered modal's scrim dims it, like the rest of the board).
@@ -1349,6 +1415,18 @@ async fn main() {
                                 pending_evict = Some((*cid, ns, pod));
                                 evict_just_opened = true;
                             }
+                            // Port-forward starts immediately — not a write, and
+                            // RBAC is pre-checked, so no confirm (unlike evict).
+                            if let Some((ns, pod)) = act.forward {
+                                net.request_forward(ForwardReq {
+                                    cluster: *cid,
+                                    namespace: ns,
+                                    pod,
+                                });
+                            }
+                            if let Some(lp) = act.stop_forward {
+                                net.stop_forward(lp);
+                            }
                             if let Some((ns, pod)) = act.inspect
                                 && let Some(y) = kubernation_core::state::inspect::pod_yaml(
                                     &s.hot.observed,
@@ -1397,6 +1475,16 @@ async fn main() {
                             if let Some((ns, pod)) = act.evict {
                                 pending_evict = Some((*nid, ns, pod));
                                 evict_just_opened = true;
+                            }
+                            if let Some((ns, pod)) = act.forward {
+                                net.request_forward(ForwardReq {
+                                    cluster: *nid,
+                                    namespace: ns,
+                                    pod,
+                                });
+                            }
+                            if let Some(lp) = act.stop_forward {
+                                net.stop_forward(lp);
                             }
                             if let Some((ns, pod)) = act.inspect
                                 && let Some(y) = kubernation_core::state::inspect::pod_yaml(
@@ -1765,6 +1853,10 @@ async fn main() {
         // (first_container + tail, two API round-trips) to land.
         let shot_at = if args.tail || args.concern_logs {
             240
+        } else if args.forward.is_some() {
+            // Resolve the default port (a get + maybe a Service LIST) + bind +
+            // appear in net.forwards() — a few net ticks (250ms each).
+            180
         } else if args.plan_go {
             120
         } else if args.browse.is_some() {

@@ -3,6 +3,8 @@
 //!   WORLD      → the isometric minimap (overview + click-to-jump)
 //!   STATUS     → cluster identity, node/pod counts, the concern rollup,
 //!                the gauge source, and the active namespace filter
+//!   FORWARDS   → live port-forwards (shown only when any exist), each with a
+//!                stop button — the always-visible home for the tunnels
 //!   SELECTION  → whatever tile is selected/hovered (4X's "moving unit" box),
 //!                reusing the same lines as the hover tooltip
 //!
@@ -15,11 +17,16 @@ use kubernation_core::state::attention::{Severity, severity_counts};
 use kubernation_core::state::filter::NamespaceFilter;
 
 use crate::draw::{Camera, MinimapLayout, Overlay, SceneWorld, draw_minimap};
-use crate::net::Snapshot;
+use crate::net::{ForwardInfo, Snapshot};
 use crate::panels::{self, region_lines, truncate_str};
 use crate::text::{text, text_bold};
 use crate::theme::*;
 
+/// Draw the column. `forwards` are the live port-forwards (a FORWARDS section
+/// appears when non-empty); a click on a forward's stop button returns its
+/// local port for the caller to stop. `interactive` is false while a modal is
+/// up (the column is dimmed behind the scrim, so its stops mustn't fire).
+#[allow(clippy::too_many_arguments)]
 pub fn draw_sidebar(
     worlds: &[SceneWorld],
     cam: &Camera,
@@ -28,7 +35,12 @@ pub fn draw_sidebar(
     ns_filter: &NamespaceFilter,
     ml: &MinimapLayout,
     overlay: Overlay,
-) {
+    forwards: &[ForwardInfo],
+    mouse: Vec2,
+    click: bool,
+    interactive: bool,
+) -> Option<u16> {
+    let mut stop: Option<u16> = None;
     let col = panels::sidebar_rect();
     stone_panel(col.x, col.y, col.w, col.h);
     let x = col.x + 14.0;
@@ -111,6 +123,64 @@ pub fn draw_sidebar(
         y += 18.0;
     }
 
+    // --- FORWARDS (only when any are live) --------------------------------
+    if !forwards.is_empty() {
+        y += 6.0;
+        divider(y);
+        y += 16.0;
+        text_bold(
+            format!("FORWARDS ({})", forwards.len()),
+            x,
+            y,
+            15.0,
+            STONE_INK,
+        );
+        y += 20.0;
+        let cap = 4;
+        for f in forwards.iter().take(cap) {
+            // Stop button at the column's right edge; the line shows the
+            // local→pod mapping (HOT/WARM-tagged in pair mode).
+            let stop_btn = Rect::new(col.x + col.w - 26.0, y - 11.0, 18.0, 15.0);
+            let tag = match (snap.warm.is_some(), f.cluster) {
+                (true, kubernation_core::events::ClusterId::Warm) => "W ",
+                (true, _) => "H ",
+                _ => "",
+            };
+            // Local port (what you connect to) → pod port, then the pod.
+            let line = format!(
+                "{tag}:{}>{} {}/{}",
+                f.local_port, f.pod_port, f.namespace, f.pod
+            );
+            text(ascii(&truncate_str(&line, 26)), x, y, 13.0, STONE_INK);
+            let on = stop_btn.contains(mouse) && interactive;
+            draw_rectangle(
+                stop_btn.x,
+                stop_btn.y,
+                stop_btn.w,
+                stop_btn.h,
+                if on { STONE_CRIT } else { darker(STONE, 0.85) },
+            );
+            draw_rectangle_lines(
+                stop_btn.x, stop_btn.y, stop_btn.w, stop_btn.h, 1.0, STONE_EDGE,
+            );
+            text("x", stop_btn.x + 6.0, stop_btn.y + 12.0, 13.0, STONE_INK);
+            if on && click {
+                stop = Some(f.local_port);
+            }
+            y += 18.0;
+        }
+        if forwards.len() > cap {
+            text(
+                format!("+{} more (stop from a pod row)", forwards.len() - cap),
+                x,
+                y,
+                12.0,
+                STONE_INK_DIM,
+            );
+            y += 16.0;
+        }
+    }
+
     // --- SELECTION --------------------------------------------------------
     y += 6.0;
     divider(y);
@@ -134,4 +204,6 @@ pub fn draw_sidebar(
             y += 17.0;
         }
     }
+
+    stop
 }

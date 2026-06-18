@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kubernation_core::events::{ClusterId, WorldDelta};
-use kubernation_core::k8s::{actions, browse, client, logs, watch};
+use kubernation_core::k8s::{actions, browse, client, logs, portforward, watch};
 use kubernation_core::state::attention::Concern;
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::model::Models;
@@ -62,6 +62,28 @@ pub struct EvictReq {
 /// `commit_interventions`); the client keeps this familiar alias.
 pub use kubernation_core::k8s::actions::CommitOutcome as PlanOutcome;
 
+/// A request to start a port-forward for a pod. The net thread resolves the
+/// pod's default port (`portforward::default_port`) and binds a local listener.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ForwardReq {
+    pub cluster: ClusterId,
+    pub namespace: String,
+    pub pod: String,
+}
+
+/// A live port-forward, as the UI sees it. The net thread keeps the matching
+/// `portforward::Forward` handle privately (dropping it tears the tunnel down);
+/// this is the cloneable view rendered in the forwards strip + pod rows.
+#[derive(Clone)]
+pub struct ForwardInfo {
+    pub cluster: ClusterId,
+    pub namespace: String,
+    pub pod: String,
+    pub pod_port: u16,
+    /// The local `127.0.0.1` port now listening — also the stop key.
+    pub local_port: u16,
+}
+
 pub struct WorldSnap {
     pub models: Arc<Models>,
     pub observed: ObservedWorld,
@@ -95,6 +117,17 @@ pub struct Net {
     evict_perm: Mutex<HashMap<(ClusterId, String), bool>>,
     /// Namespaces awaiting a permission probe.
     evict_perm_pending: Mutex<HashSet<(ClusterId, String)>>,
+    /// A request to start a port-forward (the net thread resolves the port,
+    /// binds the listener, and appends to `forwards`).
+    forward_req: Mutex<Option<ForwardReq>>,
+    /// Local ports the UI asked to stop (drained each tick).
+    forward_stop: Mutex<Vec<u16>>,
+    /// Live forwards, mirrored from the net thread's private handle list for
+    /// the UI to render + stop.
+    forwards: Mutex<Vec<ForwardInfo>>,
+    /// RBAC cache for `create pods/portforward` (mirrors `evict_perm`).
+    forward_perm: Mutex<HashMap<(ClusterId, String), bool>>,
+    forward_perm_pending: Mutex<HashSet<(ClusterId, String)>>,
     /// A confirmed End-of-Turn commit: the staged interventions to apply to
     /// the hot cluster (dry-run-validated, then applied).
     plan_req: Mutex<Option<Vec<Intervention>>>,
@@ -135,6 +168,11 @@ impl Net {
             evict_status: Mutex::new(None),
             evict_perm: Mutex::new(HashMap::new()),
             evict_perm_pending: Mutex::new(HashSet::new()),
+            forward_req: Mutex::new(None),
+            forward_stop: Mutex::new(Vec::new()),
+            forwards: Mutex::new(Vec::new()),
+            forward_perm: Mutex::new(HashMap::new()),
+            forward_perm_pending: Mutex::new(HashSet::new()),
             plan_req: Mutex::new(None),
             plan_outcome: Mutex::new(None),
             ns_filter: Mutex::new(NamespaceFilter::All),
@@ -223,6 +261,49 @@ impl Net {
             return Some(*b);
         }
         self.evict_perm_pending.lock().unwrap().insert(key);
+        None
+    }
+
+    /// Start a port-forward for a pod (the net thread resolves the port).
+    pub fn request_forward(&self, req: ForwardReq) {
+        *self.forward_req.lock().unwrap() = Some(req);
+    }
+
+    /// Stop the forward listening on `local_port`.
+    pub fn stop_forward(&self, local_port: u16) {
+        self.forward_stop.lock().unwrap().push(local_port);
+    }
+
+    /// The live port-forwards, for the strip + pod rows.
+    pub fn forwards(&self) -> Vec<ForwardInfo> {
+        self.forwards.lock().unwrap().clone()
+    }
+
+    /// The live forward for (cluster, namespace, pod), if one exists — drives a
+    /// pod row's button between "fwd" (start) and "stop :PORT".
+    pub fn forward_for(
+        &self,
+        cluster: ClusterId,
+        namespace: &str,
+        pod: &str,
+    ) -> Option<ForwardInfo> {
+        self.forwards
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|f| f.cluster == cluster && f.namespace == namespace && f.pod == pod)
+            .cloned()
+    }
+
+    /// May the user port-forward in (cluster, namespace)? `Some(true/false)`
+    /// once the RBAC probe answers, `None` while pending — asking enqueues the
+    /// probe (mirrors `evict_allowed`).
+    pub fn forward_allowed(&self, cluster: ClusterId, namespace: &str) -> Option<bool> {
+        let key = (cluster, namespace.to_string());
+        if let Some(b) = self.forward_perm.lock().unwrap().get(&key) {
+            return Some(*b);
+        }
+        self.forward_perm_pending.lock().unwrap().insert(key);
         None
     }
 
@@ -352,6 +433,10 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
             let mut evict_set: Option<u64> = None;
             let mut last_filter = NamespaceFilter::All;
             let mut last_browse: Option<String> = None;
+            // Live port-forwards: the private handles (dropping one aborts its
+            // accept loop + in-flight tunnels). `net.forwards` mirrors these for
+            // the UI; the two stay in lock-step.
+            let mut forwards: Vec<(ClusterId, portforward::Forward)> = Vec::new();
             loop {
                 // Hot-context switch: connect the new cluster, then drop the
                 // old handle (its informers abort) by reassigning. Snapshot
@@ -372,6 +457,15 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             // RBAC answers were for the old cluster.
                             net.evict_perm.lock().unwrap().clear();
                             net.evict_perm_pending.lock().unwrap().clear();
+                            // Hot forwards point at the cluster we're leaving —
+                            // drop them (abort their tunnels); warm survives.
+                            forwards.retain(|(c, _)| *c != ClusterId::Hot);
+                            net.forwards
+                                .lock()
+                                .unwrap()
+                                .retain(|f| f.cluster != ClusterId::Hot);
+                            net.forward_perm.lock().unwrap().clear();
+                            net.forward_perm_pending.lock().unwrap().clear();
                             // Namespaces differ across clusters — reset.
                             *net.ns_filter.lock().unwrap() = NamespaceFilter::All;
                             // Discovered kinds + any open browse are the old
@@ -522,6 +616,123 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     evict_set = None;
                 }
 
+                // Port-forward: start a requested forward (resolve the port,
+                // bind a local listener) and stop any the UI asked to close.
+                // Not a cluster write — but gated like one (RBAC pre-checked,
+                // explicit start, visible + stoppable). The transient toast
+                // reuses `evict_status` (the shared action-toast slot, as commit
+                // does); `forwards` is the persistent live list.
+                let freq = net.forward_req.lock().unwrap().take();
+                if let Some(fr) = freq {
+                    let client = match fr.cluster {
+                        ClusterId::Warm => {
+                            warm_client.clone().unwrap_or_else(|| hot_client.clone())
+                        }
+                        ClusterId::Hot => hot_client.clone(),
+                    };
+                    // Skip if already forwarding this exact pod (no duplicates).
+                    let dup = net.forwards.lock().unwrap().iter().any(|f| {
+                        f.cluster == fr.cluster && f.namespace == fr.namespace && f.pod == fr.pod
+                    });
+                    if dup {
+                        // Leave the existing one; nothing to do.
+                    } else {
+                        // Bound the port lookup (a get + maybe a Service LIST) so
+                        // a hung apiserver can't freeze the net loop — same guard
+                        // the resource browser's LIST got in the FMEA pass.
+                        let resolved = tokio::time::timeout(
+                            Duration::from_secs(15),
+                            portforward::default_port(client.clone(), &fr.namespace, &fr.pod),
+                        )
+                        .await;
+                        match resolved {
+                            Ok(Some(port)) => {
+                                match portforward::start(client, &fr.namespace, &fr.pod, port).await
+                                {
+                                    Ok(fwd) => {
+                                        let local = fwd.local_port;
+                                        *net.evict_status.lock().unwrap() = Some(format!(
+                                            "forwarding 127.0.0.1:{local} -> {}/{}:{port}",
+                                            fr.namespace, fr.pod
+                                        ));
+                                        net.forwards.lock().unwrap().push(ForwardInfo {
+                                            cluster: fr.cluster,
+                                            namespace: fr.namespace.clone(),
+                                            pod: fr.pod.clone(),
+                                            pod_port: port,
+                                            local_port: local,
+                                        });
+                                        forwards.push((fr.cluster, fwd));
+                                    }
+                                    Err(e) => {
+                                        *net.evict_status.lock().unwrap() =
+                                            Some(format!("forward failed: {e}"));
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                *net.evict_status.lock().unwrap() = Some(format!(
+                                    "{}/{}: no forwardable port found",
+                                    fr.namespace, fr.pod
+                                ));
+                            }
+                            Err(_) => {
+                                *net.evict_status.lock().unwrap() = Some(format!(
+                                    "{}/{}: port lookup timed out",
+                                    fr.namespace, fr.pod
+                                ));
+                            }
+                        }
+                        evict_set = Some(ticks);
+                    }
+                }
+                let stops: Vec<u16> = net.forward_stop.lock().unwrap().drain(..).collect();
+                for lp in stops {
+                    if let Some(pos) = forwards.iter().position(|(_, f)| f.local_port == lp) {
+                        // Remove → drop → abort the accept loop + its tunnels.
+                        let (_, fwd) = forwards.remove(pos);
+                        drop(fwd);
+                        net.forwards.lock().unwrap().retain(|f| f.local_port != lp);
+                        *net.evict_status.lock().unwrap() = Some(format!("stopped forward :{lp}"));
+                        evict_set = Some(ticks);
+                    }
+                }
+                // Reap forwards whose backing pod is gone (evicted / rescheduled).
+                // A forward targets a *specific* pod, so once the pod disappears
+                // the tunnel is dead — drop it rather than leave a black-holing
+                // "stop :PORT" in the UI. Guarded on readiness so an unsynced
+                // store (initial sync, post-switch) can't wrongly reap.
+                let hot_ready = ready_hot.load(Ordering::Relaxed);
+                let warm_ready = ready_warm.load(Ordering::Relaxed);
+                let dead: Vec<u16> = forwards
+                    .iter()
+                    .filter(|(cluster, f)| {
+                        let (world, ready) = match cluster {
+                            ClusterId::Hot => (&hot_handle.world, hot_ready),
+                            ClusterId::Warm => match warm_handle.as_ref() {
+                                Some(h) => (&h.world, warm_ready),
+                                None => return true, // warm world gone → dead
+                            },
+                        };
+                        ready && !world.pod_exists(&f.namespace, &f.pod)
+                    })
+                    .map(|(_, f)| f.local_port)
+                    .collect();
+                if !dead.is_empty() {
+                    forwards.retain(|(_, f)| !dead.contains(&f.local_port));
+                    net.forwards
+                        .lock()
+                        .unwrap()
+                        .retain(|f| !dead.contains(&f.local_port));
+                    *net.evict_status.lock().unwrap() = Some(if dead.len() == 1 {
+                        format!("forward :{} ended — pod gone", dead[0])
+                    } else {
+                        format!("{} forwards ended — pods gone", dead.len())
+                    });
+                    evict_set = Some(ticks);
+                    dirty.store(true, Ordering::Relaxed);
+                }
+
                 // End-of-Turn commit (hot cluster): the shared write file
                 // dry-runs every staged change (also enforcing RBAC) and only
                 // applies for real if all pass. The per-row outcome goes back
@@ -557,6 +768,23 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     };
                     let allowed = actions::can_evict_pod(client, &ns).await.unwrap_or(false);
                     net.evict_perm
+                        .lock()
+                        .unwrap()
+                        .insert((cluster, ns), allowed);
+                }
+
+                // Answer pending port-forward (RBAC) probes the same way.
+                let fperm_todo: Vec<(ClusterId, String)> =
+                    net.forward_perm_pending.lock().unwrap().drain().collect();
+                for (cluster, ns) in fperm_todo {
+                    let client = match cluster {
+                        ClusterId::Warm => {
+                            warm_client.clone().unwrap_or_else(|| hot_client.clone())
+                        }
+                        ClusterId::Hot => hot_client.clone(),
+                    };
+                    let allowed = portforward::can_forward(client, &ns).await.unwrap_or(false);
+                    net.forward_perm
                         .lock()
                         .unwrap()
                         .insert((cluster, ns), allowed);

@@ -504,6 +504,14 @@ fn page_controls(cx: &mut Ctx) {
         "in logs: / p T s",
         "filter (AND · !excl) · previous · timestamps · window",
     );
+    cx.key(
+        "Hover a pod row",
+        "reveal fwd (port-forward) · yaml · evict — RBAC-gated",
+    );
+    cx.key(
+        "fwd · FORWARDS column",
+        "tunnel 127.0.0.1 → the pod; x stops it",
+    );
     cx.key("y · pod row yaml", "inspect YAML — workload/node, or a pod");
     cx.key(
         "c · w (logs / yaml)",

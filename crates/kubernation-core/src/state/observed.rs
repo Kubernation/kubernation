@@ -127,6 +127,18 @@ impl ObservedWorld {
         g.pod_usage(namespace, name)
     }
 
+    /// Is a pod with this (namespace, name) currently in the store? Used to
+    /// reap a port-forward whose backing pod has disappeared (a forward targets
+    /// a specific pod, so once it's gone the tunnel is dead).
+    pub fn pod_exists(&self, namespace: &str, name: &str) -> bool {
+        self.pods
+            .find(|p| {
+                p.metadata.name.as_deref() == Some(name)
+                    && p.metadata.namespace.as_deref() == Some(namespace)
+            })
+            .is_some()
+    }
+
     /// Whether live metrics are currently driving the gauges.
     pub fn metrics_available(&self) -> bool {
         self.metrics.lock().map(|g| g.available).unwrap_or(false)
@@ -185,5 +197,23 @@ impl RecentEvent {
             count: ev.count.unwrap_or(1),
             when,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::state::fixtures as fx;
+
+    #[test]
+    fn pod_exists_tracks_the_store() {
+        let (world, mut s) = fx::world();
+        // Absent before seeding.
+        assert!(!world.pod_exists("demo", "web-1"));
+        s.pod(fx::pod("demo", "web-1", Some("n1")));
+        // Present once seeded — this is what the port-forward reaper checks.
+        assert!(world.pod_exists("demo", "web-1"));
+        // Namespace + name must both match (no cross-namespace false positive).
+        assert!(!world.pod_exists("other", "web-1"));
+        assert!(!world.pod_exists("demo", "web-2"));
     }
 }

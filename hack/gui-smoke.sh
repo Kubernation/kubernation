@@ -31,6 +31,7 @@ STATES=(
   "overlay-namespace|--overlay namespace"
   "concern-logs|--concern-logs"
   "namespace-scope|--namespace kubernation-demo"
+  "forward|--forward web"
 )
 
 fail=0
