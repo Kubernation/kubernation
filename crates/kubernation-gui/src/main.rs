@@ -371,6 +371,7 @@ async fn main() {
             && snap.is_some()
             && panel.is_none()
             && almanac.is_none()
+            && advisor.is_none()
             && !picker
             && !ns_picker
         {

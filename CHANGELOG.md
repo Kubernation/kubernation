@@ -54,6 +54,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   navigable, open ocean included (the click resolves to the nearest cell).
 
 ### Fixed
+- **Advisor review follow-ups (2 adversarial findings).** Pressing `t` no longer
+  opens the End-of-Turn review *underneath* an open advisor — the `t` guard was
+  the one modal-suspend site missing an `advisor.is_none()` check (it had the
+  Almanac twin but not the advisor), which let two stacked modals share clicks.
+  And the Health advisor now reports **terminating** pods in their own row
+  (dim/benign) instead of folding them into "pending" (which tinted a normal
+  mid-rollout pod as trouble) — matching the rest of the app's pending-vs-
+  terminating distinction. Unit test now covers both buckets.
 - **Map-title review follow-ups (2 adversarial findings).** The title cartouche
   is now bounded to the play area — the (serif) title truncates and the box is
   clamped so a long context name or a narrow window can't overdraw the right

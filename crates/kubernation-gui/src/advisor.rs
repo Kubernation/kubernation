@@ -203,6 +203,7 @@ fn page_health(cx: &mut Ctx, r: &HealthReport) {
         &r.pods_pending.to_string(),
         warn_if(r.pods_pending, WARN),
     );
+    cx.stat("terminating", &r.pods_terminating.to_string(), DIM);
     cx.stat(
         "failing",
         &r.pods_failing.to_string(),

@@ -25,6 +25,7 @@ pub struct HealthReport {
     pub pods_running: usize,
     pub pods_starting: usize,
     pub pods_pending: usize,
+    pub pods_terminating: usize,
     pub pods_failing: usize,
     pub pods_succeeded: usize,
     pub workloads_total: usize,
@@ -95,7 +96,8 @@ pub fn health_report(world: &ObservedWorld) -> HealthReport {
         match pod_state(&p).0 {
             PodState::Ok => r.pods_running += 1,
             PodState::Starting => r.pods_starting += 1,
-            PodState::Pending | PodState::Terminating => r.pods_pending += 1,
+            PodState::Pending => r.pods_pending += 1,
+            PodState::Terminating => r.pods_terminating += 1,
             PodState::Failing => r.pods_failing += 1,
             PodState::Succeeded => r.pods_succeeded += 1,
         }
@@ -224,11 +226,18 @@ mod tests {
             "web-rs",
         ));
 
+        // A pending pod and a terminating pod must land in distinct buckets —
+        // a benign terminating pod must NOT read as pending.
+        s.pod(fx::pod_phase(fx::pod("demo", "queued", None), "Pending"));
+        s.pod(fx::pod_terminating(fx::pod("demo", "draining", Some("n1"))));
+
         let r = health_report(&world);
         assert_eq!(r.nodes_total, 2);
         assert_eq!(r.nodes_healthy, 2);
-        assert_eq!(r.pods_total, 2);
+        assert_eq!(r.pods_total, 4);
         assert_eq!(r.pods_running, 2);
+        assert_eq!(r.pods_pending, 1);
+        assert_eq!(r.pods_terminating, 1);
         assert_eq!(r.workloads_total, 2);
         assert_eq!(r.workloads_degraded, 1); // api is 1/3
     }

@@ -215,6 +215,14 @@ pub fn pod_phase(mut p: Pod, phase: &str) -> Pod {
     p
 }
 
+/// A pod being deleted (a deletion timestamp → `PodState::Terminating`).
+pub fn pod_terminating(mut p: Pod) -> Pod {
+    p.metadata.deletion_timestamp = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+        k8s_openapi::jiff::Timestamp::UNIX_EPOCH,
+    ));
+    p
+}
+
 /// First container waits with `reason` and is not ready.
 pub fn pod_waiting(mut p: Pod, reason: &str) -> Pod {
     let cs = p
