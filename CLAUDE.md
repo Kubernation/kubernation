@@ -53,7 +53,9 @@ crates/
                  reflector spawning (watch.rs; spawn() takes a DeltaSink
                  closure so any frontend can subscribe); metrics.rs (poll
                  metrics.k8s.io) and logs.rs (on-demand pod log tail) sit
-                 beside the reflectors — both are fetch-not-watch
+                 beside the reflectors — both are fetch-not-watch; browse.rs
+                 (discover any kind + LIST DynamicObjects on demand — the
+                 resource browser's data, also fetch-not-watch)
     state/       observed.rs  ObservedWorld (reflector stores + event ring
                               + dynamic custom-resource stores)
                  world.rs     PURE world geometry: continents/provinces/
@@ -72,7 +74,8 @@ crates/
     util.rs      fnv1a64 stable hash, age/bytes formatting
   kubernation/        THE TUI (the product): main/app/events/logging/config
                  + ui/ components (map, workloads, city, node_detail, plan
-                 [End-of-Turn review], inspect [YAML dossier], attention_panel,
+                 [End-of-Turn review], inspect [YAML dossier], browse [the `:`
+                 resource browser — kind picker + generic table], attention_panel,
                  sidebar, status_bar, help, picker, theme, symbols). `cargo run`
                  = this (default-members).
   kubernation-gui/    macroquad windowed client over the same core (promoted
@@ -89,11 +92,13 @@ crates/
                  4X advisor screens — Health/Storage/Network, on window.rs over
                  core's advisor reports), inspect.rs (the read-only YAML
                  inspector window, on window.rs over core's inspect),
+                 browse.rs (the `:` resource browser — a mouse/wheel modal:
+                 kind picker → generic table → click a row to inspect),
                  city.rs / node.rs (the 4X city + province drill-down
                  windows, on window.rs), plan.rs (the End-of-Turn review),
                  text.rs (bundled sans + serif fonts), theme.rs. See the
                  "Isometric world map" + "GUI menu bar + overlays" + "Advisor
-                 screens" + "GUI spike/promotion" decisions.
+                 screens" + "Resource browser" + "GUI spike/promotion" decisions.
 ```
 
 **Data flow:** watchers (kube 3.x reflectors) keep `ObservedWorld` stores
@@ -352,7 +357,11 @@ what makes the interesting logic unit-testable without a cluster.
   rollout), StatefulSet, DaemonSet, Job, CronJob, PVC, Service, Ingress,
   Event. **Secrets and ConfigMaps are never watched** — the city screen
   derives their *names* from pod-template references, so we observe
-  dependency shape without reading contents (least privilege). Ingress
+  dependency shape without reading contents (least privilege). The one
+  controlled exception is the **resource browser** (`:any kind`), which can
+  LIST + inspect any kind on demand — there a Secret's `data`/`stringData`
+  values are **redacted** (`dynamic_yaml`), so we still never surface secret
+  contents (see the "Resource browser" decision). Ingress
   shares the `Services` dirty-bit and Job/CronJob the `Workloads` dirty-bit
   (the deltas are payload-free; rebuilds are wholesale).
 - **Events:** no reflector store; a bounded ring (500) deduped by
@@ -812,11 +821,39 @@ what makes the interesting logic unit-testable without a cluster.
   the handle's `ObservedWorld`) and pushes the screen. The pure builders are
   reused across both frontends. Dev flag `--yaml` (with `--inspect`); verified
   live (the GUI shows web's Deployment + worker2's Node YAML, managedFields
-  stripped). This is the first of the "narrow the k9s gap" borrows; candidates
-  not yet built: a `:`-style arbitrary-resource browser (reusing the dynamic
-  reflectors), port-forward, workload-list sort/filter. Exec/shell is
-  deliberately **not** planned (the macroquad GUI can't host a PTY, and
-  arbitrary exec breaks the read-by-default / one-write-file posture).
+  stripped). This is the first of the "narrow the k9s gap" borrows; the
+  `:`-style resource browser followed (see next), and candidates not yet built:
+  port-forward, workload-list sort/filter. Exec/shell is deliberately **not**
+  planned (the macroquad GUI can't host a PTY, and arbitrary exec breaks the
+  read-by-default / one-write-file posture).
+- **Resource browser (`:any kind`)** (2026-06-17, the second k9s-gap borrow,
+  user "let's work on resource browser (:any kind)"; chose **both frontends** +
+  **redact Secret values**): a k9s-style escape hatch to *any* kind, not just the
+  watched ones. Core `k8s/browse.rs` is the data layer (fetch-not-watch, like
+  `logs`/`metrics`): `discover(client)` runs `kube::discovery::Discovery` →
+  `KindEntry { api: ApiResource, namespaced }` for every recommended resource
+  (subresources with `/` skipped, sorted+deduped by `label()`); `list_kind`
+  does `Api::<DynamicObject>::all_with(&ar).list(limit 500)`; `row(obj)` →
+  `BrowseRow { namespace, name, age }`. Re-exports `DynamicObject as Object` so
+  the TUI crate (no direct `kube` dep) can name it. Drilling a row opens the
+  **inspector**, serialized by **`state/inspect::dynamic_yaml`** — which
+  **relaxes** the never-read-Secrets guarantee in exactly one controlled way:
+  for a `v1` Secret it **redacts** every `data`/`stringData` value to
+  `•••• (N bytes)` (keys + sizes kept), and shows ConfigMaps + all else in full
+  (user's call — the only sanctioned read of Secret-adjacent content; values
+  never leave the redactor). Both pure + unit-tested. **TUI** (`ui/browse.rs`):
+  `:` opens a filterable `ResourcePicker` (type to filter, Enter lists, `r`
+  refresh); rows in a `BrowseView`; payload-free actions (the `Action` enum
+  derives `Eq`, which `DynamicObject` isn't — the app reads the selection from
+  the picker/view). **GUI** (`gui/browse.rs`): `:` (Shift+Semicolon) opens a
+  mouse + wheel modal — kind picker → generic table → click a row to inspect;
+  the net thread holds a `discover_req` flag + `browse_req`/`browse_out` slots
+  (drained like `log_req`). LIST-on-demand (no reflector lifecycle) was chosen
+  over a live watch. Dev flags: TUI verified via the committed snapshot tests;
+  GUI `--browse` (pick mode) / `--browse <kind>` (jump to that table) +
+  `--screenshot`. Verified live on kind (70 kinds discovered; the GUI configmaps
+  table shows every CM in full; secrets = 0 on this cluster, so redaction is
+  unit-test-covered, not live).
 
 ## The pair (hot/warm)
 
@@ -893,6 +930,8 @@ the previous-container tail, `j/k`/`g`/`G`/`f` scroll/follow ·
 `y` inspect YAML — the read-only dossier (selected pod, else the workload/node;
 also `y` on a workload-list row) · **in the log / inspector views:** `c` copy
 to clipboard, `w` export to a file ·
+`:` resource browser — any kind (pick · type to filter · Enter lists · row →
+yaml · `r` refresh) ·
 **planning turn:** `+`/`−` stage scale, `R` toggle restart & `i` set image
 (city), `C` stage cordon (node), `t` open the End-of-Turn review (`x` unstage ·
 `D` discard · `c`/`Enter` commit, y/n confirm) ·

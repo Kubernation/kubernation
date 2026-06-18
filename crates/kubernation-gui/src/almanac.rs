@@ -501,6 +501,10 @@ fn page_controls(cx: &mut Ctx) {
         "c · w (logs / yaml)",
         "copy to clipboard · export to a file",
     );
+    cx.key(
+        ": (resource browser)",
+        "any kind — pick, then click a row's YAML",
+    );
     cx.key("Hover", "tooltip for whatever is under the cursor");
     cx.heading("Plan & cluster");
     cx.key("t", "open the End-of-Turn review (staged changes)");

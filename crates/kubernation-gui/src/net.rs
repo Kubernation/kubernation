@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kubernation_core::events::{ClusterId, WorldDelta};
-use kubernation_core::k8s::{actions, client, logs, watch};
+use kubernation_core::k8s::{actions, browse, client, logs, watch};
 use kubernation_core::state::attention::Concern;
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::model::Models;
@@ -97,6 +97,19 @@ pub struct Net {
     plan_outcome: Mutex<Option<PlanOutcome>>,
     /// The namespace filter the net thread applies when building Models.
     ns_filter: Mutex<NamespaceFilter>,
+    /// Resource browser: a one-shot discovery request + its cached result, the
+    /// kind currently being LISTed, and that LIST's output.
+    discover_req: AtomicBool,
+    kinds: Mutex<Option<Vec<browse::KindEntry>>>,
+    browse_req: Mutex<Option<browse::KindEntry>>,
+    browse_out: Mutex<BrowseOut>,
+}
+
+/// The resource browser's current LIST state (the net thread fills it; a
+/// `None` result means "listing in progress").
+#[derive(Default, Clone)]
+pub struct BrowseOut {
+    pub result: Option<Result<Vec<browse::Object>, String>>,
 }
 
 impl Net {
@@ -114,7 +127,37 @@ impl Net {
             plan_req: Mutex::new(None),
             plan_outcome: Mutex::new(None),
             ns_filter: Mutex::new(NamespaceFilter::All),
+            discover_req: AtomicBool::new(false),
+            kinds: Mutex::new(None),
+            browse_req: Mutex::new(None),
+            browse_out: Mutex::new(BrowseOut::default()),
         })
+    }
+
+    /// Ask the net thread to discover resource kinds (once).
+    pub fn request_discover(&self) {
+        self.discover_req.store(true, Ordering::Relaxed);
+    }
+
+    /// Discovered kinds, if discovery has completed.
+    pub fn kinds(&self) -> Option<Vec<browse::KindEntry>> {
+        self.kinds.lock().unwrap().clone()
+    }
+
+    /// Ask the net thread to LIST `kind` (replaces any in-flight browse).
+    pub fn request_browse(&self, kind: browse::KindEntry) {
+        *self.browse_req.lock().unwrap() = Some(kind);
+        // `result: None` is the "listing in progress" state.
+        *self.browse_out.lock().unwrap() = BrowseOut::default();
+    }
+
+    pub fn browse_out(&self) -> BrowseOut {
+        self.browse_out.lock().unwrap().clone()
+    }
+
+    pub fn clear_browse(&self) {
+        *self.browse_req.lock().unwrap() = None;
+        *self.browse_out.lock().unwrap() = BrowseOut::default();
     }
 
     /// Scope the built models to these namespaces (the net thread rebuilds on
@@ -285,6 +328,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
             let mut last_log: Option<LogReq> = None;
             let mut evict_set: Option<u64> = None;
             let mut last_filter = NamespaceFilter::All;
+            let mut last_browse: Option<String> = None;
             loop {
                 // Hot-context switch: connect the new cluster, then drop the
                 // old handle (its informers abort) by reassigning. Snapshot
@@ -345,6 +389,26 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     }
                 }
                 last_log = req;
+
+                // Resource browser: one-shot discovery, then LIST the requested
+                // kind (re-LIST on change or every ~2s, hot cluster).
+                if net.discover_req.swap(false, Ordering::Relaxed) {
+                    let kinds = browse::discover(&hot_client).await;
+                    *net.kinds.lock().unwrap() = Some(kinds);
+                }
+                let breq = net.browse_req.lock().unwrap().clone();
+                if let Some(k) = breq.clone()
+                    && (last_browse.as_deref() != Some(k.label().as_str())
+                        || ticks.is_multiple_of(8))
+                {
+                    let res = browse::list_kind(&hot_client, &k).await;
+                    // Store only if still the requested kind.
+                    if net.browse_req.lock().unwrap().as_ref().map(|r| r.label()) == Some(k.label())
+                    {
+                        *net.browse_out.lock().unwrap() = BrowseOut { result: Some(res) };
+                    }
+                }
+                last_browse = breq.map(|k| k.label());
 
                 // Confirmed eviction — the only write the app performs. Run it
                 // once, report the result as a transient toast; the watch will

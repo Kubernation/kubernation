@@ -13,6 +13,7 @@
 
 mod advisor;
 mod almanac;
+mod browse;
 mod city;
 mod draw;
 mod inspect;
@@ -31,6 +32,7 @@ use std::path::PathBuf;
 
 use advisor::{Advisor, AdvisorAction, AdvisorTab};
 use almanac::{Almanac, AlmanacAction};
+use browse::{BrowseAction, Browser};
 use clap::Parser;
 use draw::{
     Camera, Overlay, SceneWorld, draw_sea, draw_selection, draw_world, locate, minimap_layout,
@@ -143,6 +145,10 @@ struct Args {
     /// city/node (development verification of the inspector)
     #[arg(long)]
     yaml: bool,
+    /// Open the resource browser on sync; with a value, select that kind's
+    /// table (e.g. "configmaps") — development verification of the browser
+    #[arg(long, value_name = "KIND", num_args = 0..=1, default_missing_value = "")]
+    browse: Option<String>,
 }
 
 fn window_conf() -> Conf {
@@ -224,6 +230,10 @@ async fn main() {
     let mut advisor: Option<Advisor> = None;
     // The object inspector (read-only YAML dossier) — a modal window.
     let mut inspector: Option<Inspector> = None;
+    // The resource browser (`:` — any kind) — a modal window.
+    let mut browser: Option<Browser> = None;
+    // Dev: one-shot arm for the --browse verification flag.
+    let mut browse_armed = false;
     // A transient toast (copy / export feedback): (message, expiry time).
     let mut toast: Option<(String, f64)> = None;
     // The planning turn: staged interventions (preview-only) + the open
@@ -346,6 +356,29 @@ async fn main() {
         let mut picker_just_opened = false;
         let mut ns_picker_just_opened = false;
 
+        // Dev verification: open the resource browser (and, with a value,
+        // select that kind's table) once discovery lands.
+        if args.browse.is_some() && !browse_armed {
+            if browser.is_none() {
+                browser = Some(Browser::new());
+                net.request_discover();
+            }
+            match args.browse.as_deref() {
+                Some(label) if !label.is_empty() => {
+                    if let Some(b) = browser.as_mut()
+                        && let Some(kinds) = net.kinds()
+                    {
+                        if let Some(k) = kinds.iter().find(|k| k.label() == label) {
+                            net.request_browse(k.clone());
+                            b.force_table(k.label());
+                        }
+                        browse_armed = true;
+                    }
+                }
+                _ => browse_armed = true, // empty value → pick mode, done
+            }
+        }
+
         // ---- input ------------------------------------------------------
         // A minimap drag ends the moment the button is up — checked here,
         // outside the modal-suspended nav block, so opening a modal mid-drag
@@ -365,10 +398,12 @@ async fn main() {
         let mut almanac_just_opened = false;
         let mut advisor_just_opened = false;
         let mut inspector_just_opened = false;
+        let mut browser_just_opened = false;
         if (is_key_pressed(KeyCode::F1) || is_key_pressed(KeyCode::Slash))
             && !log_open
             && !typing
             && advisor.is_none()
+            && browser.is_none()
         {
             if almanac.is_some() {
                 almanac = None;
@@ -383,11 +418,31 @@ async fn main() {
             && panel.is_none()
             && almanac.is_none()
             && advisor.is_none()
+            && browser.is_none()
             && !picker
             && !ns_picker
         {
             plan_open = !plan_open;
             plan_just_opened = plan_open;
+        }
+        // `:` (Shift+;) opens the resource browser — discover kinds if needed.
+        if is_key_pressed(KeyCode::Semicolon)
+            && (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift))
+            && !typing
+            && !log_open
+            && browser.is_none()
+            && inspector.is_none()
+            && almanac.is_none()
+            && advisor.is_none()
+            && !plan_open
+            && pending_evict.is_none()
+            && !pending_commit
+        {
+            if net.kinds().is_none() {
+                net.request_discover();
+            }
+            browser = Some(Browser::new());
+            browser_just_opened = true;
         }
         // `y` inspects the open city/node window's object (read-only YAML).
         // Not while a log overlay is up — the inspector would stack on top of it
@@ -398,6 +453,7 @@ async fn main() {
             && inspector.is_none()
             && almanac.is_none()
             && advisor.is_none()
+            && browser.is_none()
             && !plan_open
             && pending_evict.is_none()
             && !pending_commit
@@ -432,6 +488,16 @@ async fn main() {
                 almanac = None;
             } else if advisor.is_some() {
                 advisor = None;
+            } else if inspector.is_some() {
+                // The inspector sits on top of its panel / the browser — close
+                // it first.
+                inspector = None;
+            } else if let Some(b) = browser.as_mut() {
+                // Esc backs the table out to the kind list, then closes.
+                if !b.back() {
+                    browser = None;
+                    net.clear_browse();
+                }
             } else if plan_open {
                 plan_open = false;
             } else if ns_picker {
@@ -450,9 +516,6 @@ async fn main() {
             } else if open_menu.is_some() {
                 // Esc dismisses an open dropdown before it can quit the app.
                 open_menu = None;
-            } else if inspector.is_some() {
-                // The inspector sits on top of its panel — close it first.
-                inspector = None;
             } else if panel.is_some() {
                 panel = None;
             } else {
@@ -614,12 +677,20 @@ async fn main() {
                 toast = Some((export_to_file(&i.text(), &i.filename()), get_time() + 4.0));
             }
         }
+        // The resource browser swallows the wheel to scroll its list/table.
+        if let Some(b) = browser.as_mut() {
+            let (_, wheel) = mouse_wheel();
+            if wheel.abs() > 0.0 {
+                b.scroll_by(wheel);
+            }
+        }
 
         let mut manual_pan = false;
         if !picker
             && !ns_picker
             && almanac.is_none()
             && advisor.is_none()
+            && browser.is_none()
             && !panel_modal
             && !plan_open
             && open_menu.is_none()
@@ -763,6 +834,7 @@ async fn main() {
                 || ns_picker
                 || almanac.is_some()
                 || advisor.is_some()
+                || browser.is_some()
                 || panel_modal
                 || plan_open
                 || open_menu.is_some()
@@ -999,6 +1071,7 @@ async fn main() {
                 if !picker
                     && almanac.is_none()
                     && advisor.is_none()
+                    && browser.is_none()
                     && !panel_modal
                     && !plan_open
                     && open_menu.is_none()
@@ -1199,6 +1272,7 @@ async fn main() {
             && !ns_picker
             && almanac.is_none()
             && advisor.is_none()
+            && browser.is_none()
             && !plan_open
             && panel.is_none()
             && !log_open
@@ -1377,6 +1451,35 @@ async fn main() {
             }
         }
 
+        // The resource browser (`:` — any kind). A row click drills into the
+        // inspector (which then draws on top next frame).
+        if browser.is_some() && inspector.is_none() {
+            let click = is_mouse_button_pressed(MouseButton::Left) && !browser_just_opened;
+            match browser.as_mut().map(|b| b.draw(&net, mouse, click)) {
+                Some(BrowseAction::Close) => {
+                    browser = None;
+                    net.clear_browse();
+                }
+                Some(BrowseAction::Inspect(obj)) => {
+                    let kind = obj
+                        .types
+                        .as_ref()
+                        .map(|t| t.kind.clone())
+                        .unwrap_or_default();
+                    let ns = obj.metadata.namespace.clone().unwrap_or_default();
+                    let name = obj.metadata.name.clone().unwrap_or_default();
+                    let title = inspect::title(&kind, &ns, &name);
+                    inspector = Some(Inspector::new(
+                        title,
+                        kubernation_core::state::inspect::dynamic_yaml(&obj),
+                    ));
+                    // (No just-opened guard needed: the inspector draws next
+                    // frame, by which point this click's press edge is gone.)
+                }
+                _ => {}
+            }
+        }
+
         // Development verification: auto-confirm the staged evict (REAL delete)
         // a few frames after it's raised, so the write path can be exercised
         // headlessly.
@@ -1467,6 +1570,10 @@ async fn main() {
             240
         } else if args.plan_go {
             120
+        } else if args.browse.is_some() {
+            // Discovery (one Discovery::run) and, with a kind, a LIST need a few
+            // net-thread ticks (250ms each) to land before the modal has content.
+            180
         } else {
             45
         };

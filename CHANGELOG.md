@@ -9,27 +9,31 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
-- **Resource browser (`:any kind`) — a k9s-style escape hatch.** Press **`:`**
-  to open a filterable picker of every resource kind the cluster serves
+- **Resource browser (`:any kind`) — a k9s-style escape hatch, both frontends.**
+  Press **`:`** to open a picker of every resource kind the cluster serves
   (built-ins + CRDs, via discovery), pick one, and see a generic table
-  (namespace · name · age) of its objects — LISTed on demand (fetch-not-watch),
-  `r` to refresh. **Enter** drills into the YAML inspector (the same dossier).
-  **Least-privilege preserved:** a Secret's `data`/`stringData` values are
-  **redacted** (keys + byte sizes shown, values masked); ConfigMaps and every
-  other kind are shown in full. Pure, unit-tested core
-  (`kubernation-core` `k8s/browse.rs` + `state/inspect::dynamic_yaml`);
-  discovery + list verified live on kind (70 kinds). _(TUI in this release; the
-  GUI browser lands alongside.)_
+  (namespace · name · age) of its objects — LISTed on demand (fetch-not-watch).
+  Drilling into a row opens the YAML inspector (the same dossier). The **TUI**
+  picker filters by typing and refreshes with `r`; the **GUI** is a mouse +
+  wheel modal (pick a kind → click a row). **Least-privilege preserved:** a
+  Secret's `data`/`stringData` values are **redacted** (keys + byte sizes shown,
+  values masked); ConfigMaps and every other kind are shown in full. Pure,
+  unit-tested core (`kubernation-core` `k8s/browse.rs` +
+  `state/inspect::dynamic_yaml`); discovery + list + both frontends verified live
+  on kind (70 kinds; configmaps shown in full).
 - **Copy + export for logs and YAML.** In the log overlay and the object
   inspector, **`c`** copies the whole buffer to the system clipboard and **`w`**
   exports it to a file in the working directory (logs → `.log`, YAML → `.yaml`),
-  with a toast/flash showing the path. The GUI copies via macroquad's
-  clipboard; the TUI via **OSC 52** (works over SSH on supporting terminals) —
-  and the TUI's own terminal text-selection still works as before. Export is the
-  always-reliable path (incl. headless / over SSH). A small RFC 4648 base64 is
-  bundled for OSC 52 (no new dependency). Real per-character drag-selection in
-  the GUI is intentionally **not** built (macroquad has no native selectable
-  text); copy-all + export covers the copy/paste need.
+  with a toast/flash showing the path. Both frontends copy by piping to the
+  platform clipboard tool (`pbcopy` / `wl-copy` / `xclip` / `xsel` / `clip`) —
+  the reliable path that actually round-trips into a paste; the GUI falls back to
+  macroquad's clipboard and the TUI additionally emits **OSC 52** for SSH
+  terminals that support it (the TUI's own terminal text-selection still works as
+  before). Export is the always-reliable path (incl. headless / over SSH). A
+  small RFC 4648 base64 is bundled for OSC 52 (no new dependency). Real
+  per-character drag-selection in the GUI is intentionally **not** built
+  (macroquad has no native selectable text); copy-all + export covers the
+  copy/paste need.
 - **Object inspector — read-only YAML (`y`), a k9s-style "dossier".** Inspect the
   full YAML of a workload, node, or pod in a scrollable modal — the GUI opens it
   with `y` on a city/node window (workload/node) or a pod row's **`yaml`** button;
