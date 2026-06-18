@@ -74,6 +74,10 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   navigable, open ocean included (the click resolves to the nearest cell).
 
 ### Fixed
+- **Inspector: long YAML lines no longer overflow the window** (user-reported).
+  macroquad has no scissor, so a long line (a uid, a long label/annotation
+  value, an image ref) ran past the right edge; each line is now clipped to the
+  window width with a trailing "…". (The TUI already clips via ratatui.)
 - **Inspector review follow-ups (2 adversarial findings).** `y` no longer opens
   the inspector while a pod's log overlay is up (it would stack on top and Esc
   would close the hidden overlay first). And the core YAML-strip test now
