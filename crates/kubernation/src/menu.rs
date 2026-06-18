@@ -24,6 +24,7 @@ pub enum MenuAction {
     SetOverlay(Overlay),
     EndTurn,
     DiscardTurn,
+    ChaosOpen,
     NamespaceFilter,
     Advisor(AdvisorTab),
     Almanac,
@@ -137,6 +138,10 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                 Item::act(end_turn, MenuAction::EndTurn).enable(staged > 0),
                 Item::act("Discard staged changes", MenuAction::DiscardTurn).enable(staged > 0),
             ],
+        },
+        Menu {
+            title: "Game Day".to_string(),
+            items: vec![Item::act("Chaos drill\u{2026}", MenuAction::ChaosOpen)],
         },
         Menu {
             title: "Advisors".to_string(),

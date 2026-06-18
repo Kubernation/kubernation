@@ -340,6 +340,58 @@ pub fn draw_city(
         draw_rectangle(gx, y + 2.0, gw * frac, 11.0, col);
         draw_rectangle_lines(gx, y + 2.0, gw, 11.0, 1.0, darker(PARCHMENT, 0.6));
         text(ascii(&summary), gx + gw + 12.0, y + 12.0, 13.0, col);
+        y += 20.0;
+
+        // SLO target stepper: [−] 99.0% [+] [reset] + the source tag. Stepping
+        // sets an in-session manual override; reset clears it.
+        let target = st.map(|s| s.target).unwrap_or(slo::DEFAULT_TARGET);
+        let source = st.map(|s| s.source).unwrap_or(slo::TargetSource::Default);
+        text("SLO", b.x, y + 13.0, 13.0, DIM);
+        let minus = Rect::new(b.x + 44.0, y, 20.0, 18.0);
+        let plus = Rect::new(b.x + 138.0, y, 20.0, 18.0);
+        for (rct, sym) in [(minus, "-"), (plus, "+")] {
+            let bg = if rct.contains(mouse) {
+                lighter(PLATE, 1.7)
+            } else {
+                PLATE
+            };
+            draw_rectangle(rct.x, rct.y, rct.w, rct.h, bg);
+            draw_rectangle_lines(rct.x, rct.y, rct.w, rct.h, 1.0, PARCHMENT);
+            text(sym, rct.x + 6.0, rct.y + 14.0, 16.0, INK);
+        }
+        let tnum = format!("{:.2}%", target * 100.0);
+        let tm = text_size(&tnum, 14.0);
+        let tcx = (minus.x + minus.w + plus.x) / 2.0;
+        let tcol = if source == slo::TargetSource::Manual {
+            WARN
+        } else {
+            INK
+        };
+        text(&tnum, tcx - tm.width / 2.0, y + 14.0, 14.0, tcol);
+        // Source tag.
+        let (tag, tag_col) = target_source_tag(source);
+        text(tag, plus.x + 30.0, y + 13.0, 12.0, tag_col);
+        // Reset (only meaningful when a manual override is active).
+        let reset = Rect::new(plus.x + 90.0, y, 46.0, 18.0);
+        if source == slo::TargetSource::Manual {
+            let rbg = if reset.contains(mouse) {
+                lighter(PLATE, 1.7)
+            } else {
+                PLATE
+            };
+            draw_rectangle(reset.x, reset.y, reset.w, reset.h, rbg);
+            draw_rectangle_lines(reset.x, reset.y, reset.w, reset.h, 1.0, DIM);
+            text("reset", reset.x + 6.0, y + 13.0, 12.0, DIM);
+        }
+        if click {
+            if minus.contains(mouse) {
+                act.slo_target = Some((r.clone(), Some(step_target(target, false))));
+            } else if plus.contains(mouse) {
+                act.slo_target = Some((r.clone(), Some(step_target(target, true))));
+            } else if reset.contains(mouse) && source == slo::TargetSource::Manual {
+                act.slo_target = Some((r.clone(), None));
+            }
+        }
         y += 22.0;
     }
     draw_line(b.x, y, b.x + b.w, y, 1.0, darker(PARCHMENT, 0.5));
@@ -652,6 +704,35 @@ fn treasury_summary(st: Option<&SloStatus>) -> (String, Color) {
     }
 }
 
+/// The SLO-target tiers the treasury stepper walks (an availability curve, not
+/// a linear step — the interesting range is 90%..99.95%).
+const SLO_TIERS: [f64; 6] = [0.90, 0.95, 0.99, 0.995, 0.999, 0.9995];
+
+/// Step the SLO target to the next/previous tier nearest `current` (pure).
+fn step_target(current: f64, up: bool) -> f64 {
+    let idx = SLO_TIERS
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| (**a - current).abs().total_cmp(&(**b - current).abs()))
+        .map(|(i, _)| i)
+        .unwrap_or(2);
+    let ni = if up {
+        (idx + 1).min(SLO_TIERS.len() - 1)
+    } else {
+        idx.saturating_sub(1)
+    };
+    SLO_TIERS[ni]
+}
+
+/// Short tag + colour for where a workload's SLO target came from (pure).
+fn target_source_tag(src: slo::TargetSource) -> (&'static str, Color) {
+    match src {
+        slo::TargetSource::Manual => ("manual", WARN),
+        slo::TargetSource::Annotation => ("annotated", STRUCT),
+        slo::TargetSource::Default => ("default", DIM),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,7 +745,29 @@ mod tests {
             burn: 2.0,
             samples: 100,
             state,
+            source: slo::TargetSource::Default,
         }
+    }
+
+    #[test]
+    fn step_target_walks_tiers_and_clamps() {
+        assert_eq!(step_target(0.99, true), 0.995);
+        assert_eq!(step_target(0.99, false), 0.95);
+        // nearest-tier snap (0.992 → 0.99), then step up
+        assert_eq!(step_target(0.992, true), 0.995);
+        // clamp at both ends
+        assert_eq!(step_target(0.9995, true), 0.9995);
+        assert_eq!(step_target(0.90, false), 0.90);
+    }
+
+    #[test]
+    fn target_source_tag_maps_source() {
+        assert_eq!(target_source_tag(slo::TargetSource::Manual).1, WARN);
+        assert_eq!(
+            target_source_tag(slo::TargetSource::Annotation).0,
+            "annotated"
+        );
+        assert_eq!(target_source_tag(slo::TargetSource::Default).0, "default");
     }
 
     #[test]

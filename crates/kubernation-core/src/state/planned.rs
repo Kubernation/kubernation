@@ -265,7 +265,7 @@ fn cordon_word(on: bool) -> String {
 }
 
 /// The observed desired replicas of a scalable workload (DaemonSets aren't).
-fn current_replicas(world: &ObservedWorld, r: &WorkloadRef) -> Option<i32> {
+pub(crate) fn current_replicas(world: &ObservedWorld, r: &WorkloadRef) -> Option<i32> {
     let ns = r.namespace.as_str();
     let name = r.name.as_str();
     match r.kind {

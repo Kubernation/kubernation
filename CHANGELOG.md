@@ -29,6 +29,24 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   first).
 
 ### Added
+- **Game Day — chaos drills (standard Kubernetes resources).** A new Game Day
+  menu opens a chaos console: pick a workload, choose an experiment — **kill one
+  pod**, **kill all pods**, or an **outage** (scale to 0, with Restore) — preview
+  its blast radius + the budget it'll spend, then run it (a real, CRIT-confirmed
+  failure). A **scorecard** shows the cluster's response: recovery time, budget
+  spent, self-healed or not. It reuses the existing gated write primitives
+  (`evict_pod`, scale patch) so it adds **no new verb or resource type**; control-
+  plane / system namespaces are never targetable (fail-closed in the core +
+  re-checked at execution); RBAC-gated and hot-cluster-only. Node-failure,
+  NetworkPolicy partition, and service-mesh fault injection are deferred to later
+  passes. Drill planning + guards are pure + unit-tested; verified live on kind
+  (killed a `web` pod, controller recovered in ~1s).
+- **Per-workload / configurable SLO targets.** The treasury's SLO target is no
+  longer fixed at 99% — set it per workload via a `kubernation.io/slo-target`
+  annotation (e.g. "99.9", read-only/declarative) or the city window's new SLO
+  stepper (an in-session override), with a global `--slo-target` default.
+  Precedence: manual override > annotation > default; the band tags the source
+  (manual / annotated / default). Pure + unit-tested; verified live.
 - **The treasury — availability SLOs + error budgets.** Each city window gains a
   **TREASURY** band: an availability SLO (default 99%) and the error budget it
   spends down — a coin gauge that's full when the workload stays up, draining

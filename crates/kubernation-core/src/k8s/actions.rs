@@ -221,6 +221,61 @@ pub async fn commit_interventions(client: Client, ivs: &[Intervention]) -> Commi
     }
 }
 
+/// Execute a confirmed chaos drill: a sequence of existing primitives (pod
+/// deletes + Scale patches) — chaos adds **no new verb**. Scale steps are
+/// dry-run-gated first (the same server-side dry-run that enforces RBAC); if all
+/// pass, every step runs best-effort with a per-step result. Pod-kill RBAC is
+/// enforced by the apiserver on each `DELETE` (a forbidden delete fails its
+/// row); unlike the evict control there's no up-front `can_evict_pod` probe, so
+/// a user lacking `delete pods` sees per-step "forbidden" rows rather than a
+/// disabled button. Reuses `CommitRow`/`CommitOutcome` so the UI shows it like a
+/// commit.
+pub async fn run_chaos(client: Client, steps: &[crate::state::chaos::ChaosStep]) -> CommitOutcome {
+    use crate::state::chaos::ChaosStep;
+    // Gate: dry-run the Scale steps (evicts aren't dry-runnable).
+    let mut dry_fail = Vec::new();
+    for step in steps {
+        if let ChaosStep::Scale(iv) = step
+            && let Err(detail) = apply_intervention(client.clone(), iv, true).await
+        {
+            dry_fail.push(CommitRow {
+                label: iv_label(iv),
+                ok: false,
+                detail,
+            });
+        }
+    }
+    if !dry_fail.is_empty() {
+        return CommitOutcome {
+            applied: false,
+            rows: dry_fail,
+        };
+    }
+    // Run every step for real.
+    let mut rows = Vec::new();
+    for step in steps {
+        let (label, res) = match step {
+            ChaosStep::Evict { namespace, pod } => (
+                format!("kill pod {namespace}/{pod}"),
+                evict_pod(client.clone(), namespace, pod).await,
+            ),
+            ChaosStep::Scale(iv) => (
+                iv_label(iv),
+                apply_intervention(client.clone(), iv, false).await,
+            ),
+        };
+        rows.push(CommitRow {
+            label,
+            ok: res.is_ok(),
+            detail: res.err().unwrap_or_default(),
+        });
+    }
+    CommitOutcome {
+        applied: true,
+        rows,
+    }
+}
+
 /// Short human label for a staged intervention (commit-result rows).
 pub fn iv_label(iv: &Intervention) -> String {
     match iv {

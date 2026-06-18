@@ -650,6 +650,79 @@ pub fn draw_commit_confirm(n: usize, mouse: Vec2, click: bool) -> Confirm {
     }
 }
 
+/// Confirm modal for a chaos drill (a real, deliberate failure injection).
+/// CRIT-red, blunt copy: `title` names the drill, `line1` the concrete effect,
+/// `line2` the blast/impact, `action` the button label. Returns (yes, cancel).
+pub fn draw_chaos_confirm(
+    title: &str,
+    line1: &str,
+    line2: &str,
+    action: &str,
+    mouse: Vec2,
+    click: bool,
+) -> Confirm {
+    draw_rectangle(
+        0.0,
+        0.0,
+        screen_width(),
+        screen_height(),
+        Color::new(0.0, 0.0, 0.0, 0.55),
+    );
+    let w = 520.0;
+    let h = 158.0;
+    let x = ((screen_width() - w) / 2.0).floor();
+    let y = ((screen_height() - h) / 2.0).floor();
+    stone_panel(x, y, w, h);
+    text_bold(ascii(title), x + 16.0, y + 28.0, 18.0, CRIT);
+    text(ascii(line1), x + 16.0, y + 54.0, 14.0, STONE_INK);
+    text(ascii(line2), x + 16.0, y + 74.0, 13.0, STONE_INK_DIM);
+    text(
+        "A real action on the live cluster.",
+        x + 16.0,
+        y + 91.0,
+        12.0,
+        STONE_INK_DIM,
+    );
+    let bh = 28.0;
+    let by = y + h - bh - 12.0;
+    let cancel = Rect::new(x + 16.0, by, 170.0, bh);
+    let run = Rect::new(x + w - 186.0, by, 170.0, bh);
+    let cbg = if cancel.contains(mouse) {
+        lighter(STONE_DARK, 1.4)
+    } else {
+        STONE_DARK
+    };
+    draw_rectangle(cancel.x, cancel.y, cancel.w, cancel.h, cbg);
+    draw_rectangle_lines(cancel.x, cancel.y, cancel.w, cancel.h, 1.0, STONE_EDGE);
+    let cm = text_size("Cancel", 15.0);
+    text(
+        "Cancel",
+        cancel.x + (cancel.w - cm.width) / 2.0,
+        by + 19.0,
+        15.0,
+        STONE_LIGHT,
+    );
+    let rbg = if run.contains(mouse) {
+        CRIT
+    } else {
+        darker(CRIT, 0.8)
+    };
+    draw_rectangle(run.x, run.y, run.w, run.h, rbg);
+    draw_rectangle_lines(run.x, run.y, run.w, run.h, 1.0, CRIT);
+    let rm = text_size(action, 15.0);
+    text(
+        action,
+        run.x + (run.w - rm.width) / 2.0,
+        by + 19.0,
+        15.0,
+        INK,
+    );
+    Confirm {
+        yes: click && run.contains(mouse),
+        cancel: click && cancel.contains(mouse),
+    }
+}
+
 // --- context picker -----------------------------------------------------
 
 pub struct PickerLayout {

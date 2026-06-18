@@ -21,8 +21,12 @@ Restart/Image to the cluster). Both are **RBAC-aware**: eviction probes `delete
 pods` with a `SelfSubjectAccessReview`; the planning turn validates every staged
 change with a **server-side dry-run** (which also enforces RBAC) and only applies
 if all pass (all-or-nothing at the gate, via `actions::commit_interventions`).
-Staging itself still never writes — only Commit does. See the "Pod eviction" and
-"Planning-turn apply" decisions. One **active-but-non-mutating** capability,
+Staging itself still never writes — only Commit does. A third path, **Game Day
+chaos drills**, deliberately injects failures (`actions::run_chaos`) — but it's a
+*sequencer over the same two primitives* (pod delete + scale patch), so it adds
+**no new verb**; it's confirmed, RBAC-gated, and refuses control-plane / system
+namespaces (fail-closed). See the "Pod eviction", "Planning-turn apply", and
+"Game Day — chaos drills" decisions. One **active-but-non-mutating** capability,
 **port-forward** (`k8s/portforward.rs`), sits *beside* the write file rather than
 in it (it changes nothing on the cluster) but is gated in the same spirit:
 RBAC-pre-checked (`create pods/portforward`), explicit, and individually
@@ -81,7 +85,9 @@ crates/
                  blast.rs     PURE dependency fan-out of a node/workload
                               (node→workloads→services→ingresses) — blast radius
                  slo.rs       availability SLOs + error-budget tracker (the
-                              treasury); PURE math, frontend-driven sampling
+                              treasury) + per-workload target config; PURE math
+                 chaos.rs     PURE chaos-drill planner + fail-closed guards (the
+                              Game Day experiments; execution is actions::run_chaos)
                  advisor.rs   PURE cluster-wide rollups (Health/Storage/
                               Network) for the advisor screens
                  inspect.rs   PURE read-only YAML of an in-store object
@@ -1166,6 +1172,67 @@ what makes the interesting logic unit-testable without a cluster.
   `minReadySeconds` doesn't count a mid-rollout workload down. Deferred:
   configurable/per-workload targets, latency SLOs (need a metric source), a
   multi-window burn-rate alert, persisting budgets across runs.
+- **Per-workload / configurable SLO targets** (2026-06-18, user "address the
+  settings for per-workload/configurable SLO targets"; design-workflow vetted):
+  the treasury's target was hardcoded 0.99. **Precedence: in-session manual
+  override > workload annotation > `--slo-target` default > 0.99.** **Core
+  (`state/slo.rs`):** `parse_target` ("99"/"99.9" percent, "0.999" fraction;
+  rejects ≤0, ≥100% zero-budget, NaN — `Err` with a reason); `SloConfig{default,
+  overrides}` with `resolve(wr, annotation) -> (target, TargetSource)`;
+  `annotation_target` reads `kubernation.io/slo-target` (read-only, declarative —
+  no write); `SloStatus.source: TargetSource` (Manual/Annotation/Default), set by
+  `statuses_with`. `build_workloads` parses `WorkloadRow.slo_target` once per
+  workload (cheaper than a per-workload store walk). **Net:** per-cluster
+  `SloConfig` + a `slo_override_req` slot (`set_slo_target`); captures the
+  annotation-target map at each SLO sample; `statuses_with` resolves the
+  effective target+source per workload. **GUI (`city.rs`):** the treasury band's
+  SLO stepper (`step_target` over a 90→99.95 tier curve, `target_source_tag`) →
+  `WinAction.slo_target` → `net.set_slo_target`; the source tag shows
+  manual/annotated/default. Pure parts unit-tested; verified live (annotated
+  `web` 99.9% reads "annotated"; stepping flips to "manual"). Deferred: writing
+  the annotation back, range presets.
+- **Game Day — chaos drills** (2026-06-18, user "implement chaos/game-day mode …
+  as much as possible with standard Kubernetes resources"; design-workflow chose
+  the safety-first spine + the blast/scorecard grafts): resilience drills that
+  inject a *real* failure and let you watch the cluster respond — the treasury
+  spends, the blast radius spreads, the queue lights up. **Standard resources
+  only: reuses the existing write primitives, so chaos adds NO new verb / no new
+  resource type** (the RBAC surface is exactly `delete pods` + `patch scale`,
+  already gated). **Core (`state/chaos.rs`, pure + unit-tested):** the guards
+  (`ns_protected` for kube-system/-public/-node-lease, `node_protected` for
+  control-plane) live here and **fail closed**; `Experiment`{KillOne, KillAll,
+  Outage}; `plan_chaos(world, exp) -> ChaosPlan{steps, restore, refused, blast}`
+  enumerates the concrete `ChaosStep`s (Evict / Scale), captures the Outage
+  restore replicas (`current_replicas`, now `pub(crate)`), refuses protected
+  targets / DaemonSet-outage / no-pods, and computes the blast via `blast_radius`;
+  `ChaosScorecard` + `scorecard_lines`. **Execute-immediately, NOT staged** (chaos
+  is imperative + temporal — a poor fit for the desired-state planning turn). The
+  **one new write** is `actions::run_chaos` (a sequencer: dry-run the Scale steps
+  for the RBAC gate, then run all steps via `evict_pod`/`apply_intervention`) —
+  the write surface stays one file. **Net:** `chaos_req`/`chaos_session` slots;
+  the drain **re-checks `ns_protected` fail-closed**, captures `budget_before`,
+  runs `run_chaos` under a `tokio::timeout`, and tracks **recovery (ready≥1) +
+  budget spend** on the SLO samples for the scorecard; hot-cluster-only; cleared
+  on context switch. **GUI:** a "Game Day" menu (between Orders and Advisors —
+  shifts the `--menu` index map), the `chaos.rs` modal (target picker with
+  protected namespaces filtered out, experiment radio, blast+budget preview,
+  CRIT "Run drill", the scorecard + a Restore for outages), `draw_chaos_confirm`
+  (a blunt CRIT confirm). Dev flags `--chaos <wl>` / `--chaos-go` (auto-runs a
+  KillOne). **Review fixes (7, no Critical):** the scorecard now needs the target
+  to actually *dip* (ready→0) before "recovered" (a KillOne the workload shrugs
+  off reads "stayed up — no outage", not a phantom "self-healed in 0s"); an
+  Outage scales the target to 0 → the SLO ring prunes it, so the scorecard keeps
+  the last budget reading instead of blanking; the net thread *owns* the session
+  (the GUI no longer clears it on close — that raced an in-flight drill — and the
+  window shows only a session matching the open target); the chaos window's
+  clicks are gated while its confirm is up, and it's in the world-nav suspend
+  gate; the net protected-namespace re-check now covers Scale steps too; and
+  `run_chaos`'s doc no longer claims a pod-kill RBAC pre-check it doesn't do (the
+  apiserver enforces per-DELETE). Verified live (KillOne on `web` → "stayed up —
+  no outage"). **Deferred to later
+  passes:** node-failure (cordon+drain), NetworkPolicy partition, Istio/mesh
+  fault injection + latency/cpu stress (need a mesh/exec), timed auto-restore,
+  warm-cluster chaos, persisted run history.
 
 ## The pair (hot/warm)
 
@@ -1251,6 +1318,13 @@ change. Summary:
   (RBAC-gated; default port = its containerPort or selecting-Service targetPort);
   the right column's **FORWARDS** section lists live forwards with an **x** to
   stop. Not a cluster write, but gated like one.
+- **Treasury / SLO:** the city window shows the error budget + an SLO stepper
+  (per-workload target; also `kubernation.io/slo-target` annotation, `--slo-target`
+  default).
+- **Game Day (chaos):** the **Game Day** menu opens a chaos drill — pick a
+  workload + experiment (kill one / kill all / outage), preview blast + budget,
+  **Run drill** (real, confirmed, RBAC-gated; control-plane/system namespaces
+  refused). A scorecard shows recovery + budget spent; an outage offers Restore.
 - **Esc** closes the topmost overlay · the menus carry switch-context, fit, the
   map overlay (terrain/pressure/replicas/namespace), namespace filter, advisors,
   Almanac, quit.

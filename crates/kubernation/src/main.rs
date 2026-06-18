@@ -15,6 +15,7 @@
 mod advisor;
 mod almanac;
 mod browse;
+mod chaos;
 mod city;
 mod draw;
 mod inspect;
@@ -35,6 +36,7 @@ use std::path::PathBuf;
 use advisor::{Advisor, AdvisorAction, AdvisorTab};
 use almanac::{Almanac, AlmanacAction};
 use browse::{BrowseAction, Browser};
+use chaos::{Chaos, ChaosAction};
 use clap::Parser;
 use draw::{
     Camera, Overlay, SceneWorld, draw_blast, draw_sea, draw_selection, draw_world, locate,
@@ -45,12 +47,14 @@ use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::Target;
 use kubernation_core::state::blast::{Subject, blast_radius};
 use kubernation_core::state::filter::NamespaceFilter;
+use kubernation_core::state::slo;
 use kubernation_core::state::world::Region;
 use macroquad::prelude::*;
 use menu::{MenuAction, MenuCtx};
 use net::{EvictReq, ForwardReq, LogReq};
 use panels::{
-    Panel, draw_attention_strip, draw_commit_confirm, draw_evict_confirm, draw_logs, draw_tooltip,
+    Panel, draw_attention_strip, draw_chaos_confirm, draw_commit_confirm, draw_evict_confirm,
+    draw_logs, draw_tooltip,
 };
 use text::{text, text_size};
 use theme::*;
@@ -122,6 +126,14 @@ struct Args {
     /// overlay (dev verification of the dependency fan-out highlight)
     #[arg(long, value_name = "SUBSTR")]
     blast: Option<String>,
+    /// Open the Game Day chaos window pre-targeted at the first workload
+    /// matching SUBSTR (development verification of the chaos UI)
+    #[arg(long, value_name = "SUBSTR")]
+    chaos: Option<String>,
+    /// With --chaos, auto-run the drill (REALLY injects the failure) — dev
+    /// verification of the chaos write path
+    #[arg(long)]
+    chaos_go: bool,
     /// Hold the intro splash (the full Kubernation scene) — replays it, and
     /// with --screenshot captures it (development verification / demo)
     #[arg(long)]
@@ -148,6 +160,11 @@ struct Args {
     /// still change it from the World menu). Also used for verification.
     #[arg(long, value_name = "NS")]
     namespace: Option<String>,
+    /// Global default SLO availability target — a percent ("99.9") or fraction
+    /// ("0.999"). Per-workload overrides come from the
+    /// `kubernation.io/slo-target` annotation or the city-window stepper.
+    #[arg(long, value_name = "PCT")]
+    slo_target: Option<String>,
     /// Start with a map overlay active: "terrain" (default), "pressure"
     /// (cpu/mem heat), "replicas" (workload health) or "namespace" (territory).
     /// Set from the View menu at runtime; flag is for shots.
@@ -175,6 +192,16 @@ struct Args {
     browse: Option<String>,
 }
 
+/// A chaos drill awaiting its confirm modal — the run to submit plus the
+/// confirm copy (so the confirm is built once, when the drill is chosen).
+struct PendingChaos {
+    run: net::ChaosRun,
+    title: String,
+    line1: String,
+    line2: String,
+    action: String,
+}
+
 fn window_conf() -> Conf {
     Conf {
         window_title: "Kubernation".into(),
@@ -199,12 +226,18 @@ async fn main() {
     let inspect = args.inspect.clone();
     let want_warm = args.warm.is_some();
     let net = net::Net::new();
+    let slo_default = args
+        .slo_target
+        .as_deref()
+        .and_then(|s| slo::parse_target(s).ok())
+        .unwrap_or(slo::DEFAULT_TARGET);
     net::spawn(
         net::NetArgs {
             context: args.context.clone(),
             kubeconfig: args.kubeconfig.clone(),
             warm: args.warm.clone(),
             projections: args.project.clone(),
+            slo_default,
         },
         net.clone(),
     );
@@ -221,6 +254,7 @@ async fn main() {
     // selected tile (else the focused concern's subject). Toggled with `B`.
     let mut blast_on = args.blast.is_some();
     let mut blast_armed = args.blast.is_some();
+    let mut chaos_armed = args.chaos.is_some();
     // Memoized blast radius: (cluster, subject, result), recomputed only when
     // the subject or the snapshot changes (keyed by the snapshot's Arc pointer).
     let mut blast_cache: Option<(
@@ -294,6 +328,10 @@ async fn main() {
     let mut pending_evict: Option<(ClusterId, String, String)> = None;
     // End-of-Turn commit awaiting confirmation.
     let mut pending_commit = false;
+    // Game Day: the chaos drill console (modal) + a confirmed drill awaiting
+    // its confirm modal. (`chaos_just_opened` is frame-local, declared below.)
+    let mut chaos: Option<Chaos> = None;
+    let mut pending_chaos: Option<PendingChaos> = None;
     // Intro splash: hold the full Kubernation scene a few moments on launch.
     let mut splash_start: Option<f64> = None;
     let mut splash_skipped = false;
@@ -449,10 +487,15 @@ async fn main() {
         let mut advisor_just_opened = false;
         let mut inspector_just_opened = false;
         let mut browser_just_opened = false;
+        // Frame-local: true only on the frame the chaos window / its confirm
+        // opened, so the opening click can't reach a button.
+        let mut chaos_just_opened = false;
+        let mut chaos_confirm_just_opened = false;
         if (is_key_pressed(KeyCode::F1) || is_key_pressed(KeyCode::Slash))
             && !log_open
             && !typing
             && advisor.is_none()
+            && chaos.is_none()
             && browser.is_none()
         {
             if almanac.is_some() {
@@ -468,6 +511,7 @@ async fn main() {
             && panel.is_none()
             && almanac.is_none()
             && advisor.is_none()
+            && chaos.is_none()
             && browser.is_none()
             && !picker
             && !ns_picker
@@ -485,12 +529,14 @@ async fn main() {
             && inspector.is_none()
             && almanac.is_none()
             && advisor.is_none()
+            && chaos.is_none()
             && !plan_open
             && !picker
             && !ns_picker
             && open_menu.is_none()
             && pending_evict.is_none()
-            && !pending_commit;
+            && !pending_commit
+            && pending_chaos.is_none();
         if map_input_free {
             let mut open_browser = false;
             // Draining here also keeps a stray char from leaking into the log
@@ -522,10 +568,12 @@ async fn main() {
             && inspector.is_none()
             && almanac.is_none()
             && advisor.is_none()
+            && chaos.is_none()
             && browser.is_none()
             && !plan_open
             && pending_evict.is_none()
             && !pending_commit
+            && pending_chaos.is_none()
             && let Some(s) = snap.as_ref()
         {
             let obs = &s.hot.observed;
@@ -549,10 +597,16 @@ async fn main() {
             }
         }
         if is_key_pressed(KeyCode::Escape) {
-            if pending_commit {
+            if pending_chaos.is_some() {
+                // The chaos confirm sits on top of the chaos window.
+                pending_chaos = None;
+            } else if pending_commit {
                 pending_commit = false;
             } else if pending_evict.is_some() {
                 pending_evict = None;
+            } else if chaos.is_some() {
+                // Net thread owns the session (see the Close arm).
+                chaos = None;
             } else if almanac.is_some() {
                 almanac = None;
             } else if advisor.is_some() {
@@ -814,6 +868,7 @@ async fn main() {
             && !ns_picker
             && almanac.is_none()
             && advisor.is_none()
+            && chaos.is_none()
             && browser.is_none()
             && !panel_modal
             && !plan_open
@@ -939,9 +994,10 @@ async fn main() {
                         "game" => Some(0),
                         "view" => Some(1),
                         "orders" => Some(2),
-                        "advisors" => Some(3),
-                        "world" => Some(4),
-                        "help" => Some(5),
+                        "gameday" => Some(3),
+                        "advisors" => Some(4),
+                        "world" => Some(5),
+                        "help" => Some(6),
                         _ => None,
                     };
                 }
@@ -991,6 +1047,8 @@ async fn main() {
                 || ns_picker
                 || almanac.is_some()
                 || advisor.is_some()
+                || chaos.is_some()
+                || pending_chaos.is_some()
                 || browser.is_some()
                 || panel_modal
                 || plan_open
@@ -1225,6 +1283,23 @@ async fn main() {
                         }
                     }
                 }
+
+                // Development verification: open the Game Day window pre-targeted
+                // at the first workload matching --chaos.
+                if let Some(needle) = &args.chaos
+                    && chaos_armed
+                {
+                    chaos_armed = false;
+                    let target = s
+                        .hot
+                        .models
+                        .workloads
+                        .iter()
+                        .find(|w| w.r.name.contains(needle.as_str()))
+                        .map(|w| w.r.clone());
+                    chaos = Some(Chaos::new(target));
+                    chaos_just_opened = true;
+                }
             } // end world navigation (suspended while the picker is open)
 
             // `L` tails the focused concern's offending pod directly (the "city
@@ -1241,12 +1316,14 @@ async fn main() {
                 && !ns_picker
                 && almanac.is_none()
                 && advisor.is_none()
+                && chaos.is_none()
                 && browser.is_none()
                 && inspector.is_none()
                 && !plan_open
                 && open_menu.is_none()
                 && pending_evict.is_none()
                 && !pending_commit
+                && pending_chaos.is_none()
             {
                 let c = &s.attention[concern_idx.min(s.attention.len() - 1)];
                 if let Some(p) = &c.probe {
@@ -1281,6 +1358,7 @@ async fn main() {
                 && !ns_picker
                 && almanac.is_none()
                 && advisor.is_none()
+                && chaos.is_none()
                 && browser.is_none()
                 && inspector.is_none()
                 && !plan_open
@@ -1288,6 +1366,7 @@ async fn main() {
                 && !panel_modal
                 && pending_evict.is_none()
                 && !pending_commit
+                && pending_chaos.is_none()
             {
                 blast_on = !blast_on;
             }
@@ -1399,6 +1478,7 @@ async fn main() {
                 let sidebar_interactive = !picker
                     && almanac.is_none()
                     && advisor.is_none()
+                    && chaos.is_none()
                     && browser.is_none()
                     && !panel_modal
                     && !plan_open
@@ -1406,7 +1486,8 @@ async fn main() {
                     && open_menu.is_none()
                     && inspector.is_none()
                     && pending_evict.is_none()
-                    && !pending_commit;
+                    && !pending_commit
+                    && pending_chaos.is_none();
                 let sidebar_click =
                     is_mouse_button_pressed(MouseButton::Left) && sidebar_interactive;
                 if let Some(lp) = sidebar::draw_sidebar(
@@ -1444,6 +1525,7 @@ async fn main() {
                 if !picker
                     && almanac.is_none()
                     && advisor.is_none()
+                    && chaos.is_none()
                     && browser.is_none()
                     && !panel_modal
                     && !plan_open
@@ -1479,7 +1561,8 @@ async fn main() {
                     } else {
                         let pclick = is_mouse_button_pressed(MouseButton::Left)
                             && !plan_just_opened
-                            && !pending_commit;
+                            && !pending_commit
+                            && pending_chaos.is_none();
                         let act =
                             plan::draw_plan(&planned, Some(s), outcome.as_ref(), mouse, pclick);
                         if let Some(i) = act.unstage {
@@ -1523,6 +1606,9 @@ async fn main() {
                                 } else {
                                     planned.stage_restart(wr);
                                 }
+                            }
+                            if let Some((wr, target)) = act.slo_target {
+                                net.set_slo_target(*cid, wr, target);
                             }
                             if let Some((ns, pod, prefer_prev)) = act.log {
                                 // Smart crash-loop default; --log-previous forces it.
@@ -1681,12 +1767,14 @@ async fn main() {
             && !ns_picker
             && almanac.is_none()
             && advisor.is_none()
+            && chaos.is_none()
             && browser.is_none()
             && !plan_open
             && panel.is_none()
             && !log_open
             && pending_evict.is_none()
-            && !pending_commit;
+            && !pending_commit
+            && pending_chaos.is_none();
         if !menu_live {
             open_menu = None;
         }
@@ -1716,6 +1804,18 @@ async fn main() {
                 plan_open = true;
             }
             Some(MenuAction::DiscardTurn) => planned.clear(),
+            Some(MenuAction::ChaosOpen) => {
+                // Pre-target the focused concern's workload (the "city in
+                // trouble → raid it" flow); else open with an empty picker.
+                let target = snap.as_ref().and_then(|s| {
+                    s.attention.get(concern_idx).and_then(|c| match &c.target {
+                        Target::Workload(wr) => Some(wr.clone()),
+                        _ => None,
+                    })
+                });
+                chaos = Some(Chaos::new(target));
+                chaos_just_opened = true;
+            }
             Some(MenuAction::NamespaceFilter) => {
                 ns_picker = true;
                 ns_picker_just_opened = true;
@@ -1851,6 +1951,103 @@ async fn main() {
             }
         }
 
+        // The Game Day chaos console, drawn on top. A "Run drill" / "Restore"
+        // raises the chaos confirm (pending_chaos); the net thread runs it.
+        if chaos.is_some() {
+            // Gate the window's clicks while its confirm is up (the confirm only
+            // paints a scrim — without this, the click reaches the window too).
+            let click = is_mouse_button_pressed(MouseButton::Left)
+                && !chaos_just_opened
+                && pending_chaos.is_none();
+            let session = net.chaos_session();
+            let action = snap
+                .as_ref()
+                .zip(chaos.as_mut())
+                .map(|(s, c)| c.draw(s, session.as_ref(), mouse, click));
+            match action {
+                Some(ChaosAction::Close) => {
+                    // Leave the session for the net thread to own (cleared on
+                    // context switch / overwritten by the next run) — clearing it
+                    // here races a still-in-flight drill that re-creates it. The
+                    // window only shows a session matching the open target.
+                    chaos = None;
+                }
+                Some(ChaosAction::Run(exp)) => {
+                    if let Some(s) = snap.as_ref() {
+                        let plan =
+                            kubernation_core::state::chaos::plan_chaos(&s.hot.observed, &exp);
+                        if !plan.is_refused() {
+                            use kubernation_core::state::chaos::Experiment;
+                            let wr = exp.workload().clone();
+                            let line1 = match &exp {
+                                Experiment::Outage { .. } => {
+                                    format!(
+                                        "Scale {}/{} to 0 — a real outage.",
+                                        wr.namespace, wr.name
+                                    )
+                                }
+                                Experiment::KillOne { .. } => {
+                                    format!("Delete one pod of {}/{}.", wr.namespace, wr.name)
+                                }
+                                Experiment::KillAll { .. } => format!(
+                                    "Delete all {} pod(s) of {}/{}.",
+                                    plan.steps.len(),
+                                    wr.namespace,
+                                    wr.name
+                                ),
+                            };
+                            pending_chaos = Some(PendingChaos {
+                                run: net::ChaosRun {
+                                    cluster: ClusterId::Hot,
+                                    experiment: exp.label().to_string(),
+                                    target: wr,
+                                    blast: plan.blast,
+                                    steps: plan.steps,
+                                    restore: plan.restore,
+                                },
+                                title: "Run chaos drill?".into(),
+                                line1,
+                                line2: format!("Blast radius: {} affected.", plan.blast),
+                                action: "Run drill".into(),
+                            });
+                            chaos_confirm_just_opened = true;
+                        }
+                    }
+                }
+                Some(ChaosAction::Restore) => {
+                    if let Some(sess) = net.chaos_session()
+                        && !sess.restore.is_empty()
+                    {
+                        let steps = sess
+                            .restore
+                            .iter()
+                            .cloned()
+                            .map(kubernation_core::state::chaos::ChaosStep::Scale)
+                            .collect();
+                        pending_chaos = Some(PendingChaos {
+                            run: net::ChaosRun {
+                                cluster: ClusterId::Hot,
+                                experiment: format!("restore {}", sess.experiment),
+                                target: sess.target.clone(),
+                                blast: 0,
+                                steps,
+                                restore: Vec::new(),
+                            },
+                            title: "Restore?".into(),
+                            line1: format!(
+                                "Scale {}/{} back up.",
+                                sess.target.namespace, sess.target.name
+                            ),
+                            line2: "Undo the outage.".into(),
+                            action: "Restore".into(),
+                        });
+                        chaos_confirm_just_opened = true;
+                    }
+                }
+                Some(ChaosAction::None) | None => {}
+            }
+        }
+
         // The object inspector (YAML dossier), drawn on top of its panel.
         if inspector.is_some() {
             let click = is_mouse_button_pressed(MouseButton::Left) && !inspector_just_opened;
@@ -1915,6 +2112,30 @@ async fn main() {
             net.request_commit(planned.interventions().to_vec());
         }
 
+        // Dev: auto-run the chaos drill (REALLY injects — a KillOne, which the
+        // controller recovers) a few frames after the window opens.
+        if args.chaos_go
+            && frames_synced == 30
+            && let Some(c) = &chaos
+            && let Some(wr) = &c.target
+            && let Some(s) = snap.as_ref()
+        {
+            let exp = kubernation_core::state::chaos::Experiment::KillOne {
+                workload: wr.clone(),
+            };
+            let plan = kubernation_core::state::chaos::plan_chaos(&s.hot.observed, &exp);
+            if !plan.is_refused() {
+                net.request_chaos(net::ChaosRun {
+                    cluster: ClusterId::Hot,
+                    experiment: exp.label().to_string(),
+                    target: wr.clone(),
+                    blast: plan.blast,
+                    steps: plan.steps,
+                    restore: plan.restore,
+                });
+            }
+        }
+
         // Evict confirm — the one destructive action, on top of everything.
         // Esc cancels (handled above); the opening click can't reach a button.
         if let Some((cid, ns, pod)) = pending_evict.clone() {
@@ -1948,6 +2169,20 @@ async fn main() {
                 pending_commit = false;
             } else if act.cancel {
                 pending_commit = false;
+            }
+        }
+
+        // Chaos drill confirm — a real failure injection (CRIT). On confirm the
+        // net thread runs it; the chaos window stays open to show the scorecard.
+        if let Some(pc) = &pending_chaos {
+            let cclick = is_mouse_button_pressed(MouseButton::Left) && !chaos_confirm_just_opened;
+            let act =
+                draw_chaos_confirm(&pc.title, &pc.line1, &pc.line2, &pc.action, mouse, cclick);
+            if act.yes {
+                net.request_chaos(pc.run.clone());
+                pending_chaos = None;
+            } else if act.cancel {
+                pending_chaos = None;
             }
         }
 
@@ -1992,7 +2227,9 @@ async fn main() {
             // Resolve the default port (a get + maybe a Service LIST) + bind +
             // appear in net.forwards() — a few net ticks (250ms each).
             180
-        } else if args.plan_go || args.blast.is_some() {
+        } else if args.chaos_go {
+            600 // run at frame 30 + watch recovery + the scorecard settle
+        } else if args.plan_go || args.blast.is_some() || args.chaos.is_some() {
             120
         } else if args.browse.is_some() {
             // Discovery (per-group enumeration) and, with a kind, a LIST need a

@@ -34,6 +34,7 @@ STATES=(
   "forward|--forward web"
   "blast-node|--blast kubernation-worker"
   "blast-workload|--blast web"
+  "chaos|--chaos web"
 )
 
 fail=0

@@ -18,12 +18,13 @@ use std::time::Duration;
 use kubernation_core::events::{ClusterId, WorldDelta};
 use kubernation_core::k8s::{actions, browse, client, logs, portforward, watch};
 use kubernation_core::state::attention::{Concern, Target};
+use kubernation_core::state::chaos;
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::model::{Models, WorkloadRef, build_workloads};
 use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::planned::Intervention;
-use kubernation_core::state::slo::{self, SloStatus, SloTracker};
+use kubernation_core::state::slo::{self, SloConfig, SloStatus, SloTracker};
 
 /// Which pod's logs the UI wants tailed, and how. The poll re-fetches whenever
 /// any of these change (`PartialEq`), so toggling previous/timestamps/window
@@ -83,6 +84,41 @@ pub struct ForwardInfo {
     pub pod_port: u16,
     /// The local `127.0.0.1` port now listening — also the stop key.
     pub local_port: u16,
+}
+
+/// A confirmed chaos drill the UI has queued (the net thread runs it once,
+/// reusing the gated write primitives). Carries enough to seed the scorecard.
+#[derive(Clone)]
+pub struct ChaosRun {
+    pub cluster: ClusterId,
+    pub experiment: String,
+    pub target: WorkloadRef,
+    pub blast: usize,
+    pub steps: Vec<chaos::ChaosStep>,
+    /// Interventions that undo the drill (Outage → scale back); the scorecard's
+    /// Restore button re-submits these as another run. Empty for kills.
+    pub restore: Vec<Intervention>,
+}
+
+/// The live game-day session — the net thread tracks the cluster's response
+/// (recovery + budget spend) so the chaos window can show a scorecard.
+#[derive(Clone)]
+pub struct ChaosSession {
+    pub cluster: ClusterId,
+    pub experiment: String,
+    pub target: WorkloadRef,
+    pub blast: usize,
+    pub budget_before: Option<SloStatus>,
+    pub budget_after: Option<SloStatus>,
+    /// The target was observed down (`ready == 0`) after the drill.
+    pub dipped: bool,
+    pub recovered: bool,
+    pub recover_secs: Option<f64>,
+    pub restore: Vec<Intervention>,
+    /// The run's per-step result (errors surface here).
+    pub outcome: Option<PlanOutcome>,
+    /// Net-tick at run start (recovery time is measured from here).
+    started_tick: u64,
 }
 
 pub struct WorldSnap {
@@ -149,6 +185,13 @@ pub struct Net {
     discover_warnings: Mutex<Vec<String>>,
     browse_req: Mutex<Option<browse::KindEntry>>,
     browse_out: Mutex<BrowseOut>,
+    /// In-session per-workload SLO target overrides the UI set (the city-window
+    /// stepper). Drained each tick into the per-cluster `SloConfig`.
+    slo_override_req: Mutex<Vec<(ClusterId, WorkloadRef, Option<f64>)>>,
+    /// A confirmed chaos drill to run (one at a time).
+    chaos_req: Mutex<Option<ChaosRun>>,
+    /// The live game-day session (run result + recovery/budget tracking).
+    chaos_session: Mutex<Option<ChaosSession>>,
 }
 
 /// The resource browser's current LIST state (the net thread fills it; a
@@ -185,7 +228,31 @@ impl Net {
             discover_warnings: Mutex::new(Vec::new()),
             browse_req: Mutex::new(None),
             browse_out: Mutex::new(BrowseOut::default()),
+            slo_override_req: Mutex::new(Vec::new()),
+            chaos_req: Mutex::new(None),
+            chaos_session: Mutex::new(None),
         })
+    }
+
+    /// Set (or clear, with `None`) an in-session SLO target override for a
+    /// workload — the city-window treasury stepper.
+    pub fn set_slo_target(&self, cluster: ClusterId, wr: WorkloadRef, target: Option<f64>) {
+        self.slo_override_req
+            .lock()
+            .unwrap()
+            .push((cluster, wr, target));
+    }
+
+    /// Queue a confirmed chaos drill (the net thread runs it once).
+    pub fn request_chaos(&self, run: ChaosRun) {
+        *self.chaos_req.lock().unwrap() = Some(run);
+    }
+
+    /// The live game-day session (scorecard source), if any. The net thread
+    /// owns its lifecycle (created on run, cleared on context switch), so the
+    /// GUI never clears it — that would race a still-in-flight drill.
+    pub fn chaos_session(&self) -> Option<ChaosSession> {
+        self.chaos_session.lock().unwrap().clone()
     }
 
     /// Ask the net thread to discover resource kinds (once).
@@ -352,6 +419,8 @@ pub struct NetArgs {
     pub kubeconfig: Option<PathBuf>,
     pub warm: Option<String>,
     pub projections: Vec<String>,
+    /// Global default SLO availability target (`--slo-target`, else 0.99).
+    pub slo_default: f64,
 }
 
 pub fn spawn(args: NetArgs, net: Arc<Net>) {
@@ -446,6 +515,12 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
             const SLO_SAMPLE_TICKS: u64 = 8;
             let mut slo = SloTracker::default();
             let mut slo_warm = SloTracker::default();
+            // Per-cluster SLO config (default + in-session overrides) and the
+            // latest annotation-declared targets (captured at each sample).
+            let mut slo_cfg = SloConfig::new(args.slo_default);
+            let mut slo_cfg_warm = SloConfig::new(args.slo_default);
+            let mut slo_ann: HashMap<WorkloadRef, f64> = HashMap::new();
+            let mut slo_ann_warm: HashMap<WorkloadRef, f64> = HashMap::new();
             loop {
                 // Hot-context switch: connect the new cluster, then drop the
                 // old handle (its informers abort) by reassigning. Snapshot
@@ -475,8 +550,13 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 .retain(|f| f.cluster != ClusterId::Hot);
                             net.forward_perm.lock().unwrap().clear();
                             net.forward_perm_pending.lock().unwrap().clear();
-                            // Error budgets belong to the cluster we're leaving.
+                            // Error budgets + SLO config belong to the old cluster.
                             slo.clear();
+                            slo_cfg.clear_overrides();
+                            slo_ann.clear();
+                            // Any chaos drill belonged to the old cluster.
+                            *net.chaos_req.lock().unwrap() = None;
+                            *net.chaos_session.lock().unwrap() = None;
                             // Namespaces differ across clusters — reset.
                             *net.ns_filter.lock().unwrap() = NamespaceFilter::All;
                             // Discovered kinds + any open browse are the old
@@ -765,6 +845,76 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     dirty.store(true, Ordering::Relaxed);
                 }
 
+                // Chaos drill (hot cluster): run a confirmed game-day experiment
+                // once, reusing the gated write primitives. Fail-closed
+                // protected-namespace re-check (a UI bug can't aim chaos at the
+                // control plane). Seed the scorecard: budget before, then track
+                // recovery + spend on the SLO samples below.
+                let chaos_run = net.chaos_req.lock().unwrap().take();
+                if let Some(run) = chaos_run {
+                    // Fail-closed re-check of EVERY step's effective namespace —
+                    // not just the target — so a (future) UI bug that decoupled
+                    // a Scale step's namespace from the target can't slip a
+                    // control-plane scale-to-0 past the guard.
+                    let protected = chaos::ns_protected(&run.target.namespace)
+                        || run.steps.iter().any(|s| match s {
+                            chaos::ChaosStep::Evict { namespace, .. } => {
+                                chaos::ns_protected(namespace)
+                            }
+                            chaos::ChaosStep::Scale(
+                                kubernation_core::state::planned::Intervention::Scale {
+                                    workload,
+                                    ..
+                                },
+                            ) => chaos::ns_protected(&workload.namespace),
+                            chaos::ChaosStep::Scale(_) => false,
+                        });
+                    if protected {
+                        *net.evict_status.lock().unwrap() =
+                            Some("chaos refused: protected namespace".into());
+                        evict_set = Some(ticks);
+                    } else {
+                        let (t, _) =
+                            slo_cfg.resolve(&run.target, slo_ann.get(&run.target).copied());
+                        let budget_before = slo.status(&run.target, t);
+                        *net.evict_status.lock().unwrap() = Some(format!(
+                            "running chaos: {} on {}/{}",
+                            run.experiment, run.target.namespace, run.target.name
+                        ));
+                        // Bounded so a hung call can't freeze the net loop.
+                        let outcome = tokio::time::timeout(
+                            Duration::from_secs(25),
+                            actions::run_chaos(hot_client.clone(), &run.steps),
+                        )
+                        .await
+                        .ok();
+                        *net.evict_status.lock().unwrap() = Some(match &outcome {
+                            Some(o) => format!(
+                                "chaos: {}/{} step(s)",
+                                o.rows.iter().filter(|r| r.ok).count(),
+                                o.rows.len()
+                            ),
+                            None => "chaos: timed out".into(),
+                        });
+                        *net.chaos_session.lock().unwrap() = Some(ChaosSession {
+                            cluster: run.cluster,
+                            experiment: run.experiment,
+                            target: run.target,
+                            blast: run.blast,
+                            budget_before,
+                            budget_after: budget_before,
+                            dipped: false,
+                            recovered: false,
+                            recover_secs: None,
+                            restore: run.restore,
+                            outcome,
+                            started_tick: ticks,
+                        });
+                        evict_set = Some(ticks);
+                        dirty.store(true, Ordering::Relaxed);
+                    }
+                }
+
                 // Answer any pending evict-permission (RBAC) probes; cache the
                 // result so the UI can enable/disable the evict control. Deny
                 // on error (the safe default).
@@ -801,21 +951,75 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         .insert((cluster, ns), allowed);
                 }
 
+                // Drain in-session SLO target overrides (the city-window
+                // stepper) into the per-cluster config; force a rebuild so the
+                // new target shows immediately.
+                let overrides: Vec<(ClusterId, WorkloadRef, Option<f64>)> =
+                    net.slo_override_req.lock().unwrap().drain(..).collect();
+                if !overrides.is_empty() {
+                    for (cluster, wr, target) in overrides {
+                        match cluster {
+                            ClusterId::Hot => slo_cfg.set_override(wr, target),
+                            ClusterId::Warm => slo_cfg_warm.set_override(wr, target),
+                        }
+                    }
+                    dirty.store(true, Ordering::Relaxed);
+                }
+
                 // Treasury: sample each workload's availability into the SLO
                 // rings every ~2s (from the *unfiltered* workloads — SLOs track
                 // the whole cluster regardless of the namespace view) and force
                 // a rebuild so the published budgets stay fresh on an idle
                 // cluster. The first sample lands immediately so the city window
-                // shows "warming" right away rather than blank.
+                // shows "warming" right away rather than blank. The same rows
+                // carry the per-workload annotation target (captured here).
                 if ready_hot.load(Ordering::Relaxed)
                     && (ticks == 1 || ticks.is_multiple_of(SLO_SAMPLE_TICKS))
                 {
-                    slo.record(&build_workloads(&hot_handle.world));
+                    let rows = build_workloads(&hot_handle.world);
+                    slo_ann = rows
+                        .iter()
+                        .filter_map(|r| r.slo_target.map(|t| (r.r.clone(), t)))
+                        .collect();
+                    slo.record(&rows);
+                    // Chaos scorecard: track the target's live budget + recovery
+                    // from the fresh hot rows (chaos is hot-only in pass 1).
+                    if let Some(sess) = net.chaos_session.lock().unwrap().as_mut()
+                        && sess.cluster == ClusterId::Hot
+                    {
+                        let (t, _) =
+                            slo_cfg.resolve(&sess.target, slo_ann.get(&sess.target).copied());
+                        // Keep the prior reading when the target has no SLO right
+                        // now (an Outage scaled it to 0 → the ring is pruned) —
+                        // otherwise the scorecard's budget line vanishes mid-drill.
+                        if let Some(s) = slo.status(&sess.target, t) {
+                            sess.budget_after = Some(s);
+                        }
+                        // Recovery only counts once the target actually went down
+                        // (ready == 0). A kill the workload shrugged off (other
+                        // replicas stayed up) never dips → "stayed up", not a
+                        // phantom "self-healed" before the outage even registered.
+                        if let Some(row) = rows.iter().find(|r| r.r == sess.target) {
+                            if row.ready == 0 {
+                                sess.dipped = true;
+                            }
+                            if sess.dipped && !sess.recovered && row.ready >= 1 {
+                                sess.recovered = true;
+                                sess.recover_secs =
+                                    Some(ticks.saturating_sub(sess.started_tick) as f64 * 0.25);
+                            }
+                        }
+                    }
                     if let Some(h) = warm_handle
                         .as_ref()
                         .filter(|_| ready_warm.load(Ordering::Relaxed))
                     {
-                        slo_warm.record(&build_workloads(&h.world));
+                        let wrows = build_workloads(&h.world);
+                        slo_ann_warm = wrows
+                            .iter()
+                            .filter_map(|r| r.slo_target.map(|t| (r.r.clone(), t)))
+                            .collect();
+                        slo_warm.record(&wrows);
                     }
                     dirty.store(true, Ordering::Relaxed);
                 }
@@ -832,15 +1036,25 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 }
                 last_filter = filter.clone();
                 let hot_models = Arc::new(Models::build_filtered(&hot_handle.world, &filter));
-                let hot_slo: Arc<HashMap<WorkloadRef, SloStatus>> =
-                    Arc::new(slo.statuses(slo::DEFAULT_TARGET).into_iter().collect());
+                let hot_slo: Arc<HashMap<WorkloadRef, SloStatus>> = Arc::new(
+                    slo.statuses_with(|wr| slo_cfg.resolve(wr, slo_ann.get(wr).copied()))
+                        .into_iter()
+                        .collect(),
+                );
                 let warm = warm_handle
                     .as_ref()
                     .filter(|_| ready_warm.load(Ordering::Relaxed))
                     .map(|h| WorldSnap {
                         models: Arc::new(Models::build_filtered(&h.world, &filter)),
                         observed: h.world.clone(),
-                        slo: Arc::new(slo_warm.statuses(slo::DEFAULT_TARGET).into_iter().collect()),
+                        slo: Arc::new(
+                            slo_warm
+                                .statuses_with(|wr| {
+                                    slo_cfg_warm.resolve(wr, slo_ann_warm.get(wr).copied())
+                                })
+                                .into_iter()
+                                .collect(),
+                        ),
                     });
                 let pair = warm
                     .as_ref()

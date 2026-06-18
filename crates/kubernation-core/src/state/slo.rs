@@ -39,6 +39,20 @@ const BURN_RECENT: usize = 8;
 /// Burn rate (× the sustainable spend) above which a budget reads as "burning".
 const BURN_HOT: f64 = 1.5;
 
+/// Where a workload's SLO target came from (precedence: manual > annotation >
+/// default). Surfaced in the treasury band so an operator knows what they're
+/// looking at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TargetSource {
+    /// An in-session manual override (the city-window stepper).
+    Manual,
+    /// The workload's `kubernation.io/slo-target` annotation.
+    Annotation,
+    /// The global default (`--slo-target`, else `DEFAULT_TARGET`).
+    #[default]
+    Default,
+}
+
 /// How a workload's error budget reads right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BudgetState {
@@ -67,6 +81,9 @@ pub struct SloStatus {
     /// How many samples back this reading (more = more trustworthy).
     pub samples: usize,
     pub state: BudgetState,
+    /// Where `target` came from (the convenience builders report `Default`;
+    /// `statuses_with` sets the real source).
+    pub source: TargetSource,
 }
 
 impl SloStatus {
@@ -102,6 +119,7 @@ impl SloStatus {
             burn,
             samples: n,
             state,
+            source: TargetSource::Default,
         })
     }
 }
@@ -140,17 +158,128 @@ impl SloTracker {
         SloStatus::from_ring(self.rings.get(wr)?, target)
     }
 
-    /// Every tracked workload's reading.
+    /// Every tracked workload's reading at a single shared target.
     pub fn statuses(&self, target: f64) -> Vec<(WorkloadRef, SloStatus)> {
+        self.statuses_with(|_| (target, TargetSource::Default))
+    }
+
+    /// Every tracked workload's reading at a *per-workload* target + source
+    /// (the caller resolves config precedence: override > annotation > default).
+    pub fn statuses_with(
+        &self,
+        target_of: impl Fn(&WorkloadRef) -> (f64, TargetSource),
+    ) -> Vec<(WorkloadRef, SloStatus)> {
         self.rings
             .iter()
-            .filter_map(|(wr, ring)| SloStatus::from_ring(ring, target).map(|s| (wr.clone(), s)))
+            .filter_map(|(wr, ring)| {
+                let (target, source) = target_of(wr);
+                SloStatus::from_ring(ring, target).map(|mut s| {
+                    s.source = source;
+                    (wr.clone(), s)
+                })
+            })
             .collect()
     }
 
     /// Drop all history (e.g. on a context switch — a new cluster's budgets).
     pub fn clear(&mut self) {
         self.rings.clear();
+    }
+}
+
+/// The workload-annotation key for a per-workload SLO availability target.
+pub const ANNOTATION: &str = "kubernation.io/slo-target";
+
+/// Parse an SLO target string into an availability *fraction* in `(0, 1)`.
+/// Accepts a percent (`"99"`, `"99.9"` — anything `>= 1`, treated as `n%`) or a
+/// fraction (`"0.999"`). Rejects non-numbers, `<= 0`, and `>= 100%` (a 100%
+/// target is a zero-budget singularity — any blip breaches). `Err` carries a
+/// short reason for a log line.
+pub fn parse_target(raw: &str) -> Result<f64, String> {
+    let n: f64 = raw
+        .trim()
+        .parse()
+        .map_err(|_| format!("not a number: {raw:?}"))?;
+    if !n.is_finite() {
+        return Err(format!("not finite: {raw:?}"));
+    }
+    // >= 1 is a percent; < 1 is already a fraction.
+    let frac = if n >= 1.0 { n / 100.0 } else { n };
+    if frac <= 0.0 {
+        return Err(format!("must be > 0: {raw:?}"));
+    }
+    if frac >= 1.0 {
+        return Err(format!("must be < 100% (zero budget): {raw:?}"));
+    }
+    Ok(frac)
+}
+
+/// The per-workload SLO target declared on an object's annotations, if any and
+/// valid (`build_workloads` calls this once per workload — cheaper than a
+/// per-workload store walk). A malformed value resolves to `None` (→ default).
+pub fn annotation_target(
+    annotations: Option<&std::collections::BTreeMap<String, String>>,
+) -> Option<f64> {
+    annotations?
+        .get(ANNOTATION)
+        .and_then(|s| parse_target(s).ok())
+}
+
+/// Per-cluster SLO configuration: a global default plus in-session per-workload
+/// manual overrides (the city-window stepper). Annotation targets are *not*
+/// stored here — they're read from the live object each resolve so they stay
+/// declarative; this only holds the ephemeral knobs.
+#[derive(Debug, Clone)]
+pub struct SloConfig {
+    pub default: f64,
+    overrides: HashMap<WorkloadRef, f64>,
+}
+
+impl Default for SloConfig {
+    fn default() -> Self {
+        SloConfig {
+            default: DEFAULT_TARGET,
+            overrides: HashMap::new(),
+        }
+    }
+}
+
+impl SloConfig {
+    /// A config with the given global default and no overrides.
+    pub fn new(default: f64) -> Self {
+        SloConfig {
+            default,
+            overrides: HashMap::new(),
+        }
+    }
+
+    /// The effective target + its source for a workload, given its annotation
+    /// target (if any). Precedence: manual override > annotation > default.
+    pub fn resolve(&self, wr: &WorkloadRef, annotation: Option<f64>) -> (f64, TargetSource) {
+        if let Some(&t) = self.overrides.get(wr) {
+            (t, TargetSource::Manual)
+        } else if let Some(t) = annotation {
+            (t, TargetSource::Annotation)
+        } else {
+            (self.default, TargetSource::Default)
+        }
+    }
+
+    /// Set (or, with `None`, clear) a workload's manual override.
+    pub fn set_override(&mut self, wr: WorkloadRef, target: Option<f64>) {
+        match target {
+            Some(t) => {
+                self.overrides.insert(wr, t);
+            }
+            None => {
+                self.overrides.remove(&wr);
+            }
+        }
+    }
+
+    /// Drop all manual overrides (e.g. on a context switch).
+    pub fn clear_overrides(&mut self) {
+        self.overrides.clear();
     }
 }
 
@@ -204,6 +333,7 @@ mod tests {
             status: crate::state::model::RolloutStatus::Complete,
             note: String::new(),
             age: None,
+            slo_target: None,
         }
     }
 
@@ -213,6 +343,57 @@ mod tests {
             namespace: "demo".into(),
             name: name.into(),
         }
+    }
+
+    #[test]
+    fn parse_target_accepts_percent_and_fraction_rejects_extremes() {
+        let approx = |r: Result<f64, String>, want: f64| (r.unwrap() - want).abs() < 1e-9;
+        assert!(approx(parse_target("99"), 0.99));
+        assert!(approx(parse_target("99.9"), 0.999));
+        assert!(approx(parse_target(" 0.995 "), 0.995));
+        assert!(approx(parse_target("50"), 0.5)); // operator's call, accepted
+        assert!(approx(parse_target("1.0"), 0.01)); // ">=1" is percent, so 1.0 = 1%
+        assert!(parse_target("abc").is_err());
+        assert!(parse_target("0").is_err()); // <= 0
+        assert!(parse_target("100").is_err()); // 100% = zero budget
+        assert!(parse_target("150").is_err()); // > 100%
+    }
+
+    #[test]
+    fn config_resolve_precedence_override_annotation_default() {
+        let mut cfg = SloConfig {
+            default: 0.99,
+            ..Default::default()
+        };
+        let w = wr("web");
+        // default when nothing set
+        assert_eq!(cfg.resolve(&w, None), (0.99, TargetSource::Default));
+        // annotation beats default
+        assert_eq!(
+            cfg.resolve(&w, Some(0.999)),
+            (0.999, TargetSource::Annotation)
+        );
+        // manual override beats both
+        cfg.set_override(w.clone(), Some(0.95));
+        assert_eq!(cfg.resolve(&w, Some(0.999)), (0.95, TargetSource::Manual));
+        // clearing the override falls back to annotation
+        cfg.set_override(w.clone(), None);
+        assert_eq!(
+            cfg.resolve(&w, Some(0.999)),
+            (0.999, TargetSource::Annotation)
+        );
+    }
+
+    #[test]
+    fn statuses_with_applies_per_workload_target_and_source() {
+        let mut t = SloTracker::default();
+        for _ in 0..MIN_SAMPLES {
+            t.record(&[row("web", 1, 1)]);
+        }
+        let got = t.statuses_with(|_| (0.999, TargetSource::Annotation));
+        let (_, st) = got.first().unwrap();
+        assert_eq!(st.target, 0.999);
+        assert_eq!(st.source, TargetSource::Annotation);
     }
 
     #[test]

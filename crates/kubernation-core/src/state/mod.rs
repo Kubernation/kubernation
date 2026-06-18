@@ -1,6 +1,7 @@
 pub mod advisor;
 pub mod attention;
 pub mod blast;
+pub mod chaos;
 pub mod filter;
 pub mod inspect;
 pub mod logline;

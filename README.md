@@ -298,15 +298,16 @@ TUI also had a `config.toml`; the windowed client has no config file yet.)
 
 ## Status
 
-Near observe-only — two gated writes (confirmed **pod eviction** and a
-**committed planning turn**) plus one active-but-non-mutating capability,
-RBAC-gated **port-forward**; everything else reads. Built well past the MVP: the
+Near observe-only — gated writes only (confirmed **pod eviction**, a **committed
+planning turn**, and **Game Day chaos drills** — all sequenced through one
+auditable write file) plus one active-but-non-mutating capability, RBAC-gated
+**port-forward**; everything else reads. Built well past the MVP: the
 isometric world map, hot/warm cluster pairs, metrics-server live usage (with
 cpu/mem trend sparklines), the
 minimap + map overlays, pod log tailing (severity coloring, timestamps, filters,
 concern→logs), blast-radius impact highlighting, availability SLOs + error-budget
-"treasury", the connectivity / storage /
-batch map layers, the resource
+"treasury" (per-workload targets), Game Day chaos drills, the connectivity /
+storage / batch map layers, the resource
 browser (`:any kind`), the read-only YAML inspector, the in-app Almanac, the
 advisor screens, the city + province drill-down windows, and the **planning
 turn** — staging interventions, previewing the diff, and committing it

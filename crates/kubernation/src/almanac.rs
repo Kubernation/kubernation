@@ -555,7 +555,11 @@ fn page_reading(cx: &mut Ctx) {
     );
     cx.heading("Treasury (error budget)");
     cx.para(
-        "Each city window shows an availability SLO and the error budget it spends down — full when the workload stays up, draining when it flaps, exhausted when availability falls below the target (default 99%). Availability is derived from pod readiness (at least one replica up) over a recent window — no metrics-server needed. A burning or exhausted budget also raises a queue concern.",
+        "Each city window shows an availability SLO and the error budget it spends down — full when the workload stays up, draining when it flaps, exhausted when availability falls below the target (default 99%). Availability is derived from pod readiness (at least one replica up) over a recent window — no metrics-server needed. Set a per-workload target with the city's SLO stepper or a `kubernation.io/slo-target` annotation (e.g. \"99.9\"). A burning or exhausted budget also raises a queue concern.",
+    );
+    cx.heading("Game Day (chaos)");
+    cx.para(
+        "The Game Day menu opens a chaos drill: pick a workload, choose an experiment (outage / kill one pod / kill all pods), preview its blast radius + budget cost, then run it — a real, confirmed failure on standard Kubernetes resources. A scorecard shows the cluster's response (recovery time, budget spent); an outage offers Restore. Control-plane and system namespaces are never targetable.",
     );
     cx.heading("Attention");
     cx.para(

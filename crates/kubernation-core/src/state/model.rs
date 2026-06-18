@@ -520,6 +520,9 @@ pub struct WorkloadRow {
     pub status: RolloutStatus,
     pub note: String,
     pub age: Option<Time>,
+    /// Per-workload SLO availability target from the `kubernation.io/slo-target`
+    /// annotation, parsed (a fraction in (0,1)); `None` → the global default.
+    pub slo_target: Option<f64>,
 }
 
 pub fn deployment_status(d: &Deployment) -> (RolloutStatus, String) {
@@ -622,6 +625,7 @@ pub fn build_workloads(world: &ObservedWorld) -> Vec<WorkloadRow> {
             status,
             note,
             age: d.metadata.creation_timestamp.clone(),
+            slo_target: crate::state::slo::annotation_target(d.metadata.annotations.as_ref()),
         });
     }
     for s in world.statefulsets.state() {
@@ -640,6 +644,7 @@ pub fn build_workloads(world: &ObservedWorld) -> Vec<WorkloadRow> {
             status,
             note,
             age: s.metadata.creation_timestamp.clone(),
+            slo_target: crate::state::slo::annotation_target(s.metadata.annotations.as_ref()),
         });
     }
     for d in world.daemonsets.state() {
@@ -658,6 +663,7 @@ pub fn build_workloads(world: &ObservedWorld) -> Vec<WorkloadRow> {
             status,
             note,
             age: d.metadata.creation_timestamp.clone(),
+            slo_target: crate::state::slo::annotation_target(d.metadata.annotations.as_ref()),
         });
     }
     rows.sort_by(|a, b| a.r.cmp(&b.r));
