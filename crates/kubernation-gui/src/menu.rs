@@ -1,6 +1,6 @@
 //! A classic-4X dropdown menu bar for the GUI chrome. Replaces the scattered
 //! chrome buttons (almanac `?`, End-Turn, namespace filter) with Game / View /
-//! Orders / World / Help menus — the iconic menu bar of the genre, in the
+//! Orders / Advisors / World / Help menus — the iconic menu bar of the genre, in the
 //! Kubernation carved-stone palette. Immediate-mode like the rest of the GUI:
 //! `draw_menu_bar` both paints the bar (+ any open dropdown) and hit-tests,
 //! returning the chosen action. An open menu is GUI-loop state
@@ -8,6 +8,7 @@
 
 use macroquad::prelude::*;
 
+use crate::advisor::AdvisorTab;
 use crate::draw::Overlay;
 use crate::panels::CHROME_H;
 use crate::text::{text, text_bold, text_size};
@@ -24,6 +25,7 @@ pub enum MenuAction {
     EndTurn,
     DiscardTurn,
     NamespaceFilter,
+    Advisor(AdvisorTab),
     Almanac,
 }
 
@@ -134,6 +136,23 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
             items: vec![
                 Item::act(end_turn, MenuAction::EndTurn).enable(staged > 0),
                 Item::act("Discard staged changes", MenuAction::DiscardTurn).enable(staged > 0),
+            ],
+        },
+        Menu {
+            title: "Advisors".to_string(),
+            items: vec![
+                Item::act(
+                    "Health (state of the realm)",
+                    MenuAction::Advisor(AdvisorTab::Health),
+                ),
+                Item::act(
+                    "Storage (granaries)",
+                    MenuAction::Advisor(AdvisorTab::Storage),
+                ),
+                Item::act(
+                    "Network (harbors & gates)",
+                    MenuAction::Advisor(AdvisorTab::Network),
+                ),
             ],
         },
         Menu {

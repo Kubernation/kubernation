@@ -11,6 +11,7 @@
 //! between cities · N fly to the next concern · ?/F1 Almanac (in-app
 //! reference) · Esc close · Q quit.
 
+mod advisor;
 mod almanac;
 mod city;
 mod draw;
@@ -27,6 +28,7 @@ mod window;
 
 use std::path::PathBuf;
 
+use advisor::{Advisor, AdvisorAction, AdvisorTab};
 use almanac::{Almanac, AlmanacAction};
 use clap::Parser;
 use draw::{
@@ -127,10 +129,14 @@ struct Args {
     /// Set from the View menu at runtime; flag is for shots.
     #[arg(long, value_name = "MODE")]
     overlay: Option<String>,
-    /// Open a chrome menu on sync — game / view / orders / world / help
-    /// (development verification of the menu bar dropdowns)
+    /// Open a chrome menu on sync — game / view / orders / advisors / world /
+    /// help (development verification of the menu bar dropdowns)
     #[arg(long, value_name = "NAME")]
     menu: Option<String>,
+    /// Open an advisor screen on sync — health / storage / network
+    /// (development verification of the advisor windows)
+    #[arg(long, value_name = "NAME")]
+    advisor: Option<String>,
 }
 
 fn window_conf() -> Conf {
@@ -208,6 +214,8 @@ async fn main() {
     let mut auto_tail = args.tail;
     // The Almanac (in-app reference) — a modal window; None = closed.
     let mut almanac: Option<Almanac> = None;
+    // The advisor screens (Health / Storage / Network) — a modal window.
+    let mut advisor: Option<Advisor> = None;
     // The planning turn: staged interventions (preview-only) + the open
     // End-of-Turn review modal.
     let mut planned = kubernation_core::state::planned::PlannedWorld::default();
@@ -345,7 +353,12 @@ async fn main() {
         // *this frame* so the same click/press doesn't immediately dismiss it.
         // When a log overlay or a text editor is open, `/` is text instead.
         let mut almanac_just_opened = false;
-        if (is_key_pressed(KeyCode::F1) || is_key_pressed(KeyCode::Slash)) && !log_open && !typing {
+        let mut advisor_just_opened = false;
+        if (is_key_pressed(KeyCode::F1) || is_key_pressed(KeyCode::Slash))
+            && !log_open
+            && !typing
+            && advisor.is_none()
+        {
             if almanac.is_some() {
                 almanac = None;
             } else {
@@ -371,6 +384,8 @@ async fn main() {
                 pending_evict = None;
             } else if almanac.is_some() {
                 almanac = None;
+            } else if advisor.is_some() {
+                advisor = None;
             } else if plan_open {
                 plan_open = false;
             } else if ns_picker {
@@ -496,11 +511,34 @@ async fn main() {
                 a.cycle(1);
             }
         }
+        // The advisor window likewise swallows the wheel and 1-3 / ←→ tabs.
+        if let Some(a) = advisor.as_mut() {
+            let (_, wheel) = mouse_wheel();
+            if wheel.abs() > 0.0 {
+                a.scroll_by(wheel);
+            }
+            for (k, t) in [
+                (KeyCode::Key1, AdvisorTab::Health),
+                (KeyCode::Key2, AdvisorTab::Storage),
+                (KeyCode::Key3, AdvisorTab::Network),
+            ] {
+                if is_key_pressed(k) {
+                    a.go(t);
+                }
+            }
+            if is_key_pressed(KeyCode::Left) {
+                a.cycle(-1);
+            }
+            if is_key_pressed(KeyCode::Right) {
+                a.cycle(1);
+            }
+        }
 
         let mut manual_pan = false;
         if !picker
             && !ns_picker
             && almanac.is_none()
+            && advisor.is_none()
             && !panel_modal
             && !plan_open
             && open_menu.is_none()
@@ -607,13 +645,21 @@ async fn main() {
                 if args.almanac {
                     almanac = Some(Almanac::new());
                 }
+                if let Some(a) = &args.advisor {
+                    advisor = Some(Advisor::new(match a.as_str() {
+                        "storage" => AdvisorTab::Storage,
+                        "network" => AdvisorTab::Network,
+                        _ => AdvisorTab::Health,
+                    }));
+                }
                 if let Some(m) = &args.menu {
                     open_menu = match m.as_str() {
                         "game" => Some(0),
                         "view" => Some(1),
                         "orders" => Some(2),
-                        "world" => Some(3),
-                        "help" => Some(4),
+                        "advisors" => Some(3),
+                        "world" => Some(4),
+                        "help" => Some(5),
                         _ => None,
                     };
                 }
@@ -635,6 +681,7 @@ async fn main() {
             if picker
                 || ns_picker
                 || almanac.is_some()
+                || advisor.is_some()
                 || panel_modal
                 || plan_open
                 || open_menu.is_some()
@@ -848,6 +895,7 @@ async fn main() {
                 // Hover tooltip over the map (not the column / chrome / strip).
                 if !picker
                     && almanac.is_none()
+                    && advisor.is_none()
                     && !panel_modal
                     && !plan_open
                     && open_menu.is_none()
@@ -1024,6 +1072,7 @@ async fn main() {
         let menu_live = !picker
             && !ns_picker
             && almanac.is_none()
+            && advisor.is_none()
             && !plan_open
             && panel.is_none()
             && !log_open
@@ -1069,6 +1118,10 @@ async fn main() {
                         .unwrap_or(0),
                     _ => 0,
                 };
+            }
+            Some(MenuAction::Advisor(tab)) => {
+                advisor = Some(Advisor::new(tab));
+                advisor_just_opened = true;
             }
             Some(MenuAction::Almanac) => {
                 almanac = Some(Almanac::new());
@@ -1172,6 +1225,17 @@ async fn main() {
                     almanac = None;
                 }
                 _ => {}
+            }
+        }
+
+        // The advisor screens, drawn on top (own clicks, not the opening one).
+        if advisor.is_some() {
+            let click = is_mouse_button_pressed(MouseButton::Left) && !advisor_just_opened;
+            let action = advisor
+                .as_mut()
+                .map(|a| a.draw(snap.as_deref(), mouse, click));
+            if let Some(AdvisorAction::Close) = action {
+                advisor = None;
             }
         }
 

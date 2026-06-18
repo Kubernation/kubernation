@@ -64,6 +64,8 @@ crates/
                               apply path.
                  model.rs     PURE derivations: map/workloads/city/node
                  attention.rs PURE detectors → severity-ordered concerns
+                 advisor.rs   PURE cluster-wide rollups (Health/Storage/
+                              Network) for the advisor screens
                  fixtures.rs  synthetic worlds (feature = "fixtures")
     util.rs      fnv1a64 stable hash, age/bytes formatting
   kubernation/        THE TUI (the product): main/app/events/logging/config
@@ -79,14 +81,16 @@ crates/
                  sprites), panels.rs (hover tooltip, attention strip, context
                  picker, shared helpers), sidebar.rs (the docked right column —
                  WORLD/STATUS/SELECTION, classic-4X right panel), menu.rs (the
-                 classic-4X dropdown menu bar — Game/View/Orders/World/Help),
-                 window.rs (reusable modal chrome for drill-downs), almanac.rs
-                 (the in-app reference / field guide),
+                 classic-4X dropdown menu bar — Game/View/Orders/Advisors/
+                 World/Help), window.rs (reusable modal chrome for drill-downs),
+                 almanac.rs (the in-app reference / field guide), advisor.rs (the
+                 4X advisor screens — Health/Storage/Network, on window.rs over
+                 core's advisor reports),
                  city.rs / node.rs (the 4X city + province drill-down
                  windows, on window.rs), plan.rs (the End-of-Turn review),
                  text.rs (bundled sans + serif fonts), theme.rs. See the
-                 "Isometric world map" + "GUI menu bar + overlays" + "GUI
-                 spike/promotion" decisions.
+                 "Isometric world map" + "GUI menu bar + overlays" + "Advisor
+                 screens" + "GUI spike/promotion" decisions.
 ```
 
 **Data flow:** watchers (kube 3.x reflectors) keep `ObservedWorld` stores
@@ -762,6 +766,30 @@ what makes the interesting logic unit-testable without a cluster.
   `--menu <name>` capture them headlessly (all four verified live on kind). The
   TUI keeps its own `1/2/3` overlays + key-driven actions (no menu bar). Deferred:
   a TUI menu bar.
+- **Advisor screens** (2026-06-17, user, after the menu bar — the classic-4X
+  "advisors"/Civ F1 Berater): a new **Advisors** menu opens a modal window with
+  three read-only summary tabs. The reports are **pure functions of
+  `ObservedWorld`** in core (`state/advisor.rs`: `health_report` /
+  `storage_report` / `network_report` → `HealthReport`/`StorageReport`/
+  `NetworkReport`), unit-tested against `fixtures.rs` — keeping the interesting
+  logic out of the GUI. They are **cluster-wide** (deliberately *not* scoped by
+  the namespace filter — an advisor reports on the whole realm) and reuse the
+  existing pure builders (`build_map` for node health, `build_workloads` for
+  workload strength, `pod_state` for pod phases, `ingress_backends` + the
+  selector-match logic mirrored from `attention.rs` for orphan gates / idle
+  harbors). **Health** rolls up provinces(nodes)/citizens(pods)/cities(workloads);
+  **Storage** is granaries(PVCs) bound vs pending + the pending list; **Network**
+  is harbors(services)+gates(ingresses) + orphan/idle routes. The GUI side
+  (`gui/advisor.rs`) is a modal `Advisor` window on `window.rs`, mirroring the
+  Almanac's tab/scroll/Esc machinery (tabs switch via click or 1/2/3/←/→); it's
+  added to every modal-suspend / Esc / `menu_live` site like the Almanac, with
+  an `advisor_just_opened` guard. Trouble counts use meaning colors on the dark
+  panel (`theme::GOOD` green / `WARN` / `CRIT` / `STRUCT`). Dev flag `--advisor
+  <health|storage|network>` (and the `--menu advisors` index). They **complement**
+  the attention queue (which says *what needs orders*) rather than replacing it.
+  Verified live on kind (4 nodes healthy, 2 failing pods, 1 understrength
+  workload, stuck-pvc pending). Deferred: a TUI advisor view; advisor-driven
+  navigation (click a row → fly there).
 
 ## The pair (hot/warm)
 

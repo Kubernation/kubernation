@@ -9,6 +9,16 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Advisor screens (Civ's F1 "Berater").** A new **Advisors** menu opens a
+  modal window with three read-only summary tabs of the whole realm: **Health**
+  (provinces/nodes by health, citizens/pods by phase, cities/workloads at
+  strength), **Storage** (granaries/PVCs bound vs. pending, with the pending
+  claims listed), and **Network** (harbors/services + gates/ingresses, plus
+  orphan gates and idle harbors). The reports are pure functions of the observed
+  world (`kubernation-core` `state/advisor.rs`, unit-tested) and cluster-wide
+  (deliberately not scoped by the namespace filter — an advisor reports on the
+  whole realm); they complement the attention queue. Tabs switch with clicks or
+  1/2/3/←/→; dev flag `--advisor <health|storage|network>`.
 - **GUI: a cartographic map title bar.** A centered stone cartouche over the top
   of the board names the realm — "Cluster Map — &lt;context&gt;" in the serif map
   font, with an iso-diamond flourish at each end — and, when a non-default map

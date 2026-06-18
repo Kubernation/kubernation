@@ -17,6 +17,9 @@ pub const INK: Color = Color::new(0.95, 0.94, 0.90, 1.0);
 pub const DIM: Color = Color::new(0.62, 0.60, 0.55, 1.0);
 pub const CRIT: Color = Color::new(0.83, 0.18, 0.13, 1.0);
 pub const WARN: Color = Color::new(0.88, 0.72, 0.18, 1.0);
+/// Readable "healthy / good" green for text on the dark window panels
+/// (advisor screens). Meaning color, like CRIT/WARN — not decoration.
+pub const GOOD: Color = Color::new(0.52, 0.80, 0.47, 1.0);
 pub const ROAD: Color = Color::new(0.42, 0.30, 0.18, 1.0);
 pub const STRUCT: Color = Color::new(0.45, 0.85, 0.90, 1.0);
 pub const HOUSE: Color = Color::new(0.82, 0.78, 0.68, 1.0);

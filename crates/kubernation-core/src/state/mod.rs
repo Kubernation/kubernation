@@ -1,3 +1,4 @@
+pub mod advisor;
 pub mod attention;
 pub mod filter;
 pub mod model;
