@@ -4,7 +4,9 @@
 //! inspector. Mouse + wheel driven (the TUI has the keyboard/filter idiom). The
 //! data (discovery + LIST) comes from the net thread via `Net`.
 
-use kubernation_core::k8s::browse::{Object, row};
+use std::sync::Arc;
+
+use kubernation_core::k8s::browse::{ListResult, Object, row};
 use macroquad::prelude::*;
 
 use crate::net::Net;
@@ -32,6 +34,11 @@ pub struct Browser {
     kind_label: String,
     scroll: f32,
     max_scroll: f32,
+    /// Memoized table: the LIST it was built from (held so its pointer stays
+    /// valid for `Arc::ptr_eq`) and the pre-formatted `{name}{age}` line per row.
+    /// Rebuilt only when a new LIST arrives — not every frame.
+    cached: Option<Arc<ListResult>>,
+    cached_rows: Vec<String>,
 }
 
 impl Browser {
@@ -41,6 +48,8 @@ impl Browser {
             kind_label: String::new(),
             scroll: 0.0,
             max_scroll: 0.0,
+            cached: None,
+            cached_rows: Vec::new(),
         }
     }
 
@@ -122,7 +131,7 @@ impl Browser {
                     }
                     y += row_h;
                 }
-                for k in &kinds {
+                for k in kinds.iter() {
                     let rect = Rect::new(b.x, y - 13.0, b.w, row_h);
                     if y > b.y && y < b.y + b.h {
                         if rect.contains(mouse) {
@@ -209,53 +218,60 @@ impl Browser {
                 text("(no objects)", b.x + 6.0, top + 14.0, fs, DIM);
             }
             Some(Ok(lr)) => {
-                let mut y = top - self.scroll + 14.0;
-                for o in &lr.items {
-                    let r = row(o);
-                    let mut name = if r.namespace.is_empty() {
-                        r.name.clone()
-                    } else {
-                        format!("{}/{}", r.namespace, r.name)
-                    };
-                    // Keep the age column aligned: clip an over-long name so it
-                    // can't overrun into the age (padding alone never truncates).
-                    // Char-based — `String::truncate` is byte-indexed and would
-                    // panic mid-codepoint (browsed objects can be any kind).
-                    if name.chars().count() > 56 {
-                        name = name.chars().take(55).collect::<String>();
-                        name.push('…');
+                // Rebuild the formatted rows only when a NEW list arrives (the
+                // Arc pointer changes); otherwise the per-frame loop does zero
+                // `row()`/clone/format work — it just draws the visible slice.
+                if self.cached.as_ref().is_none_or(|c| !Arc::ptr_eq(c, lr)) {
+                    self.cached_rows = lr.items.iter().map(format_row).collect();
+                    self.cached = Some(lr.clone());
+                }
+                let n = lr.items.len();
+                // The full content height (rows + an optional truncation note).
+                let extra = if lr.truncated { 1 } else { 0 };
+                let content = (n + extra) as f32 * row_h;
+                self.max_scroll = (content + 4.0 - view_h).max(0.0);
+                self.scroll = self.scroll.min(self.max_scroll);
+
+                // Only the rows in view are drawn (and only their rects built) —
+                // O(visible), not O(items).
+                let base = top - self.scroll + 14.0;
+                let first = (self.scroll / row_h).floor().max(0.0) as usize;
+                let visible = (view_h / row_h).ceil() as usize + 2;
+                for i in first..(first + visible).min(n) {
+                    let y = base + i as f32 * row_h;
+                    // Skip a partial row scrolled up under the header / below the
+                    // body (no scissor in macroquad — clip by hand).
+                    if y <= top || y >= b.y + b.h {
+                        continue;
                     }
                     let rect = Rect::new(b.x, y - 13.0, b.w, row_h);
-                    if y > top && y < b.y + b.h {
-                        if rect.contains(mouse) {
-                            draw_rectangle(
-                                rect.x,
-                                rect.y,
-                                rect.w,
-                                rect.h,
-                                Color::new(1.0, 1.0, 1.0, 0.06),
-                            );
+                    if rect.contains(mouse) {
+                        draw_rectangle(
+                            rect.x,
+                            rect.y,
+                            rect.w,
+                            rect.h,
+                            Color::new(1.0, 1.0, 1.0, 0.06),
+                        );
+                        if click {
+                            act = BrowseAction::Inspect(Box::new(lr.items[i].clone()));
                         }
-                        text(format!("{name:<58}{}", r.age), b.x + 6.0, y, fs, INK);
                     }
-                    if click && rect.contains(mouse) {
-                        act = BrowseAction::Inspect(Box::new(o.clone()));
-                    }
-                    y += row_h;
+                    text(&self.cached_rows[i], b.x + 6.0, y, fs, INK);
                 }
                 // A capped LIST: tell the user the view is incomplete.
                 if lr.truncated {
-                    text(
-                        format!("… showing first {} (more on the server)", lr.items.len()),
-                        b.x + 6.0,
-                        y,
-                        fs,
-                        DIM,
-                    );
-                    y += row_h;
+                    let y = base + n as f32 * row_h;
+                    if y > top && y < b.y + b.h {
+                        text(
+                            format!("… showing first {n} (more on the server)"),
+                            b.x + 6.0,
+                            y,
+                            fs,
+                            DIM,
+                        );
+                    }
                 }
-                self.max_scroll = ((y - (top - self.scroll)) - view_h).max(0.0);
-                self.scroll = self.scroll.min(self.max_scroll);
                 let area = Rect::new(b.x, top, b.w, view_h);
                 scrollbar(area, self.scroll, self.max_scroll);
             }
@@ -268,6 +284,24 @@ impl Browser {
         }
         act
     }
+}
+
+/// Pre-format one table row's display line: `ns/name` (clipped to keep the age
+/// column aligned) left-padded, then the age. Built once per LIST, not per frame.
+fn format_row(o: &Object) -> String {
+    let r = row(o);
+    let mut name = if r.namespace.is_empty() {
+        r.name
+    } else {
+        format!("{}/{}", r.namespace, r.name)
+    };
+    // Char-based clip — `String::truncate` is byte-indexed and would panic
+    // mid-codepoint (browsed objects can be any kind).
+    if name.chars().count() > 56 {
+        name = name.chars().take(55).collect::<String>();
+        name.push('…');
+    }
+    format!("{name:<58}{}", r.age)
 }
 
 fn scrollbar(b: Rect, scroll: f32, max_scroll: f32) {

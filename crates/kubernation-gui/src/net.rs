@@ -101,7 +101,9 @@ pub struct Net {
     /// kinds, and any groups that failed to enumerate), the kind currently being
     /// LISTed, and that LIST's output.
     discover_req: AtomicBool,
-    kinds: Mutex<Option<Vec<browse::KindEntry>>>,
+    // `Arc` so the per-frame `kinds()` pull (the picker reads it every frame) is
+    // a refcount bump, not a deep clone of the whole kind list.
+    kinds: Mutex<Option<Arc<Vec<browse::KindEntry>>>>,
     discover_warnings: Mutex<Vec<String>>,
     browse_req: Mutex<Option<browse::KindEntry>>,
     browse_out: Mutex<BrowseOut>,
@@ -144,8 +146,9 @@ impl Net {
         self.discover_req.store(true, Ordering::Relaxed);
     }
 
-    /// Discovered kinds, if discovery has completed.
-    pub fn kinds(&self) -> Option<Vec<browse::KindEntry>> {
+    /// Discovered kinds, if discovery has completed (an `Arc` — the per-frame
+    /// picker pull is a refcount bump, not a deep copy).
+    pub fn kinds(&self) -> Option<Arc<Vec<browse::KindEntry>>> {
         self.kinds.lock().unwrap().clone()
     }
 
@@ -414,7 +417,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 if net.discover_req.swap(false, Ordering::Relaxed) {
                     let d = browse::discover(&hot_client).await;
                     *net.discover_warnings.lock().unwrap() = d.warnings;
-                    *net.kinds.lock().unwrap() = Some(d.kinds);
+                    *net.kinds.lock().unwrap() = Some(Arc::new(d.kinds));
                 }
                 let breq = net.browse_req.lock().unwrap().clone();
                 if let Some(k) = breq.clone() {

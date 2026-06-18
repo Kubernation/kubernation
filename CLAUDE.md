@@ -903,8 +903,22 @@ what makes the interesting logic unit-testable without a cluster.
   non-US layouts); and the TUI gained a `discover_gen` guard (a slow old-cluster
   discovery can't repopulate a switched-to cluster). Deferred (risk already
   covered): a SelfSubjectAccessReview pre-flight for `secrets` (apiserver RBAC +
-  redaction + scoping suffice), and parallelizing discovery (the per-group
-  timeout removes the hang; latency is one-shot + cached).
+  redaction + scoping suffice).
+  **Performance pass** (2026-06-18, "perf review + mitigation"): a profile of the
+  hot paths (GUI is immediate-mode at ~60fps — anything in a `draw_*` runs every
+  frame) drove four fixes. (1) The GUI table no longer re-derives every row each
+  frame: `Browser` **memoizes** the formatted `{name}{age}` lines, rebuilding only
+  when a new `Arc<ListResult>` arrives (`Arc::ptr_eq`), and (2) draws only the
+  **visible slice** (`first = scroll/row_h`, ~25 rows) instead of walking all 500
+  — turning a per-frame O(items) cost (×500 `row()` clones + `jiff::now()` reads)
+  into on-LIST O(items) + per-frame O(visible). (3) `Net.kinds` is an
+  `Arc<Vec<KindEntry>>` (like `browse_out`) so the picker's per-frame pull is a
+  refcount bump, not a deep clone of ~70 entries. (4) `discover` fans the
+  per-group resource queries out **concurrently** (`futures::join_all`) instead of
+  sequentially, so `:` open is ~one round-trip deep, not N. Deferred: moving the
+  LIST/discover awaits off the net tick loop onto spawned tasks — the FMEA
+  timeout already bounds the rare slow-LIST stall and the common case is <1s, so
+  it isn't worth reintroducing concurrency into the just-hardened request slots.
 
 ## The pair (hot/warm)
 

@@ -104,24 +104,36 @@ pub async fn discover(client: &Client) -> Discovered {
         other => warn_skip(&mut warnings, "core api versions", other),
     }
 
-    // Named groups (/apis). Each is queried on its own so one broken/slow group
-    // can't take down the rest.
+    // Named groups (/apis). Each group's resources are queried independently —
+    // and concurrently — so one broken/slow group can't take down (or serialize
+    // behind it) the rest. (`Discovery::run` does these sequentially.)
     match tokio::time::timeout(deadline, client.list_api_groups()).await {
         Ok(Ok(groups)) => {
-            for g in groups.groups {
-                // Prefer the server's preferred version; fall back to the first.
-                let gv = g
-                    .preferred_version
-                    .or_else(|| g.versions.into_iter().next());
-                let Some(gv) = gv else { continue };
-                match tokio::time::timeout(
-                    deadline,
-                    client.list_api_group_resources(&gv.group_version),
-                )
-                .await
-                {
-                    Ok(Ok(list)) => collect(&mut out, &list.resources, &g.name, &gv.version),
-                    other => warn_skip(&mut warnings, &gv.group_version, other),
+            // (group, version, group_version) for each group's preferred version.
+            let targets: Vec<(String, String, String)> = groups
+                .groups
+                .into_iter()
+                .filter_map(|g| {
+                    let name = g.name.clone();
+                    let gv = g
+                        .preferred_version
+                        .or_else(|| g.versions.into_iter().next())?;
+                    Some((name, gv.version, gv.group_version))
+                })
+                .collect();
+            let futs =
+                targets.iter().map(|(_, _, group_version)| {
+                    let client = client.clone();
+                    let gv = group_version.clone();
+                    async move {
+                        tokio::time::timeout(deadline, client.list_api_group_resources(&gv)).await
+                    }
+                });
+            let results = futures::future::join_all(futs).await;
+            for ((name, version, group_version), r) in targets.iter().zip(results) {
+                match r {
+                    Ok(Ok(list)) => collect(&mut out, &list.resources, name, version),
+                    other => warn_skip(&mut warnings, group_version, other),
                 }
             }
         }

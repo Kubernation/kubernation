@@ -29,7 +29,9 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   and LIST are deadline-bounded (a hung/degraded API can't freeze the UI) and
   report unavailable groups; the browser honors the active namespace filter,
   classifies RBAC/not-found errors, and opens via the `:` character (non-US
-  layouts).
+  layouts). A performance pass made the GUI table render the visible slice from a
+  memoized row cache (was re-deriving all rows every frame), shares the kind list
+  by `Arc`, and discovers API groups concurrently.
 - **Copy + export for logs and YAML.** In the log overlay and the object
   inspector, **`c`** copies the whole buffer to the system clipboard and **`w`**
   exports it to a file in the working directory (logs → `.log`, YAML → `.yaml`),
