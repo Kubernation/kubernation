@@ -1197,8 +1197,9 @@ async fn main() {
                                     planned.stage_restart(wr);
                                 }
                             }
-                            if let Some((ns, pod)) = act.log {
-                                log_previous = args.log_previous;
+                            if let Some((ns, pod, prefer_prev)) = act.log {
+                                // Smart crash-loop default; --log-previous forces it.
+                                log_previous = prefer_prev || args.log_previous;
                                 log_timestamps = args.log_timestamps;
                                 log_window = kubernation_core::k8s::logs::LogWindow::default();
                                 log_filter = args.log_filter.clone().unwrap_or_default();
@@ -1245,8 +1246,9 @@ async fn main() {
                             if let Some(iv) = act.stage {
                                 planned.stage(iv);
                             }
-                            if let Some((ns, pod)) = act.log {
-                                log_previous = args.log_previous;
+                            if let Some((ns, pod, prefer_prev)) = act.log {
+                                // Smart crash-loop default; --log-previous forces it.
+                                log_previous = prefer_prev || args.log_previous;
                                 log_timestamps = args.log_timestamps;
                                 log_window = kubernation_core::k8s::logs::LogWindow::default();
                                 log_filter = args.log_filter.clone().unwrap_or_default();

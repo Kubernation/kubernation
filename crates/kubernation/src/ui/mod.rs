@@ -36,9 +36,12 @@ pub enum Action {
     OpenNode(String),
     OpenWorkload(WorkloadRef),
     /// Tail a pod's logs (namespace, pod); cluster is the active view's.
+    /// `previous` opens straight on the previous container (a crash-looper's
+    /// last words) — the view can still toggle with `p`.
     OpenLogs {
         namespace: String,
         pod: String,
+        previous: bool,
     },
     /// Evict (delete) a pod (namespace, pod); the app confirms + checks RBAC
     /// before writing. Cluster is the active view's.

@@ -495,7 +495,14 @@ fn page_controls(cx: &mut Ctx) {
     cx.heading("Inspect");
     cx.key("Click land / city", "open the node or city panel");
     cx.key("Click a harbor / gate", "open the city it serves");
-    cx.key("Click a pod row", "tail that pod's logs");
+    cx.key(
+        "Click a pod row",
+        "tail that pod's logs (lines tinted by severity)",
+    );
+    cx.key(
+        "in logs: / p T s",
+        "filter (AND · !excl) · previous · timestamps · window",
+    );
     cx.key("y · pod row yaml", "inspect YAML — workload/node, or a pod");
     cx.key(
         "c · w (logs / yaml)",

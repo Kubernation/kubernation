@@ -41,6 +41,15 @@ pub enum PodState {
     Succeeded,
 }
 
+/// Should a freshly-opened log view default to the *previous* container? Yes for
+/// a crash-looping / repeatedly-restarting pod — its current container is in
+/// backoff (its live tail is empty), so the useful "last words" are in the
+/// previous instance (`kubectl logs --previous`). Everything else wants the live
+/// tail. Mirrors the attention "flapping" threshold (5 restarts).
+pub fn prefer_previous(state: PodState, reason: &str, restarts: i32) -> bool {
+    reason.contains("CrashLoopBackOff") || (state == PodState::Failing && restarts >= 5)
+}
+
 /// Classify a pod and give the short reason shown in tables
 /// ("CrashLoopBackOff", "ContainerCreating", "Running", ...).
 pub fn pod_state(pod: &Pod) -> (PodState, String) {
@@ -1831,5 +1840,17 @@ mod tests {
         assert_eq!(owner.name, "web");
         assert_eq!(owner.kind, WorkloadKind::Deployment);
         assert!(detail.info.iter().any(|(k, _)| *k == "runtime"));
+    }
+
+    #[test]
+    fn prefer_previous_for_crashloops_only() {
+        // A crash-looping pod → previous (its live container is in backoff).
+        assert!(prefer_previous(PodState::Failing, "CrashLoopBackOff", 3));
+        // High restarts even without the exact reason.
+        assert!(prefer_previous(PodState::Failing, "Error", 5));
+        // A healthy / pending / low-restart pod → live tail.
+        assert!(!prefer_previous(PodState::Ok, "Running", 0));
+        assert!(!prefer_previous(PodState::Pending, "ContainerCreating", 0));
+        assert!(!prefer_previous(PodState::Failing, "Error", 1));
     }
 }

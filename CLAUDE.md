@@ -919,6 +919,41 @@ what makes the interesting logic unit-testable without a cluster.
   LIST/discover awaits off the net tick loop onto spawned tasks — the FMEA
   timeout already bounds the rare slow-LIST stall and the common case is <1s, so
   it isn't worth reintroducing concurrency into the just-hardened request slots.
+- **Log UX — Tier 0** (2026-06-18, user: "make tailing and working with logs
+  easier"; chose a tiered roadmap from an ideation pass, did Tier 0 first): seven
+  quick wins, most sharing a new pure module **`state/logline.rs`** (no UI deps,
+  unit-tested — the single home for log-line logic the two renderers were about
+  to duplicate). (1) **Severity coloring**: `classify(line) -> Level` (klog
+  `E/W/I` headers, structured `level=`/`"level":`/`"severity":`, bracketed
+  `[error]`, uppercase plaintext) → ERROR red / WARN yellow / DEBUG dim; a
+  render-only hint, raw text untouched (honors color-discipline). (2) **Filter
+  upgrade**: `FilterExpr` = space-separated AND of substrings, leading `!`
+  excludes (subtractive triage); replaces the duplicated substring match in both
+  frontends. (3) **Timestamps** (`T`): `logs::tail` gained a `timestamps` flag;
+  the TUI peels the RFC3339 prefix into a dim gutter (`split_ts` + ratatui
+  spans), the GUI shows it inline (proportional font — a measured gutter is
+  deferred). (4) **History window** (`s`): a `LogWindow` enum {Tail 500 / More 2k
+  / Hour since-1h, capped} so a crash past the 500-line tail is reachable.
+  Timestamps + window are carried as a `LogOpts` struct (so future fetch knobs
+  don't churn `tail`'s signature) and ride the existing re-fetch rail (TUI
+  `RefetchLogs`; GUI `LogReq` `PartialEq`). (5) **Container cache**: both
+  frontends were re-issuing `first_container` (`Api::get`) every ~2s poll; now
+  resolved once per pod target (GUI: cached in the net loop, reset on switch;
+  TUI: cached on `LogsView`, round-tripped via the `Logs` event) — survives
+  p/T/s toggles. (6) **Smart `--previous`**: `model::prefer_previous(state,
+  reason, restarts)` opens a crash-looping pod (CrashLoopBackOff, or Failing with
+  ≥5 restarts) straight on the previous container's last words; threaded through
+  `Action::OpenLogs.previous` / `WinAction.log`'s bool (the view can still toggle
+  with `p`). (7) **Discoverability**: the TUI pod lists already show `l logs · e
+  evict`; help.rs + the GUI Almanac document the in-overlay keys + filter syntax.
+  Dev flag `--log-timestamps` (with `--tail`). Verified live on kind: a planted
+  deployment's ERROR/`level=warn`/`W0618` lines color red/yellow; coredns shows
+  inline timestamps + a `(ts)` title; crashy auto-opens on `<previous>` (smart
+  default, no flag). Core: logline (3) + `prefer_previous` (1) tests; TUI:
+  exclude-filter test. Deferred to later tiers: a concern→logs verb (T1),
+  multi-container picker / all-containers (T2), JSON/logfmt columns (T3+),
+  match-navigation + grep-context (T5), multi-pod "whole-city" tailing (B1), the
+  honest since-anchored append + log stream (B3/B2).
 
 ## The pair (hot/warm)
 

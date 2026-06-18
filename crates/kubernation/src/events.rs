@@ -14,10 +14,12 @@ pub enum AppEvent {
     /// A slice of one observed world changed (payload-free, coalescable).
     World(ClusterId, WorldDelta),
     /// A pod-log fetch finished. `gen` lets the app drop stale results
-    /// (after the user moved to a different pod).
+    /// (after the user moved to a different pod). `container` carries the
+    /// resolved container back so the view caches it (no re-resolve per poll).
     Logs {
         generation: u64,
         result: Result<String, String>,
+        container: Option<String>,
     },
     /// A pod eviction finished; the payload is the line to flash (Ok = a
     /// success message, Err = the failure).

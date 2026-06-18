@@ -77,6 +77,9 @@ impl Component for NodeDetailView {
                     return Some(Action::OpenLogs {
                         namespace: p.namespace.clone(),
                         pod: p.name.clone(),
+                        previous: kubernation_core::state::model::prefer_previous(
+                            p.state, &p.reason, p.restarts,
+                        ),
                     });
                 }
             }

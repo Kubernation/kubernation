@@ -20,8 +20,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   TUI peels them into a dim left gutter; the GUI shows them inline) so you can
   correlate a line with an event; **`s`** cycles how much history to pull —
   **500** lines (default) → **2k** → **since 1h** — so a crash that scrolled off
-  the 500-line window is reachable. (More of the log-UX pass — container picker,
-  concern→logs — to follow.)
+  the 500-line window is reachable.
+- **Logs: crash-loops open on the previous container automatically.** Opening a
+  CrashLoopBackOff (or repeatedly-restarting) pod's logs now defaults to the
+  *previous* container — its last words before the crash — instead of an empty
+  live tail; `p` still toggles. The container is also resolved once per pod and
+  cached, so the ~2s poll no longer re-issues a pod GET each time. (Completes the
+  Tier-0 log-UX pass; container picker / concern→logs / multi-pod tailing are
+  later tiers.)
 - **Resource browser (`:any kind`) — a k9s-style escape hatch, both frontends.**
   Press **`:`** to open a picker of every resource kind the cluster serves
   (built-ins + CRDs, via discovery), pick one, and see a generic table

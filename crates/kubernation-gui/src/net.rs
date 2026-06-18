@@ -344,6 +344,11 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
             let mut tick = tokio::time::interval(Duration::from_millis(250));
             let mut ticks: u64 = 0;
             let mut last_log: Option<LogReq> = None;
+            // The resolved container is cached per (cluster, ns, pod) so the
+            // ~2s poll (and p/T/s toggles) don't re-issue an `Api::get` every
+            // time — the container can't change mid-session.
+            let mut log_container: Option<String> = None;
+            let mut log_target: Option<(ClusterId, String, String)> = None;
             let mut evict_set: Option<u64> = None;
             let mut last_filter = NamespaceFilter::All;
             let mut last_browse: Option<String> = None;
@@ -378,6 +383,9 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             *net.discover_warnings.lock().unwrap() = Vec::new();
                             *net.browse_req.lock().unwrap() = None;
                             *net.browse_out.lock().unwrap() = BrowseOut::default();
+                            // A same-named pod on the new cluster must re-resolve.
+                            log_target = None;
+                            log_container = None;
                         }
                         Err(err) => {
                             *net.status.lock().unwrap() = format!("switch failed: {err}");
@@ -399,14 +407,22 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         }
                         ClusterId::Hot => hot_client.clone(),
                     };
-                    let container =
-                        logs::first_container(client.clone(), &r.namespace, &r.pod).await;
+                    // Resolve the container only when the pod target changes,
+                    // not on every poll (it never changes mid-session).
+                    let target = (r.cluster, r.namespace.clone(), r.pod.clone());
+                    if log_target.as_ref() != Some(&target) {
+                        log_container =
+                            logs::first_container(client.clone(), &r.namespace, &r.pod).await;
+                        log_target = Some(target);
+                    }
                     let opts = logs::LogOpts {
                         previous: r.previous,
                         timestamps: r.timestamps,
                         window: r.window,
                     };
-                    let res = logs::tail(client, &r.namespace, &r.pod, container, &opts).await;
+                    let res =
+                        logs::tail(client, &r.namespace, &r.pod, log_container.clone(), &opts)
+                            .await;
                     // Only store if still the requested target.
                     if net.log_req.lock().unwrap().as_ref() == Some(&r) {
                         let mut g = net.log_tail.lock().unwrap();

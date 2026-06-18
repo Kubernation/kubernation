@@ -27,6 +27,9 @@ pub struct LogsView {
     pub timestamps: bool,
     /// How much history to pull (`s` cycles; app re-fetches).
     pub window: LogWindow,
+    /// Resolved container, cached across polls so the app doesn't re-issue an
+    /// `Api::get` every fetch (it can't change mid-session).
+    pub container: Option<String>,
     lines: Vec<String>,
     error: Option<String>,
     loading: bool,
@@ -48,6 +51,7 @@ impl LogsView {
         self.previous = false;
         self.timestamps = false;
         self.window = LogWindow::default();
+        self.container = None; // resolve once for the new pod
         self.lines.clear();
         self.error = None;
         self.loading = true;

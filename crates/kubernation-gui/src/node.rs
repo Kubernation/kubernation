@@ -216,7 +216,11 @@ pub fn draw_node(
             } else if crate::window::row_button(yaml_btn, mouse, click, "yaml") {
                 act.inspect = Some((p.namespace.clone(), p.name.clone()));
             } else if click && !evict_btn.contains(mouse) && !yaml_btn.contains(mouse) {
-                act.log = Some((p.namespace.clone(), p.name.clone()));
+                act.log = Some((
+                    p.namespace.clone(),
+                    p.name.clone(),
+                    kubernation_core::state::model::prefer_previous(p.state, &p.reason, p.restarts),
+                ));
             }
         }
         ly += row_h;
@@ -283,9 +287,11 @@ pub fn draw_node(
 
     // Headless verification: tail the first pod without a click.
     if auto_log && act.log.is_none() && !detail.pods.is_empty() {
+        let p = &detail.pods[0];
         act.log = Some((
-            detail.pods[0].namespace.clone(),
-            detail.pods[0].name.clone(),
+            p.namespace.clone(),
+            p.name.clone(),
+            kubernation_core::state::model::prefer_previous(p.state, &p.reason, p.restarts),
         ));
     }
     if click

@@ -406,7 +406,11 @@ pub fn draw_city(
             } else if crate::window::row_button(yaml_btn, mouse, click, "yaml") {
                 act.inspect = Some((r.namespace.clone(), p.name.clone()));
             } else if click && !evict_btn.contains(mouse) && !yaml_btn.contains(mouse) {
-                act.log = Some((r.namespace.clone(), p.name.clone()));
+                act.log = Some((
+                    r.namespace.clone(),
+                    p.name.clone(),
+                    kubernation_core::state::model::prefer_previous(p.state, &p.reason, p.restarts),
+                ));
             }
         }
         ly += row_h;
@@ -516,7 +520,12 @@ pub fn draw_city(
 
     // Headless verification: tail the first pod without a click.
     if auto_log && act.log.is_none() && !city.pods.is_empty() {
-        act.log = Some((r.namespace.clone(), city.pods[0].name.clone()));
+        let p = &city.pods[0];
+        act.log = Some((
+            r.namespace.clone(),
+            p.name.clone(),
+            kubernation_core::state::model::prefer_previous(p.state, &p.reason, p.restarts),
+        ));
     }
 
     // Close: the X, or a click anywhere outside the frame (when not acting on

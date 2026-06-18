@@ -158,6 +158,11 @@ impl Component for CityView {
                     return Some(Action::OpenLogs {
                         namespace: m.r.namespace.clone(),
                         pod: pod.name.clone(),
+                        previous: kubernation_core::state::model::prefer_previous(
+                            pod.state,
+                            &pod.reason,
+                            pod.restarts,
+                        ),
                     });
                 }
             }

@@ -290,7 +290,15 @@ impl App {
                 false
             }
             // Drop stale tails from a previous open (generation token).
-            AppEvent::Logs { generation, result } if generation == self.log_gen => {
+            AppEvent::Logs {
+                generation,
+                result,
+                container,
+            } if generation == self.log_gen => {
+                // Cache the resolved container so the next poll skips the get.
+                if self.logs.container.is_none() {
+                    self.logs.container = container;
+                }
                 self.logs.set_result(result);
                 true
             }
@@ -715,8 +723,13 @@ impl App {
                 self.focus = source;
                 self.push_screen(Screen::City);
             }
-            Action::OpenLogs { namespace, pod } => {
+            Action::OpenLogs {
+                namespace,
+                pod,
+                previous,
+            } => {
                 self.logs.open(source, namespace, pod);
+                self.logs.previous = previous; // smart default for crash-loops
                 self.push_screen(Screen::Logs);
                 self.fetch_logs();
             }
@@ -1045,6 +1058,7 @@ impl App {
         };
         let ns = self.logs.namespace.clone();
         let pod = self.logs.pod.clone();
+        let cached = self.logs.container.clone();
         let opts = logs::LogOpts {
             previous: self.logs.previous,
             timestamps: self.logs.timestamps,
@@ -1052,9 +1066,20 @@ impl App {
         };
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let container = logs::first_container(client.clone(), &ns, &pod).await;
-            let result = logs::tail(client, &ns, &pod, container, &opts).await;
-            let _ = tx.send(AppEvent::Logs { generation, result }).await;
+            // Resolve the container once (cached on the view thereafter), so a
+            // poll / p-T-s toggle doesn't re-issue an Api::get each time.
+            let container = match cached {
+                Some(c) => Some(c),
+                None => logs::first_container(client.clone(), &ns, &pod).await,
+            };
+            let result = logs::tail(client, &ns, &pod, container.clone(), &opts).await;
+            let _ = tx
+                .send(AppEvent::Logs {
+                    generation,
+                    result,
+                    container,
+                })
+                .await;
         });
     }
 

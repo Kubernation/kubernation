@@ -39,8 +39,9 @@ impl WinLayout {
 #[derive(Default)]
 pub struct WinAction {
     pub close: bool,
-    /// A pod whose logs to tail: (namespace, pod).
-    pub log: Option<(String, String)>,
+    /// A pod whose logs to tail: (namespace, pod, start-on-previous-container).
+    /// `previous` is the smart crash-loop default (the view can still toggle it).
+    pub log: Option<(String, String, bool)>,
     /// A pod the operator asked to evict: (namespace, pod). The caller confirms
     /// before anything is written.
     pub evict: Option<(String, String)>,
