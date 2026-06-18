@@ -24,15 +24,20 @@ use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::planned::Intervention;
 
-/// Which pod's logs the UI wants tailed.
+/// Which pod's logs the UI wants tailed, and how. The poll re-fetches whenever
+/// any of these change (`PartialEq`), so toggling previous/timestamps/window
+/// triggers a refresh for free.
 #[derive(Clone, PartialEq, Eq)]
 pub struct LogReq {
     pub cluster: ClusterId,
     pub namespace: String,
     pub pod: String,
     /// Tail the previously-terminated container (`kubectl logs --previous`).
-    /// Flipping it changes the request, so the poll re-fetches automatically.
     pub previous: bool,
+    /// Prefix each line with the server timestamp.
+    pub timestamps: bool,
+    /// How much history to pull.
+    pub window: logs::LogWindow,
 }
 
 /// The latest tail for the requested pod.
@@ -396,7 +401,12 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     };
                     let container =
                         logs::first_container(client.clone(), &r.namespace, &r.pod).await;
-                    let res = logs::tail(client, &r.namespace, &r.pod, container, r.previous).await;
+                    let opts = logs::LogOpts {
+                        previous: r.previous,
+                        timestamps: r.timestamps,
+                        window: r.window,
+                    };
+                    let res = logs::tail(client, &r.namespace, &r.pod, container, &opts).await;
                     // Only store if still the requested target.
                     if net.log_req.lock().unwrap().as_ref() == Some(&r) {
                         let mut g = net.log_tail.lock().unwrap();

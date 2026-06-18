@@ -18,8 +18,8 @@ const KEYMAP: &[(&str, &[(&str, &str)])] = &[
             ("Enter", "open the thing under the cursor"),
             ("l", "tail logs of the selected pod (city / node)"),
             (
-                "/  p (in logs)",
-                "filter (terms AND · !term excludes) · toggle previous",
+                "/ p T s (in logs)",
+                "filter (AND · !excl) · previous · timestamps · window",
             ),
             ("e", "evict the selected pod — deletes it (confirm y/n)"),
             ("y", "inspect YAML (selected pod, else the workload / node)"),

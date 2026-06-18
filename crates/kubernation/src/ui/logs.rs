@@ -11,6 +11,7 @@ use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{Action, Component, RenderCtx};
 use crate::events::ClusterId;
+use kubernation_core::k8s::logs::LogWindow;
 use kubernation_core::state::attention::Severity;
 use kubernation_core::state::logline::{self, FilterExpr, Level};
 
@@ -22,6 +23,10 @@ pub struct LogsView {
     /// Tail the previously-terminated container (`kubectl logs --previous`).
     /// The app reads this when (re)fetching; toggled in-view with `p`.
     pub previous: bool,
+    /// Prefix lines with the server timestamp (`T` toggles; app re-fetches).
+    pub timestamps: bool,
+    /// How much history to pull (`s` cycles; app re-fetches).
+    pub window: LogWindow,
     lines: Vec<String>,
     error: Option<String>,
     loading: bool,
@@ -41,6 +46,8 @@ impl LogsView {
         self.namespace = namespace;
         self.pod = pod;
         self.previous = false;
+        self.timestamps = false;
+        self.window = LogWindow::default();
         self.lines.clear();
         self.error = None;
         self.loading = true;
@@ -48,6 +55,14 @@ impl LogsView {
         self.scroll = 0;
         self.filter.clear();
         self.filtering = false;
+    }
+
+    /// Reset the body for a re-fetch after a fetch-param toggle (p / T / s).
+    fn begin_refetch(&mut self) {
+        self.lines.clear();
+        self.error = None;
+        self.loading = true;
+        self.follow = true;
     }
 
     /// Result of a fetch (whole tail as one string).
@@ -147,13 +162,21 @@ impl Component for LogsView {
             KeyCode::Char('G') | KeyCode::Char('f') => self.follow = true,
             // `/` opens the filter editor (the app then routes keys to us).
             KeyCode::Char('/') => self.filtering = true,
-            // `p` toggles the previous-container tail and asks for a re-fetch.
+            // `p` previous-container · `T` timestamps · `s` history window —
+            // each flips a fetch param and asks for a re-fetch.
             KeyCode::Char('p') => {
                 self.previous = !self.previous;
-                self.lines.clear();
-                self.error = None;
-                self.loading = true;
-                self.follow = true;
+                self.begin_refetch();
+                return Some(Action::RefetchLogs);
+            }
+            KeyCode::Char('T') => {
+                self.timestamps = !self.timestamps;
+                self.begin_refetch();
+                return Some(Action::RefetchLogs);
+            }
+            KeyCode::Char('s') => {
+                self.window = self.window.next();
+                self.begin_refetch();
                 return Some(Action::RefetchLogs);
             }
             // `c` copies the tail to the clipboard, `w` exports it to a file.
@@ -194,8 +217,14 @@ impl Component for LogsView {
         };
         let follow = if self.follow { " ▸following" } else { "" };
         let prev = if self.previous { " ‹previous›" } else { "" };
+        let win = if self.window == LogWindow::default() {
+            String::new()
+        } else {
+            format!(" [{}]", self.window.label())
+        };
+        let ts = if self.timestamps { " ⏱" } else { "" };
         let title = format!(
-            " logs {}/{}{world}{prev}{follow} ",
+            " logs {}/{}{world}{prev}{win}{ts}{follow} ",
             self.namespace, self.pod
         );
 
@@ -218,15 +247,25 @@ impl Component for LogsView {
             )]
         } else {
             // Color each line by its guessed severity (a hint — text unchanged).
+            // With timestamps on, peel the leading ts into a dim left gutter.
+            let style_of = |l: &str| match logline::classify(l) {
+                Level::Error => theme.severity(Severity::Critical),
+                Level::Warn => theme.severity(Severity::Warning),
+                Level::Debug => theme.dim(),
+                Level::Info | Level::Plain => Style::default(),
+            };
             visible
                 .iter()
                 .map(|l| {
-                    let style = match logline::classify(l) {
-                        Level::Error => theme.severity(Severity::Critical),
-                        Level::Warn => theme.severity(Severity::Warning),
-                        Level::Debug => theme.dim(),
-                        Level::Info | Level::Plain => Style::default(),
-                    };
+                    let style = style_of(l);
+                    if self.timestamps
+                        && let (Some(ts), msg) = logline::split_ts(l)
+                    {
+                        return Line::from(vec![
+                            Span::styled(format!("{ts} "), theme.dim()),
+                            Span::styled(msg.to_string(), style),
+                        ]);
+                    }
                     Line::styled((*l).clone(), style)
                 })
                 .collect()
@@ -257,7 +296,7 @@ impl Component for LogsView {
         // so the next keypress operates on the in-range value.
         self.scroll = scroll;
 
-        let hint = " j/k · / filter · p previous · c copy · w export · G/f follow · Esc ";
+        let hint = " j/k · / filter · p prev · T ts · s window · c copy · w export · G/f · Esc ";
         let mut block = Block::bordered()
             .border_style(theme.chrome())
             .title(title)

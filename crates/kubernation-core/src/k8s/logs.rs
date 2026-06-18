@@ -8,30 +8,90 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::Client;
 use kube::api::{Api, LogParams};
 
-/// How many trailing lines to pull per fetch.
+/// Default trailing lines per fetch (the `LogWindow::Tail` window).
 pub const TAIL: i64 = 500;
+/// Larger line window (`LogWindow::More`).
+const TAIL_MORE: i64 = 2000;
+/// Safety ceiling on the time-windowed fetch so a chatty pod can't return an
+/// unbounded dump.
+const SINCE_CAP_LINES: i64 = 5000;
+
+/// How much history a fetch pulls. Cycled by the view; maps to `LogParams`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LogWindow {
+    /// The last `TAIL` (500) lines — the default.
+    #[default]
+    Tail,
+    /// The last `TAIL_MORE` (2000) lines.
+    More,
+    /// Everything from the last hour (capped at `SINCE_CAP_LINES`).
+    Hour,
+}
+
+impl LogWindow {
+    /// Cycle to the next window (for a single toggle key).
+    pub fn next(self) -> Self {
+        match self {
+            LogWindow::Tail => LogWindow::More,
+            LogWindow::More => LogWindow::Hour,
+            LogWindow::Hour => LogWindow::Tail,
+        }
+    }
+
+    /// Short label for the view title.
+    pub fn label(self) -> &'static str {
+        match self {
+            LogWindow::Tail => "500",
+            LogWindow::More => "2k",
+            LogWindow::Hour => "1h",
+        }
+    }
+
+    fn apply(self, lp: &mut LogParams) {
+        match self {
+            LogWindow::Tail => lp.tail_lines = Some(TAIL),
+            LogWindow::More => lp.tail_lines = Some(TAIL_MORE),
+            LogWindow::Hour => {
+                lp.since_seconds = Some(3600);
+                lp.tail_lines = Some(SINCE_CAP_LINES);
+            }
+        }
+    }
+}
+
+/// How a view wants its tail fetched. A small struct (vs. a pile of bool args)
+/// so new fetch knobs ride along without churning every call site; it is also
+/// the change-detection key the GUI poll compares (`PartialEq`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LogOpts {
+    /// Tail the *previously terminated* container (`kubectl logs --previous`).
+    pub previous: bool,
+    /// Prefix each line with the server's RFC3339 timestamp.
+    pub timestamps: bool,
+    /// How much history to pull.
+    pub window: LogWindow,
+}
 
 /// Fetch the recent log tail for one pod. `container` is required only for
 /// multi-container pods; `None` lets the server pick the sole container.
-/// `previous` tails the *previously terminated* container instead of the
-/// running one (the `kubectl logs --previous` idiom — useful for a crash
-/// loop); the server errors if no previous instance exists, which the view
-/// surfaces inline. Errors are returned as display strings.
+/// `opts` selects the previous-container tail (the crash-loop's last words —
+/// the server errors if no previous instance exists, surfaced inline),
+/// timestamps, and the history window. Errors are returned as display strings.
 pub async fn tail(
     client: Client,
     namespace: &str,
     pod: &str,
     container: Option<String>,
-    previous: bool,
+    opts: &LogOpts,
 ) -> Result<String, String> {
     let api: Api<Pod> = Api::namespaced(client, namespace);
-    let lp = LogParams {
+    let mut lp = LogParams {
         container,
-        tail_lines: Some(TAIL),
-        timestamps: false,
-        previous,
+        timestamps: opts.timestamps,
+        previous: opts.previous,
         ..Default::default()
     };
+    opts.window.apply(&mut lp);
     api.logs(pod, &lp).await.map_err(|e| e.to_string())
 }
 

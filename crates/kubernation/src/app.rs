@@ -1045,11 +1045,15 @@ impl App {
         };
         let ns = self.logs.namespace.clone();
         let pod = self.logs.pod.clone();
-        let previous = self.logs.previous;
+        let opts = logs::LogOpts {
+            previous: self.logs.previous,
+            timestamps: self.logs.timestamps,
+            window: self.logs.window,
+        };
         let tx = self.tx.clone();
         tokio::spawn(async move {
             let container = logs::first_container(client.clone(), &ns, &pod).await;
-            let result = logs::tail(client, &ns, &pod, container, previous).await;
+            let result = logs::tail(client, &ns, &pod, container, &opts).await;
             let _ = tx.send(AppEvent::Logs { generation, result }).await;
         });
     }

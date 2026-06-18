@@ -252,9 +252,18 @@ pub(crate) fn observed_for(
 
 /// A centered scrollback panel showing the tail of one pod's logs. The net
 /// thread keeps `tail` fresh on a ~2s poll; this just paints the latest.
-/// `filter` (case-insensitive substring) narrows the shown lines; `previous`
-/// reflects the `--previous` toggle, `filter_active` the live filter editor.
-pub fn draw_logs(tail: &LogTail, filter: &str, filter_active: bool, previous: bool) {
+/// `filter` narrows the shown lines (terms AND; `!term` excludes); `previous`
+/// reflects the `--previous` toggle, `filter_active` the live filter editor,
+/// `timestamps`/`window` the ts and history-window state (for the title; the
+/// fetched lines already carry inline timestamps when on).
+pub fn draw_logs(
+    tail: &LogTail,
+    filter: &str,
+    filter_active: bool,
+    previous: bool,
+    timestamps: bool,
+    window: kubernation_core::k8s::logs::LogWindow,
+) {
     let w = (screen_width() * 0.72).min(940.0);
     let h = (screen_height() - STRIP_H - CHROME_H - 40.0).max(200.0);
     let x = (screen_width() - w) / 2.0;
@@ -270,13 +279,19 @@ pub fn draw_logs(tail: &LogTail, filter: &str, filter_active: bool, previous: bo
                 ""
             };
             let prev = if previous { " <previous>" } else { "" };
-            format!("logs · {tag}{}/{}{prev}", t.namespace, t.pod)
+            let win = if window == kubernation_core::k8s::logs::LogWindow::default() {
+                String::new()
+            } else {
+                format!(" [{}]", window.label())
+            };
+            let ts = if timestamps { " (ts)" } else { "" };
+            format!("logs · {tag}{}/{}{prev}{win}{ts}", t.namespace, t.pod)
         }
         None => "logs".into(),
     };
     text_bold(ascii(&title), x + 14.0, y + 22.0, 16.0, PARCHMENT);
     text(
-        "Esc close · / filter · p previous · c copy · w export · live",
+        "Esc · / filter (!excl) · p prev · T ts · s window · c copy · w export · live",
         x + 14.0,
         y + 40.0,
         12.0,

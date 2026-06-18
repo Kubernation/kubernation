@@ -124,6 +124,9 @@ struct Args {
     /// (development verification of the grep/filter)
     #[arg(long, value_name = "SUBSTR")]
     log_filter: Option<String>,
+    /// With --tail, open with timestamps on (development verification).
+    #[arg(long)]
+    log_timestamps: bool,
     /// Launch scoped to a single namespace (the namespace filter; you can
     /// still change it from the World menu). Also used for verification.
     #[arg(long, value_name = "NS")]
@@ -219,8 +222,11 @@ async fn main() {
     let mut city_image_edit: Option<String> = None;
     // Log tailing: the open overlay + a headless auto-open after --inspect.
     let mut log_open = false;
-    // Log overlay state: --previous container toggle + substring filter editor.
+    // Log overlay state: --previous container toggle + substring filter editor +
+    // timestamps toggle + history window.
     let mut log_previous = false;
+    let mut log_timestamps = false;
+    let mut log_window = kubernation_core::k8s::logs::LogWindow::default();
     let mut log_filter = String::new();
     let mut log_filter_active = false;
     let mut auto_tail = args.tail;
@@ -574,6 +580,22 @@ async fn main() {
                         r.previous = log_previous;
                         net.request_logs(r);
                     }
+                }
+                // `T` toggles timestamps, `s` cycles the history window — both
+                // change the LogReq, so the poll re-fetches on its own.
+                if is_key_pressed(KeyCode::T)
+                    && let Some(mut r) = net.log_request()
+                {
+                    log_timestamps = !log_timestamps;
+                    r.timestamps = log_timestamps;
+                    net.request_logs(r);
+                }
+                if is_key_pressed(KeyCode::S)
+                    && let Some(mut r) = net.log_request()
+                {
+                    log_window = log_window.next();
+                    r.window = log_window;
+                    net.request_logs(r);
                 }
                 // `c` copies the tail to the clipboard, `w` exports it to a file.
                 if is_key_pressed(KeyCode::C) {
@@ -1177,6 +1199,8 @@ async fn main() {
                             }
                             if let Some((ns, pod)) = act.log {
                                 log_previous = args.log_previous;
+                                log_timestamps = args.log_timestamps;
+                                log_window = kubernation_core::k8s::logs::LogWindow::default();
                                 log_filter = args.log_filter.clone().unwrap_or_default();
                                 log_filter_active = false;
                                 net.request_logs(LogReq {
@@ -1184,6 +1208,8 @@ async fn main() {
                                     namespace: ns,
                                     pod,
                                     previous: log_previous,
+                                    timestamps: log_timestamps,
+                                    window: log_window,
                                 });
                                 log_open = true;
                                 auto_tail = false;
@@ -1221,6 +1247,8 @@ async fn main() {
                             }
                             if let Some((ns, pod)) = act.log {
                                 log_previous = args.log_previous;
+                                log_timestamps = args.log_timestamps;
+                                log_window = kubernation_core::k8s::logs::LogWindow::default();
                                 log_filter = args.log_filter.clone().unwrap_or_default();
                                 log_filter_active = false;
                                 net.request_logs(LogReq {
@@ -1228,6 +1256,8 @@ async fn main() {
                                     namespace: ns,
                                     pod,
                                     previous: log_previous,
+                                    timestamps: log_timestamps,
+                                    window: log_window,
                                 });
                                 log_open = true;
                                 auto_tail = false;
@@ -1271,6 +1301,8 @@ async fn main() {
                         &log_filter,
                         log_filter_active,
                         log_previous,
+                        log_timestamps,
+                        log_window,
                     );
                 }
                 draw_attention_strip(&s.attention, paired, concern_idx, panels::map_width());

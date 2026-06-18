@@ -989,8 +989,10 @@ on 256-color terminals.
 `h/j/k/l`+arrows explore · `]`/`[` next/prev city · `PgUp/PgDn` page,
 `Ctrl+u/d` half page, `Home/End` west/east continent · `Enter` opens the
 region under the cursor · `l` tail the selected pod's logs (city/node) ·
-**in the log view:** `/` filter (case-insensitive substring), `p` toggle
-the previous-container tail, `j/k`/`g`/`G`/`f` scroll/follow ·
+**in the log view:** `/` filter (terms AND; `!term` excludes), `p` toggle
+the previous-container tail, `T` toggle timestamps, `s` cycle the history
+window (500 / 2k / since 1h), `j/k`/`g`/`G`/`f` scroll/follow (lines are
+tinted by guessed severity) ·
 `e` evict the selected pod (city/node — real delete, RBAC-gated, y/n confirm) ·
 `y` inspect YAML — the read-only dossier (selected pod, else the workload/node;
 also `y` on a workload-list row) · **in the log / inspector views:** `c` copy

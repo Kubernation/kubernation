@@ -15,8 +15,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   fields, and uppercase plaintext markers; it's a render-only hint, the text is
   never altered. The `/` filter gained **AND of terms** and a leading **`!` to
   exclude** (subtractive triage, e.g. `error !readiness`). The shared logic lives
-  in a pure, unit-tested `kubernation-core` `state/logline.rs`. (First slice of a
-  log-UX pass; more — timestamps, history window, container picker — to follow.)
+  in a pure, unit-tested `kubernation-core` `state/logline.rs`.
+- **Logs: timestamps + history window.** **`T`** toggles server timestamps (the
+  TUI peels them into a dim left gutter; the GUI shows them inline) so you can
+  correlate a line with an event; **`s`** cycles how much history to pull —
+  **500** lines (default) → **2k** → **since 1h** — so a crash that scrolled off
+  the 500-line window is reachable. (More of the log-UX pass — container picker,
+  concern→logs — to follow.)
 - **Resource browser (`:any kind`) — a k9s-style escape hatch, both frontends.**
   Press **`:`** to open a picker of every resource kind the cluster serves
   (built-ins + CRDs, via discovery), pick one, and see a generic table
