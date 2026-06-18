@@ -1,6 +1,9 @@
 # Kubernation
 
-A 4X-inspired Kubernetes TUI. The cluster is a living **world**
+A 4X-inspired Kubernetes explorer — a **windowed (macroquad) map client**.
+(There was a ratatui TUI; it was removed 2026-06-18 — see the "TUI removed"
+decision. The headless-terminal niche is k9s's; this leans into the graphical
+4X metaphor instead.) The cluster is a living **world**
 the operator explores: zones are continents, nodes are provinces of
 health-textured terrain, workloads are cities sited where their pods run
 (population badge + name label), DaemonSets are roads, and abstract things
@@ -14,16 +17,18 @@ not a wall of dashboards.
 models, on-demand log tails) is read-only. Two write paths exist, each behind
 an explicit confirm: **pod eviction** (a real `DELETE`, from a pod's evict
 control), and **committing the planning turn** (apply staged Scale/Cordon/
-Restart/Image to the cluster). Both write paths now exist in **both** frontends
-(GUI and TUI). Both are **RBAC-aware**: eviction probes `delete pods` with a
-`SelfSubjectAccessReview`; the planning turn validates every staged change with
-a **server-side dry-run** (which also enforces RBAC) and only applies if all
-pass (all-or-nothing at the gate, via `actions::commit_interventions`). Staging
-itself still never writes — only Commit does. See the "Pod eviction",
-"Planning-turn apply", and "Planning turn in the TUI" decisions.
+Restart/Image to the cluster). Both are **RBAC-aware**: eviction probes `delete
+pods` with a `SelfSubjectAccessReview`; the planning turn validates every staged
+change with a **server-side dry-run** (which also enforces RBAC) and only applies
+if all pass (all-or-nothing at the gate, via `actions::commit_interventions`).
+Staging itself still never writes — only Commit does. See the "Pod eviction" and
+"Planning-turn apply" decisions. (Decision-log entries written before 2026-06-18
+that say "both frontends / GUI and TUI" are historical — the logic they describe
+now lives only in the GUI + core; the shared write file `actions.rs` is unchanged.)
 
-The full product brief lives in `kubernation-tui-mvp-prompt.md`. Read it before
-proposing scope changes.
+The full product brief lives in `kubernation-tui-mvp-prompt.md` (written for the
+original TUI; the world model + write posture carried over to the GUI). Read it
+before proposing scope changes.
 
 ## Conceptual model (the short version)
 
@@ -72,14 +77,12 @@ crates/
                               (workload/node/pod) — the inspector "dossier"
                  fixtures.rs  synthetic worlds (feature = "fixtures")
     util.rs      fnv1a64 stable hash, age/bytes formatting
-  kubernation/        THE TUI (the product): main/app/events/logging/config
-                 + ui/ components (map, workloads, city, node_detail, plan
-                 [End-of-Turn review], inspect [YAML dossier], browse [the `:`
-                 resource browser — kind picker + generic table], attention_panel,
-                 sidebar, status_bar, help, picker, theme, symbols). `cargo run`
-                 = this (default-members).
-  kubernation-gui/    macroquad windowed client over the same core (promoted
-                 from spike): net.rs (tokio thread publishing Models +
+    examples/smoke.rs  headless connect + world summary (the CI gate;
+                 `make smoke` — UI-free since the GUI needs a display)
+  kubernation/        THE PRODUCT — the macroquad windowed client (was
+                 `kubernation-gui`, renamed when the TUI was removed 2026-06-18;
+                 `cargo run` = this, default-members):
+                 net.rs (tokio thread publishing Models +
                  ObservedWorld snapshots), draw.rs (ISOMETRIC 2:1 diamond
                  projection — iso camera/transform, dithered terrain diamonds,
                  procedural settlements, iso minimap; all original geometry, no
@@ -979,6 +982,23 @@ what makes the interesting logic unit-testable without a cluster.
   (probe present with `previous=true`; a pure replica gap carries none). Dev flag
   `--concern-logs` (GUI). Verified live on kind: `L` on the crashy concern opens
   `crashy-… <previous>` showing "boom" — the previous container's last words.
+- **TUI removed; GUI is the product** (2026-06-18, user's call): the ratatui
+  TUI was deleted and the macroquad client renamed `kubernation-gui` →
+  **`kubernation`** (the binary + `crates/kubernation/`; `cargo run` = it).
+  **Rationale:** every feature was being built twice (browser, logs T0/T1, …) —
+  a real, recurring tax — and the headless-terminal niche the TUI served is
+  better covered by k9s; the 4X metaphor doesn't fit a terminal anyway. So
+  rather than a half-maintained TUI, one well-built frontend. **What moved:** the
+  `--smoke` CI gate (was a TUI flag) became a UI-free core example
+  (`kubernation-core/examples/smoke.rs`, `make smoke`) since the GUI needs a
+  display; the `scale_rebuild` frame-budget test (was a TUI TestBackend render)
+  became a core test timing `Models::build` — the rebuild the GUI recomputes each
+  tick — (`make perf-test`, ~1ms for 100 nodes/1000 pods). **What's lost:**
+  headless/SSH operation, and the TUI's ~21 TestBackend snapshot tests (which
+  asserted TUI rendering specifically); the *logic* stays tested in core (75
+  tests) and the privilege/write posture is unchanged (one file, `actions.rs`).
+  `kubernation-core` is untouched and still UI-dep-free. Decision-log entries
+  above that describe "both frontends / the TUI does X" are historical record.
 
 ## The pair (hot/warm)
 
@@ -1020,8 +1040,6 @@ what makes the interesting logic unit-testable without a cluster.
 | `◆`   | pod succeeded (completed)     |
 | `‼ ! ·` | critical / warning / info   |
 | `▓░`  | gauge filled / empty          |
-| `▪` (atlas) / `·` (plain) | world-panel node cell, colored by worst state |
-| `┌┐└┘` | world-panel viewport frame (reversed cell = cursor) |
 | `▒`   | fog of war (world not yet synced)  |
 | `Ψ`   | Service harbor (on the city's east coast, cyan) |
 | `∏`   | Ingress gate (on the city's east coast, cyan) |
@@ -1033,54 +1051,49 @@ Health precedence on a tile: NotReady > Cordoned > Pressure > Healthy.
 Zone headers carry a `▪N` rollup (colored by the zone's worst node) when
 any node in the zone is degraded.
 
-**Color discipline:** color encodes meaning, never decoration — and in the
-default **atlas palette** (2026-06-12, user call), *terrain*: parchment-gold
-panel chrome, green for healthy land (tiles, zone headers, calm gauges,
-muted-green running pods), white city-name labels, and a blue-ocean WORLD
-panel with light-green land cells. Saturated red / bold yellow remain
-reserved for attention — trouble pops against terrain, never competes with
-it (pinned by a theme test). `color = "plain"` restores the restrained
-palette (healthy = no color at all); `color = "mono"` carries
-all meanings via bold/dim/reverse only. All colors are named ANSI — safe
-on 256-color terminals.
+**Color discipline:** color encodes meaning, never decoration. *Terrain* reads
+in a parchment-gold + green-land + blue-ocean palette; **saturated red / bold
+yellow are reserved for attention** — trouble pops against terrain, never
+competes with it. (The removed TUI had `color = auto/plain/mono` ANSI palettes;
+the GUI uses fixed RGBA themes in `theme.rs`, same meaning rules.)
 
-## Keymap
+## Controls (the windowed client)
 
-`h/j/k/l`+arrows explore · `]`/`[` next/prev city · `PgUp/PgDn` page,
-`Ctrl+u/d` half page, `Home/End` west/east continent · `Enter` opens the
-region under the cursor · `l` tail the selected pod's logs (city/node) ·
-**in the log view:** `/` filter (terms AND; `!term` excludes), `p` toggle
-the previous-container tail, `T` toggle timestamps, `s` cycle the history
-window (500 / 2k / since 1h), `j/k`/`g`/`G`/`f` scroll/follow (lines are
-tinted by guessed severity) ·
-`e` evict the selected pod (city/node — real delete, RBAC-gated, y/n confirm) ·
-`y` inspect YAML — the read-only dossier (selected pod, else the workload/node;
-also `y` on a workload-list row) · **in the log / inspector views:** `c` copy
-to clipboard, `w` export to a file ·
-`:` resource browser — any kind (pick · type to filter · Enter lists · row →
-yaml · `r` refresh) ·
-**planning turn:** `+`/`−` stage scale, `R` toggle restart & `i` set image
-(city), `C` stage cordon (node), `t` open the End-of-Turn review (`x` unstage ·
-`D` discard · `c`/`Enter` commit, y/n confirm) ·
-`Esc` back · `m` map ·
-`w` workloads · `n` next concern · `L` tail the focused concern's offending pod ·
-`a` attention panel · `Tab` focus panel ·
-`c` context picker · `N` namespace filter (multi-select; status bar shows it) ·
-`1/2/3` overlays (pressure/replicas/namespace) ·
-`?` keymap · `q`/Ctrl-C quit. Keep `help.rs` in sync with any change.
+Mouse-first, with a classic-4X **menu bar** (Game/View/Orders/Advisors/World/
+Help) and a few keys. The authoritative, user-facing list is the in-app
+**Almanac** (`?`/`F1`, "Controls" page) — keep `almanac.rs` in sync with any
+change. Summary:
+
+- **Navigate:** drag / `WASD` / arrows pan · mouse wheel zoom (cursor-anchored)
+  · `F` fit · `]`/`[` next/prev city · click the minimap to recenter.
+- **Inspect:** click land/city/harbor opens the node/city drill-down window ·
+  click a pod row tails its logs · `y` (or a pod row's `yaml`) opens the YAML
+  dossier · hover for a tooltip.
+- **Logs overlay:** `/` filter (terms AND; `!term` excludes) · `p` previous
+  container · `T` timestamps · `s` history window (500 / 2k / since 1h) ·
+  `c` copy · `w` export · lines tinted by guessed severity.
+- **Attention:** `N` fly to the next concern · `L` tail the focused concern's
+  offending pod's logs.
+- **Resource browser:** `:` (any kind — pick → table → click a row's YAML).
+- **Planning turn:** city window steppers stage scale / restart / image, the
+  province window stages cordon; **Orders ▸ End of Turn** reviews + commits
+  (confirm modal). **Evict** a pod from its row (real delete, RBAC-gated, confirm).
+- **Esc** closes the topmost overlay · the menus carry switch-context, fit, the
+  map overlay (terrain/pressure/replicas/namespace), namespace filter, advisors,
+  Almanac, quit.
 
 ## Dev loop
 
 ```
-make dev        # kind-up + samples + run (the standard loop)
-make smoke      # headless: connect, print world summary, exit (CI gate)
+make dev        # kind-up + samples + run the windowed client (standard loop)
+make run        # the windowed client (macroquad) against the dev cluster
+make smoke      # headless connect + world summary, exit (CI gate; core example)
 make lint test  # fmt --check, clippy -D warnings, cargo test
 make kind-down
 
-make gui        # windowed client spike (macroquad) against the dev cluster
 make perf-up    # kwok-simulated 100-node / 1000-pod cluster (needs kwokctl)
-make perf       # run the TUI against it
-make perf-test  # release-mode rebuild+frame budget test (<100ms asserted)
+make perf       # run the client against it
+make perf-test  # release-mode model-rebuild budget test (<100ms asserted)
 make perf-down
 ```
 
@@ -1091,17 +1104,20 @@ context `kind-kubernation`). `hack/samples.yaml` provides: healthy `web`
 and two `Gizmo` customs (CRD in hack/samples-crd.yaml) for projection.
 `make run`/`make pair` pass `--project gizmos.example.com`.
 
-Logs: `~/.local/state/kubernation/kubernation.log` (`--log-level`, `RUST_LOG`).
-Config: `~/.config/kubernation/config.toml` (`tick_ms`, `color`,
-`attention_expanded`) — all optional.
+Config / logs: the windowed client is driven by CLI flags (`--context`,
+`--warm`, `--project`, plus the `--screenshot`/`--inspect`/… dev flags); it does
+not read a config file or write a log file (the TUI's `config.rs`/`logging.rs`
+went with it). `tracing` events from core have no subscriber attached, so they're
+dropped — add one to the GUI's `main` if a log file is ever wanted.
 
 ## Conventions
 
 - `cargo fmt` and `cargo clippy --all-targets -- -D warnings` must be clean
   before any commit.
-- New state logic ships with unit tests against `state/fixtures.rs`; new
-  views ship with a TestBackend snapshot-style test asserting rendered
-  content.
+- New state logic ships with unit tests against `state/fixtures.rs` (the
+  interesting logic lives in pure core, where it's testable without a cluster
+  or a display). GUI rendering is verified by the headless `--screenshot` dev
+  flags + review, not unit tests (macroquad isn't unit-testable).
 - Commit in working states with descriptive messages; the user reviews
   commits.
 - **Versioning (semver):** one workspace version is the source of truth
@@ -1109,19 +1125,21 @@ Config: `~/.config/kubernation/config.toml` (`tick_ms`, `color`,
   inherits it via `version.workspace = true`). **Bump it in the same commit
   as a user-facing change** — pre-1.0, so `minor` = new feature/behaviour,
   `patch` = fix/docs/refactor, and (still pre-1.0) a breaking change also
-  bumps `minor`. The version is surfaced by `--version` on both binaries, the
-  TUI status bar, and the GUI chrome (`env!("CARGO_PKG_VERSION")`). Update
-  `CHANGELOG.md` under `[Unreleased]` as you go; a release rolls Unreleased
-  into a dated `[X.Y.Z]` section and is marked by a git tag `vX.Y.Z`.
+  bumps `minor`. The version is surfaced by `--version` and the GUI chrome
+  (`env!("CARGO_PKG_VERSION")`). Update `CHANGELOG.md` under `[Unreleased]` as
+  you go; a release rolls Unreleased into a dated `[X.Y.Z]` section and is marked
+  by a git tag `vX.Y.Z`.
 - Document non-obvious decisions in this file's Decisions log as you make
   them.
 
 ## Performance evidence (criterion 6)
 
-Synthetic: `make perf-test` builds a fixture world of 100 nodes / 1000 pods
-and times full rebuild (map + workloads + attention) plus a rendered
-140×40 frame — measured 2026-06-12 on the M4 Max at **avg ~0.5ms, worst
-<1ms**, asserted <100ms in release. Live: `make perf-up && make perf` runs
+Synthetic: `make perf-test` (a core test, `scale_rebuild`) builds a fixture
+world of 100 nodes / 1000 pods and times the full `Models::build` rebuild (map +
+workloads + attention — what the GUI recomputes each tick) — **~1ms/rebuild on
+the M4 Max**, asserted <100ms in release. (Originally this also rendered a TUI
+140×40 frame; the render moved to the GUI, which isn't unit-timed.) Live: `make
+perf-up && make perf` runs
 against a kwok-simulated cluster of the same size (`hack/perf-seed.sh`,
 5 zones × 20 nodes, 20 deployments × 50 replicas). Input latency is
 unmeasurable by eye; world rebuilds are coalesced at tick cadence so churn
@@ -1132,10 +1150,8 @@ never blocks input.
 external services / chaos layers ·
 unmounted-PVC island granaries (the *map* feature; connectivity + failed-Job
 attention are now built) · Job/CronJob
-city screens · mouse
-support · minimap horizontal
-compression for very wide zone counts (~60+) · zoom levels (compact 1-line
-tiles for very large boards) · pair: per-container image diffs, env/config
+city windows · pair: per-container image diffs, env/config
 drift, unified single-board mode ("one continent, sync ghosts") · logs:
-the kube log *stream* (we poll the tail) and a multi-container picker
-(`--previous` + grep/filter are now built).
+the kube log *stream* (we poll the tail), a multi-container picker /
+all-containers (log-UX tier T2), and multi-pod "whole-city" tailing (B1) ·
+a GUI log file (no `tracing` subscriber is attached today).

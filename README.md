@@ -4,9 +4,9 @@
   <img src="kubernation-logo-full.png" alt="Kubernation" width="420">
 </p>
 
-**The cluster as a living world.** A terminal UI for observing Kubernetes,
-built on the interface grammar of early Sid Meier's Civilization: a 2D
-world you explore — zones are continents, nodes are provinces of terrain,
+**The cluster as a living world.** A windowed (macroquad) client for observing
+Kubernetes, built on the interface grammar of early Sid Meier's Civilization: a
+2D world you explore — zones are continents, nodes are provinces of terrain,
 workloads are cities sited where their pods run — plus a "city screen"
 giving one workload full context, and an attention queue that brings
 problems to you — the *next unit needing orders* — instead of making you
@@ -17,44 +17,31 @@ This is not a retro skin on k9s. It is a different operator model:
 - **Spatial, not tabular.** Your resources project onto a stable world
   map; geography means something (failure domains, placement, drift).
 - **Attention-driven.** Failing pods, stuck rollouts, pending PVCs, nodes
-  under pressure — aggregated, ranked, and one keypress (`n`) from their
-  full context.
-- **Near observe-only.** Kubernation reads the cluster and does not change
-  it — with one deliberate, gated exception: **pod eviction** (a real
-  delete), invoked only from the GUI behind an explicit confirm. The entire
-  write surface is one small file (`k8s/actions.rs`). The planning turn
-  (`PlannedWorld`: scale / cordon) stays preview-only — staged diffs are shown
-  but never applied.
+  under pressure — aggregated, ranked, and one keypress (`N`) from their
+  full context (and `L` straight into the offending pod's logs).
+- **Near observe-only.** Kubernation reads the cluster and does not change it —
+  with two deliberate, gated, RBAC-aware writes: **pod eviction** (a real
+  delete) and **committing a planning turn** (apply staged scale / cordon /
+  restart / image, server-side dry-run validated). The entire write surface is
+  one small file (`k8s/actions.rs`); staging itself never writes.
 
-```text
- KUBERNATION ▏kind-kubernation ▏kind ▏https://127.0.0.1:50970/ ▏4n·25p                     overlay PRESSURE ▏? help
-~≈ z-a · 1 ≈                   ≈ z-b · 1 ≈                  ≈ z-c · 1 ≈        ┌ WORLD ────────────┐
- ▣ kubernation-worker ●5 ≣3      ~  ▣ kubernation-worker2 ●6 ≣3       ▣ kubernation-worker3   │ ┌              ┐  │
- ,    ,    ,    ,    ,         ,   ◍0‼   ,    ,    ,    ~   ,    ,    ,    ,   │  ▪ ▪ ▪ ▪          │
-    ,    ,    ,    ,    ,  ~      ,crashy   ,    ,          ,    ,   ◍2   ,    │ └              ┘  │
-                 ~              ,◍3  ,    ,    ,            ,  coredns  ,      ├ STATUS ───────────┤
-       ~                  ~   ,  web    ,    ,    ,    ~    ,    ,    ,    ,   │ 4 provinces 6 cities
-                ~                ◍2   ,    ,    ,           ~                  │ 25 pods  ‼1 !1 ·1
-      ~                  ~     , db ,    ,    ,    ,                  ~        ├ ORDERS ───────────┤
-  ≈ kubernation-demo ≈  ·          ~                  ~                  ~          │ ◍ crashy
-   ✦ gizmo/alpha-frob…                  ~                  ~                   │ pop 0 of 2 desired
- · ✦ gizmo/beta-frobn…     ~                  ~                  ~             │ ‼ needs attention
-┌ ATTENTION (3) ───────────────────────────────────────────────────────────────────────────────────┐
-│▸‼ deploy kubernation-demo/crashy — CrashLoopBackOff ×2     0/2 ready · rollout Progressing (0/2)      │
-│ ! pvc kubernation-demo/stuck-pvc — Pending                 storageClass does-not-exist                │
-└──────────────────────────────────────────────── n cycles · Tab focuses · a collapses ────────────┘
-```
+![Kubernation](docs/gui-world.png)
 
-*(Real capture from `make dev` — crashy's city flies a `‼` flag with
-population 0, the `✦` structures on the isle of kubernation-demo are live
-custom resources, and `≣3` marks three daemonset roads per province.)*
+*(A real capture from `make dev`: a classic-4X isometric world — crashy's city
+flies a warning flag, the `✦` structures on the isle of kubernation-demo are
+live custom resources, daemonsets pave roads across the provinces.)*
+
+> A ratatui terminal UI shipped first; it was removed 2026-06-18 to focus on the
+> one windowed frontend — k9s already serves the headless-terminal niche, and the
+> 4X metaphor is a graphical one. The pure data/model core (`kubernation-core`)
+> is unchanged.
 
 ## Quick start
 
 Requirements: Rust (stable), Docker, `kind`, `kubectl`.
 
 ```sh
-make dev          # create a 4-node kind cluster, apply samples, launch TUI
+make dev          # create a 4-node kind cluster, apply samples, launch the client
 ```
 
 Or against any cluster you can already reach:
@@ -63,8 +50,8 @@ Or against any cluster you can already reach:
 cargo run --release -- --context <kubeconfig-context>
 ```
 
-Useful targets: `make smoke` (headless connect + world summary),
-`make lint`, `make test`, `make kind-down`.
+Useful targets: `make smoke` (headless connect + world summary — a UI-free
+core check), `make lint`, `make test`, `make kind-down`.
 
 ### Hot/warm pair
 
@@ -74,21 +61,13 @@ make pair                 # both worlds side by side
 ```
 
 Or against real clusters: `kubernation --context prod --warm prod-standby`.
-The map splits into two continents (`h`/`l` past the edge crosses over),
-the workload list gains a SYNC column (`=` in sync, `≠r` replica drift,
-`≠i` image drift, `−w` missing on warm), the city screen gets a pair line,
-and the attention queue merges both worlds with `H`/`W` tags plus a single
-aggregate drift concern.
+The standby rises as a second archipelago east of the hot one (detailed
+below); cities carry sync chips, and the attention queue merges both worlds
+with `H`/`W` tags plus a single aggregate drift concern.
 
-### GUI client (windowed)
+### The map
 
-![GUI client](docs/gui-world.png)
-
-```sh
-make gui    # or: cargo run -p kubernation-gui --release -- --context <ctx>
-```
-
-The same `kubernation-core` world rendered as a real strategy-game view
+The `kubernation-core` world is rendered as a real strategy-game view
 (macroquad), on a classic-4X **isometric 2:1 diamond** map — the
 rectangular model underneath stays the canonical coordinate system; the
 GUI projects it to diamonds (render-only). **All-original procedural
@@ -182,8 +161,7 @@ real `DELETE` (a managed pod is recreated by its controller; a bare pod is
 gone). It is the only write the app performs — one small, auditable path
 (`k8s/actions.rs`) behind an explicit confirm. It is **RBAC-aware**: the
 button is disabled (**`locked`**) unless a `SelfSubjectAccessReview` says you
-may delete pods in that namespace. The **TUI** has it too — `e` on the
-selected pod, with a y/n confirm and the same permission check.
+may delete pods in that namespace.
 
 ![Evict confirm](docs/gui-evict.png)
 
@@ -193,7 +171,7 @@ cluster from a context picker — no restart. Labels use **Fira Sans** with
 all original procedural geometry (no sprite assets), so the binary stays
 self-contained.
 
-With `--warm` (`make gui-pair`) the standby cluster rises as a **second
+With `--warm` (`make pair`) the standby cluster rises as a **second
 archipelago** east of the hot one — one sea, free panning between them,
 `F` fits both on screen:
 
@@ -209,35 +187,34 @@ drift concern.
 
 ```sh
 make perf-up      # kwok-simulated cluster: 100 nodes (5 zones), 1000 pods
-make perf         # run the TUI against it
-make perf-test    # release-mode budget test: rebuild + frame < 100ms
+make perf         # run the client against it
+make perf-test    # release-mode budget test: model rebuild < 100ms
 make perf-down
 ```
 
-Measured on an M4 Max: a full world rebuild (map + workloads + attention)
-plus a rendered 140×40 frame at 100 nodes / 1000 pods takes **~0.5ms
-average, <1ms worst** (`make perf-test`); against the live kwok cluster, 40
-freshly scaled-up pods were reflected in the UI **81ms** after `kubectl
-scale` returned. Input redraws immediately; world churn coalesces at the
-tick (250ms default), so a noisy cluster can never make typing lag.
+Measured on an M4 Max: a full world rebuild (map + workloads + attention — what
+the client recomputes each tick) at 100 nodes / 1000 pods takes **~1ms**
+(`make perf-test`); against the live kwok cluster, 40 freshly scaled-up pods
+were reflected in the UI **81ms** after `kubectl scale` returned. World churn
+coalesces at the tick (250ms default), so a noisy cluster can't make the UI lag.
 
-## Keys
+## Controls
 
-| Key | Action |
+Mouse-first, with a classic-4X menu bar and a few keys (the in-app **Almanac**,
+`?`, has the full list):
+
+| Input | Action |
 | --- | ------ |
-| `h j k l` / arrows | move cursor / selection |
-| `]` / `[` | sail to next / previous city |
-| `PgUp/PgDn` · `Ctrl+u/d` · `Home/End` | page the map · half page · west/east continent |
-| `Enter` | open the thing under the cursor |
-| `l` | tail the selected pod's logs (city / node screen) |
-| `Esc` / `Backspace` | back |
-| `m` / `w` | map · workload list |
-| `n` | **next concern** — jump to the top problem's view |
-| `a` / `Tab` | expand attention panel · focus it |
-| `1` `2` `3` | map overlay: pressure · replica health · namespace |
-| `c` | switch kube context |
-| `?` | full keymap |
-| `q` / `Ctrl-C` | quit |
+| drag · `WASD`/arrows · wheel | pan · pan · zoom (cursor-anchored) |
+| `F` · `]`/`[` | fit the world · sail to next / previous city |
+| click land / city / harbor | open the node / city drill-down window |
+| click a pod row | tail its logs (overlay) |
+| `y` | inspect YAML (the read-only dossier) |
+| `N` · `L` | next concern · tail that concern's offending pod |
+| `:` | resource browser — any kind |
+| `Esc` | close the topmost overlay |
+| `?` / `F1` | the Almanac (legend · controls · how to read state) |
+| menu bar | switch context · fit · map overlay · namespace · advisors · quit |
 
 ## Reading the world
 
@@ -280,11 +257,10 @@ metrics-server (`make metrics-up`) and the gauges switch automatically to
 `cpu use`, the GUI panel says `live usage`. No metrics-server, no problem:
 it falls back to requests on its own.
 
-On terminals ≥110 columns the map gains the world sidebar: **WORLD** (the
-chart: green land on blue ocean, `┌┐└┘` framing your viewport), **STATUS**
-(provinces/cities/pods/concerns — your people and gold), and **ORDERS**
-(whatever the cursor stands on — city, province, structure, or open sea).
-Narrower terminals get a floating WORLD chart instead.
+A docked right column rides beside the map: **WORLD** (the minimap — green land
+on blue ocean, a frame marking your viewport; click to recenter), **STATUS**
+(provinces/cities/pods/concerns — your people and gold), and **SELECTION**
+(whatever you clicked or hover — city, province, structure, or open sea).
 
 ### Projecting custom resources
 
@@ -297,10 +273,8 @@ connect and watches its instances live; they appear as `✦` structures on
 their namespace's island. CRDs absent on a cluster are skipped quietly —
 a hot/warm pair may project asymmetrically.
 
-The default palette is **atlas**: parchment chrome, green terrain, white
-city labels, blue ocean — with red and yellow strictly reserved for things
-needing attention. Prefer the old restrained look? `color = "plain"` in
-`~/.config/kubernation/config.toml`; `color = "mono"` for no color at all.
+The palette is **atlas**: parchment chrome, green terrain, white city labels,
+blue ocean — with red and yellow strictly reserved for things needing attention.
 
 ## The conceptual model
 
@@ -314,30 +288,24 @@ architecture and decisions live in [CLAUDE.md](CLAUDE.md).
 
 ## Configuration
 
-Optional file at `~/.config/kubernation/config.toml`:
-
-```toml
-tick_ms = 250              # world-change coalescing cadence
-color = "auto"             # "auto" (atlas) | "plain" | "mono"
-attention_expanded = false # start with the panel expanded
-```
-
-CLI: `--context`, `--kubeconfig`, `--log-level`, `--smoke`. Diagnostics go
-to `~/.local/state/kubernation/kubernation.log` — never stderr, which would corrupt
-the TUI.
+The client is driven by CLI flags — `--context`, `--kubeconfig`, `--warm`,
+`--project` (repeatable). The headless `make smoke` check is a separate, UI-free
+core example. (The removed TUI had a `config.toml` and a log file; the windowed
+client has neither yet.)
 
 ## Status
 
-Near observe-only — the one write is the confirmed **pod eviction** above;
-everything else reads. Many post-MVP features are built: the isometric world
-map, hot/warm cluster pairs, metrics-server live usage, the minimap, pod log
-tailing, the connectivity / storage / batch map layers, the in-app Almanac,
-the city + province drill-down windows, and the **planning turn** — staging
-interventions and previewing their diff (preview-only; nothing is applied).
-Deferred, by design: *applying* staged changes to the cluster (dry-run +
-confirm + RBAC), more interventions, external managed services, chaos layers,
-and the planning turn in the TUI. See CLAUDE.md for the full list and the
-reasoning.
+Near observe-only — two gated writes (confirmed **pod eviction** and a
+**committed planning turn**); everything else reads. Built well past the MVP: the
+isometric world map, hot/warm cluster pairs, metrics-server live usage, the
+minimap + map overlays, pod log tailing (severity coloring, timestamps, filters,
+concern→logs), the connectivity / storage / batch map layers, the resource
+browser (`:any kind`), the read-only YAML inspector, the in-app Almanac, the
+advisor screens, the city + province drill-down windows, and the **planning
+turn** — staging interventions, previewing the diff, and committing it
+(server-side dry-run + RBAC + confirm). Deferred, by design: more interventions,
+external managed services, chaos layers, and the bigger log tiers (all-containers
+picker, multi-pod tailing). See CLAUDE.md for the full list and the reasoning.
 
 ## Trademark
 

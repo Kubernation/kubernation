@@ -1,6 +1,7 @@
-//! Pure, UI-free helpers for working with raw log lines — shared by the TUI and
-//! GUI log views so the logic lives in one tested place instead of being
-//! copy-pasted into each renderer. Tier-0 scope:
+//! Pure, UI-free helpers for working with raw log lines, so the logic lives in
+//! one tested place rather than the renderer. (Originally shared by the TUI and
+//! GUI log views; the TUI is gone but the split still earns its keep — it's
+//! unit-tested without a UI.) Tier-0 scope:
 //!
 //! - [`classify`] — a cheap severity guess (ERROR/WARN/…) for coloring, from
 //!   klog headers, structured `level=`/`"level":` fields, and plaintext markers.

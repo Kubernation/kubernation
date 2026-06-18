@@ -8,6 +8,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+- **The TUI was removed; the windowed (macroquad) client is now the product**
+  and is the `kubernation` binary (renamed from `kubernation-gui`; `cargo run` /
+  `make run` launch it). Every feature had been built twice; the headless niche
+  is k9s's and the 4X metaphor is graphical, so the project consolidated on one
+  well-built frontend. The pure data/model core (`kubernation-core`) is
+  unchanged. `make smoke` (the CI gate) is now a UI-free core example
+  (`examples/smoke.rs`), and `make perf-test` times the core `Models::build`
+  rebuild (~1ms at 100 nodes / 1000 pods). Lost: headless/SSH operation and the
+  TUI's render snapshot tests (the logic stays tested in core).
+
 ### Added
 - **One key from a concern to its logs (`L`).** The attention queue parks you on
   "the city in trouble"; **`L`** now tails the offending pod's logs directly

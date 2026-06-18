@@ -1853,4 +1853,52 @@ mod tests {
         assert!(!prefer_previous(PodState::Pending, "ContainerCreating", 0));
         assert!(!prefer_previous(PodState::Failing, "Error", 1));
     }
+
+    /// The frame budget (criterion 6): a synthetic 100-node / 1000-pod world
+    /// must rebuild the full `Models` (map + workloads + attention — what the
+    /// GUI recomputes each tick) well under the 100ms tick budget. Asserted in
+    /// release (`make perf-test`); debug just times it. Run via
+    /// `cargo test --release scale_rebuild`.
+    #[test]
+    fn scale_rebuild_within_budget() {
+        use std::time::Instant;
+        let (world, mut s) = fx::world();
+        // 100 nodes across 5 zones.
+        for z in 0..5 {
+            for i in 0..20 {
+                s.node(fx::node(&format!("node-{z}-{i}"), Some(&format!("z-{z}"))));
+            }
+        }
+        // 20 workloads × 50 pods = 1000 pods.
+        for w in 0..20 {
+            let name = format!("app-{w}");
+            s.deployment(fx::deployment("demo", &name, 50, 50));
+            let rs = format!("{name}-rs");
+            s.replicaset(fx::replicaset("demo", &rs, &name));
+            for p in 0..50 {
+                let node = format!("node-{}-{}", w % 5, p % 20);
+                s.pod(fx::pod_owned(
+                    fx::pod("demo", &format!("{name}-{p}"), Some(&node)),
+                    "ReplicaSet",
+                    &rs,
+                ));
+            }
+        }
+
+        let _ = Models::build(&world); // warm caches
+        let iters = 5;
+        let start = Instant::now();
+        for _ in 0..iters {
+            let m = Models::build(&world);
+            assert!(m.map.total_nodes >= 100 && m.map.total_pods >= 1000);
+        }
+        let per = start.elapsed() / iters;
+        println!("scale_rebuild: 100 nodes / 1000 pods → {per:?}/rebuild");
+        if !cfg!(debug_assertions) {
+            assert!(
+                per.as_millis() < 100,
+                "rebuild over the 100ms budget: {per:?}"
+            );
+        }
+    }
 }

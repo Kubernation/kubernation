@@ -9,7 +9,7 @@ WARM_KCTX    := kind-$(WARM_CLUSTER)
         perf-up perf perf-test perf-down \
         warm-up warm-drift pair warm-down
 
-## dev: full loop — cluster up, samples applied, TUI running
+## dev: full loop — cluster up, samples applied, the windowed client running
 dev: kind-up samples run
 
 ## kind-up: create the 4-node dev cluster (idempotent) and wait for Ready
@@ -24,13 +24,14 @@ samples:
 	kubectl --context $(KCTX) wait --for=condition=Established crd/gizmos.example.com --timeout=30s
 	kubectl --context $(KCTX) apply -f hack/samples.yaml
 
-## run: launch the TUI against the dev cluster
+## run: launch the windowed client against the dev cluster
 run:
 	cargo run --release -- --context $(KCTX) --project gizmos.example.com
 
-## smoke: headless connect + world summary (CI / sanity)
+## smoke: headless connect + world summary (CI / sanity) — the GUI needs a
+## display, so the gate is a UI-free core example.
 smoke:
-	cargo run -- --context $(KCTX) --smoke
+	cargo run -p kubernation-core --example smoke -- --context $(KCTX) --project gizmos.example.com
 
 ## metrics-up: install metrics-server on the dev cluster (kind needs
 ## --kubelet-insecure-tls); gauges switch from scheduling pressure to live
@@ -60,7 +61,7 @@ warm-drift:
 	kubectl --context $(WARM_KCTX) -n kubernation-demo delete deploy crashy --ignore-not-found
 	kubectl --context $(WARM_KCTX) -n kubernation-demo set image daemonset/agent sleeper=busybox:1.37
 
-## pair: run the TUI observing hot + warm side by side
+## pair: run the windowed client observing hot + warm side by side
 pair:
 	cargo run --release -- --context $(KCTX) --warm $(WARM_KCTX) --project gizmos.example.com
 
@@ -74,31 +75,24 @@ perf-up:
 		kwokctl create cluster --name $(PERF_CLUSTER)
 	hack/perf-seed.sh $(PERF_KCTX)
 
-## perf: run the TUI against the kwok perf cluster
+## perf: run the windowed client against the kwok perf cluster
 perf:
 	cargo run --release -- --context $(PERF_KCTX)
 
-## perf-test: release-mode rebuild+frame latency budget (<100ms asserted)
+## perf-test: release-mode model-rebuild latency budget (<100ms asserted) —
+## the pure core rebuild the GUI recomputes each tick (criterion 6)
 perf-test:
-	cargo test --release scale_rebuild -- --nocapture
+	cargo test --release -p kubernation-core scale_rebuild -- --nocapture
 
 ## perf-down: delete the kwok perf cluster
 perf-down:
 	kwokctl delete cluster --name $(PERF_CLUSTER)
-
-## gui: run the windowed client against the dev cluster
-gui:
-	cargo run --release -p kubernation-gui -- --context $(KCTX) --project gizmos.example.com
-
-## gui-pair: windowed client observing hot + warm archipelagos
-gui-pair:
-	cargo run --release -p kubernation-gui -- --context $(KCTX) --warm $(WARM_KCTX) --project gizmos.example.com
 
 ## lint: formatting + clippy, the same gate as CI
 lint:
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
 
-## test: unit + snapshot tests
+## test: unit tests (core logic + GUI render helpers)
 test:
 	cargo test --workspace

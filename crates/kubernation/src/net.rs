@@ -58,8 +58,8 @@ pub struct EvictReq {
     pub pod: String,
 }
 
-/// The End-of-Turn commit result now lives in the core write file
-/// (`k8s::actions`), shared with the TUI; the GUI keeps its familiar name.
+/// The End-of-Turn commit result lives in the core write file (`k8s::actions`,
+/// `commit_interventions`); the client keeps this familiar alias.
 pub use kubernation_core::k8s::actions::CommitOutcome as PlanOutcome;
 
 pub struct WorldSnap {
