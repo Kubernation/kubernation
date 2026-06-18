@@ -954,6 +954,31 @@ what makes the interesting logic unit-testable without a cluster.
   multi-container picker / all-containers (T2), JSON/logfmt columns (T3+),
   match-navigation + grep-context (T5), multi-pod "whole-city" tailing (B1), the
   honest since-anchored append + log stream (B3/B2).
+- **Log UX — Tier 1: concern→logs (`L`)** (2026-06-18, the highest-ROI item from
+  the log roadmap): the attention queue is the product's spine — `n` parks you on
+  "the city in trouble" — but the next move (its logs) was a 3-step hunt through
+  the pod list. The detectors *had* the offending pod's identity while aggregating
+  and threw it away (`Target` is workload/node-grained by the "city in trouble,
+  not 40 alarms" rule). Now `Concern` carries a `probe: Option<LogProbe>
+  { namespace, pod, previous }`: the per-pod loop captures a **representative
+  log-worthy pod** (one that actually ran — crash/OOM/Failed/flap; *not*
+  Pending/Unschedulable/image-pull/config-error, which have no logs) into the
+  workload's `Agg`, **preferring a crash-looper** so `previous` lands on the last
+  words (via `model::prefer_previous`). Concerns with no single log-worthy pod
+  (replica gaps, nodes, connectivity, events, jobs, pair drift) carry `None`.
+  **`L`** opens that pod's logs directly — in the **TUI** from the attention panel
+  (focused or `n`-parked, returning `Action::OpenLogs{..,previous}`) and globally
+  (`logs_action_for`); in the **GUI** as a map nav key on the focused concern
+  (`concern_idx`), enqueuing a `LogReq` from the probe. Both reuse the existing
+  fetch machinery — this only routes an identity the queue already computed.
+  Load-bearing GUI fix: the panel-match `None` arm used to auto-close any
+  panel-less log overlay (assuming logs always had a backing panel) — it now
+  doesn't, since a concern-opened log is legitimately panel-less (Esc + the
+  `close_panel` path still tear down a panel-backed one); nav is suspended while
+  `log_open`. Core `LogProbe` + `prefer_previous`-on-crashloop unit-tested
+  (probe present with `previous=true`; a pure replica gap carries none). Dev flag
+  `--concern-logs` (GUI). Verified live on kind: `L` on the crashy concern opens
+  `crashy-… <previous>` showing "boom" — the previous container's last words.
 
 ## The pair (hot/warm)
 
@@ -1038,7 +1063,8 @@ yaml · `r` refresh) ·
 (city), `C` stage cordon (node), `t` open the End-of-Turn review (`x` unstage ·
 `D` discard · `c`/`Enter` commit, y/n confirm) ·
 `Esc` back · `m` map ·
-`w` workloads · `n` next concern · `a` attention panel · `Tab` focus panel ·
+`w` workloads · `n` next concern · `L` tail the focused concern's offending pod ·
+`a` attention panel · `Tab` focus panel ·
 `c` context picker · `N` namespace filter (multi-select; status bar shows it) ·
 `1/2/3` overlays (pressure/replicas/namespace) ·
 `?` keymap · `q`/Ctrl-C quit. Keep `help.rs` in sync with any change.

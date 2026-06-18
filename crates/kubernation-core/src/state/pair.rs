@@ -221,6 +221,7 @@ impl PairSync {
             title: format!("pair drift: {total} workloads differ hot↔warm"),
             detail: format!("{} missing · {} drifting", self.missing, self.drifted),
             target: Target::WorkloadList,
+            probe: None,
             key: "pair:drift".into(),
             cluster: ClusterId::Hot,
         })

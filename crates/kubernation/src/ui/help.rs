@@ -62,6 +62,7 @@ const KEYMAP: &[(&str, &[(&str, &str)])] = &[
         "ATTENTION",
         &[
             ("n", "next concern (opens its view)"),
+            ("L", "tail the concern's offending pod's logs"),
             ("a", "expand / collapse panel"),
             ("Tab", "focus panel (j/k + Enter, Esc leaves)"),
         ],

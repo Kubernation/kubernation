@@ -127,6 +127,9 @@ struct Args {
     /// With --tail, open with timestamps on (development verification).
     #[arg(long)]
     log_timestamps: bool,
+    /// Open the first concern's pod logs via the `L` jump (dev verification).
+    #[arg(long)]
+    concern_logs: bool,
     /// Launch scoped to a single namespace (the namespace filter; you can
     /// still change it from the World menu). Also used for verification.
     #[arg(long, value_name = "NS")]
@@ -229,6 +232,7 @@ async fn main() {
     let mut log_window = kubernation_core::k8s::logs::LogWindow::default();
     let mut log_filter = String::new();
     let mut log_filter_active = false;
+    let mut concern_logs_armed = false;
     let mut auto_tail = args.tail;
     // The Almanac (in-app reference) — a modal window; None = closed.
     let mut almanac: Option<Almanac> = None;
@@ -880,6 +884,33 @@ async fn main() {
                     plan_open = true;
                 }
             }
+            // Dev: exercise the concern→logs `L` jump once attention lands.
+            if args.concern_logs && !concern_logs_armed && !s.attention.is_empty() {
+                if let Some((i, cluster, probe)) = s
+                    .attention
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, c)| c.probe.clone().map(|p| (i, c.cluster, p)))
+                {
+                    concern_idx = i;
+                    log_previous = probe.previous;
+                    log_timestamps = args.log_timestamps;
+                    log_window = kubernation_core::k8s::logs::LogWindow::default();
+                    log_filter = String::new();
+                    log_filter_active = false;
+                    net.request_logs(LogReq {
+                        cluster,
+                        namespace: probe.namespace,
+                        pod: probe.pod,
+                        previous: log_previous,
+                        timestamps: log_timestamps,
+                        window: log_window,
+                    });
+                    log_open = true;
+                    auto_tail = false;
+                }
+                concern_logs_armed = true;
+            }
             if picker
                 || ns_picker
                 || almanac.is_some()
@@ -888,9 +919,11 @@ async fn main() {
                 || panel_modal
                 || plan_open
                 || open_menu.is_some()
+                || log_open
             {
-                // A modal (or an open chrome menu) is up: world navigation is
-                // suspended this frame.
+                // A modal (or an open chrome menu, or the log overlay — which
+                // can be open over the bare map via the concern `L` jump) is up:
+                // world navigation is suspended this frame.
             } else {
                 if is_key_pressed(KeyCode::F) {
                     cam.fit(bounds);
@@ -937,6 +970,31 @@ async fn main() {
                                 Target::WorkloadList => None,
                             };
                         }
+                    }
+                }
+                // `L` tails the focused concern's offending pod directly (the
+                // "city in trouble → and here's why" jump). Concerns without a
+                // log-worthy pod (replica gaps, nodes, …) carry no probe.
+                if is_key_pressed(KeyCode::L) && !s.attention.is_empty() {
+                    let c = &s.attention[concern_idx.min(s.attention.len() - 1)];
+                    if let Some(p) = &c.probe {
+                        log_previous = p.previous;
+                        log_timestamps = args.log_timestamps;
+                        log_window = kubernation_core::k8s::logs::LogWindow::default();
+                        log_filter = String::new();
+                        log_filter_active = false;
+                        net.request_logs(LogReq {
+                            cluster: c.cluster,
+                            namespace: p.namespace.clone(),
+                            pod: p.pod.clone(),
+                            previous: log_previous,
+                            timestamps: log_timestamps,
+                            window: log_window,
+                        });
+                        log_open = true;
+                        auto_tail = false;
+                    } else {
+                        toast = Some(("this concern has no pod to tail".into(), get_time() + 2.5));
                     }
                 }
                 if is_key_pressed(KeyCode::Enter)
@@ -1285,12 +1343,11 @@ async fn main() {
                             close_panel = act.close;
                         }
                         None => {
-                            if log_open {
-                                log_open = false;
-                                net.clear_logs();
-                            }
-                            // The minimap now lives in the always-on right
-                            // column (drawn above), not a floating overlay.
+                            // No drill-down panel. A log overlay may still be up
+                            // legitimately — the concern `L` jump opens one with
+                            // no backing panel — so DON'T auto-close it here; Esc
+                            // (which closes the log first) and `close_panel`
+                            // handle a panel-backed log's teardown.
                         }
                     }
                 }
@@ -1635,7 +1692,7 @@ async fn main() {
 
         // When tailing, wait long enough for the net thread's first fetch
         // (first_container + tail, two API round-trips) to land.
-        let shot_at = if args.tail {
+        let shot_at = if args.tail || args.concern_logs {
             240
         } else if args.plan_go {
             120

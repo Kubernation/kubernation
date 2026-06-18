@@ -9,6 +9,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **One key from a concern to its logs (`L`).** The attention queue parks you on
+  "the city in trouble"; **`L`** now tails the offending pod's logs directly
+  instead of a hunt through the pod list — auto-opening on the *previous*
+  container for a crash-looper (its last words). Works from the attention panel
+  and the map (both frontends); concerns with no single log-worthy pod (replica
+  gaps, nodes, connectivity, events) have no such jump. The offending pod is
+  identified by the pure detectors (`Concern.probe`), unit-tested.
 - **Logs: severity coloring + a smarter filter (both frontends).** Log lines are
   now tinted by guessed severity — ERROR/FATAL/PANIC red, WARN yellow, DEBUG dim
   — recognised from klog headers (`E0617…`), structured `level=`/`"level":`

@@ -68,6 +68,17 @@ pub fn action_for(t: &Target) -> Action {
     }
 }
 
+/// The "tail this concern's offending pod" action (`L`), when the concern
+/// carries a representative pod (a crash/OOM/Failed/flap). `None` for concerns
+/// with no single log-worthy pod (replica gaps, nodes, connectivity, events).
+pub fn logs_action_for(c: &Concern) -> Option<Action> {
+    c.probe.as_ref().map(|p| Action::OpenLogs {
+        namespace: p.namespace.clone(),
+        pod: p.pod.clone(),
+        previous: p.previous,
+    })
+}
+
 fn tag(c: &Concern) -> &'static str {
     match c.cluster {
         ClusterId::Hot => "H ",
@@ -95,6 +106,16 @@ impl Component for AttentionPanel {
                 {
                     self.cycle = Some(i);
                     return Some(action_for(&c.target));
+                }
+            }
+            // `L` tails the offending pod's logs directly (when the concern has
+            // one) — the "city in trouble → and here's why" jump.
+            KeyCode::Char('L') => {
+                if let Some(i) = self.state.selected()
+                    && let Some(c) = ctx.attention.get(i)
+                {
+                    self.cycle = Some(i);
+                    return logs_action_for(c);
                 }
             }
             _ => {}
@@ -150,7 +171,7 @@ impl Component for AttentionPanel {
                     truncate(&top.title, area.width.saturating_sub(32) as usize),
                     theme.severity(top.severity),
                 ));
-                spans.push(Span::styled("  [n]ext [a]ll", theme.dim()));
+                spans.push(Span::styled("  [n]ext [L]ogs [a]ll", theme.dim()));
                 Line::from(spans)
             };
             f.render_widget(Paragraph::new(line), area);
@@ -158,9 +179,9 @@ impl Component for AttentionPanel {
         }
 
         let hint = if self.focused {
-            " j/k · Enter opens · Esc leaves "
+            " j/k · Enter opens · L logs · Esc leaves "
         } else {
-            " n cycles · Tab focuses · a collapses "
+            " n cycles · L logs · Tab focuses · a collapses "
         };
         let block = Block::bordered()
             .border_style(theme.chrome())

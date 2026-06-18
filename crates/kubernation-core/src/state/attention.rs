@@ -11,7 +11,7 @@ use crate::events::ClusterId;
 use super::filter::NamespaceFilter;
 use super::model::{
     MapModel, OwnerIndex, PRESSURE_HIGH, PodState, RolloutStatus, WorkloadRef, WorkloadRow,
-    ingress_backends, pod_oom_killed, pod_restarts, pod_state,
+    ingress_backends, pod_oom_killed, pod_restarts, pod_state, prefer_previous,
 };
 use super::observed::ObservedWorld;
 
@@ -45,12 +45,26 @@ pub enum Target {
     WorkloadList,
 }
 
+/// The offending pod a concern can take you straight into the logs of — the
+/// detectors know it while aggregating, so the "city in trouble → and here's
+/// why" jump is one key, not a hunt through the pod list. `None` for concerns
+/// with no single log-worthy pod (replica gaps, nodes, connectivity, events).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogProbe {
+    pub namespace: String,
+    pub pod: String,
+    /// Start on the previous container (a crash-looper's last words).
+    pub previous: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Concern {
     pub severity: Severity,
     pub title: String,
     pub detail: String,
     pub target: Target,
+    /// A representative offending pod to tail (the `L` verb), when one exists.
+    pub probe: Option<LogProbe>,
     /// Stable identity for cycling; also the sort tiebreaker.
     pub key: String,
     /// Which member of the pair this belongs to. `build` is single-world
@@ -67,6 +81,9 @@ struct Agg {
     unsched: u32,
     oom: u32,
     flapping: u32,
+    /// A representative log-worthy pod for this workload (first seen, but a
+    /// crash-looper takes precedence so `previous` lands on the last words).
+    probe: Option<LogProbe>,
 }
 
 impl Agg {
@@ -177,6 +194,7 @@ pub fn build(
             title: format!("job {ns}/{name} — {msg}"),
             detail: String::new(),
             target: Target::WorkloadList,
+            probe: None,
             key: format!("j:{ns}/{name}"),
         });
     }
@@ -199,6 +217,20 @@ pub fn build(
         if !agg.any() {
             continue;
         }
+        // A pod worth tailing — one that actually ran (so it has logs): a
+        // crash loop, an OOM kill, a Failed pod, or a flapper. Pending /
+        // Unschedulable / image-pull / config-error pods never started a
+        // container, so there's nothing to tail.
+        let ns = pod.metadata.namespace.clone().unwrap_or_default();
+        let name = pod.metadata.name.clone().unwrap_or_default();
+        let pod_probe =
+            (agg.crash > 0 || agg.failed > 0 || agg.oom > 0 || agg.flapping > 0).then(|| {
+                LogProbe {
+                    namespace: ns.clone(),
+                    pod: name.clone(),
+                    previous: prefer_previous(state, &reason, pod_restarts(pod)),
+                }
+            });
         match idx.workload_of(pod) {
             Some(r) => {
                 let e = by_workload.entry(r).or_default();
@@ -209,15 +241,24 @@ pub fn build(
                 e.unsched += agg.unsched;
                 e.oom += agg.oom;
                 e.flapping += agg.flapping;
+                // Keep one representative pod; prefer a crash-looper so the
+                // `L` jump opens its previous-container last words.
+                if let Some(p) = pod_probe {
+                    let better = match &e.probe {
+                        None => true,
+                        Some(cur) => p.previous && !cur.previous,
+                    };
+                    if better {
+                        e.probe = Some(p);
+                    }
+                }
             }
             None => {
                 // Bare pod, or Job-owned. A pod whose Job already has its own
                 // concern folds under it (no per-pod spam for a failed Job).
-                let ns = pod.metadata.namespace.clone().unwrap_or_default();
                 if job_owner(pod).is_some_and(|j| covered_jobs.contains(&(ns.clone(), j))) {
                     continue;
                 }
-                let name = pod.metadata.name.clone().unwrap_or_default();
                 let (severity, msg) = agg.primary().expect("agg.any() checked");
                 let target = pod
                     .spec
@@ -230,6 +271,7 @@ pub fn build(
                     title: format!("pod {ns}/{name} — {msg}"),
                     detail: reason.clone(),
                     target,
+                    probe: pod_probe,
                     key: format!("b:{ns}/{name}"),
                 });
             }
@@ -270,6 +312,9 @@ pub fn build(
             title: format!("{} — {headline}", row.r),
             detail,
             target: Target::Workload(row.r.clone()),
+            // A pod-level issue carries its representative pod; a pure replica
+            // gap / stalled rollout has no single pod to tail.
+            probe: agg.and_then(|a| a.probe),
             key: format!("w:{}/{}/{}", row.r.kind, row.r.namespace, row.r.name),
         });
     }
@@ -283,6 +328,7 @@ pub fn build(
                 severity,
                 title: format!("{r} — {msg}"),
                 detail: String::new(),
+                probe: agg.probe,
                 key: format!("w:{}/{}/{}", r.kind, r.namespace, r.name),
                 target: Target::Workload(r),
             });
@@ -327,6 +373,7 @@ pub fn build(
                     tile.mem_ratio * 100.0
                 ),
                 target: Target::Node(tile.name.clone()),
+                probe: None,
                 key: format!("n:{}", tile.name),
             });
         }
@@ -359,6 +406,7 @@ pub fn build(
             title: format!("pvc {ns}/{name} — {phase}"),
             detail: format!("storageClass {sc}"),
             target: owner.map_or(Target::WorkloadList, Target::Workload),
+            probe: None,
             key: format!("p:{ns}/{name}"),
         });
     }
@@ -394,6 +442,7 @@ pub fn build(
             ),
             detail: "route points at a missing Service".into(),
             target: Target::WorkloadList,
+            probe: None,
             key: format!("i:{ns}/{name}"),
         });
     }
@@ -428,6 +477,7 @@ pub fn build(
             title: format!("service {ns}/{name} — selects no pods"),
             detail: "harbor with no city".into(),
             target: Target::WorkloadList,
+            probe: None,
             key: format!("s:{ns}/{name}"),
         });
     }
@@ -494,6 +544,7 @@ pub fn build(
             ),
             detail: String::new(),
             target,
+            probe: None,
             key: format!("e:{kind}/{ns}/{name}"),
         });
     }
@@ -653,6 +704,47 @@ mod tests {
         assert!(matches!(&c.target, Target::Workload(r) if r.name == "crashy"));
         // No per-pod entries for owned pods.
         assert!(cs.iter().all(|c| !c.key.starts_with("b:")));
+    }
+
+    #[test]
+    fn crashloop_concern_carries_a_previous_log_probe() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.deployment(fx::deployment("demo", "crashy", 1, 1));
+        s.replicaset(fx::replicaset("demo", "crashy-abc", "crashy"));
+        s.pod(fx::pod_owned(
+            fx::pod_waiting(
+                fx::pod("demo", "crashy-abc-0", Some("n1")),
+                "CrashLoopBackOff",
+            ),
+            "ReplicaSet",
+            "crashy-abc",
+        ));
+        let cs = concerns(&world);
+        let c = cs
+            .iter()
+            .find(|c| c.key.starts_with("w:"))
+            .expect("workload concern");
+        // The `L` jump lands on the offending pod, on its previous container.
+        let p = c.probe.as_ref().expect("crash concern carries a log probe");
+        assert_eq!(p.namespace, "demo");
+        assert_eq!(p.pod, "crashy-abc-0");
+        assert!(p.previous, "crash-loop probe opens the previous container");
+    }
+
+    #[test]
+    fn replica_gap_only_concern_has_no_log_probe() {
+        // A healthy-but-understrength workload (no failing pod) has nothing to
+        // tail — the probe is None, so `L` is a no-op there.
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.deployment(fx::deployment("demo", "web", 3, 1));
+        let cs = concerns(&world);
+        let c = cs
+            .iter()
+            .find(|c| c.key.starts_with("w:"))
+            .expect("replica-gap concern");
+        assert!(c.probe.is_none(), "a pure replica gap carries no probe");
     }
 
     #[test]
