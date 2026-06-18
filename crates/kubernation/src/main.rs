@@ -1983,8 +1983,9 @@ async fn main() {
         // When tailing, wait long enough for the net thread's first fetch
         // (first_container + tail, two API round-trips) to land.
         let shot_at = if args.spark {
-            // ~30s at 60fps → 2-3 metrics polls (15s each) → a drawable trend.
-            1800
+            // Long hold so metrics polls (15s) draw a trend AND SLO samples
+            // (2s) reach a verdict; headless frame rate varies, so over-wait.
+            2600
         } else if args.tail || args.concern_logs {
             240
         } else if args.forward.is_some() {

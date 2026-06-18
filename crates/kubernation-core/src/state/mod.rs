@@ -8,6 +8,7 @@ pub mod model;
 pub mod observed;
 pub mod pair;
 pub mod planned;
+pub mod slo;
 pub mod world;
 
 #[cfg(any(test, feature = "fixtures"))]

@@ -78,6 +78,10 @@ crates/
                               apply path.
                  model.rs     PURE derivations: map/workloads/city/node
                  attention.rs PURE detectors → severity-ordered concerns
+                 blast.rs     PURE dependency fan-out of a node/workload
+                              (node→workloads→services→ingresses) — blast radius
+                 slo.rs       availability SLOs + error-budget tracker (the
+                              treasury); PURE math, frontend-driven sampling
                  advisor.rs   PURE cluster-wide rollups (Health/Storage/
                               Network) for the advisor screens
                  inspect.rs   PURE read-only YAML of an in-store object
@@ -1126,6 +1130,42 @@ what makes the interesting logic unit-testable without a cluster.
   only when the subject or snapshot changes, not every frame while held on).
   Deferred: true downstream consumers (needs Hubble/mesh), a blast list in the
   SELECTION column.
+- **The treasury — availability SLOs + error budgets** (2026-06-18, user "implement
+  the treasury" from the AIM SRE roadmap — the central SRE observability
+  primitive, and the 4X "treasury you spend" makes it more legible than a
+  dashboard number): per-workload availability SLOs with an **error budget** the
+  city window shows as a coin gauge. **Core (`state/slo.rs`, pure + unit-tested):**
+  `SloTracker` holds a rolling per-workload availability ring; `SloStatus`
+  (sli / target / budget_remaining / burn / state) is the pure math —
+  budget_remaining = clamp(1 − (1−sli)/(1−target)), burn = recent-downtime ÷
+  sustainable-rate, `BudgetState` {Warming &lt; MIN_SAMPLES, Healthy, Burning
+  (burn&gt;1.5), Breached (budget≤0)}. **The SLI is derived from pod readiness** —
+  a workload is "up" at a sample if it has **≥1 available replica** (the textbook
+  uptime definition: catches outages / crash-loops, ignores healthy rolling
+  deploys; partial capacity loss is the attention queue's replica-gap job). So it
+  needs **no metrics-server / Prometheus** — works on any cluster, unlike the
+  RED/latency signals (those still need a source). **In-session window** (a
+  rolling ring, no cross-restart persistence) — honest *recent* availability, not
+  30-day compliance. **Net thread:** samples every ~2s (`SLO_SAMPLE_TICKS`) from
+  the **unfiltered** `build_workloads` (SLOs track the whole cluster regardless of
+  the namespace view, like the reflectors), forces a rebuild so budgets stay fresh
+  on an idle cluster, publishes per-workload `SloStatus` in each `WorldSnap.slo`,
+  and appends a **budget concern** (Burning→Warning, Breached→Critical) for any
+  workload **not already flagged** by a stronger concern (keeps "city in trouble,
+  not 40 alarms"; surfaces the *flaky-but-up-now* cases the instant detectors
+  miss). Hot/warm tracked separately; `slo.clear()` on context switch. **GUI:** a
+  TREASURY band in the city window — a coin gauge (budget remaining) + the pure
+  `treasury_summary` (state→colour/text, unit-tested). Default target 99%
+  (`slo::DEFAULT_TARGET`; per-workload config is deferred). Verified live on kind:
+  `web` 100% budget (green), `crashy` exhausted (avail ~12%, red). Dev: any
+  `--inspect <city> --spark` holds the shot long enough for samples to reach a
+  verdict. **Review fixes:** the budget *concern* respects the active namespace
+  filter (the SLO *map* stays unfiltered so any city window shows its budget, but
+  a filtered-out workload no longer leaks a budget alarm into the scoped queue);
+  and the SLI keys on `ready` (a serving pod), not `available`, so a non-zero
+  `minReadySeconds` doesn't count a mid-rollout workload down. Deferred:
+  configurable/per-workload targets, latency SLOs (need a metric source), a
+  multi-window burn-rate alert, persisting budgets across runs.
 
 ## The pair (hot/warm)
 

@@ -553,6 +553,10 @@ fn page_reading(cx: &mut Ctx) {
     cx.para(
         "Node cpu / mem read live usage when metrics-server is installed, otherwise scheduling pressure (pod requests / allocatable). Calm below 70%, elevated 70-90% (yellow), high above 90% (red). With metrics-server, a trend sparkline under each gauge shows the last ~15 minutes (and the STATUS column shows the cluster trend).",
     );
+    cx.heading("Treasury (error budget)");
+    cx.para(
+        "Each city window shows an availability SLO and the error budget it spends down — full when the workload stays up, draining when it flaps, exhausted when availability falls below the target (default 99%). Availability is derived from pod readiness (at least one replica up) over a recent window — no metrics-server needed. A burning or exhausted budget also raises a queue concern.",
+    );
     cx.heading("Attention");
     cx.para(
         "Pod-level failures aggregate per owning workload — one \"city in trouble\", not forty pod alarms. The strip along the bottom shows the worst few; N walks them.",

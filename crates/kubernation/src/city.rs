@@ -15,6 +15,7 @@ use macroquad::prelude::*;
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::model::{WorkloadRef, build_city};
 use kubernation_core::state::planned::{Intervention, PlannedWorld};
+use kubernation_core::state::slo::{self, BudgetState, SloStatus};
 use kubernation_core::util::{format_age_opt, format_usage};
 
 use crate::net::Snapshot;
@@ -322,6 +323,25 @@ pub fn draw_city(
         PARCHMENT,
     );
     y += 22.0;
+    // TREASURY: the error budget you spend down — a coin gauge (remaining) +
+    // the SLO summary. Availability is derived from pod readiness (no
+    // metrics-server needed); see core `state::slo`.
+    {
+        let st = match id {
+            ClusterId::Hot => snap.hot.slo.get(r),
+            ClusterId::Warm => snap.warm.as_ref().and_then(|w| w.slo.get(r)),
+        };
+        let (summary, col) = treasury_summary(st);
+        text("treasury", b.x, y + 12.0, 14.0, PARCHMENT);
+        let gx = b.x + 78.0;
+        let gw = 150.0;
+        let frac = st.map(|s| s.budget_remaining as f32).unwrap_or(0.0);
+        draw_rectangle(gx, y + 2.0, gw, 11.0, darker(PANEL, 0.6));
+        draw_rectangle(gx, y + 2.0, gw * frac, 11.0, col);
+        draw_rectangle_lines(gx, y + 2.0, gw, 11.0, 1.0, darker(PARCHMENT, 0.6));
+        text(ascii(&summary), gx + gw + 12.0, y + 12.0, 13.0, col);
+        y += 22.0;
+    }
     draw_line(b.x, y, b.x + b.w, y, 1.0, darker(PARCHMENT, 0.5));
     y += 8.0;
 
@@ -584,4 +604,87 @@ fn gauge(x: f32, y: f32, w: f32, label: &str, value: i32, max: i32, col: Color) 
     let n = format!("{value}/{max}");
     let m = text_size(&n, 12.0);
     text(&n, bx + bw - m.width - 4.0, y + 11.0, 12.0, INK);
+}
+
+/// The treasury band's summary text + colour for a workload's error budget —
+/// pure draw-decision logic, testable without a GL context (the testability
+/// policy). `None` = the workload isn't being tracked yet (just synced) or has
+/// no SLO (scaled to zero).
+fn treasury_summary(st: Option<&SloStatus>) -> (String, Color) {
+    let Some(s) = st else {
+        return ("no SLO yet (just synced or scaled to zero)".into(), DIM);
+    };
+    match s.state {
+        BudgetState::Warming => (
+            format!(
+                "warming up . {} samples . target {:.1}%",
+                s.samples,
+                s.target * 100.0
+            ),
+            DIM,
+        ),
+        BudgetState::Healthy => (
+            format!(
+                "{} budget . avail {:.2}% / SLO {:.1}%",
+                slo::budget_pct(s),
+                s.sli * 100.0,
+                s.target * 100.0
+            ),
+            GOOD,
+        ),
+        BudgetState::Burning => (
+            format!(
+                "{} budget . burning {:.1}x . avail {:.2}%",
+                slo::budget_pct(s),
+                s.burn,
+                s.sli * 100.0
+            ),
+            WARN,
+        ),
+        BudgetState::Breached => (
+            format!(
+                "budget exhausted . avail {:.2}% / SLO {:.1}%",
+                s.sli * 100.0,
+                s.target * 100.0
+            ),
+            CRIT,
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(state: BudgetState, budget_remaining: f64) -> SloStatus {
+        SloStatus {
+            sli: 0.995,
+            target: 0.99,
+            budget_remaining,
+            burn: 2.0,
+            samples: 100,
+            state,
+        }
+    }
+
+    #[test]
+    fn treasury_summary_colours_by_budget_state() {
+        // Untracked → dim placeholder.
+        assert_eq!(treasury_summary(None).1, DIM);
+        // Each state maps to its meaning colour + a recognisable phrase.
+        let (t, c) = treasury_summary(Some(&status(BudgetState::Healthy, 0.5)));
+        assert_eq!(c, GOOD);
+        assert!(t.contains("budget"));
+        assert_eq!(
+            treasury_summary(Some(&status(BudgetState::Warming, 1.0))).1,
+            DIM
+        );
+        assert_eq!(
+            treasury_summary(Some(&status(BudgetState::Burning, 0.3))).1,
+            WARN
+        );
+        let (t, c) = treasury_summary(Some(&status(BudgetState::Breached, 0.0)));
+        assert_eq!(c, CRIT);
+        assert!(t.contains("exhausted"));
+    }
 }

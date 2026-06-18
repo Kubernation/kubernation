@@ -836,6 +836,7 @@ mod tests {
             hot: WorldSnap {
                 models,
                 observed: world,
+                slo: Arc::new(std::collections::HashMap::new()),
             },
             warm: None,
             pair: None,

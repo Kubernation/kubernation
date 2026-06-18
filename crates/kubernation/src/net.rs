@@ -17,12 +17,13 @@ use std::time::Duration;
 
 use kubernation_core::events::{ClusterId, WorldDelta};
 use kubernation_core::k8s::{actions, browse, client, logs, portforward, watch};
-use kubernation_core::state::attention::Concern;
+use kubernation_core::state::attention::{Concern, Target};
 use kubernation_core::state::filter::NamespaceFilter;
-use kubernation_core::state::model::Models;
+use kubernation_core::state::model::{Models, WorkloadRef, build_workloads};
 use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::planned::Intervention;
+use kubernation_core::state::slo::{self, SloStatus, SloTracker};
 
 /// Which pod's logs the UI wants tailed, and how. The poll re-fetches whenever
 /// any of these change (`PartialEq`), so toggling previous/timestamps/window
@@ -87,6 +88,9 @@ pub struct ForwardInfo {
 pub struct WorldSnap {
     pub models: Arc<Models>,
     pub observed: ObservedWorld,
+    /// Per-workload error-budget readings (the treasury), keyed by workload.
+    /// `Arc` so the per-frame city-window lookup is a refcount bump.
+    pub slo: Arc<HashMap<WorkloadRef, SloStatus>>,
 }
 
 pub struct Snapshot {
@@ -437,6 +441,11 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
             // accept loop + in-flight tunnels). `net.forwards` mirrors these for
             // the UI; the two stay in lock-step.
             let mut forwards: Vec<(ClusterId, portforward::Forward)> = Vec::new();
+            // Treasury: per-workload availability rings, sampled every
+            // `SLO_SAMPLE_TICKS` ticks (≈2s) from the *unfiltered* workloads.
+            const SLO_SAMPLE_TICKS: u64 = 8;
+            let mut slo = SloTracker::default();
+            let mut slo_warm = SloTracker::default();
             loop {
                 // Hot-context switch: connect the new cluster, then drop the
                 // old handle (its informers abort) by reassigning. Snapshot
@@ -466,6 +475,8 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 .retain(|f| f.cluster != ClusterId::Hot);
                             net.forward_perm.lock().unwrap().clear();
                             net.forward_perm_pending.lock().unwrap().clear();
+                            // Error budgets belong to the cluster we're leaving.
+                            slo.clear();
                             // Namespaces differ across clusters — reset.
                             *net.ns_filter.lock().unwrap() = NamespaceFilter::All;
                             // Discovered kinds + any open browse are the old
@@ -790,6 +801,25 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         .insert((cluster, ns), allowed);
                 }
 
+                // Treasury: sample each workload's availability into the SLO
+                // rings every ~2s (from the *unfiltered* workloads — SLOs track
+                // the whole cluster regardless of the namespace view) and force
+                // a rebuild so the published budgets stay fresh on an idle
+                // cluster. The first sample lands immediately so the city window
+                // shows "warming" right away rather than blank.
+                if ready_hot.load(Ordering::Relaxed)
+                    && (ticks == 1 || ticks.is_multiple_of(SLO_SAMPLE_TICKS))
+                {
+                    slo.record(&build_workloads(&hot_handle.world));
+                    if let Some(h) = warm_handle
+                        .as_ref()
+                        .filter(|_| ready_warm.load(Ordering::Relaxed))
+                    {
+                        slo_warm.record(&build_workloads(&h.world));
+                    }
+                    dirty.store(true, Ordering::Relaxed);
+                }
+
                 // Rebuild when the world changed (dirty) OR the namespace
                 // filter changed under us; either way re-derive with it.
                 if !ready_hot.load(Ordering::Relaxed) {
@@ -802,12 +832,15 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 }
                 last_filter = filter.clone();
                 let hot_models = Arc::new(Models::build_filtered(&hot_handle.world, &filter));
+                let hot_slo: Arc<HashMap<WorkloadRef, SloStatus>> =
+                    Arc::new(slo.statuses(slo::DEFAULT_TARGET).into_iter().collect());
                 let warm = warm_handle
                     .as_ref()
                     .filter(|_| ready_warm.load(Ordering::Relaxed))
                     .map(|h| WorldSnap {
                         models: Arc::new(Models::build_filtered(&h.world, &filter)),
                         observed: h.world.clone(),
+                        slo: Arc::new(slo_warm.statuses(slo::DEFAULT_TARGET).into_iter().collect()),
                     });
                 let pair = warm
                     .as_ref()
@@ -823,6 +856,41 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 if let Some(c) = pair.as_ref().and_then(|p| p.concern()) {
                     merged.push(c);
                 }
+                // Treasury concerns: a workload burning / exhausting its error
+                // budget — but only if a stronger point-in-time concern doesn't
+                // already cover it (keeps the "city in trouble, not 40 alarms"
+                // rule, and lets the budget surface the *flaky-but-up-now* cases
+                // the instant detectors miss).
+                let flagged: HashSet<(ClusterId, WorkloadRef)> = merged
+                    .iter()
+                    .filter_map(|c| match &c.target {
+                        Target::Workload(wr) => Some((c.cluster, wr.clone())),
+                        _ => None,
+                    })
+                    .collect();
+                // The SLO map is unfiltered (every city window shows its budget),
+                // but the *queue* concern respects the active namespace filter,
+                // like every other concern — so a filtered-out workload can't leak
+                // a budget alarm into the scoped view.
+                for (wr, st) in hot_slo.iter() {
+                    if filter.matches(&wr.namespace)
+                        && !flagged.contains(&(ClusterId::Hot, wr.clone()))
+                        && let Some(c) = slo::budget_concern(wr, st)
+                    {
+                        merged.push(c);
+                    }
+                }
+                if let Some(w) = &warm {
+                    for (wr, st) in w.slo.iter() {
+                        if filter.matches(&wr.namespace)
+                            && !flagged.contains(&(ClusterId::Warm, wr.clone()))
+                            && let Some(mut c) = slo::budget_concern(wr, st)
+                        {
+                            c.cluster = ClusterId::Warm;
+                            merged.push(c);
+                        }
+                    }
+                }
                 merged.sort_by(|a, b| {
                     b.severity
                         .cmp(&a.severity)
@@ -835,6 +903,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     hot: WorldSnap {
                         models: hot_models,
                         observed: hot_handle.world.clone(),
+                        slo: hot_slo,
                     },
                     warm,
                     pair,

@@ -29,6 +29,19 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   first).
 
 ### Added
+- **The treasury — availability SLOs + error budgets.** Each city window gains a
+  **TREASURY** band: an availability SLO (default 99%) and the error budget it
+  spends down — a coin gauge that's full when the workload stays up, draining
+  when it flaps, exhausted when availability falls below target. In the 4X
+  framing the error budget is a treasury you spend. Availability is **derived
+  from pod readiness** (≥1 replica up over a recent ~8-min window) — no
+  metrics-server or Prometheus needed, works on any cluster; partial capacity
+  loss stays the attention queue's job. A burning or exhausted budget raises a
+  queue concern (deduped against workloads a stronger concern already covers, so
+  the budget surfaces the *flaky-but-up-now* cases the point-in-time detectors
+  miss). Honest scope: an in-session rolling window (no cross-restart history),
+  i.e. *recent* availability, not 30-day compliance. The math is pure +
+  unit-tested; verified live on kind (web 100% budget, crashy exhausted).
 - **Blast-radius highlighting (`B`).** Select a node or workload (or focus a
   concern) and press **`B`** to light up its dependency fan-out on the map —
   pulsing lines spread from the troubled subject to every affected city, harbor
