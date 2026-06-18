@@ -27,7 +27,9 @@ pub enum AppEvent {
     /// Resource discovery finished — the browsable kinds.
     Kinds(Vec<kubernation_core::k8s::browse::KindEntry>),
     /// A resource-browser LIST finished (Ok = objects + truncation, Err = message).
+    /// `generation` drops a stale result whose kind the user already moved off.
     BrowseRows {
+        generation: u64,
         result: Result<kubernation_core::k8s::browse::ListResult, String>,
     },
 }

@@ -186,8 +186,10 @@ impl Browser {
                     };
                     // Keep the age column aligned: clip an over-long name so it
                     // can't overrun into the age (padding alone never truncates).
-                    if name.len() > 56 {
-                        name.truncate(55);
+                    // Char-based — `String::truncate` is byte-indexed and would
+                    // panic mid-codepoint (browsed objects can be any kind).
+                    if name.chars().count() > 56 {
+                        name = name.chars().take(55).collect::<String>();
                         name.push('…');
                     }
                     let rect = Rect::new(b.x, y - 13.0, b.w, row_h);

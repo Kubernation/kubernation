@@ -1576,8 +1576,9 @@ async fn main() {
         } else if args.plan_go {
             120
         } else if args.browse.is_some() {
-            // Discovery (one Discovery::run) and, with a kind, a LIST need a few
-            // net-thread ticks (250ms each) to land before the modal has content.
+            // Discovery (per-group enumeration) and, with a kind, a LIST need a
+            // few net-thread ticks (250ms each) to land before the modal has
+            // content.
             180
         } else {
             45

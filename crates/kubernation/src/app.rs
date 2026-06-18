@@ -131,6 +131,9 @@ pub struct App {
     resource_picker: ResourcePicker,
     browse: BrowseView,
     browse_kind: Option<browse::KindEntry>,
+    /// Generation token so a slow LIST for a kind the user moved off can't
+    /// clobber the current table (mirrors `log_gen`).
+    browse_gen: u64,
     attention_panel: AttentionPanel,
     picker: ContextPicker,
     ns_picker: NamespacePicker,
@@ -206,6 +209,7 @@ impl App {
             resource_picker: ResourcePicker::default(),
             browse: BrowseView::default(),
             browse_kind: None,
+            browse_gen: 0,
             attention_panel,
             picker: ContextPicker::default(),
             ns_picker: NamespacePicker::default(),
@@ -313,10 +317,13 @@ impl App {
                 }
                 true
             }
-            AppEvent::BrowseRows { result } => {
+            // Drop a stale LIST whose kind the user already moved off (e.g.
+            // picked A — slow — then B; A's late result must not clobber B).
+            AppEvent::BrowseRows { generation, result } if generation == self.browse_gen => {
                 self.browse.set_result(result);
                 true
             }
+            AppEvent::BrowseRows { .. } => false,
             AppEvent::Term(TermEvent::Key(key)) if key.kind != KeyEventKind::Release => {
                 self.on_key(key).await;
                 true
@@ -986,11 +993,13 @@ impl App {
     }
 
     fn spawn_list(&mut self, kind: browse::KindEntry) {
+        self.browse_gen += 1;
+        let generation = self.browse_gen;
         let client = self.hot_cluster.client.clone();
         let tx = self.tx.clone();
         tokio::spawn(async move {
             let result = browse::list_kind(&client, &kind).await;
-            let _ = tx.send(AppEvent::BrowseRows { result }).await;
+            let _ = tx.send(AppEvent::BrowseRows { generation, result }).await;
         });
     }
 
