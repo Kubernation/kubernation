@@ -425,10 +425,10 @@ async fn main() {
             plan_open = !plan_open;
             plan_just_opened = plan_open;
         }
-        // `:` (Shift+;) opens the resource browser — discover kinds if needed.
-        if is_key_pressed(KeyCode::Semicolon)
-            && (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift))
-            && !typing
+        // `:` opens the resource browser — discover kinds if needed. Detect the
+        // produced ':' CHARACTER rather than a physical Shift+Semicolon chord, so
+        // it works on keyboard layouts where ':' isn't Shift+; (AZERTY, etc.).
+        let map_input_free = !typing
             && !log_open
             && panel.is_none()
             && browser.is_none()
@@ -436,14 +436,32 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && !plan_open
+            && !picker
+            && !ns_picker
+            && open_menu.is_none()
             && pending_evict.is_none()
-            && !pending_commit
-        {
-            if net.kinds().is_none() {
-                net.request_discover();
+            && !pending_commit;
+        if map_input_free {
+            let mut open_browser = false;
+            // Draining here also keeps a stray char from leaking into the log
+            // filter the next time it opens.
+            while let Some(c) = get_char_pressed() {
+                if c == ':' {
+                    open_browser = true;
+                }
             }
-            browser = Some(Browser::new());
-            browser_just_opened = true;
+            if open_browser {
+                if net.kinds().is_none() {
+                    net.request_discover();
+                }
+                browser = Some(Browser::new());
+                browser_just_opened = true;
+            }
+        } else if !log_open {
+            // A non-char modal owns the screen — discard typed chars so a stray
+            // ':' can't pop the browser open when the modal later closes. (The
+            // log overlay consumes its own chars, so leave its queue alone.)
+            while get_char_pressed().is_some() {}
         }
         // `y` inspects the open city/node window's object (read-only YAML).
         // Not while a log overlay is up — the inspector would stack on top of it
@@ -494,11 +512,13 @@ async fn main() {
                 // it first.
                 inspector = None;
             } else if let Some(b) = browser.as_mut() {
-                // Esc backs the table out to the kind list, then closes.
+                // Esc backs the table out to the kind list, then closes. Either
+                // way drop the in-flight LIST so the net thread stops re-polling
+                // that kind every ~2s once no table is shown.
                 if !b.back() {
                     browser = None;
-                    net.clear_browse();
                 }
+                net.clear_browse();
             } else if plan_open {
                 plan_open = false;
             } else if ns_picker {
@@ -1463,6 +1483,10 @@ async fn main() {
             match browser.as_mut().map(|b| b.draw(&net, mouse, click)) {
                 Some(BrowseAction::Close) => {
                     browser = None;
+                    net.clear_browse();
+                }
+                Some(BrowseAction::Back) => {
+                    // Returned to the kind picker — stop the net thread re-LISTing.
                     net.clear_browse();
                 }
                 Some(BrowseAction::Inspect(obj)) => {

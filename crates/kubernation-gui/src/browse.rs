@@ -15,6 +15,8 @@ use crate::window::draw_window;
 pub enum BrowseAction {
     None,
     Close,
+    /// Returned to the kind picker from the table — the caller stops the LIST.
+    Back,
     /// Boxed — `Object` is large vs. the unit variants.
     Inspect(Box<Object>),
 }
@@ -87,8 +89,39 @@ impl Browser {
             None => {
                 text("discovering kinds…", b.x + 4.0, b.y + 18.0, fs, DIM);
             }
+            Some(kinds) if kinds.is_empty() => {
+                text(
+                    "no resource kinds discovered",
+                    b.x + 4.0,
+                    b.y + 18.0,
+                    fs,
+                    CRIT,
+                );
+                text(
+                    "the cluster may be initialising or the discovery API is degraded",
+                    b.x + 4.0,
+                    b.y + 36.0,
+                    fs,
+                    DIM,
+                );
+            }
             Some(kinds) => {
-                let mut y = b.y - self.scroll + 14.0;
+                // A degraded-discovery note (some API groups couldn't be read).
+                let warnings = net.discover_warnings();
+                let top = b.y - self.scroll + 14.0;
+                let mut y = top;
+                if !warnings.is_empty() {
+                    if y > b.y && y < b.y + b.h {
+                        text(
+                            format!("⚠ {} API group(s) unavailable", warnings.len()),
+                            b.x + 6.0,
+                            y,
+                            fs,
+                            WARN,
+                        );
+                    }
+                    y += row_h;
+                }
                 for k in &kinds {
                     let rect = Rect::new(b.x, y - 13.0, b.w, row_h);
                     if y > b.y && y < b.y + b.h {
@@ -112,7 +145,7 @@ impl Browser {
                     }
                     y += row_h;
                 }
-                self.max_scroll = ((kinds.len() as f32 * row_h + 18.0) - b.h).max(0.0);
+                self.max_scroll = ((y - top) + 4.0 - b.h).max(0.0);
                 self.scroll = self.scroll.min(self.max_scroll);
                 scrollbar(b, self.scroll, self.max_scroll);
             }
@@ -153,7 +186,7 @@ impl Browser {
         if click && back.contains(mouse) {
             self.mode = Mode::Pick;
             self.scroll = 0.0;
-            return BrowseAction::None;
+            return BrowseAction::Back;
         }
         let top = b.y + 22.0;
         let view_h = (b.y + b.h - top).max(0.0);

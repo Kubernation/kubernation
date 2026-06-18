@@ -19,14 +19,17 @@ use kubernation_core::k8s::browse::{BrowseRow, KindEntry, ListResult, Object, ro
 pub struct ResourcePicker {
     pub open: bool,
     kinds: Vec<KindEntry>,
+    /// API groups discovery couldn't enumerate (shown as a "N unavailable" note).
+    warnings: Vec<String>,
     discovering: bool,
     filter: String,
     state: ListState,
 }
 
 impl ResourcePicker {
-    pub fn open_with(&mut self, kinds: Vec<KindEntry>, discovering: bool) {
+    pub fn open_with(&mut self, kinds: Vec<KindEntry>, warnings: Vec<String>, discovering: bool) {
         self.kinds = kinds;
+        self.warnings = warnings;
         self.discovering = discovering;
         self.filter.clear();
         self.open = true;
@@ -34,8 +37,9 @@ impl ResourcePicker {
     }
 
     /// Discovery landed while the picker is open — fill it in.
-    pub fn set_kinds(&mut self, kinds: Vec<KindEntry>) {
+    pub fn set_kinds(&mut self, kinds: Vec<KindEntry>, warnings: Vec<String>) {
         self.kinds = kinds;
+        self.warnings = warnings;
         self.discovering = false;
         self.reset_selection();
     }
@@ -94,18 +98,37 @@ impl ResourcePicker {
     pub fn render(&mut self, f: &mut Frame, theme: &Theme) {
         let area = centered(f.area(), 56, 20);
         f.render_widget(Clear, area);
-        let items: Vec<ListItem> = self
-            .filtered()
-            .iter()
-            .map(|k| {
-                let scope = if k.namespaced { "" } else { "  ·  cluster" };
-                ListItem::new(format!("{}{scope}", k.label()))
-            })
-            .collect();
+        let items: Vec<ListItem> = if !self.discovering && self.kinds.is_empty() {
+            // Discovery returned nothing — don't render a silent blank body.
+            vec![
+                ListItem::new(Line::styled(
+                    "no resource kinds discovered",
+                    theme.severity(kubernation_core::state::attention::Severity::Critical),
+                )),
+                ListItem::new(Line::styled(
+                    "(cluster initialising, or the discovery API is degraded — Esc, then : to retry)",
+                    theme.dim(),
+                )),
+            ]
+        } else {
+            self.filtered()
+                .iter()
+                .map(|k| {
+                    let scope = if k.namespaced { "" } else { "  ·  cluster" };
+                    ListItem::new(format!("{}{scope}", k.label()))
+                })
+                .collect()
+        };
         let title = if self.discovering {
             " :resource — discovering kinds… ".to_string()
-        } else {
+        } else if self.warnings.is_empty() {
             format!(" :resource — {} kinds ", self.kinds.len())
+        } else {
+            format!(
+                " :resource — {} kinds · ⚠ {} unavailable ",
+                self.kinds.len(),
+                self.warnings.len()
+            )
         };
         let mut block = Block::bordered()
             .border_style(theme.chrome())
@@ -337,7 +360,7 @@ mod tests {
     fn picker_shows_discovering_when_empty() {
         let theme = Theme::new(ColorMode::Auto);
         let mut p = ResourcePicker::default();
-        p.open_with(Vec::new(), true);
+        p.open_with(Vec::new(), Vec::new(), true);
         let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
         term.draw(|f| p.render(f, &theme)).unwrap();
         assert!(dump(&term).contains("discovering"), "discovering title");

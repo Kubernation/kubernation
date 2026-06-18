@@ -24,8 +24,13 @@ pub enum AppEvent {
     Evicted { result: Result<String, String> },
     /// An End-of-Turn commit finished; the per-row outcome feeds the review.
     Committed { outcome: CommitOutcome },
-    /// Resource discovery finished — the browsable kinds.
-    Kinds(Vec<kubernation_core::k8s::browse::KindEntry>),
+    /// Resource discovery finished — the browsable kinds + any groups that
+    /// couldn't be enumerated. `generation` drops a result from a cluster the
+    /// user already switched away from.
+    Kinds {
+        generation: u64,
+        discovered: kubernation_core::k8s::browse::Discovered,
+    },
     /// A resource-browser LIST finished (Ok = objects + truncation, Err = message).
     /// `generation` drops a stale result whose kind the user already moved off.
     BrowseRows {

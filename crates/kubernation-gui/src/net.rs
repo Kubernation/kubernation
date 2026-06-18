@@ -97,19 +97,23 @@ pub struct Net {
     plan_outcome: Mutex<Option<PlanOutcome>>,
     /// The namespace filter the net thread applies when building Models.
     ns_filter: Mutex<NamespaceFilter>,
-    /// Resource browser: a one-shot discovery request + its cached result, the
-    /// kind currently being LISTed, and that LIST's output.
+    /// Resource browser: a one-shot discovery request + its cached result (the
+    /// kinds, and any groups that failed to enumerate), the kind currently being
+    /// LISTed, and that LIST's output.
     discover_req: AtomicBool,
     kinds: Mutex<Option<Vec<browse::KindEntry>>>,
+    discover_warnings: Mutex<Vec<String>>,
     browse_req: Mutex<Option<browse::KindEntry>>,
     browse_out: Mutex<BrowseOut>,
 }
 
 /// The resource browser's current LIST state (the net thread fills it; a
-/// `None` result means "listing in progress").
+/// `None` result means "listing in progress"). The payload is an `Arc` so the
+/// per-frame `browse_out()` pull is a refcount bump, not a deep copy of up to
+/// `LIST_LIMIT` (possibly large) objects.
 #[derive(Default, Clone)]
 pub struct BrowseOut {
-    pub result: Option<Result<browse::ListResult, String>>,
+    pub result: Option<Result<Arc<browse::ListResult>, String>>,
 }
 
 impl Net {
@@ -129,6 +133,7 @@ impl Net {
             ns_filter: Mutex::new(NamespaceFilter::All),
             discover_req: AtomicBool::new(false),
             kinds: Mutex::new(None),
+            discover_warnings: Mutex::new(Vec::new()),
             browse_req: Mutex::new(None),
             browse_out: Mutex::new(BrowseOut::default()),
         })
@@ -142,6 +147,11 @@ impl Net {
     /// Discovered kinds, if discovery has completed.
     pub fn kinds(&self) -> Option<Vec<browse::KindEntry>> {
         self.kinds.lock().unwrap().clone()
+    }
+
+    /// Groups discovery couldn't enumerate (for a "N unavailable" picker note).
+    pub fn discover_warnings(&self) -> Vec<String> {
+        self.discover_warnings.lock().unwrap().clone()
     }
 
     /// Ask the net thread to LIST `kind` (replaces any in-flight browse).
@@ -357,6 +367,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             // on B). `last_browse` self-resets next tick (the
                             // cleared browse_req makes `breq` None).
                             *net.kinds.lock().unwrap() = None;
+                            *net.discover_warnings.lock().unwrap() = Vec::new();
                             *net.browse_req.lock().unwrap() = None;
                             *net.browse_out.lock().unwrap() = BrowseOut::default();
                         }
@@ -401,8 +412,9 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // Resource browser: one-shot discovery, then LIST the requested
                 // kind (re-LIST on change or every ~2s, hot cluster).
                 if net.discover_req.swap(false, Ordering::Relaxed) {
-                    let kinds = browse::discover(&hot_client).await;
-                    *net.kinds.lock().unwrap() = Some(kinds);
+                    let d = browse::discover(&hot_client).await;
+                    *net.discover_warnings.lock().unwrap() = d.warnings;
+                    *net.kinds.lock().unwrap() = Some(d.kinds);
                 }
                 let breq = net.browse_req.lock().unwrap().clone();
                 if let Some(k) = breq.clone() {
@@ -416,12 +428,27 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         || last_browse.as_deref() != Some(k.label().as_str())
                         || ticks.is_multiple_of(8)
                     {
-                        let res = browse::list_kind(&hot_client, &k).await;
+                        let filter = net.namespace_filter();
+                        // Client-side deadline so a hung LIST can't freeze the
+                        // whole net loop (logs/evict/commit/snapshot all run
+                        // after this in the same tick).
+                        let res = match tokio::time::timeout(
+                            Duration::from_secs(25),
+                            browse::list_kind(&hot_client, &k, &filter),
+                        )
+                        .await
+                        {
+                            Ok(r) => r,
+                            Err(_) => Err("list timed out".to_string()),
+                        };
+                        let stored = BrowseOut {
+                            result: Some(res.map(Arc::new)),
+                        };
                         // Store only if still the requested kind.
                         if net.browse_req.lock().unwrap().as_ref().map(|r| r.label())
                             == Some(k.label())
                         {
-                            *net.browse_out.lock().unwrap() = BrowseOut { result: Some(res) };
+                            *net.browse_out.lock().unwrap() = stored;
                         }
                     }
                 }

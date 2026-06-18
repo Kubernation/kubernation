@@ -876,6 +876,35 @@ what makes the interesting logic unit-testable without a cluster.
   `kinds` on context switch too. Secrets = 0 on the dev cluster normally, so the
   redaction is unit-test-covered (None→stamp→redact, end-to-end) plus the
   one-off live check above.
+  **FMEA round** (2026-06-18, "address medium+"): a failure-mode analysis of the
+  feature (58 candidates → 43 real → 15 medium+) drove a second hardening pass.
+  *Security/privilege:* redaction now fires for a Secret of **any** group/version
+  (a `*.Secret` CRD/aggregated API, not just core v1) **and** fails *closed* —
+  an object whose `kind` we can't determine (a hypothetical un-stamped item) has
+  its `data`/`stringData` masked rather than shown; a Secret's `annotations` are
+  dropped (defense-in-depth vs. a `last-applied` base64 copy — `clean_yaml`
+  already strips that specific key); and an **inline-credential sweep**
+  (`mask_sensitive`) masks string leaves under high-confidence credential keys
+  (`password`/`token`/`apiKey`/… — exact-match, so reference fields like
+  `secretName` are untouched) on **every** browsed object, catching operator CRs
+  that embed secrets inline. *Robustness:* `list_kind` is wrapped in a client-side
+  `tokio::timeout` (25s) + a server-side `ListParams.timeout` (20s) so a hung
+  LIST can't freeze the GUI net loop (which also runs logs/evict/commit/snapshot);
+  `discover` gives each group a 5s deadline and returns `Discovered { kinds,
+  warnings }` so a degraded API group shows a "N unavailable" note instead of
+  silently vanishing; an empty discovery shows a legible message (not a blank
+  picker). *Scope/UX:* `list_kind` now honors the active `NamespaceFilter`
+  (per-namespace LIST + merge for namespaced kinds — matches the rest of the app
+  and avoids a whole-cluster `Forbidden` for namespace-scoped users); kube errors
+  are classified (403 → "forbidden — you can't list X here", 404 → "not served");
+  the GUI `browse_out` payload is an `Arc` so the per-frame pull is a refcount
+  bump, not a deep copy of up to 500 (possibly large) objects; leaving the table
+  stops the ~2s re-LIST poll; `:` opens off the produced character (works on
+  non-US layouts); and the TUI gained a `discover_gen` guard (a slow old-cluster
+  discovery can't repopulate a switched-to cluster). Deferred (risk already
+  covered): a SelfSubjectAccessReview pre-flight for `secrets` (apiserver RBAC +
+  redaction + scoping suffice), and parallelizing discovery (the per-group
+  timeout removes the hang; latency is one-shot + cached).
 
 ## The pair (hot/warm)
 

@@ -23,7 +23,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   500-object cap clips the view. Pure, unit-tested core (`kubernation-core`
   `k8s/browse.rs` + `state/inspect::dynamic_yaml`); discovery + list + both
   frontends + Secret redaction verified live on kind (configmaps in full; a
-  planted Secret's values redacted).
+  planted Secret's values redacted). Hardened by a review + an FMEA pass:
+  redaction covers `Secret` of any group and fails closed, masks inline
+  credential fields on any object, and drops a Secret's annotations; discovery
+  and LIST are deadline-bounded (a hung/degraded API can't freeze the UI) and
+  report unavailable groups; the browser honors the active namespace filter,
+  classifies RBAC/not-found errors, and opens via the `:` character (non-US
+  layouts).
 - **Copy + export for logs and YAML.** In the log overlay and the object
   inspector, **`c`** copies the whole buffer to the system clipboard and **`w`**
   exports it to a file in the working directory (logs → `.log`, YAML → `.yaml`),

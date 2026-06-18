@@ -127,6 +127,8 @@ pub struct App {
     /// Resource browser: discovered kinds (cached), the `:` picker, and the
     /// generic table for the kind currently being browsed (hot cluster).
     kinds: Vec<browse::KindEntry>,
+    /// API groups discovery couldn't enumerate (shown in the picker).
+    kinds_warnings: Vec<String>,
     kinds_loading: bool,
     resource_picker: ResourcePicker,
     browse: BrowseView,
@@ -134,6 +136,9 @@ pub struct App {
     /// Generation token so a slow LIST for a kind the user moved off can't
     /// clobber the current table (mirrors `log_gen`).
     browse_gen: u64,
+    /// Generation token so a slow discovery for a cluster the user switched
+    /// away from can't repopulate the new cluster's kind list.
+    discover_gen: u64,
     attention_panel: AttentionPanel,
     picker: ContextPicker,
     ns_picker: NamespacePicker,
@@ -205,11 +210,13 @@ impl App {
             inspect: InspectView::default(),
             inspect_cluster: ClusterId::Hot,
             kinds: Vec::new(),
+            kinds_warnings: Vec::new(),
             kinds_loading: false,
             resource_picker: ResourcePicker::default(),
             browse: BrowseView::default(),
             browse_kind: None,
             browse_gen: 0,
+            discover_gen: 0,
             attention_panel,
             picker: ContextPicker::default(),
             ns_picker: NamespacePicker::default(),
@@ -309,14 +316,21 @@ impl App {
                 self.dirty = true; // the world changed under us
                 true
             }
-            AppEvent::Kinds(kinds) => {
-                self.kinds = kinds;
+            // Drop discovery from a cluster the user already switched away from.
+            AppEvent::Kinds {
+                generation,
+                discovered,
+            } if generation == self.discover_gen => {
+                self.kinds = discovered.kinds;
+                self.kinds_warnings = discovered.warnings;
                 self.kinds_loading = false;
                 if self.resource_picker.open {
-                    self.resource_picker.set_kinds(self.kinds.clone());
+                    self.resource_picker
+                        .set_kinds(self.kinds.clone(), self.kinds_warnings.clone());
                 }
                 true
             }
+            AppEvent::Kinds { .. } => false,
             // Drop a stale LIST whose kind the user already moved off (e.g.
             // picked A — slow — then B; A's late result must not clobber B).
             AppEvent::BrowseRows { generation, result } if generation == self.browse_gen => {
@@ -895,7 +909,9 @@ impl App {
                 self.pending_evict = None;
                 self.ns_filter = NamespaceFilter::All; // namespaces differ
                 self.kinds.clear(); // discovery was for the old cluster
+                self.kinds_warnings.clear();
                 self.kinds_loading = false; // re-discover on the next `:`
+                self.discover_gen += 1; // drop a slow old-cluster discovery
                 self.go_home(Screen::Map);
                 self.focus = ClusterId::Hot;
                 self.attention_panel.cycle = None;
@@ -978,17 +994,26 @@ impl App {
         if self.kinds.is_empty() && !self.kinds_loading {
             self.spawn_discover();
         }
-        self.resource_picker
-            .open_with(self.kinds.clone(), self.kinds.is_empty());
+        self.resource_picker.open_with(
+            self.kinds.clone(),
+            self.kinds_warnings.clone(),
+            self.kinds.is_empty(),
+        );
     }
 
     fn spawn_discover(&mut self) {
         self.kinds_loading = true;
+        let generation = self.discover_gen;
         let client = self.hot_cluster.client.clone();
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let kinds = browse::discover(&client).await;
-            let _ = tx.send(AppEvent::Kinds(kinds)).await;
+            let discovered = browse::discover(&client).await;
+            let _ = tx
+                .send(AppEvent::Kinds {
+                    generation,
+                    discovered,
+                })
+                .await;
         });
     }
 
@@ -996,9 +1021,10 @@ impl App {
         self.browse_gen += 1;
         let generation = self.browse_gen;
         let client = self.hot_cluster.client.clone();
+        let filter = self.ns_filter.clone();
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let result = browse::list_kind(&client, &kind).await;
+            let result = browse::list_kind(&client, &kind, &filter).await;
             let _ = tx.send(AppEvent::BrowseRows { generation, result }).await;
         });
     }
