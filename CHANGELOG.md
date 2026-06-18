@@ -8,6 +8,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Docs
+- **Regenerated the GUI screenshots** to reflect the current chrome — the
+  dropdown menu bar, the docked right column (WORLD/STATUS/SELECTION), the map
+  title cartouche — and added shots for the new map views (overlay), the menu
+  bar, and the advisor screens. The README GUI section is updated to match
+  (menu bar / map views / advisors), and the now-stale standalone connectivity
+  and storage shots were folded into text (the Almanac legend documents the
+  marks).
+
 ### Added
 - **Advisor screens (Civ's F1 "Berater").** A new **Advisors** menu opens a
   modal window with three read-only summary tabs of the whole realm: **Health**

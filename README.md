@@ -100,9 +100,11 @@ convention) — plus warning banners over troubled cities; namespace isles
 with structure marks, hover tooltips, right-drag panning, wheel zoom around
 the cursor, minimap click-to-jump, smooth camera flights on `]`/`[` and
 `N`, and detail drill-downs: click a city for its **city window**, click
-land for its **province window** — both centered modals (below). **Click
-any pod row** to tail its logs in a live overlay (refreshed every couple of
-seconds):
+land for its **province window** — both centered modals (below). The chrome
+is classic-4X: a **dropdown menu bar** (Game / View / Orders / Advisors /
+World / Help), a **docked right column** (WORLD minimap · STATUS · SELECTION),
+and a cartographic **map title** over the board. **Click any pod row** to
+tail its logs in a live overlay (refreshed every couple of seconds):
 
 ![GUI logs](docs/gui-logs.png)
 
@@ -119,24 +121,29 @@ cpu/mem gauges, the **garrison** of pods stationed there, the node's
 
 ![GUI node](docs/gui-node.png)
 
-A city's network exposure is moored off its east coast — Service **harbors**
-(anchors) and Ingress **gates** (arches), each on the latitude of the city
-it serves; hover for the route, click to open the city:
+**Map views.** The **View** menu recolors the whole board (and the minimap)
+like a classic-4X map display: **Terrain** (node health, the default),
+**Pressure** (cpu/mem heat), **Replicas** (worst workload health per node —
+red where a city is understrength), or **Namespace** (a per-namespace hue, a
+political/territory map). The active view is named in the title and STATUS so
+a recolored terrain isn't mistaken for `NotReady`:
 
-![GUI connectivity](docs/gui-connectivity.png)
+![GUI map views](docs/gui-overlay.png)
 
-Persistent storage shows as a **granary** (silo) inland of any city that
-mounts PVCs — cyan when every claim is Bound, yellow when one is pending:
+![GUI menu bar](docs/gui-menu.png)
 
-![GUI storage](docs/gui-storage.png)
-
-Batch work lands on the **namespace islands**: Jobs as expeditions (a
-pennant + completion status, yellow when failed), CronJobs as clocks showing
-their schedule — beside the custom-resource structures:
+More Kubernetes kinds read as geography (see the Almanac legend below for the
+exact marks): a city's network exposure is moored off its east coast — Service
+**harbors** (anchors) and Ingress **gates** (arches), each on the latitude of
+the city it serves; persistent storage is a **granary** (silo) inland of any
+city that mounts PVCs (cyan when Bound, yellow when pending); and batch work
+lands on the **namespace islands** — Jobs as expeditions (a pennant + status,
+yellow when failed), CronJobs as clocks showing their schedule, beside the
+custom-resource structures:
 
 ![GUI batch](docs/gui-batch.png)
 
-Press **`?`** (or `F1`, or the top-bar `?`) for the **Almanac** — an in-app
+Press **`?`** (or `F1`, or the **Help** menu) for the **Almanac** — an in-app
 reference, drawn on a reusable popup-window system, that documents the map's
 whole visual vocabulary with the *actual marks* beside each definition, plus
 the world metaphor, controls, and how to read state. Legend entries that
@@ -145,11 +152,21 @@ straight to it (`1`-`4` / `←→` switch pages):
 
 ![GUI Almanac](docs/gui-almanac.png)
 
+**Advisors.** The **Advisors** menu opens the classic-4X advisor screens —
+read-only summary reports of the whole realm that complement the attention
+queue: **Health** (provinces/nodes by health, citizens/pods by phase,
+cities/workloads at strength), **Storage** (granaries/PVCs bound vs. pending,
+with the pending claims), and **Network** (harbors/services + gates/ingresses,
+plus orphan gates and idle harbors). The reports are pure functions of the
+observed world (`kubernation-core`), unit-tested and cluster-wide:
+
+![GUI advisors](docs/gui-advisors.png)
+
 **The planning turn.** Intervention is framed as deliberate *staged* changes,
 not imperative edits. Set replicas from a city window (`plan replicas [−] N
 [+]`) or cordon a node from its province window; the change is staged, not
-applied. Press **`t`** (or the chrome **End Turn (N)**) for the End-of-Turn
-review — a from→to diff of everything staged, with per-row unstage and
+applied. Press **`t`** (or the **Orders** menu's End of Turn) for the
+End-of-Turn review — a from→to diff of everything staged, with per-row unstage and
 Discard. **Commit** (behind a confirm) applies the turn to the cluster: each
 staged change is **server-side dry-run validated first** — which also enforces
 RBAC — so a turn the cluster would reject is blocked before any real write,
