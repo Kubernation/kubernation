@@ -84,16 +84,48 @@ mod tests {
     use crate::state::fixtures as fx;
 
     #[test]
-    fn clean_yaml_strips_managed_fields_and_renders() {
+    fn clean_yaml_strips_noise_and_renders() {
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ManagedFieldsEntry;
+        use std::collections::BTreeMap;
+
         let (world, mut s) = fx::world();
         s.node(fx::node("n1", Some("z-a")));
-        s.pod(fx::pod("demo", "web-1", Some("n1")));
+
+        // A pod that actually carries the noise we claim to strip, plus a
+        // benign annotation that must survive (so the `annotations:` block
+        // stays).
+        let mut p = fx::pod("demo", "web-1", Some("n1"));
+        p.metadata.managed_fields = Some(vec![ManagedFieldsEntry::default()]);
+        p.metadata.annotations = Some(BTreeMap::from([
+            (
+                "kubectl.kubernetes.io/last-applied-configuration".to_string(),
+                "{\"big\":\"blob\"}".to_string(),
+            ),
+            ("keep.me/x".to_string(), "y".to_string()),
+        ]));
+        s.pod(p);
 
         let y = pod_yaml(&world, "demo", "web-1").expect("pod yaml");
-        assert!(y.contains("kind: Pod"), "has kind: {y}");
-        assert!(y.contains("name: web-1"), "has name");
-        assert!(y.contains("namespace: demo"), "has namespace");
-        assert!(!y.contains("managedFields"), "managedFields stripped");
+        assert!(y.contains("kind: Pod") && y.contains("name: web-1"));
+        assert!(y.contains("namespace: demo"));
+        assert!(!y.contains("managedFields"), "managedFields stripped:\n{y}");
+        assert!(
+            !y.contains("last-applied-configuration"),
+            "last-applied stripped:\n{y}"
+        );
+        assert!(y.contains("keep.me/x"), "benign annotation survives:\n{y}");
+        assert!(y.contains("annotations:"), "block kept (has a survivor)");
+
+        // A pod whose ONLY annotation is the stripped one → the whole
+        // `annotations:` block is removed (the is_empty cleanup).
+        let mut bare = fx::pod("demo", "bare", Some("n1"));
+        bare.metadata.annotations = Some(BTreeMap::from([(
+            "kubectl.kubernetes.io/last-applied-configuration".to_string(),
+            "{}".to_string(),
+        )]));
+        s.pod(bare);
+        let yb = pod_yaml(&world, "demo", "bare").expect("bare yaml");
+        assert!(!yb.contains("annotations"), "empty block removed:\n{yb}");
 
         // Missing object → None (not a panic / empty string).
         assert!(pod_yaml(&world, "demo", "nope").is_none());

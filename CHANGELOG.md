@@ -74,6 +74,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   navigable, open ocean included (the click resolves to the nearest cell).
 
 ### Fixed
+- **Inspector review follow-ups (2 adversarial findings).** `y` no longer opens
+  the inspector while a pod's log overlay is up (it would stack on top and Esc
+  would close the hidden overlay first). And the core YAML-strip test now
+  actually exercises the stripping — it builds an object carrying
+  `managedFields` + a `last-applied-configuration` annotation + a benign
+  annotation, and asserts the noise is removed, the benign annotation survives,
+  and an annotations block left empty is dropped (the prior assertion was
+  vacuous — the fixture never had those fields).
 - **Advisor review follow-ups (2 adversarial findings).** Pressing `t` no longer
   opens the End-of-Turn review *underneath* an open advisor — the `t` guard was
   the one modal-suspend site missing an `advisor.is_none()` check (it had the

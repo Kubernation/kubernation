@@ -388,8 +388,11 @@ async fn main() {
             plan_just_opened = plan_open;
         }
         // `y` inspects the open city/node window's object (read-only YAML).
+        // Not while a log overlay is up — the inspector would stack on top of it
+        // and Esc would close the hidden overlay first.
         if is_key_pressed(KeyCode::Y)
             && !typing
+            && !log_open
             && inspector.is_none()
             && almanac.is_none()
             && advisor.is_none()
