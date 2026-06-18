@@ -430,6 +430,7 @@ async fn main() {
             && (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift))
             && !typing
             && !log_open
+            && panel.is_none()
             && browser.is_none()
             && inspector.is_none()
             && almanac.is_none()
@@ -677,8 +678,12 @@ async fn main() {
                 toast = Some((export_to_file(&i.text(), &i.filename()), get_time() + 4.0));
             }
         }
-        // The resource browser swallows the wheel to scroll its list/table.
-        if let Some(b) = browser.as_mut() {
+        // The resource browser swallows the wheel to scroll its list/table —
+        // but only when the inspector isn't drilled in on top of it (else one
+        // wheel tick would scroll both, since `mouse_wheel()` isn't a drain).
+        if inspector.is_none()
+            && let Some(b) = browser.as_mut()
+        {
             let (_, wheel) = mouse_wheel();
             if wheel.abs() > 0.0 {
                 b.scroll_by(wheel);

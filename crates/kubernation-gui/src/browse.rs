@@ -172,18 +172,24 @@ impl Browser {
                     CRIT,
                 );
             }
-            Some(Ok(objs)) if objs.is_empty() => {
+            Some(Ok(lr)) if lr.items.is_empty() => {
                 text("(no objects)", b.x + 6.0, top + 14.0, fs, DIM);
             }
-            Some(Ok(objs)) => {
+            Some(Ok(lr)) => {
                 let mut y = top - self.scroll + 14.0;
-                for o in objs {
+                for o in &lr.items {
                     let r = row(o);
-                    let name = if r.namespace.is_empty() {
+                    let mut name = if r.namespace.is_empty() {
                         r.name.clone()
                     } else {
                         format!("{}/{}", r.namespace, r.name)
                     };
+                    // Keep the age column aligned: clip an over-long name so it
+                    // can't overrun into the age (padding alone never truncates).
+                    if name.len() > 56 {
+                        name.truncate(55);
+                        name.push('…');
+                    }
                     let rect = Rect::new(b.x, y - 13.0, b.w, row_h);
                     if y > top && y < b.y + b.h {
                         if rect.contains(mouse) {
@@ -202,7 +208,18 @@ impl Browser {
                     }
                     y += row_h;
                 }
-                self.max_scroll = ((objs.len() as f32 * row_h + 18.0) - view_h).max(0.0);
+                // A capped LIST: tell the user the view is incomplete.
+                if lr.truncated {
+                    text(
+                        format!("… showing first {} (more on the server)", lr.items.len()),
+                        b.x + 6.0,
+                        y,
+                        fs,
+                        DIM,
+                    );
+                    y += row_h;
+                }
+                self.max_scroll = ((y - (top - self.scroll)) - view_h).max(0.0);
                 self.scroll = self.scroll.min(self.max_scroll);
                 let area = Rect::new(b.x, top, b.w, view_h);
                 scrollbar(area, self.scroll, self.max_scroll);

@@ -887,6 +887,8 @@ impl App {
                 self.evict_perm.clear(); // answers were for the old cluster
                 self.pending_evict = None;
                 self.ns_filter = NamespaceFilter::All; // namespaces differ
+                self.kinds.clear(); // discovery was for the old cluster
+                self.kinds_loading = false; // re-discover on the next `:`
                 self.go_home(Screen::Map);
                 self.focus = ClusterId::Hot;
                 self.attention_panel.cycle = None;

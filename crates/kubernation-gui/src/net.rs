@@ -109,7 +109,7 @@ pub struct Net {
 /// `None` result means "listing in progress").
 #[derive(Default, Clone)]
 pub struct BrowseOut {
-    pub result: Option<Result<Vec<browse::Object>, String>>,
+    pub result: Option<Result<browse::ListResult, String>>,
 }
 
 impl Net {
@@ -351,6 +351,14 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             net.evict_perm_pending.lock().unwrap().clear();
                             // Namespaces differ across clusters — reset.
                             *net.ns_filter.lock().unwrap() = NamespaceFilter::All;
+                            // Discovered kinds + any open browse are the old
+                            // cluster's — drop them so the browser re-discovers
+                            // against the new cluster (a CRD on A may be absent
+                            // on B). `last_browse` self-resets next tick (the
+                            // cleared browse_req makes `breq` None).
+                            *net.kinds.lock().unwrap() = None;
+                            *net.browse_req.lock().unwrap() = None;
+                            *net.browse_out.lock().unwrap() = BrowseOut::default();
                         }
                         Err(err) => {
                             *net.status.lock().unwrap() = format!("switch failed: {err}");
@@ -397,15 +405,24 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     *net.kinds.lock().unwrap() = Some(kinds);
                 }
                 let breq = net.browse_req.lock().unwrap().clone();
-                if let Some(k) = breq.clone()
-                    && (last_browse.as_deref() != Some(k.label().as_str())
-                        || ticks.is_multiple_of(8))
-                {
-                    let res = browse::list_kind(&hot_client, &k).await;
-                    // Store only if still the requested kind.
-                    if net.browse_req.lock().unwrap().as_ref().map(|r| r.label()) == Some(k.label())
+                if let Some(k) = breq.clone() {
+                    // (Re-)LIST when the kind changed, when the result slot was
+                    // just blanked by a fresh request (incl. re-selecting the
+                    // SAME kind — `request_browse` resets `browse_out`), or on
+                    // the periodic refresh. Keying only off `last_browse` would
+                    // strand a same-kind re-request on "listing…" forever.
+                    let pending = net.browse_out.lock().unwrap().result.is_none();
+                    if pending
+                        || last_browse.as_deref() != Some(k.label().as_str())
+                        || ticks.is_multiple_of(8)
                     {
-                        *net.browse_out.lock().unwrap() = BrowseOut { result: Some(res) };
+                        let res = browse::list_kind(&hot_client, &k).await;
+                        // Store only if still the requested kind.
+                        if net.browse_req.lock().unwrap().as_ref().map(|r| r.label())
+                            == Some(k.label())
+                        {
+                            *net.browse_out.lock().unwrap() = BrowseOut { result: Some(res) };
+                        }
                     }
                 }
                 last_browse = breq.map(|k| k.label());

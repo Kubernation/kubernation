@@ -851,9 +851,31 @@ what makes the interesting logic unit-testable without a cluster.
   (drained like `log_req`). LIST-on-demand (no reflector lifecycle) was chosen
   over a live watch. Dev flags: TUI verified via the committed snapshot tests;
   GUI `--browse` (pick mode) / `--browse <kind>` (jump to that table) +
-  `--screenshot`. Verified live on kind (70 kinds discovered; the GUI configmaps
-  table shows every CM in full; secrets = 0 on this cluster, so redaction is
-  unit-test-covered, not live).
+  `--screenshot`. Verified live on kind.
+  **Post-review hardening** (2026-06-17, an adversarial review caught a critical
+  redaction leak + others): (1) **The apiserver omits `apiVersion`/`kind` on the
+  individual items inside a LIST response** (only the envelope carries them), so
+  every browsed `DynamicObject` arrived with `types == None` — meaning the
+  Secret check in `dynamic_yaml` never fired and Secret values were rendered in
+  full. `list_kind` now **stamps** the picked kind's `TypeMeta` onto every item
+  (`stamp_types`); this is load-bearing for the privilege posture *and* fixes the
+  inspector title (which also reads `obj.types`). Verified live: a planted
+  `browser-leak-test` Secret renders `•••• (N bytes)`, the base64 never appears.
+  (2) `discover` no longer uses `Discovery::run` (which `?`-fails the *whole*
+  enumeration if any one aggregated APIService is down — very common); it
+  enumerates groups via the public client methods and **skips a failing group**
+  rather than blanking the browser. (3) It drops kinds the server won't LIST (no
+  `list` verb — tokenreviews, bindings, …; 70→63 on kind). (4) `list_kind`
+  returns `ListResult { items, truncated }` and both frontends show "showing
+  first N" when the 500-cap clips. (5) Long ns/name rows are truncated so the age
+  column stays aligned. (6) GUI: the `:` open is gated on `panel.is_none()` (no
+  opening over a city/node window → no click fall-through); the browser wheel is
+  gated on `inspector.is_none()` (no double-scroll); the net thread re-LISTs when
+  `browse_out` was just blanked (re-selecting the same kind no longer strands on
+  "listing…") and a context switch clears `kinds`/`browse_*`. The TUI clears
+  `kinds` on context switch too. Secrets = 0 on the dev cluster normally, so the
+  redaction is unit-test-covered (None→stamp→redact, end-to-end) plus the
+  one-off live check above.
 
 ## The pair (hot/warm)
 

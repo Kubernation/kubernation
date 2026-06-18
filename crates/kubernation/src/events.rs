@@ -26,9 +26,9 @@ pub enum AppEvent {
     Committed { outcome: CommitOutcome },
     /// Resource discovery finished — the browsable kinds.
     Kinds(Vec<kubernation_core::k8s::browse::KindEntry>),
-    /// A resource-browser LIST finished (Ok = objects, Err = message).
+    /// A resource-browser LIST finished (Ok = objects + truncation, Err = message).
     BrowseRows {
-        result: Result<Vec<kubernation_core::k8s::browse::Object>, String>,
+        result: Result<kubernation_core::k8s::browse::ListResult, String>,
     },
 }
 

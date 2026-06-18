@@ -17,10 +17,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   picker filters by typing and refreshes with `r`; the **GUI** is a mouse +
   wheel modal (pick a kind → click a row). **Least-privilege preserved:** a
   Secret's `data`/`stringData` values are **redacted** (keys + byte sizes shown,
-  values masked); ConfigMaps and every other kind are shown in full. Pure,
-  unit-tested core (`kubernation-core` `k8s/browse.rs` +
-  `state/inspect::dynamic_yaml`); discovery + list + both frontends verified live
-  on kind (70 kinds; configmaps shown in full).
+  values masked); ConfigMaps and every other kind are shown in full. Discovery
+  tolerates a broken/unreachable APIService (one bad aggregated API won't blank
+  the browser), lists only kinds the server can LIST, and flags when a kind's
+  500-object cap clips the view. Pure, unit-tested core (`kubernation-core`
+  `k8s/browse.rs` + `state/inspect::dynamic_yaml`); discovery + list + both
+  frontends + Secret redaction verified live on kind (configmaps in full; a
+  planted Secret's values redacted).
 - **Copy + export for logs and YAML.** In the log overlay and the object
   inspector, **`c`** copies the whole buffer to the system clipboard and **`w`**
   exports it to a file in the working directory (logs → `.log`, YAML → `.yaml`),

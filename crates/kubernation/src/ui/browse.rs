@@ -11,7 +11,7 @@ use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::theme::Theme;
 use super::{Action, Component, RenderCtx, centered};
-use kubernation_core::k8s::browse::{BrowseRow, KindEntry, Object, row};
+use kubernation_core::k8s::browse::{BrowseRow, KindEntry, ListResult, Object, row};
 
 // --- the `:` kind picker (a filterable modal) ------------------------------
 
@@ -139,6 +139,7 @@ pub struct BrowseView {
     rows: Vec<BrowseRow>,
     state: ListState,
     loading: bool,
+    truncated: bool,
     error: Option<String>,
 }
 
@@ -151,6 +152,7 @@ impl BrowseView {
         self.rows.clear();
         self.state.select(None);
         self.loading = true;
+        self.truncated = false;
         self.error = None;
     }
 
@@ -158,12 +160,13 @@ impl BrowseView {
         self.loading = true;
     }
 
-    pub fn set_result(&mut self, result: Result<Vec<Object>, String>) {
+    pub fn set_result(&mut self, result: Result<ListResult, String>) {
         self.loading = false;
         match result {
-            Ok(objs) => {
-                self.rows = objs.iter().map(row).collect();
-                self.objects = objs;
+            Ok(lr) => {
+                self.rows = lr.items.iter().map(row).collect();
+                self.objects = lr.items;
+                self.truncated = lr.truncated;
                 self.error = None;
                 self.state.select((!self.rows.is_empty()).then_some(0));
             }
@@ -171,6 +174,7 @@ impl BrowseView {
                 self.error = Some(e);
                 self.objects.clear();
                 self.rows.clear();
+                self.truncated = false;
                 self.state.select(None);
             }
         }
@@ -221,17 +225,31 @@ impl Component for BrowseView {
         } else if self.rows.is_empty() {
             vec![ListItem::new(Line::styled("(no objects)", theme.dim()))]
         } else {
-            self.rows
+            let mut items: Vec<ListItem> = self
+                .rows
                 .iter()
                 .map(|r| {
-                    let name = if self.namespaced && !r.namespace.is_empty() {
+                    let mut name = if self.namespaced && !r.namespace.is_empty() {
                         format!("{}/{}", r.namespace, r.name)
                     } else {
                         r.name.clone()
                     };
+                    // Clip an over-long name so the age column stays aligned
+                    // (`{:<54}` pads but never truncates).
+                    if name.chars().count() > 52 {
+                        name = name.chars().take(51).collect::<String>() + "…";
+                    }
                     ListItem::new(format!("{name:<54}{}", r.age))
                 })
-                .collect()
+                .collect();
+            // A capped LIST: tell the user the view is incomplete.
+            if self.truncated {
+                items.push(ListItem::new(Line::styled(
+                    format!("… showing first {} (more on the server)", self.rows.len()),
+                    theme.dim(),
+                )));
+            }
+            items
         };
         let title = format!(" browse: {} ({}) ", self.label, self.rows.len());
         let block = Block::bordered()
@@ -307,7 +325,10 @@ mod tests {
         term.draw(|f| v.render(f, f.area(), &ctx)).unwrap();
         assert!(dump(&term).contains("could not list: boom"), "error state");
 
-        v.set_result(Ok(Vec::new()));
+        v.set_result(Ok(ListResult {
+            items: Vec::new(),
+            truncated: false,
+        }));
         term.draw(|f| v.render(f, f.area(), &ctx)).unwrap();
         assert!(dump(&term).contains("no objects"), "empty state");
     }

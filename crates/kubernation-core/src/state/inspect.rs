@@ -72,6 +72,13 @@ pub fn node_yaml(world: &ObservedWorld, name: &str) -> Option<String> {
 /// `data` / `stringData` values are redacted (keys + byte sizes shown, values
 /// masked) to keep the "never read Secret contents" posture; every other kind
 /// — including ConfigMaps — is shown in full.
+///
+/// **Contract:** redaction keys off `obj.types`, which the apiserver does NOT
+/// set on collection items — `browse::list_kind` stamps the picked kind back
+/// onto every item before any object reaches here, so a browsed Secret always
+/// arrives with `kind == "Secret"`. (If `types` were absent the object would be
+/// treated as non-Secret and shown in full, so the stamp is load-bearing for
+/// the privilege posture — see `browse::stamp_types`.)
 pub fn dynamic_yaml(obj: &kube::core::DynamicObject) -> String {
     let is_secret = obj
         .types
@@ -161,6 +168,10 @@ mod tests {
 
     #[test]
     fn dynamic_yaml_redacts_only_secret_values() {
+        // `types: Some(Secret)` is exactly what `browse::list_kind` stamps onto
+        // a browsed Secret (the apiserver omits it on list items); the
+        // None→stamp→redact pipeline is covered end-to-end in
+        // `browse::tests::stamp_types_drives_secret_redaction`.
         use kube::core::{DynamicObject, ObjectMeta, TypeMeta};
         let secret = DynamicObject {
             types: Some(TypeMeta {
