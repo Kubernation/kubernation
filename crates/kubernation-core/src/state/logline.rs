@@ -26,12 +26,18 @@ pub enum Level {
 }
 
 /// Guess a log line's severity from common conventions. Cheap and best-effort
-/// (one lowercase pass): klog headers (`E0617 …`/`W0617 …`/`I0617 …`),
-/// structured `level=error` / `"level":"error"` / `"severity":"error"`,
-/// bracketed `[error]`, and uppercase plaintext markers (`ERROR`, `WARN`).
+/// (one lowercase pass). Order matters — the *precise* signals (klog headers,
+/// structured `level=`/`"level":`/`"severity":` fields) are consulted before
+/// the loose uppercase plaintext scan, so an explicit `level=info` line whose
+/// message merely mentions "ERROR" stays Info. A leading server timestamp
+/// (when logs are fetched with timestamps on) is peeled first so it can't
+/// mask the klog header.
 pub fn classify(line: &str) -> Level {
-    // klog/glog header: a level letter followed by a 4-digit MMDD, e.g.
-    // `E0617 12:34:56.789  1 file.go:10] msg` — ubiquitous in k8s components.
+    // Classify the message, not any server-prepended RFC3339 timestamp.
+    let (_, line) = split_ts(line);
+
+    // klog/glog header (precise): a level letter followed by a 4-digit MMDD,
+    // e.g. `E0617 12:34:56.789  1 file.go:10] msg` — ubiquitous in k8s.
     let t = line.trim_start();
     let tb = t.as_bytes();
     if tb.len() >= 5 && tb[1..5].iter().all(u8::is_ascii_digit) {
@@ -43,15 +49,8 @@ pub fn classify(line: &str) -> Level {
         }
     }
 
-    // Uppercase plaintext markers (many loggers print the level uppercased).
-    if line.contains("ERROR") || line.contains("FATAL") || line.contains("PANIC") {
-        return Level::Error;
-    }
-    if line.contains("WARNING") || line.contains("WARN") {
-        return Level::Warn;
-    }
-
-    // Structured forms (logfmt / JSON), checked case-insensitively.
+    // Structured level fields (precise, logfmt / JSON), case-insensitive —
+    // BEFORE the loose plaintext scan.
     let lower = line.to_ascii_lowercase();
     for kw in ["error", "fatal", "panic"] {
         if has_level(&lower, kw) {
@@ -66,6 +65,15 @@ pub fn classify(line: &str) -> Level {
     }
     if has_level(&lower, "debug") || has_level(&lower, "trace") {
         return Level::Debug;
+    }
+
+    // Loose uppercase plaintext markers (only when no structured level was
+    // present — many loggers just print the level uppercased).
+    if line.contains("ERROR") || line.contains("FATAL") || line.contains("PANIC") {
+        return Level::Error;
+    }
+    if line.contains("WARNING") || line.contains("WARN") {
+        return Level::Warn;
     }
     Level::Plain
 }
@@ -171,6 +179,38 @@ mod tests {
         assert_eq!(classify("just a normal line"), Level::Plain);
         // a message that merely mentions a word is NOT a false level
         assert_eq!(classify(r#"{"msg":"no errors found"}"#), Level::Plain);
+    }
+
+    #[test]
+    fn classify_structured_level_beats_uppercase_in_message() {
+        // An explicit low severity must win over an uppercase keyword in the
+        // *message* text (the precise structured field is consulted first).
+        assert_eq!(
+            classify(r#"{"level":"info","msg":"connection ERROR recovered"}"#),
+            Level::Info
+        );
+        assert_eq!(
+            classify("level=info msg=\"ERROR rate is low\""),
+            Level::Info
+        );
+        assert_eq!(
+            classify("level=warn msg=\"all ERROR cleared\""),
+            Level::Warn
+        );
+    }
+
+    #[test]
+    fn classify_sees_through_a_leading_timestamp() {
+        // With timestamps on, the server prepends an RFC3339 token; the klog
+        // header / structured level must still be detected behind it.
+        assert_eq!(
+            classify("2024-06-18T03:40:11.123Z E0617 12:00:00 1 x.go:1] boom"),
+            Level::Error
+        );
+        assert_eq!(
+            classify("2024-06-18T03:40:11.123Z level=warn msg=slow"),
+            Level::Warn
+        );
     }
 
     #[test]

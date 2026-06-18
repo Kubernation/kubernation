@@ -633,6 +633,9 @@ async fn main() {
                     selected = None;
                     panel = None;
                     concern_idx = 0;
+                    // The log overlay's target belonged to the old cluster.
+                    log_open = false;
+                    net.clear_logs();
                 }
             }
         }
@@ -1426,6 +1429,9 @@ async fn main() {
                         selected = None;
                         panel = None;
                         concern_idx = 0;
+                        // The log overlay's target belonged to the old cluster.
+                        log_open = false;
+                        net.clear_logs();
                     }
                 }
             }

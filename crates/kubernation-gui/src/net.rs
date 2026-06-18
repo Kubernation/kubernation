@@ -407,10 +407,14 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         }
                         ClusterId::Hot => hot_client.clone(),
                     };
-                    // Resolve the container only when the pod target changes,
-                    // not on every poll (it never changes mid-session).
+                    // Resolve the container once per pod target, not every poll.
+                    // Retry while still unresolved (`None`) — first_container
+                    // returns None on a transient get failure or a pod still
+                    // ContainerCreating, and a multi-container pod NEEDS a name
+                    // (else the tail errors); a single-container pod resolves to
+                    // Some immediately so this doesn't spin.
                     let target = (r.cluster, r.namespace.clone(), r.pod.clone());
-                    if log_target.as_ref() != Some(&target) {
+                    if log_target.as_ref() != Some(&target) || log_container.is_none() {
                         log_container =
                             logs::first_container(client.clone(), &r.namespace, &r.pod).await;
                         log_target = Some(target);
@@ -432,7 +436,12 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 g.text = t;
                                 g.error = None;
                             }
-                            Err(e) => g.error = Some(e),
+                            Err(e) => {
+                                // Drop stale text so a later copy/export can't
+                                // grab the previous tail behind the error.
+                                g.text.clear();
+                                g.error = Some(e);
+                            }
                         }
                     }
                 }
