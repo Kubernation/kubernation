@@ -9,6 +9,16 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Copy + export for logs and YAML.** In the log overlay and the object
+  inspector, **`c`** copies the whole buffer to the system clipboard and **`w`**
+  exports it to a file in the working directory (logs → `.log`, YAML → `.yaml`),
+  with a toast/flash showing the path. The GUI copies via macroquad's
+  clipboard; the TUI via **OSC 52** (works over SSH on supporting terminals) —
+  and the TUI's own terminal text-selection still works as before. Export is the
+  always-reliable path (incl. headless / over SSH). A small RFC 4648 base64 is
+  bundled for OSC 52 (no new dependency). Real per-character drag-selection in
+  the GUI is intentionally **not** built (macroquad has no native selectable
+  text); copy-all + export covers the copy/paste need.
 - **Object inspector — read-only YAML (`y`), a k9s-style "dossier".** Inspect the
   full YAML of a workload, node, or pod in a scrollable modal — the GUI opens it
   with `y` on a city/node window (workload/node) or a pod row's **`yaml`** button;

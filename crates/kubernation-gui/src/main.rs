@@ -224,6 +224,8 @@ async fn main() {
     let mut advisor: Option<Advisor> = None;
     // The object inspector (read-only YAML dossier) — a modal window.
     let mut inspector: Option<Inspector> = None;
+    // A transient toast (copy / export feedback): (message, expiry time).
+    let mut toast: Option<(String, f64)> = None;
     // The planning turn: staged interventions (preview-only) + the open
     // End-of-Turn review modal.
     let mut planned = kubernation_core::state::planned::PlannedWorld::default();
@@ -489,6 +491,25 @@ async fn main() {
                         net.request_logs(r);
                     }
                 }
+                // `c` copies the tail to the clipboard, `w` exports it to a file.
+                if is_key_pressed(KeyCode::C) {
+                    let tail = net.log_tail();
+                    if !tail.text.is_empty() {
+                        macroquad::miniquad::window::clipboard_set(&tail.text);
+                        toast = Some((
+                            format!("copied {} log lines", tail.text.lines().count()),
+                            get_time() + 3.0,
+                        ));
+                    }
+                }
+                if is_key_pressed(KeyCode::W) {
+                    let tail = net.log_tail();
+                    if let Some(t) = &tail.target {
+                        let prev = if t.previous { "-previous" } else { "" };
+                        let fname = format!("{}-{}{prev}.log", t.namespace, t.pod);
+                        toast = Some((export_to_file(&tail.text, &fname), get_time() + 4.0));
+                    }
+                }
             }
         }
         // While the context picker is open it swallows navigation.
@@ -580,11 +601,23 @@ async fn main() {
                 a.cycle(1);
             }
         }
-        // The inspector swallows the wheel to scroll its YAML.
+        // The inspector swallows the wheel to scroll its YAML; `c` copies the
+        // document to the clipboard, `w` exports it to a file.
         if let Some(i) = inspector.as_mut() {
             let (_, wheel) = mouse_wheel();
             if wheel.abs() > 0.0 {
                 i.scroll_by(wheel);
+            }
+            if is_key_pressed(KeyCode::C) {
+                let text = i.text();
+                macroquad::miniquad::window::clipboard_set(&text);
+                toast = Some((
+                    format!("copied {} lines", text.lines().count()),
+                    get_time() + 3.0,
+                ));
+            }
+            if is_key_pressed(KeyCode::W) {
+                toast = Some((export_to_file(&i.text(), &i.filename()), get_time() + 4.0));
             }
         }
 
@@ -1417,6 +1450,23 @@ async fn main() {
             text(ascii(&msg), bx + 12.0, by + 18.0, fs, STONE_INK);
         }
 
+        // Copy / export toast (a row below the evict toast; auto-expires).
+        if let Some((msg, exp)) = &toast
+            && get_time() < *exp
+        {
+            let fs = 14.0;
+            let tm = text_size(msg, fs);
+            let bw = tm.width + 24.0;
+            let bx = (screen_width() - bw) / 2.0;
+            let by = panels::CHROME_H + 42.0;
+            draw_rectangle(bx, by, bw, 24.0, STONE);
+            draw_rectangle_lines(bx, by, bw, 24.0, 1.0, STONE_EDGE);
+            text(ascii(msg), bx + 12.0, by + 17.0, fs, STONE_INK);
+        }
+        if toast.as_ref().is_some_and(|(_, exp)| get_time() >= *exp) {
+            toast = None;
+        }
+
         // When tailing, wait long enough for the net thread's first fetch
         // (first_container + tail, two API round-trips) to land.
         let shot_at = if args.tail {
@@ -1434,6 +1484,18 @@ async fn main() {
         }
 
         next_frame().await;
+    }
+}
+
+/// Write `text` to `filename` in the working directory; returns a toast
+/// message (the path on success, the error otherwise).
+fn export_to_file(text: &str, filename: &str) -> String {
+    let path = std::env::current_dir()
+        .unwrap_or_else(|_| ".".into())
+        .join(filename);
+    match std::fs::write(&path, text) {
+        Ok(()) => format!("exported → {}", path.display()),
+        Err(e) => format!("export failed: {e}"),
     }
 }
 

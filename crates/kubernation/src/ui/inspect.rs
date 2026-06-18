@@ -30,6 +30,22 @@ impl InspectView {
         let view = self.last_h.saturating_sub(2); // borders
         (self.lines.len() as u16).saturating_sub(view)
     }
+
+    fn text(&self) -> String {
+        self.lines.join("\n")
+    }
+
+    /// Filesystem-safe export name from the title, e.g.
+    /// "Deployment demo/web" → "deployment-demo-web.yaml".
+    fn filename(&self) -> String {
+        let base: String = self
+            .title
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        format!("{}.yaml", base.trim_matches('-'))
+    }
 }
 
 impl Component for InspectView {
@@ -47,6 +63,14 @@ impl Component for InspectView {
             KeyCode::Char('u') if ctrl => self.scroll = self.scroll.saturating_sub(page),
             KeyCode::Char('g') => self.scroll = 0,
             KeyCode::Char('G') => self.scroll = self.max_scroll(),
+            // `c` copies the document to the clipboard, `w` exports it.
+            KeyCode::Char('c') => return Some(Action::CopyText(self.text())),
+            KeyCode::Char('w') => {
+                return Some(Action::ExportText {
+                    text: self.text(),
+                    filename: self.filename(),
+                });
+            }
             _ => {}
         }
         None
@@ -65,7 +89,7 @@ impl Component for InspectView {
         } else {
             self.lines.iter().map(|l| Line::raw(l.clone())).collect()
         };
-        let hint = " j/k scroll · g/G top/bottom · Esc back ";
+        let hint = " j/k · g/G · c copy · w export · Esc back ";
         let block = Block::bordered()
             .border_style(theme.chrome())
             .title(format!(" {} ", self.title))

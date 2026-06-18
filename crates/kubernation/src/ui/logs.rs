@@ -81,6 +81,17 @@ impl LogsView {
         }
     }
 
+    /// The whole fetched tail (for copy / export — not the filtered view).
+    fn text(&self) -> String {
+        self.lines.join("\n")
+    }
+
+    /// Export filename: `{namespace}-{pod}[-previous].log`.
+    fn filename(&self) -> String {
+        let prev = if self.previous { "-previous" } else { "" };
+        format!("{}-{}{prev}.log", self.namespace, self.pod)
+    }
+
     /// Lines currently shown — all of them, or only those matching the filter.
     fn visible(&self) -> Vec<&String> {
         if self.filter.is_empty() {
@@ -143,6 +154,14 @@ impl Component for LogsView {
                 self.loading = true;
                 self.follow = true;
                 return Some(Action::RefetchLogs);
+            }
+            // `c` copies the tail to the clipboard, `w` exports it to a file.
+            KeyCode::Char('c') => return Some(Action::CopyText(self.text())),
+            KeyCode::Char('w') => {
+                return Some(Action::ExportText {
+                    text: self.text(),
+                    filename: self.filename(),
+                });
             }
             _ => {}
         }
@@ -225,7 +244,7 @@ impl Component for LogsView {
         // so the next keypress operates on the in-range value.
         self.scroll = scroll;
 
-        let hint = " j/k scroll · / filter · p previous · G/f follow · Esc back ";
+        let hint = " j/k · / filter · p previous · c copy · w export · G/f follow · Esc ";
         let mut block = Block::bordered()
             .border_style(theme.chrome())
             .title(title)

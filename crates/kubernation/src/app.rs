@@ -691,6 +691,13 @@ impl App {
                     self.flash = Some(format!("no object for node {name}"));
                 }
             }
+            Action::CopyText(text) => {
+                copy_osc52(&text);
+                self.flash = Some(format!("copied {} lines (OSC 52)", text.lines().count()));
+            }
+            Action::ExportText { text, filename } => {
+                self.flash = Some(export_to_file(&text, &filename));
+            }
             Action::EvictPod { namespace, pod } => {
                 // RBAC gate (cached per namespace): only raise the confirm if
                 // the user may delete pods there; otherwise say why.
@@ -1132,6 +1139,54 @@ fn divider(f: &mut ratatui::Frame, area: Rect, theme: &Theme) {
     }
 }
 
+/// Write `text` to `filename` in the working directory; returns a flash message.
+fn export_to_file(text: &str, filename: &str) -> String {
+    let path = std::env::current_dir()
+        .unwrap_or_else(|_| ".".into())
+        .join(filename);
+    match std::fs::write(&path, text) {
+        Ok(()) => format!("exported → {}", path.display()),
+        Err(e) => format!("export failed: {e}"),
+    }
+}
+
+/// Copy `text` to the terminal's clipboard via OSC 52 (works over SSH on
+/// supporting terminals; not all terminals enable it). Written straight to the
+/// tty — a self-contained escape, so interleaving with ratatui's output is safe.
+fn copy_osc52(text: &str) {
+    use std::io::Write;
+    let seq = format!("\x1b]52;c;{}\x07", base64(text.as_bytes()));
+    let mut out = std::io::stdout();
+    let _ = out.write_all(seq.as_bytes());
+    let _ = out.flush();
+}
+
+/// Minimal standard base64 (no padding-free variants) — avoids a dependency for
+/// the one OSC 52 use.
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(T[((n >> 18) & 63) as usize] as char);
+        out.push(T[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            T[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::render_evict_confirm;
@@ -1158,5 +1213,17 @@ mod tests {
         assert!(text.contains("Evict pod?"), "title missing:\n{text}");
         assert!(text.contains("demo/web-7d4b-2"), "pod missing:\n{text}");
         assert!(text.contains("[y] evict"), "prompt missing:\n{text}");
+    }
+
+    #[test]
+    fn base64_matches_rfc4648_vectors() {
+        use super::base64;
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foob"), "Zm9vYg==");
+        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
     }
 }

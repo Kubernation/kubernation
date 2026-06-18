@@ -23,6 +23,10 @@ const KEYMAP: &[(&str, &[(&str, &str)])] = &[
             ),
             ("e", "evict the selected pod — deletes it (confirm y/n)"),
             ("y", "inspect YAML (selected pod, else the workload / node)"),
+            (
+                "c · w (logs / yaml)",
+                "copy to clipboard · export to a file",
+            ),
             ("Esc / Backspace", "back"),
         ],
     ),

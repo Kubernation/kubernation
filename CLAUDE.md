@@ -891,7 +891,8 @@ region under the cursor · `l` tail the selected pod's logs (city/node) ·
 the previous-container tail, `j/k`/`g`/`G`/`f` scroll/follow ·
 `e` evict the selected pod (city/node — real delete, RBAC-gated, y/n confirm) ·
 `y` inspect YAML — the read-only dossier (selected pod, else the workload/node;
-also `y` on a workload-list row) ·
+also `y` on a workload-list row) · **in the log / inspector views:** `c` copy
+to clipboard, `w` export to a file ·
 **planning turn:** `+`/`−` stage scale, `R` toggle restart & `i` set image
 (city), `C` stage cordon (node), `t` open the End-of-Turn review (`x` unstage ·
 `D` discard · `c`/`Enter` commit, y/n confirm) ·

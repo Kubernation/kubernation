@@ -55,6 +55,13 @@ pub enum Action {
     },
     InspectWorkload(WorkloadRef),
     InspectNode(String),
+    /// Copy text to the system clipboard (the app sends OSC 52).
+    CopyText(String),
+    /// Export text to a file in the working directory.
+    ExportText {
+        text: String,
+        filename: String,
+    },
     SwitchContext(String),
     /// Scope the whole world to these namespaces (the namespace-filter picker).
     SetNamespaceFilter(NamespaceFilter),

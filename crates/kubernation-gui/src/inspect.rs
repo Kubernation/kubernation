@@ -52,17 +52,37 @@ impl Inspector {
         self.scroll = (self.scroll - dy * 36.0).clamp(0.0, self.max_scroll);
     }
 
+    /// The whole document (for copy / export).
+    pub fn text(&self) -> String {
+        self.lines.join("\n")
+    }
+
+    /// A filesystem-safe export name derived from the title, e.g.
+    /// "Deployment demo/web" → "deployment-demo-web.yaml".
+    pub fn filename(&self) -> String {
+        let base: String = self
+            .title
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        format!("{}.yaml", base.trim_matches('-'))
+    }
+
     /// Draw the window + YAML; returns true when it should close.
     pub fn draw(&mut self, mouse: Vec2, click: bool) -> bool {
         let win = draw_window(&self.title, vec2(720.0, 600.0), &["Close"], usize::MAX);
         let b = win.body;
         let line_h = 16.0;
         let fs = 13.0;
+        // Reserve a footer row for the key hint; YAML scrolls above it.
+        let footer_h = 18.0;
+        let view_h = (b.h - footer_h).max(0.0);
         let mut y = b.y - self.scroll + 12.0;
         // Leave room for the left margin + the scrollbar gutter on the right.
         let max_w = b.w - 10.0;
         for line in &self.lines {
-            if y > b.y && y < b.y + b.h {
+            if y > b.y && y < b.y + view_h {
                 // Replace tabs (rare in YAML) so columns don't jump, then clip
                 // to the body width (no scissor in macroquad).
                 let s = ascii(&line.replace('\t', "  "));
@@ -71,16 +91,23 @@ impl Inspector {
             y += line_h;
         }
         let content_h = self.lines.len() as f32 * line_h + 24.0;
-        self.max_scroll = (content_h - b.h).max(0.0);
+        self.max_scroll = (content_h - view_h).max(0.0);
         self.scroll = self.scroll.min(self.max_scroll);
         if self.max_scroll > 0.0 {
-            let frac = (b.h / content_h).clamp(0.05, 1.0);
-            let thumb_h = b.h * frac;
+            let frac = (view_h / content_h).clamp(0.05, 1.0);
+            let thumb_h = view_h * frac;
             let t = self.scroll / self.max_scroll;
-            let ty = b.y + t * (b.h - thumb_h);
-            draw_rectangle(b.x + b.w + 2.0, b.y, 3.0, b.h, darker(PANEL, 0.6));
+            let ty = b.y + t * (view_h - thumb_h);
+            draw_rectangle(b.x + b.w + 2.0, b.y, 3.0, view_h, darker(PANEL, 0.6));
             draw_rectangle(b.x + b.w + 2.0, ty, 3.0, thumb_h, PARCHMENT);
         }
+        text(
+            "j/k scroll · c copy · w export · Esc close",
+            b.x + 4.0,
+            b.y + b.h - 4.0,
+            12.0,
+            DIM,
+        );
 
         click
             && (win.close.contains(mouse)

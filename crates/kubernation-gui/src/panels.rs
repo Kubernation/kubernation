@@ -275,7 +275,7 @@ pub fn draw_logs(tail: &LogTail, filter: &str, filter_active: bool, previous: bo
     };
     text_bold(ascii(&title), x + 14.0, y + 22.0, 16.0, PARCHMENT);
     text(
-        "Esc close · / filter · p previous · last 500 lines · live",
+        "Esc close · / filter · p previous · c copy · w export · live",
         x + 14.0,
         y + 40.0,
         12.0,
