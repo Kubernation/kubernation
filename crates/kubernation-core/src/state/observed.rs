@@ -139,6 +139,28 @@ impl ObservedWorld {
             .is_some()
     }
 
+    /// Recent usage samples for one node (oldest→newest) — the trend behind
+    /// the node window's sparklines. Empty when metrics-server isn't reporting
+    /// (the ring is retained across a blip but hidden while `available` is
+    /// false, so the sparkline disappears and resumes with continuity).
+    pub fn node_usage_history(&self, name: &str) -> Vec<crate::k8s::metrics::NodeUsage> {
+        let g = match self.metrics.lock() {
+            Ok(g) if g.available => g,
+            _ => return Vec::new(),
+        };
+        g.node_history(name)
+    }
+
+    /// Recent cluster-aggregate usage samples (oldest→newest) — the STATUS
+    /// overview sparkline. Empty when metrics-server isn't reporting.
+    pub fn cluster_usage_history(&self) -> Vec<crate::k8s::metrics::NodeUsage> {
+        let g = match self.metrics.lock() {
+            Ok(g) if g.available => g,
+            _ => return Vec::new(),
+        };
+        g.cluster_history()
+    }
+
     /// Whether live metrics are currently driving the gauges.
     pub fn metrics_available(&self) -> bool {
         self.metrics.lock().map(|g| g.available).unwrap_or(false)

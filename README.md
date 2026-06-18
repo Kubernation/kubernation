@@ -300,7 +300,8 @@ TUI also had a `config.toml`; the windowed client has no config file yet.)
 Near observe-only — two gated writes (confirmed **pod eviction** and a
 **committed planning turn**) plus one active-but-non-mutating capability,
 RBAC-gated **port-forward**; everything else reads. Built well past the MVP: the
-isometric world map, hot/warm cluster pairs, metrics-server live usage, the
+isometric world map, hot/warm cluster pairs, metrics-server live usage (with
+cpu/mem trend sparklines), the
 minimap + map overlays, pod log tailing (severity coloring, timestamps, filters,
 concern→logs), the connectivity / storage / batch map layers, the resource
 browser (`:any kind`), the read-only YAML inspector, the in-app Almanac, the

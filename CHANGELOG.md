@@ -29,6 +29,16 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   first).
 
 ### Added
+- **Live cpu/mem trend sparklines.** Metrics-server samples now accumulate into a
+  bounded history ring, and the node ("province") window draws a small trend
+  sparkline under each cpu/mem gauge — usage ÷ allocatable over the last ~15
+  minutes, coloured by the same pressure bucket as the gauge — so you see whether
+  a node is climbing, not just where it sits now. The right column's STATUS
+  section gains cluster-wide cpu + mem sparklines (self-scaled) as an at-a-glance
+  "is the realm heating up". Both appear only when metrics-server is reporting;
+  the history is retained across a transient poll blip (hidden while down, resumes
+  with continuity). The ring + ratio math are pure + unit-tested; verified live on
+  kind with metrics-server.
 - **Port-forward a pod to `127.0.0.1` (`kubectl port-forward`, in the GUI).**
   Hover a pod in a city's CITIZENS or a node's GARRISON list and click **fwd** to
   open a local tunnel; the **FORWARDS** section of the right column lists every

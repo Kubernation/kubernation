@@ -547,7 +547,7 @@ fn page_reading(cx: &mut Ctx) {
     cx.key("World (zoom out)", "each province aggregates to one badge");
     cx.heading("Gauges");
     cx.para(
-        "Node cpu / mem read live usage when metrics-server is installed, otherwise scheduling pressure (pod requests / allocatable). Calm below 70%, elevated 70-90% (yellow), high above 90% (red).",
+        "Node cpu / mem read live usage when metrics-server is installed, otherwise scheduling pressure (pod requests / allocatable). Calm below 70%, elevated 70-90% (yellow), high above 90% (red). With metrics-server, a trend sparkline under each gauge shows the last ~15 minutes (and the STATUS column shows the cluster trend).",
     );
     cx.heading("Attention");
     cx.para(

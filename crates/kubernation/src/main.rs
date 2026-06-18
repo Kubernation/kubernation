@@ -160,6 +160,10 @@ struct Args {
     /// city/node (development verification of the inspector)
     #[arg(long)]
     yaml: bool,
+    /// With --inspect <node>, hold the screenshot long enough for metrics-server
+    /// to accumulate a few samples so the trend sparklines render (dev verif).
+    #[arg(long)]
+    spark: bool,
     /// Open the resource browser on sync; with a value, select that kind's
     /// table (e.g. "configmaps") — development verification of the browser
     #[arg(long, value_name = "KIND", num_args = 0..=1, default_missing_value = "")]
@@ -1851,7 +1855,10 @@ async fn main() {
 
         // When tailing, wait long enough for the net thread's first fetch
         // (first_container + tail, two API round-trips) to land.
-        let shot_at = if args.tail || args.concern_logs {
+        let shot_at = if args.spark {
+            // ~30s at 60fps → 2-3 metrics polls (15s each) → a drawable trend.
+            1800
+        } else if args.tail || args.concern_logs {
             240
         } else if args.forward.is_some() {
             // Resolve the default port (a get + maybe a Service LIST) + bind +

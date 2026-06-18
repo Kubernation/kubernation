@@ -1059,6 +1059,39 @@ what makes the interesting logic unit-testable without a cluster.
   `kubectl auth can-i create pods/portforward` (admin yes → enabled, unprivileged
   no → locked). Deferred: a manual port-entry field (when neither resolver finds
   a port), forwarding a non-default port, UDP.
+- **Live cpu/mem sparklines** (2026-06-18, user "live cpu/mem sparklines" — the
+  next SOON-tier item; turns the instantaneous gauges into trends): the
+  metrics-server poll already had the *latest* sample; this keeps a **bounded
+  history ring**. **Core (`k8s/metrics.rs`):** `Metrics` gains `node_rings`
+  (per-node) + `cluster_ring` (per-sample sum across nodes), appended each
+  successful poll by `record_sample` (capped at `HISTORY_CAP`=60 ≈ 15 min at the
+  15s poll; a vanished node's ring ages out only after `RING_GRACE`=4 consecutive
+  absences, so a one-poll metrics scrape hiccup doesn't wipe the trend — a review
+  finding). A poll *failure* leaves the
+  rings intact but flips `available` false — so the `ObservedWorld` accessors
+  (`node_usage_history` / `cluster_usage_history`) read **empty while metrics is
+  down** and the trend resumes with continuity after a transient blip (rather
+  than wiping 15 min on one failed poll). **Model:** `build_node_detail` turns the
+  raw node ring into `cpu_history`/`mem_history` *ratio* series (usage ÷
+  allocatable) via the pure `usage_ratios_series` (the node window already had
+  `cpu_alloc`/`mem_alloc`) — so the sparkline's height reads like the gauge.
+  **GUI:** a pure `panels::sparkline_points` (values+max+rect → clamped polyline
+  points, unit-tested) + `draw_sparkline` (well + frame + baseline/top refs +
+  the trace + a latest-sample dot). The **node window** draws a sparkline under
+  each cpu/mem gauge, scaled to allocatable (max=1.0) and coloured by the latest
+  sample's pressure bucket (shared `bucket_color`, the documented <0.7/0.7–0.9/≥0.9
+  buckets) — so a capacity-relative trend that matches the gauge. The **STATUS
+  column** draws cluster cpu+mem sparklines **self-scaled** to their own window
+  peak (an overview "is the realm heating up"), each with the **current value**
+  (`{m} / human-bytes`) at the right so a flat-but-steady cluster doesn't read as
+  "maxed out" (a review finding). Both render only when metrics-server is up (empty history ⇒ nothing
+  drawn — the no-metrics path is the gui-smoke `node` state). Pure parts
+  unit-tested (ring cap/prune/aggregate, ratio series, sparkline points); verified
+  live on kind with metrics-server (`--inspect <node> --spark` holds the shot
+  ~30s for 2–3 real samples; `--spark` alone frames the STATUS sparklines). On an
+  idle dev cluster the node trace hugs the floor (cpu ~5%) — honest, since it's
+  capacity-relative. Deferred: per-pod sparklines (noisier, the rows are cramped),
+  a selectable time window.
 
 ## The pair (hot/warm)
 

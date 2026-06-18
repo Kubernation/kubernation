@@ -16,7 +16,7 @@ use kubernation_core::state::planned::{Intervention, PlannedWorld};
 use kubernation_core::util::format_usage;
 
 use crate::net::Snapshot;
-use crate::panels::{observed_for, pod_color, truncate_str};
+use crate::panels::{draw_sparkline, observed_for, pod_color, truncate_str};
 use crate::text::{text, text_bold, text_size};
 use crate::theme::*;
 use crate::window::{ForwardBtn, WinAction, draw_window};
@@ -98,7 +98,30 @@ pub fn draw_node(
     y += 16.0;
     ratio_gauge(b.x, y, 300.0, "cpu", t.cpu_ratio);
     ratio_gauge(b.x + 340.0, y, 300.0, "mem", t.mem_ratio);
-    y += 22.0;
+    y += 20.0;
+    // Live-usage trend sparklines, aligned under each gauge bar (only when
+    // metrics-server has reported history). Each is scaled to allocatable
+    // (max = 1.0) so its height reads like the gauge, and coloured by the
+    // latest sample's pressure bucket.
+    if !detail.cpu_history.is_empty() || !detail.mem_history.is_empty() {
+        let sh = 22.0;
+        let bw = 260.0; // matches the gauge bar width (w - 40)
+        text("trend", b.x, y + 14.0, 11.0, DIM);
+        draw_sparkline(
+            Rect::new(b.x + 40.0, y, bw, sh),
+            &detail.cpu_history,
+            1.0,
+            bucket_color(t.cpu_ratio),
+        );
+        draw_sparkline(
+            Rect::new(b.x + 380.0, y, bw, sh),
+            &detail.mem_history,
+            1.0,
+            bucket_color(t.mem_ratio),
+        );
+        y += sh + 4.0;
+    }
+    y += 18.0;
     text(
         format!("{} pods stationed", detail.pods.len()),
         b.x,
@@ -324,19 +347,26 @@ pub fn draw_node(
 }
 
 /// A cpu/mem ratio bar: green calm, yellow ≥70%, red ≥90%.
+/// The pressure-bucket colour for a usage ratio: calm green &lt;0.7, elevated
+/// WARN 0.7–0.9, high CRIT ≥0.9 (the documented gauge buckets). Shared by the
+/// gauge fill and its trend sparkline so they read consistently.
+fn bucket_color(ratio: f64) -> Color {
+    if ratio >= 0.9 {
+        CRIT
+    } else if ratio >= 0.7 {
+        WARN
+    } else {
+        Color::new(0.35, 0.60, 0.30, 1.0)
+    }
+}
+
 fn ratio_gauge(x: f32, y: f32, w: f32, label: &str, ratio: f64) {
     text(label, x, y + 11.0, 13.0, DIM);
     let bx = x + 40.0;
     let bw = w - 40.0;
     let bh = 12.0;
     let by = y + 1.0;
-    let col = if ratio >= 0.9 {
-        CRIT
-    } else if ratio >= 0.7 {
-        WARN
-    } else {
-        Color::new(0.35, 0.60, 0.30, 1.0)
-    };
+    let col = bucket_color(ratio);
     draw_rectangle(bx, by, bw, bh, darker(PANEL, 0.6));
     draw_rectangle(bx, by, bw * (ratio.clamp(0.0, 1.0) as f32), bh, col);
     draw_rectangle_lines(bx, by, bw, bh, 1.0, darker(PARCHMENT, 0.6));

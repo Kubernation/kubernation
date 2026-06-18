@@ -112,6 +112,43 @@ pub fn draw_sidebar(
         STONE_INK_DIM,
     );
     y += 18.0;
+    // Cluster usage trend (when metrics-server reports) — cpu + mem
+    // sparklines self-scaled to their own 15-min peak: an at-a-glance "is the
+    // realm heating up", complementing the capacity-relative node-window ones.
+    let hist = snap.hot.observed.cluster_usage_history();
+    if !hist.is_empty() {
+        let cpu: Vec<f32> = hist.iter().map(|u| u.cpu as f32).collect();
+        let mem: Vec<f32> = hist.iter().map(|u| u.mem as f32).collect();
+        let cpu_max = cpu
+            .iter()
+            .copied()
+            .fold(0.0_f32, f32::max)
+            .max(f32::EPSILON);
+        let mem_max = mem
+            .iter()
+            .copied()
+            .fold(0.0_f32, f32::max)
+            .max(f32::EPSILON);
+        // The current value rides at the right — the sparkline is self-scaled to
+        // its own peak (a trend, not a magnitude), so the readout keeps a flat
+        // steady cluster from reading as "maxed out".
+        let cpu_val = format!("{:.0}m", cpu.last().copied().unwrap_or(0.0) * 1000.0);
+        let mem_val =
+            kubernation_core::util::human_bytes(mem.last().copied().unwrap_or(0.0) as f64);
+        for (lbl, series, scale, val) in [
+            ("cpu", &cpu, cpu_max, cpu_val.as_str()),
+            ("mem", &mem, mem_max, mem_val.as_str()),
+        ] {
+            text(lbl, x, y + 11.0, 11.0, STONE_INK_DIM);
+            let vw = crate::text::text_size(val, 11.0).width;
+            let val_x = col.x + col.w - 10.0 - vw;
+            text(val, val_x, y + 11.0, 11.0, STONE_INK_DIM);
+            let sx = x + 30.0;
+            let sw = (val_x - 6.0 - sx).max(20.0);
+            panels::draw_sparkline(Rect::new(sx, y, sw, 14.0), series, scale, STRUCT);
+            y += 18.0;
+        }
+    }
     // The map overlay is labeled when non-default so a pressure-recolored
     // terrain (red/amber by load) isn't mistaken for node health.
     if overlay != Overlay::Terrain {

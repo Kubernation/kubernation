@@ -1337,7 +1337,33 @@ pub struct NodeDetailModel {
     pub conditions: Vec<(String, String)>,
     pub cpu_alloc: f64,
     pub mem_alloc: f64,
+    /// Recent cpu/mem usage-ratio samples (oldest→newest, usage ÷ allocatable)
+    /// for the trend sparklines beside the gauges. Empty when metrics-server
+    /// isn't reporting; the latest value tracks `tile.cpu_ratio`/`mem_ratio`.
+    pub cpu_history: Vec<f32>,
+    pub mem_history: Vec<f32>,
     pub pods: Vec<NodePodRow>,
+}
+
+/// Turn a node's raw usage history into cpu/mem ratio series (usage ÷
+/// allocatable), the sparkline inputs. Pure + unit-tested; a zero/absent
+/// allocatable yields an empty series (nothing meaningful to chart).
+fn usage_ratios_series(
+    history: &[NodeUsage],
+    cpu_alloc: f64,
+    mem_alloc: f64,
+) -> (Vec<f32>, Vec<f32>) {
+    let cpu = if cpu_alloc > 0.0 {
+        history.iter().map(|u| (u.cpu / cpu_alloc) as f32).collect()
+    } else {
+        Vec::new()
+    };
+    let mem = if mem_alloc > 0.0 {
+        history.iter().map(|u| (u.mem / mem_alloc) as f32).collect()
+    } else {
+        Vec::new()
+    };
+    (cpu, mem)
 }
 
 pub fn build_node_detail(world: &ObservedWorld, name: &str) -> Option<NodeDetailModel> {
@@ -1415,12 +1441,17 @@ pub fn build_node_detail(world: &ObservedWorld, name: &str) -> Option<NodeDetail
         .collect();
     pods.sort_by(|a, b| (&a.namespace, &a.name).cmp(&(&b.namespace, &b.name)));
 
+    let (cpu_history, mem_history) =
+        usage_ratios_series(&world.node_usage_history(name), cpu_alloc, mem_alloc);
+
     Some(NodeDetailModel {
         tile,
         info,
         conditions,
         cpu_alloc,
         mem_alloc,
+        cpu_history,
+        mem_history,
         pods,
     })
 }
@@ -1508,6 +1539,30 @@ mod tests {
     use crate::state::fixtures as fx;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
     use k8s_openapi::jiff;
+
+    #[test]
+    fn usage_ratios_series_divides_by_allocatable() {
+        let hist = [
+            NodeUsage {
+                cpu: 1.0,
+                mem: 1_000.0,
+            },
+            NodeUsage {
+                cpu: 2.0,
+                mem: 3_000.0,
+            },
+        ];
+        // cpu_alloc 4 cores, mem_alloc 4000 bytes.
+        let (cpu, mem) = usage_ratios_series(&hist, 4.0, 4_000.0);
+        assert_eq!(cpu, vec![0.25, 0.5]);
+        assert_eq!(mem, vec![0.25, 0.75]);
+        // Absent allocatable → empty series (nothing meaningful to chart).
+        let (cpu0, mem0) = usage_ratios_series(&hist, 0.0, 0.0);
+        assert!(cpu0.is_empty() && mem0.is_empty());
+        // Empty history → empty series.
+        let (c, m) = usage_ratios_series(&[], 4.0, 4_000.0);
+        assert!(c.is_empty() && m.is_empty());
+    }
 
     #[test]
     fn map_zone_columns_sorted_unzoned_last() {

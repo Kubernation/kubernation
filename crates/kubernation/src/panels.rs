@@ -714,6 +714,73 @@ pub fn draw_picker(
     PickerLayout { rows }
 }
 
+/// Map a value series to polyline points inside `rect` — x runs oldest→newest
+/// left to right, y is bottom (0) to top (`max`), each value clamped to
+/// `[0, max]`. Empty series or a non-positive `max` yields no points. Pure +
+/// unit-tested (the sparkline draw-decision per the GUI testability policy).
+pub fn sparkline_points(values: &[f32], max: f32, rect: Rect) -> Vec<Vec2> {
+    if values.is_empty() || max <= 0.0 {
+        return Vec::new();
+    }
+    let n = values.len();
+    let dx = if n > 1 {
+        rect.w / (n as f32 - 1.0)
+    } else {
+        0.0
+    };
+    values
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            let t = (v / max).clamp(0.0, 1.0);
+            vec2(rect.x + i as f32 * dx, rect.y + rect.h - t * rect.h)
+        })
+        .collect()
+}
+
+/// Draw a small trend sparkline: a faint well + top (100%/`max`) reference
+/// line, the value polyline in `line`, and a dot on the latest sample. A
+/// single sample renders as just the dot; an empty series draws only the well.
+pub fn draw_sparkline(rect: Rect, values: &[f32], max: f32, line: Color) {
+    draw_rectangle(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        Color::new(0.0, 0.0, 0.0, 0.28),
+    );
+    // A faint frame so the chart area reads even when the trace hugs the floor
+    // (a near-idle node), plus a baseline + top (max) reference.
+    draw_rectangle_lines(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
+        1.0,
+        Color::new(1.0, 1.0, 1.0, 0.10),
+    );
+    draw_line(
+        rect.x,
+        rect.y + 0.5,
+        rect.x + rect.w,
+        rect.y + 0.5,
+        1.0,
+        Color::new(1.0, 1.0, 1.0, 0.12),
+    );
+    let pts = sparkline_points(values, max, rect);
+    // A flat single-sample series still shows a short stub, not just a dot.
+    if pts.len() == 1 {
+        let p = pts[0];
+        draw_line(rect.x, p.y, rect.x + rect.w, p.y, 1.5, line);
+    }
+    for w in pts.windows(2) {
+        draw_line(w[0].x, w[0].y, w[1].x, w[1].y, 1.5, line);
+    }
+    if let Some(last) = pts.last() {
+        draw_circle(last.x, last.y, 2.0, line);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -758,5 +825,22 @@ mod tests {
             lines.iter().any(|(t, _)| t.contains("web")),
             "the SELECTION/tooltip lines should name the workload: {lines:?}"
         );
+    }
+
+    #[test]
+    fn sparkline_points_map_values_into_the_rect() {
+        let r = Rect::new(10.0, 20.0, 100.0, 40.0);
+        // 0 → bottom, max → top; evenly spaced across the width.
+        let pts = sparkline_points(&[0.0, 0.5, 1.0], 1.0, r);
+        assert_eq!(pts.len(), 3);
+        assert_eq!(pts[0], vec2(10.0, 60.0)); // value 0 → bottom (y0+h)
+        assert_eq!(pts[1], vec2(60.0, 40.0)); // value .5 → middle
+        assert_eq!(pts[2], vec2(110.0, 20.0)); // value 1 → top (y0), right edge
+        // Over-max clamps to the top, not above it.
+        let over = sparkline_points(&[2.0], 1.0, r);
+        assert_eq!(over[0].y, 20.0);
+        // Degenerate inputs yield nothing (the draw helper then skips the line).
+        assert!(sparkline_points(&[], 1.0, r).is_empty());
+        assert!(sparkline_points(&[0.5], 0.0, r).is_empty());
     }
 }
