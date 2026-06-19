@@ -3,17 +3,20 @@
 //!   WORLD      → the isometric minimap (overview + click-to-jump)
 //!   STATUS     → cluster identity, node/pod counts, the concern rollup,
 //!                the gauge source, and the active namespace filter
+//!   ATTENTION  → the attention queue (relocated from the old bottom strip);
+//!                click a concern to fly there + open its drill-down (= `N`)
 //!   FORWARDS   → live port-forwards (shown only when any exist), each with a
 //!                stop button — the always-visible home for the tunnels
 //!   SELECTION  → whatever tile is selected/hovered (4X's "moving unit" box),
 //!                reusing the same lines as the hover tooltip
 //!
 //! Always visible; the drill-down modals dim it behind their scrim. The map
-//! fills everything to the column's left.
+//! fills everything to the column's left (now full-height — no bottom strip).
 
 use macroquad::prelude::*;
 
-use kubernation_core::state::attention::{Severity, severity_counts};
+use kubernation_core::events::ClusterId;
+use kubernation_core::state::attention::{Concern, Severity, severity_counts};
 use kubernation_core::state::filter::NamespaceFilter;
 
 use crate::draw::{Camera, MinimapLayout, Overlay, SceneWorld, draw_minimap};
@@ -21,6 +24,69 @@ use crate::net::{ForwardInfo, Snapshot};
 use crate::panels::{self, region_lines, truncate_str};
 use crate::text::{text, text_bold};
 use crate::theme::*;
+
+/// How many concerns the docked ATTENTION section shows before "+N more". Larger
+/// than the old bottom strip's 3 — the column has the room, and the user moved
+/// it here to use that space. A render-time break-guard keeps it from spilling
+/// the column on a short window.
+const ATTN_CAP: usize = 6;
+
+/// What a frame's interaction with the column asks the caller to do.
+#[derive(Default)]
+pub struct SidebarHit {
+    /// A FORWARDS stop button was clicked → stop this local port.
+    pub stop_forward: Option<u16>,
+    /// An ATTENTION row was clicked → focus this concern (index into
+    /// `snap.attention`), flying to it + opening its drill-down (same as `N`).
+    pub focus_concern: Option<usize>,
+}
+
+/// The attention queue rendered as `(line, color)` rows for the column's
+/// ATTENTION section — **pure** (no GL / no `screen_*`), unit-tested per the GUI
+/// testability policy. Mirrors the old bottom strip's format:
+/// `"{marker}{tag}{title} - {detail}"`, a `> ` marker on the focused concern
+/// (`concern_idx`, wrapped), `[H]`/`[W]` tags in pair mode, colour by
+/// `severity_on_stone`. Up to `cap` concern rows, then a `+N more` overflow row;
+/// a single "all quiet" row when empty. The renderer truncates each line to the
+/// column width (`fit_width`) and attaches the click hit-rects.
+pub fn attention_rows(
+    attention: &[Concern],
+    paired: bool,
+    concern_idx: usize,
+    cap: usize,
+) -> Vec<(String, Color)> {
+    if attention.is_empty() {
+        return vec![("all quiet - no concerns".into(), STONE_INK_DIM)];
+    }
+    let focus = concern_idx % attention.len();
+    let mut rows: Vec<(String, Color)> = attention
+        .iter()
+        .take(cap)
+        .enumerate()
+        .map(|(i, c)| {
+            let marker = if i == focus { "> " } else { "  " };
+            let tag = if paired {
+                match c.cluster {
+                    ClusterId::Hot => "[H] ",
+                    ClusterId::Warm => "[W] ",
+                }
+            } else {
+                ""
+            };
+            (
+                format!("{marker}{tag}{} - {}", c.title, c.detail),
+                severity_on_stone(c.severity),
+            )
+        })
+        .collect();
+    if attention.len() > cap {
+        rows.push((
+            format!("+{} more (N to cycle)", attention.len() - cap),
+            STONE_INK_DIM,
+        ));
+    }
+    rows
+}
 
 /// Draw the column. `forwards` are the live port-forwards (a FORWARDS section
 /// appears when non-empty); a click on a forward's stop button returns its
@@ -35,12 +101,14 @@ pub fn draw_sidebar(
     ns_filter: &NamespaceFilter,
     ml: &MinimapLayout,
     overlay: Overlay,
+    concern_idx: usize,
     forwards: &[ForwardInfo],
     mouse: Vec2,
     click: bool,
     interactive: bool,
-) -> Option<u16> {
+) -> SidebarHit {
     let mut stop: Option<u16> = None;
+    let mut focus: Option<usize> = None;
     let col = panels::sidebar_rect();
     stone_panel(col.x, col.y, col.w, col.h);
     let x = col.x + 14.0;
@@ -160,6 +228,59 @@ pub fn draw_sidebar(
         y += 18.0;
     }
 
+    // --- ATTENTION (the queue — relocated from the old bottom strip) -------
+    // Clickable: a row does exactly what `N` does (focus + fly + open). The
+    // focused concern wears the picker-cursor well; hovering a row washes it.
+    y += 6.0;
+    divider(y);
+    y += 16.0;
+    let attn = &snap.attention;
+    let header = if attn.is_empty() {
+        "ATTENTION".to_string()
+    } else {
+        format!("ATTENTION ({})", attn.len())
+    };
+    text_bold(header, x, y, 15.0, STONE_INK);
+    y += 20.0;
+    // Stop short of the column bottom, reserving a slot for the SELECTION
+    // header below (so a short window can't starve "what am I looking at").
+    // On a normal window the few rows never reach this, so no space is wasted.
+    let attn_bottom = col.y + col.h - 46.0;
+    let concern_rows = attn.len().min(ATTN_CAP); // rows mapping to a real concern
+    let focus_row = concern_idx % attn.len().max(1);
+    for (i, (content, color)) in attention_rows(attn, snap.warm.is_some(), concern_idx, ATTN_CAP)
+        .into_iter()
+        .enumerate()
+    {
+        if y > attn_bottom {
+            break;
+        }
+        let clickable = i < concern_rows; // skip the empty / "+N more" line
+        let rect = Rect::new(col.x + 6.0, y - 13.0, col.w - 12.0, 17.0);
+        if clickable && i == focus_row {
+            stone_well(rect.x, rect.y, rect.w, rect.h);
+        } else if clickable && interactive && rect.contains(mouse) {
+            draw_rectangle(
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                Color::new(0.0, 0.0, 0.0, 0.06),
+            );
+        }
+        text(
+            ascii(&panels::fit_width(&content, 13.0, col.w - 22.0)),
+            x,
+            y,
+            13.0,
+            color,
+        );
+        if clickable && interactive && click && rect.contains(mouse) {
+            focus = Some(i);
+        }
+        y += 17.0;
+    }
+
     // --- FORWARDS (only when any are live) --------------------------------
     if !forwards.is_empty() {
         y += 6.0;
@@ -242,5 +363,88 @@ pub fn draw_sidebar(
         }
     }
 
-    stop
+    SidebarHit {
+        stop_forward: stop,
+        focus_concern: focus,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kubernation_core::state::attention::Target;
+
+    fn concern(sev: Severity, title: &str, detail: &str, cluster: ClusterId) -> Concern {
+        Concern {
+            severity: sev,
+            title: title.into(),
+            detail: detail.into(),
+            target: Target::WorkloadList,
+            probe: None,
+            key: title.into(),
+            cluster,
+        }
+    }
+
+    #[test]
+    fn attention_rows_empty_is_all_quiet() {
+        let rows = attention_rows(&[], false, 0, ATTN_CAP);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "all quiet - no concerns");
+        assert_eq!(rows[0].1, STONE_INK_DIM);
+    }
+
+    #[test]
+    fn attention_rows_format_focus_color_and_tag() {
+        let cs = [
+            concern(
+                Severity::Critical,
+                "crashy",
+                "CrashLoopBackOff",
+                ClusterId::Hot,
+            ),
+            concern(Severity::Warning, "stuck-pvc", "Pending", ClusterId::Hot),
+        ];
+        let rows = attention_rows(&cs, false, 0, ATTN_CAP);
+        assert_eq!(rows.len(), 2);
+        // Focus marker tracks concern_idx (0 → first row).
+        assert!(rows[0].0.starts_with("> "));
+        assert!(rows[1].0.starts_with("  "));
+        // Colour is the on-stone severity ink (the region_lines analogue).
+        assert_eq!(rows[0].1, severity_on_stone(Severity::Critical));
+        // The row names the concern (title + detail).
+        assert!(rows[0].0.contains("crashy") && rows[0].0.contains("CrashLoopBackOff"));
+        // Single-cluster → no pair tag.
+        assert!(!rows[0].0.contains("[H]"));
+    }
+
+    #[test]
+    fn attention_rows_pair_tag_and_overflow_and_wrap() {
+        let cs: Vec<Concern> = (0..5)
+            .map(|i| {
+                let cl = if i == 1 {
+                    ClusterId::Warm
+                } else {
+                    ClusterId::Hot
+                };
+                concern(Severity::Info, &format!("c{i}"), "detail", cl)
+            })
+            .collect();
+        // Pair mode tags each row with its cluster.
+        let paired = attention_rows(&cs, true, 0, ATTN_CAP);
+        assert!(paired[0].0.contains("[H] "));
+        assert!(paired[1].0.contains("[W] "));
+        // cap < len → a "+N more" overflow row in dim ink.
+        let capped = attention_rows(&cs, false, 0, 3);
+        assert_eq!(capped.len(), 4);
+        assert_eq!(
+            *capped.last().unwrap(),
+            ("+2 more (N to cycle)".to_string(), STONE_INK_DIM)
+        );
+        // concern_idx wraps modulo the queue length: idx 6 over 5 concerns
+        // marks row 1 (6 % 5), shown since cap (6) covers all five.
+        let wrapped = attention_rows(&cs, false, 6, ATTN_CAP);
+        assert!(wrapped[1].0.starts_with("> "));
+        assert!(wrapped[0].0.starts_with("  "));
+    }
 }

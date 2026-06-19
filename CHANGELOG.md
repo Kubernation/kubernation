@@ -9,6 +9,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Changed
+- **The attention queue moved from the bottom strip into a docked ATTENTION
+  section in the right column**, between STATUS and FORWARDS — and its rows are
+  now **clickable**: clicking a concern flies the camera there and opens its
+  drill-down (the same path as the `N` key, so keyboard and mouse can't drift).
+  The map play area now extends to the screen bottom (the 64px strip is gone),
+  and the column shows up to 6 concerns (was 3) to use the reclaimed space. The
+  focused concern wears the picker-cursor highlight. Pure `attention_rows()` +
+  unit test per the GUI testability policy.
 - **The TUI was removed; the windowed (macroquad) client is now the product**
   and is the `kubernation` binary (renamed from `kubernation-gui`; `cargo run` /
   `make run` launch it). Every feature had been built twice; the headless niche

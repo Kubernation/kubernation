@@ -19,7 +19,7 @@ use kubernation_core::state::world::{City, CoastKind, Continent, Island, Provinc
 use macroquad::prelude::*;
 
 use crate::net::Snapshot;
-use crate::panels::{CHROME_H, COL_W, STRIP_H};
+use crate::panels::{CHROME_H, COL_W};
 use crate::text::{name_text, name_text_size, text, text_bold, text_outline, text_size};
 use crate::theme::*;
 use kubernation_core::util::fnv1a64;
@@ -1713,7 +1713,7 @@ pub fn draw_minimap(worlds: &[SceneWorld], cam: &Camera, ml: &MinimapLayout, ove
     // The size therefore tracks ONLY the zoom — panning just translates it.
     let main_hw = cam.cell_px().0;
     let ratio = ml.hw / main_hw;
-    let (rx, by) = (screen_width() - COL_W, screen_height() - STRIP_H);
+    let (rx, by) = (screen_width() - COL_W, screen_height());
     // mm point of a screen point, via the shared affine (uniform scale, no shear).
     let mmx = |sx: f32| ml.inner.x + ml.offx + (sx + cam.pos.x) * ratio;
     let mmy = |sy: f32| ml.inner.y + (sy + cam.pos.y) * ratio;

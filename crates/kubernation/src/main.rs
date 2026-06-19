@@ -44,7 +44,7 @@ use draw::{
 };
 use inspect::Inspector;
 use kubernation_core::events::ClusterId;
-use kubernation_core::state::attention::Target;
+use kubernation_core::state::attention::{Concern, Target};
 use kubernation_core::state::blast::{Subject, blast_radius};
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::model::WorkloadRef;
@@ -55,8 +55,7 @@ use macroquad::prelude::*;
 use menu::{MenuAction, MenuCtx};
 use net::{EvictReq, ForwardReq, LogReq};
 use panels::{
-    Panel, draw_attention_strip, draw_chaos_confirm, draw_commit_confirm, draw_evict_confirm,
-    draw_logs, draw_tooltip,
+    Panel, draw_chaos_confirm, draw_commit_confirm, draw_evict_confirm, draw_logs, draw_tooltip,
 };
 use text::{text, text_size};
 use theme::*;
@@ -269,6 +268,42 @@ fn build_chaos_run(
         steps: plan.steps.clone(),
         restore: plan.restore.clone(),
         watch,
+    }
+}
+
+/// Focus concern `idx`: park the cursor on it, fly the camera there, and open
+/// its drill-down — the single path both the `N` key and a click on the column's
+/// ATTENTION section take, so keyboard and mouse can't drift. A `WorkloadList`
+/// concern (no map cell) just updates `concern_idx`.
+fn focus_concern(
+    idx: usize,
+    worlds: &[SceneWorld],
+    attention: &[Concern],
+    concern_idx: &mut usize,
+    selected: &mut Option<(u16, u16)>,
+    cam: &mut Camera,
+    panel: &mut Option<Panel>,
+) {
+    let Some(concern) = attention.get(idx) else {
+        return;
+    };
+    *concern_idx = idx;
+    if let Some(sw) = worlds.iter().find(|w| w.id == concern.cluster) {
+        let local = match &concern.target {
+            Target::Workload(r) => sw.world.city_pos(r).or_else(|| sw.world.structure_pos(r)),
+            Target::Node(name) => sw.world.province_pos(name),
+            Target::WorkloadList => None,
+        };
+        if let Some(p) = local {
+            let global = (p.0 + sw.off, p.1);
+            *selected = Some(global);
+            cam.fly_to(global);
+            *panel = match &concern.target {
+                Target::Workload(r) => Some(Panel::City(sw.id, r.clone())),
+                Target::Node(name) => Some(Panel::Node(sw.id, name.clone())),
+                Target::WorkloadList => None,
+            };
+        }
     }
 }
 
@@ -976,11 +1011,9 @@ async fn main() {
                 drag_anchor = None;
             }
             // Wheel-zoom anchors at the cursor, so only over the play area —
-            // over the column/chrome/strip it would anchor on a hidden cell and
+            // over the column or chrome it would anchor on a hidden cell and
             // jolt the map sideways.
-            let over_map = mouse.x < panels::map_width()
-                && mouse.y > panels::CHROME_H
-                && mouse.y < screen_height() - panels::STRIP_H;
+            let over_map = mouse.x < panels::map_width() && mouse.y > panels::CHROME_H;
             let (_, wheel) = mouse_wheel();
             if wheel.abs() > 0.0 && over_map {
                 let factor = if wheel > 0.0 { 1.1 } else { 1.0 / 1.1 };
@@ -995,7 +1028,7 @@ async fn main() {
             let worlds = scene(s);
             let bounds = scene_size(&worlds);
             // Keep the focused-concern index in range as the queue shrinks, so
-            // the strip highlight and the `L` jump always point at the same row.
+            // the ATTENTION highlight and the `L` jump always point at the same row.
             if !s.attention.is_empty() {
                 concern_idx = concern_idx.min(s.attention.len() - 1);
             }
@@ -1154,27 +1187,16 @@ async fn main() {
                     }
                 }
                 if is_key_pressed(KeyCode::N) && !s.attention.is_empty() {
-                    concern_idx = (concern_idx + 1) % s.attention.len();
-                    let concern = &s.attention[concern_idx];
-                    if let Some(sw) = worlds.iter().find(|w| w.id == concern.cluster) {
-                        let local = match &concern.target {
-                            Target::Workload(r) => {
-                                sw.world.city_pos(r).or_else(|| sw.world.structure_pos(r))
-                            }
-                            Target::Node(name) => sw.world.province_pos(name),
-                            Target::WorkloadList => None,
-                        };
-                        if let Some(p) = local {
-                            let global = (p.0 + sw.off, p.1);
-                            selected = Some(global);
-                            cam.fly_to(global);
-                            panel = match &concern.target {
-                                Target::Workload(r) => Some(Panel::City(sw.id, r.clone())),
-                                Target::Node(name) => Some(Panel::Node(sw.id, name.clone())),
-                                Target::WorkloadList => None,
-                            };
-                        }
-                    }
+                    let next = (concern_idx + 1) % s.attention.len();
+                    focus_concern(
+                        next,
+                        &worlds,
+                        &s.attention,
+                        &mut concern_idx,
+                        &mut selected,
+                        &mut cam,
+                        &mut panel,
+                    );
                 }
                 if is_key_pressed(KeyCode::Enter)
                     && let Some(sel) = selected
@@ -1542,9 +1564,7 @@ async fn main() {
                 // shown; the drill-down modals dim it behind their scrim. The
                 // SELECTION box follows the clicked tile, else the hovered one.
                 let ml = minimap_layout(bounds);
-                let over_map = mouse.x < panels::map_width()
-                    && mouse.y > panels::CHROME_H
-                    && mouse.y < screen_height() - panels::STRIP_H;
+                let over_map = mouse.x < panels::map_width() && mouse.y > panels::CHROME_H;
                 let hovered = over_map
                     .then(|| cam.cell_at(mouse, bounds))
                     .flatten()
@@ -1568,7 +1588,7 @@ async fn main() {
                     && pending_chaos.is_none();
                 let sidebar_click =
                     is_mouse_button_pressed(MouseButton::Left) && sidebar_interactive;
-                if let Some(lp) = sidebar::draw_sidebar(
+                let hit = sidebar::draw_sidebar(
                     &worlds,
                     &cam,
                     s,
@@ -1576,12 +1596,25 @@ async fn main() {
                     &ns_filter_now,
                     &ml,
                     overlay,
+                    concern_idx,
                     &forwards,
                     mouse,
                     sidebar_click,
                     sidebar_interactive,
-                ) {
+                );
+                if let Some(lp) = hit.stop_forward {
                     net.stop_forward(lp);
+                }
+                if let Some(i) = hit.focus_concern {
+                    focus_concern(
+                        i,
+                        &worlds,
+                        &s.attention,
+                        &mut concern_idx,
+                        &mut selected,
+                        &mut cam,
+                        &mut panel,
+                    );
                 }
 
                 // Cartographic title cartouche over the top of the map (a
@@ -1598,7 +1631,7 @@ async fn main() {
                 };
                 panels::draw_map_title(&map_title, view_sub.as_deref(), panels::map_width());
 
-                // Hover tooltip over the map (not the column / chrome / strip /
+                // Hover tooltip over the map (not the column / chrome /
                 // an open overlay — incl. a panel-less concern-`L` log).
                 if !picker
                     && almanac.is_none()
@@ -1821,7 +1854,6 @@ async fn main() {
                         &mut log_follow,
                     );
                 }
-                draw_attention_strip(&s.attention, paired, concern_idx, panels::map_width());
             }
         }
 

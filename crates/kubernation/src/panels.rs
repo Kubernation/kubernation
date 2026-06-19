@@ -1,10 +1,10 @@
-//! Chrome that floats over the world: the hover tooltip, the attention
-//! strip, the context picker, and the shared helpers the drill-down windows
-//! reuse. Everything is cluster-aware: in pair mode it says which world it
-//! belongs to. (Detail drill-downs themselves live in `city.rs` / `node.rs`.)
+//! Chrome that floats over the world: the hover tooltip, the blast banner,
+//! the context picker, and the shared helpers the drill-down windows reuse.
+//! Everything is cluster-aware: in pair mode it says which world it belongs to.
+//! (Detail drill-downs themselves live in `city.rs` / `node.rs`; the attention
+//! queue now lives in the right column's ATTENTION section — see `sidebar.rs`.)
 
 use kubernation_core::events::ClusterId;
-use kubernation_core::state::attention::Concern;
 use kubernation_core::state::logline::{self, FilterExpr, Level};
 use kubernation_core::state::model::{NodeHealth, PodState, WorkloadRef};
 use kubernation_core::state::world::{CoastKind, Region};
@@ -15,7 +15,6 @@ use crate::net::{LogTail, Snapshot};
 use crate::text::{name_text, name_text_size, text, text_bold, text_size};
 use crate::theme::*;
 
-pub const STRIP_H: f32 = 64.0;
 pub const CHROME_H: f32 = 32.0;
 /// Width of the docked right column (the WORLD / STATUS / SELECTION sidebar,
 /// after the classic-4X right panel). The map fills everything to its left.
@@ -31,8 +30,8 @@ pub fn sidebar_rect() -> Rect {
     )
 }
 
-/// The play area to the left of the column (where the map + attention strip
-/// live).
+/// The play area to the left of the column (where the map lives, now full
+/// height — the attention queue moved into the column's ATTENTION section).
 pub fn map_width() -> f32 {
     (screen_width() - COL_W).max(0.0)
 }
@@ -217,7 +216,7 @@ pub fn draw_tooltip(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot, mouse: 
         + 16.0;
     let h = lines.len() as f32 * 17.0 + 10.0;
     let x = (mouse.x + 16.0).min(screen_width() - w - 8.0);
-    let y = (mouse.y + 18.0).min(screen_height() - STRIP_H - h - 8.0);
+    let y = (mouse.y + 18.0).min(screen_height() - h - 8.0);
     stone_panel(x, y, w, h);
     for (i, (content, color)) in lines.iter().enumerate() {
         text(
@@ -271,7 +270,7 @@ pub fn draw_logs(
     follow: &mut bool,
 ) {
     let w = (screen_width() * 0.72).min(940.0);
-    let h = (screen_height() - STRIP_H - CHROME_H - 40.0).max(200.0);
+    let h = (screen_height() - CHROME_H - 40.0).max(200.0);
     let x = (screen_width() - w) / 2.0;
     let y = CHROME_H + 20.0;
     draw_rectangle(x, y, w, h, Color::new(0.06, 0.07, 0.09, 0.97));
@@ -442,56 +441,6 @@ pub(crate) fn fit_width(s: &str, size: f32, max_w: f32) -> String {
     let mut out: String = chars[..lo].iter().collect();
     out.push('…');
     out
-}
-
-// --- attention strip ------------------------------------------------------
-
-pub fn draw_attention_strip(attention: &[Concern], paired: bool, concern_idx: usize, width: f32) {
-    let base = screen_height() - STRIP_H;
-    draw_rectangle(0.0, base, width, STRIP_H, STONE);
-    draw_rectangle(0.0, base, width, 2.0, STONE_LIGHT);
-    draw_rectangle(0.0, base + STRIP_H - 2.0, width, 2.0, STONE_SHADOW);
-    if attention.is_empty() {
-        text(
-            "all quiet - no concerns",
-            16.0,
-            base + 26.0,
-            18.0,
-            STONE_INK_DIM,
-        );
-        return;
-    }
-    for (i, c) in attention.iter().take(3).enumerate() {
-        let marker = if i == concern_idx % attention.len() {
-            "> "
-        } else {
-            "  "
-        };
-        let tag = if paired {
-            match c.cluster {
-                ClusterId::Hot => "[H] ",
-                ClusterId::Warm => "[W] ",
-            }
-        } else {
-            ""
-        };
-        text(
-            ascii(&format!("{marker}{tag}{} - {}", c.title, c.detail)),
-            16.0,
-            base + 20.0 + i as f32 * 19.0,
-            16.0,
-            severity_on_stone(c.severity),
-        );
-    }
-    if attention.len() > 3 {
-        text(
-            format!("+{}", attention.len() - 3),
-            width - 44.0,
-            base + 20.0,
-            14.0,
-            STONE_INK_DIM,
-        );
-    }
 }
 
 // --- evict confirm ------------------------------------------------------
@@ -788,8 +737,8 @@ pub fn draw_picker(
 }
 
 /// A small banner announcing the blast-radius overlay is active — the affected
-/// count, or a hint when no subject resolves. Sits just above the attention
-/// strip, left of the play area.
+/// count, or a hint when no subject resolves. Sits at the bottom-left of the
+/// play area.
 pub fn draw_blast_banner(affected: Option<usize>, _map_w: f32) {
     let msg = match affected {
         Some(0) => "BLAST RADIUS · nothing downstream derivable · B to clear".to_string(),
@@ -799,7 +748,7 @@ pub fn draw_blast_banner(affected: Option<usize>, _map_w: f32) {
     let fs = 13.0;
     let bw = text_size(&msg, fs).width + 20.0;
     let bx = 6.0;
-    let by = screen_height() - STRIP_H - 26.0;
+    let by = screen_height() - 26.0 - 8.0; // just above the screen bottom
     stone_panel(bx, by, bw, 22.0);
     let col = if affected.unwrap_or(0) > 0 {
         STONE_CRIT

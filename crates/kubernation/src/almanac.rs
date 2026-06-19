@@ -563,7 +563,7 @@ fn page_reading(cx: &mut Ctx) {
     );
     cx.heading("Attention");
     cx.para(
-        "Pod-level failures aggregate per owning workload — one \"city in trouble\", not forty pod alarms. The strip along the bottom shows the worst few; N walks them.",
+        "Pod-level failures aggregate per owning workload — one \"city in trouble\", not forty pod alarms. The right column's ATTENTION section lists the worst few; N walks them, and clicking a concern flies there and opens its drill-down.",
     );
     cx.heading("The pair (with --warm)");
     cx.para(
