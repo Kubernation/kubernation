@@ -72,6 +72,48 @@ pub struct Concern {
     pub cluster: ClusterId,
 }
 
+/// The runbook hint for a concern: the next action to take, pointing at the
+/// in-app verb where one fits ("the page points to the next action"). PURE +
+/// testable — keyed on the concern's stable `key` prefix + whether it has a
+/// log-worthy pod. `None` when there's no specific action beyond opening it.
+pub fn next_action(c: &Concern) -> Option<String> {
+    let logs = c.probe.is_some();
+    let s = match c.key.split(':').next().unwrap_or("") {
+        // Workload / bare-pod / job concerns: logs are the first move.
+        "w" => {
+            if logs {
+                "L: tail logs · B: blast radius · click: open the city"
+            } else {
+                "B: blast radius · click: open the city"
+            }
+        }
+        "b" | "j" => {
+            if logs {
+                "L: tail the offending pod's logs"
+            } else {
+                "open the target to see its pods + events"
+            }
+        }
+        "n" => "B: blast radius · click: open the province",
+        "p" => "check the PVC's StorageClass and whether a PV can bind",
+        "i" => "the Ingress backend Service is missing — fix the backend name",
+        "s" => "the Service selector matches no pods — check its selector / pod labels",
+        "e" => "open the target to read its recent events",
+        "slo" => "error budget burning — open the city's TREASURY (SLO) band",
+        "pair" => "compare HOT vs WARM (sync chips + the workload list)",
+        "chaos-raid" => "drill underway — B: watch the blast; the scorecard tracks recovery",
+        // Fallback: at least point at the structural verbs that apply.
+        _ => {
+            if logs {
+                "L: tail logs"
+            } else {
+                return None;
+            }
+        }
+    };
+    Some(s.to_string())
+}
+
 #[derive(Default)]
 struct Agg {
     crash: u32,
@@ -696,6 +738,63 @@ mod tests {
         let map = build_map(world);
         let rows = build_workloads(world);
         build(world, &map, &rows, &NamespaceFilter::All)
+    }
+
+    #[test]
+    fn next_action_keys_off_the_concern_kind() {
+        let mk = |key: &str, probe: bool| Concern {
+            severity: Severity::Warning,
+            title: "x".into(),
+            detail: "y".into(),
+            target: Target::WorkloadList,
+            probe: probe.then(|| LogProbe {
+                namespace: "demo".into(),
+                pod: "p".into(),
+                previous: false,
+            }),
+            key: key.into(),
+            cluster: ClusterId::Hot,
+        };
+        // A workload concern with a log-worthy pod leads with the logs verb.
+        assert!(
+            next_action(&mk("w:Deployment/demo/web", true))
+                .unwrap()
+                .contains("L: tail logs")
+        );
+        // Without a probe it still points at blast + open.
+        assert!(
+            next_action(&mk("w:Deployment/demo/web", false))
+                .unwrap()
+                .contains("B: blast")
+        );
+        // Type-specific runbook hints by key prefix.
+        assert!(
+            next_action(&mk("p:demo/data", false))
+                .unwrap()
+                .contains("StorageClass")
+        );
+        assert!(
+            next_action(&mk("i:demo/web", false))
+                .unwrap()
+                .contains("backend")
+        );
+        assert!(
+            next_action(&mk("s:demo/web", false))
+                .unwrap()
+                .contains("selector")
+        );
+        assert!(
+            next_action(&mk("slo:demo/web", false))
+                .unwrap()
+                .contains("budget")
+        );
+        assert!(
+            next_action(&mk("pair:drift", false))
+                .unwrap()
+                .contains("WARM")
+        );
+        // A bare concern with nothing actionable returns None.
+        assert!(next_action(&mk("e:Event/demo/x", false)).is_some()); // events → open target
     }
 
     fn concerns_filtered(world: &ObservedWorld, filter: &NamespaceFilter) -> Vec<Concern> {

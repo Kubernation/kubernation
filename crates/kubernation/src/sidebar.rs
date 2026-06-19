@@ -280,6 +280,24 @@ pub fn draw_sidebar(
         }
         y += 17.0;
     }
+    // Runbook hint for the focused concern: the next action / in-app verb to take.
+    if !attn.is_empty()
+        && y <= attn_bottom
+        && let Some(hint) = kubernation_core::state::attention::next_action(&attn[focus_row])
+    {
+        text(
+            ascii(&panels::fit_width(
+                &format!("next: {hint}"),
+                11.0,
+                col.w - 16.0,
+            )),
+            x,
+            y,
+            11.0,
+            STONE_WARN,
+        );
+        y += 15.0;
+    }
 
     // --- FORWARDS (only when any are live) --------------------------------
     if !forwards.is_empty() {

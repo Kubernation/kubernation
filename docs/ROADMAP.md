@@ -21,7 +21,7 @@ identity; interesting logic lives in pure, unit-tested core.
 | # | Feature | Why | Effort | Status |
 |---|---|---|---|---|
 | 1 | **Pod-not-Ready explainer** (probe + image-pull cards) | Closes the attention-queue "last mile": red → root cause + next step. CrashLoop ≈ 40% of K8s tickets. | M | ✅ shipped (v0.37.0) |
-| 2 | **Runbook / next-action hints on concerns** | Cheapest high-signal win — every concern points to its in-app verb. | S | todo |
+| 2 | **Runbook / next-action hints on concerns** | Cheapest high-signal win — every concern points to its in-app verb. | S | ✅ shipped (v0.38.0) |
 | 3 | **Rollout history + revision diff** | "Which change broke it?" Pure over the watched ReplicaSet store; unblocks #4. | M | todo |
 | 4 | **Rollback (staged turn — 5th planning verb)** | The #1 incident remediation, on the existing dry-run/commit rail. | M | todo |
 | 5 | **Right-sizing advisor** (requests vs usage) | Biggest cost + reliability lever; metrics rings already kept; no Prometheus. | M | todo |

@@ -9,6 +9,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Runbook / next-action hints on concerns.** The focused concern in the
+  ATTENTION column now shows a `next:` hint pointing at the in-app verb that acts
+  on it — `L: tail logs`, `B: blast radius`, `click: open the city/province`, or a
+  type-specific remediation (a pending PVC → check the StorageClass; an orphan
+  Ingress → fix the backend Service; an idle Service → check its selector; a
+  burning SLO → open the TREASURY band). Pure `attention::next_action` keyed on the
+  concern's stable kind (unit-tested). (Roadmap #2.)
 - **Pod-not-Ready explainer.** The city + province windows now show a plain-English
   "why / fix" for a degraded workload's worst pod — turning the raw Kubernetes
   reason (`CrashLoopBackOff`, `ImagePullBackOff`, `Unschedulable`, OOMKilled, a
