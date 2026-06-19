@@ -6,6 +6,7 @@
 //!   status band →  replicas / updated gauges, rollout, strategy, attention
 //!   citizens    →  a pod census grid + a clickable pod list (tail logs)
 //!   improvements→  owned resources (svc / ingress / pvc / cm / secret)
+//!   history     →  rollout revisions + the image change that's live (Deploys)
 //!   chronicle   →  recent events
 //!
 //! Fixed size with caps + "+N more" (4X's panels don't scroll).
@@ -606,6 +607,61 @@ pub fn draw_city(
     if city.owned.is_empty() {
         text("nothing owned", right_x, ry + 12.0, 13.0, DIM);
         ry += row_h;
+    }
+
+    // ROLLOUT HISTORY — Deployment revisions (newest first) + the image change
+    // that produced the current one ("which change is live / broke it?").
+    // Deployment-only; hidden for StatefulSet/DaemonSet (their revisions live in
+    // ControllerRevisions, which Kubernation doesn't watch).
+    let revs = kubernation_core::state::rollout::revisions(observed, r);
+    if !revs.is_empty() {
+        ry += 10.0;
+        text_bold(
+            format!("HISTORY ({})", revs.len()),
+            right_x,
+            ry + 12.0,
+            15.0,
+            PARCHMENT,
+        );
+        ry += 22.0;
+        if let Some(prev) = kubernation_core::state::rollout::previous(&revs) {
+            for ch in kubernation_core::state::rollout::image_changes(prev, &revs[0]) {
+                let line = format!(
+                    "{}: {} -> {}",
+                    ch.container,
+                    ch.from.as_deref().unwrap_or("(none)"),
+                    ch.to.as_deref().unwrap_or("(none)")
+                );
+                text(
+                    ascii(&truncate_str(&line, 46)),
+                    right_x,
+                    ry + 12.0,
+                    12.0,
+                    WARN,
+                );
+                ry += 16.0;
+            }
+        }
+        for rev in revs.iter().take(3) {
+            let img = rev.images.first().map(|(_, i)| i.as_str()).unwrap_or("");
+            let mark = if rev.current { " *" } else { "  " };
+            let line = format!(
+                "rev {}{}  {}  {}",
+                rev.number,
+                mark,
+                format_age_opt(rev.created.as_ref()),
+                img
+            );
+            let col = if rev.current { INK } else { DIM };
+            text(
+                ascii(&truncate_str(&line, 46)),
+                right_x,
+                ry + 12.0,
+                12.0,
+                col,
+            );
+            ry += 16.0;
+        }
     }
 
     ry += 10.0;

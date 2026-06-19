@@ -9,6 +9,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Rollout history + revision diff.** A Deployment's city window now has a
+  HISTORY section listing its recent revisions (newest first, the current one
+  marked) with the container image each ran, plus the image change that produced
+  the live revision — the "which change is running / broke it?" answer at a
+  glance. Pure `state/rollout.rs` over the watched ReplicaSet store (unit-tested);
+  Deployment-only (StatefulSet/DaemonSet track revisions in unwatched
+  ControllerRevisions). Sets up one-click rollback. (Roadmap #3.)
 - **Runbook / next-action hints on concerns.** The focused concern in the
   ATTENTION column now shows a `next:` hint pointing at the in-app verb that acts
   on it — `L: tail logs`, `B: blast radius`, `click: open the city/province`, or a

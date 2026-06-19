@@ -230,7 +230,7 @@ impl OwnerIndex {
     }
 }
 
-fn controller_owner(
+pub(crate) fn controller_owner(
     refs: Option<&[k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference]>,
 ) -> Option<(&str, &str)> {
     refs?
