@@ -16,6 +16,7 @@ mod advisor;
 mod almanac;
 mod browse;
 mod chaos;
+mod charter;
 mod city;
 mod draw;
 mod inspect;
@@ -37,6 +38,7 @@ use advisor::{Advisor, AdvisorAction, AdvisorTab};
 use almanac::{Almanac, AlmanacAction};
 use browse::{BrowseAction, Browser};
 use chaos::{Chaos, ChaosAction};
+use charter::{CharterAction, CharterView};
 use clap::Parser;
 use draw::{
     Camera, Overlay, SceneWorld, draw_blast, draw_sea, draw_selection, draw_world, locate,
@@ -193,6 +195,10 @@ struct Args {
     /// (development verification of the advisor windows)
     #[arg(long, value_name = "NAME")]
     advisor: Option<String>,
+    /// Open the Charter (self-scoped RBAC) on sync, optionally scoped to a
+    /// namespace (development verification of the RBAC matrix)
+    #[arg(long, value_name = "NS", num_args = 0..=1, default_missing_value = "")]
+    charter: Option<String>,
     /// With --inspect, also open the object inspector (YAML) on the inspected
     /// city/node (development verification of the inspector)
     #[arg(long)]
@@ -291,6 +297,26 @@ fn parse_tier(s: &str) -> Option<kubernation_core::state::chaos::Tier> {
         "raid" => Some(Tier::Raid),
         "siege" => Some(Tier::Siege),
         _ => None,
+    }
+}
+
+/// The namespace the Charter focuses on: a single active filter namespace if one
+/// is selected, else `default` (if present) or the first observed namespace.
+fn charter_focus_ns(filter: &NamespaceFilter, snap: Option<&net::Snapshot>) -> String {
+    if let NamespaceFilter::Only(set) = filter
+        && set.len() == 1
+    {
+        return set.iter().next().cloned().unwrap();
+    }
+    let nss: Vec<String> = snap
+        .map(|s| s.hot.observed.namespaces().into_iter().collect())
+        .unwrap_or_default();
+    if nss.iter().any(|n| n == "default") {
+        "default".to_string()
+    } else {
+        nss.first()
+            .cloned()
+            .unwrap_or_else(|| "default".to_string())
     }
 }
 
@@ -463,6 +489,8 @@ async fn main() {
     let mut almanac: Option<Almanac> = None;
     // The advisor screens (Health / Storage / Network) — a modal window.
     let mut advisor: Option<Advisor> = None;
+    // The Charter — self-scoped RBAC ("what can I do here?") — a modal window.
+    let mut charter: Option<CharterView> = None;
     // The object inspector (read-only YAML dossier) — a modal window.
     let mut inspector: Option<Inspector> = None;
     // The resource browser (`:` — any kind) — a modal window.
@@ -648,6 +676,7 @@ async fn main() {
         // When a log overlay or a text editor is open, `/` is text instead.
         let mut almanac_just_opened = false;
         let mut advisor_just_opened = false;
+        let mut charter_just_opened = false;
         let mut inspector_just_opened = false;
         let mut browser_just_opened = false;
         // Frame-local: true only on the frame the chaos window / its confirm
@@ -658,6 +687,7 @@ async fn main() {
             && !log_open
             && !typing
             && advisor.is_none()
+            && charter.is_none()
             && chaos.is_none()
             && browser.is_none()
         {
@@ -674,6 +704,7 @@ async fn main() {
             && panel.is_none()
             && almanac.is_none()
             && advisor.is_none()
+            && charter.is_none()
             && chaos.is_none()
             && browser.is_none()
             && !picker
@@ -692,6 +723,7 @@ async fn main() {
             && inspector.is_none()
             && almanac.is_none()
             && advisor.is_none()
+            && charter.is_none()
             && chaos.is_none()
             && !plan_open
             && !picker
@@ -731,6 +763,7 @@ async fn main() {
             && inspector.is_none()
             && almanac.is_none()
             && advisor.is_none()
+            && charter.is_none()
             && chaos.is_none()
             && browser.is_none()
             && !plan_open
@@ -774,6 +807,8 @@ async fn main() {
                 almanac = None;
             } else if advisor.is_some() {
                 advisor = None;
+            } else if charter.is_some() {
+                charter = None;
             } else if inspector.is_some() {
                 // The inspector sits on top of its panel / the browser — close
                 // it first.
@@ -999,6 +1034,13 @@ async fn main() {
                 a.cycle(1);
             }
         }
+        // The Charter swallows the wheel to scroll its grid.
+        if let Some(c) = charter.as_mut() {
+            let (_, wheel) = mouse_wheel();
+            if wheel.abs() > 0.0 {
+                c.scroll_by(wheel);
+            }
+        }
         // The inspector swallows the wheel to scroll its YAML; `c` copies the
         // document to the clipboard, `w` exports it to a file.
         if let Some(i) = inspector.as_mut() {
@@ -1032,6 +1074,7 @@ async fn main() {
             && !ns_picker
             && almanac.is_none()
             && advisor.is_none()
+            && charter.is_none()
             && chaos.is_none()
             && browser.is_none()
             && !panel_modal
@@ -1152,6 +1195,14 @@ async fn main() {
                         _ => AdvisorTab::Health,
                     }));
                 }
+                if let Some(ns) = &args.charter {
+                    let focus = if ns.is_empty() {
+                        charter_focus_ns(&net.namespace_filter(), Some(s))
+                    } else {
+                        ns.clone()
+                    };
+                    charter = Some(CharterView::new(focus));
+                }
                 if let Some(m) = &args.menu {
                     open_menu = match m.as_str() {
                         "game" => Some(0),
@@ -1228,6 +1279,7 @@ async fn main() {
                 || ns_picker
                 || almanac.is_some()
                 || advisor.is_some()
+                || charter.is_some()
                 || chaos.is_some()
                 || pending_chaos.is_some()
                 || browser.is_some()
@@ -1497,6 +1549,7 @@ async fn main() {
                 && !ns_picker
                 && almanac.is_none()
                 && advisor.is_none()
+                && charter.is_none()
                 && chaos.is_none()
                 && browser.is_none()
                 && inspector.is_none()
@@ -1539,6 +1592,7 @@ async fn main() {
                 && !ns_picker
                 && almanac.is_none()
                 && advisor.is_none()
+                && charter.is_none()
                 && chaos.is_none()
                 && browser.is_none()
                 && inspector.is_none()
@@ -1673,6 +1727,7 @@ async fn main() {
                 let sidebar_interactive = !picker
                     && almanac.is_none()
                     && advisor.is_none()
+                    && charter.is_none()
                     && chaos.is_none()
                     && browser.is_none()
                     && !panel_modal
@@ -1733,6 +1788,7 @@ async fn main() {
                 if !picker
                     && almanac.is_none()
                     && advisor.is_none()
+                    && charter.is_none()
                     && chaos.is_none()
                     && browser.is_none()
                     && !panel_modal
@@ -1974,6 +2030,7 @@ async fn main() {
             && !ns_picker
             && almanac.is_none()
             && advisor.is_none()
+            && charter.is_none()
             && chaos.is_none()
             && browser.is_none()
             && !plan_open
@@ -2038,6 +2095,13 @@ async fn main() {
             Some(MenuAction::Advisor(tab)) => {
                 advisor = Some(Advisor::new(tab));
                 advisor_just_opened = true;
+            }
+            Some(MenuAction::Charter) => {
+                charter = Some(CharterView::new(charter_focus_ns(
+                    &ns_filter_now,
+                    snap.as_deref(),
+                )));
+                charter_just_opened = true;
             }
             Some(MenuAction::Almanac) => {
                 almanac = Some(Almanac::new());
@@ -2155,6 +2219,18 @@ async fn main() {
                 .map(|a| a.draw(snap.as_deref(), mouse, click));
             if let Some(AdvisorAction::Close) = action {
                 advisor = None;
+            }
+        }
+
+        // The Charter (self-scoped RBAC), drawn on top (own clicks, not the
+        // opening one). It requests/reads its grid from the net thread itself.
+        if charter.is_some() {
+            let click = is_mouse_button_pressed(MouseButton::Left) && !charter_just_opened;
+            let action = charter
+                .as_mut()
+                .map(|c| c.draw(snap.as_deref(), &net, mouse, click));
+            if let Some(CharterAction::Close) = action {
+                charter = None;
             }
         }
 
@@ -2546,6 +2622,9 @@ async fn main() {
             // few net-thread ticks (250ms each) to land before the modal has
             // content.
             180
+        } else if args.charter.is_some() {
+            // The SSAR probe burst needs a couple net-thread ticks to land.
+            150
         } else {
             45
         };

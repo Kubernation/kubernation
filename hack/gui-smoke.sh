@@ -19,6 +19,7 @@ STATES=(
   "almanac|--almanac"
   "advisor|--advisor health"
   "advisor-rightsizing|--advisor rightsizing"
+  "charter|--charter"
   "browse-pick|--browse"
   "browse-table|--browse configmaps"
   "city|--inspect web"

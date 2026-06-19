@@ -11,15 +11,16 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kubernation_core::events::{ClusterId, WorldDelta};
-use kubernation_core::k8s::{actions, browse, client, logs, portforward, watch};
+use kubernation_core::k8s::{actions, browse, client, logs, portforward, rbac, watch};
 use kubernation_core::state::attention::{Concern, Severity, Target};
 use kubernation_core::state::blast::Subject;
 use kubernation_core::state::chaos::{self, ScoreKind};
+use kubernation_core::state::charter::{self, Charter};
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::model::{Models, WorkloadRef, WorkloadRow, build_workloads};
 use kubernation_core::state::observed::ObservedWorld;
@@ -262,6 +263,13 @@ pub struct Net {
     /// In-session chronicle of finished drills (newest first, capped). Archived
     /// when a new drill starts; cleared on context switch. No cross-run history.
     chaos_history: Mutex<Vec<ChaosRecord>>,
+    /// Self-scoped RBAC (the Charter): a request to probe `(ClusterId, ns)`, the
+    /// cached grid per scope (`Arc` so the per-frame pull is a refcount bump), and
+    /// a generation counter bumped on context switch so a slow pre-switch probe
+    /// burst can't populate the switched-to cluster.
+    charter_req: Mutex<Option<(ClusterId, String)>>,
+    charter_out: Mutex<HashMap<(ClusterId, String), Arc<Charter>>>,
+    charter_gen: AtomicU64,
 }
 
 /// One finished game-day drill, for the in-session chronicle.
@@ -335,7 +343,25 @@ impl Net {
             chaos_req: Mutex::new(None),
             chaos_session: Mutex::new(None),
             chaos_history: Mutex::new(Vec::new()),
+            charter_req: Mutex::new(None),
+            charter_out: Mutex::new(HashMap::new()),
+            charter_gen: AtomicU64::new(0),
         })
+    }
+
+    /// Request a (re-)probe of the self-scoped RBAC grid for `(cluster, ns)`.
+    /// No-op if already cached for that scope (the drain skips a cached scope).
+    pub fn request_charter(&self, cluster: ClusterId, namespace: String) {
+        *self.charter_req.lock().unwrap() = Some((cluster, namespace));
+    }
+
+    /// The cached Charter for `(cluster, ns)`, if probed this session.
+    pub fn charter(&self, cluster: ClusterId, namespace: &str) -> Option<Arc<Charter>> {
+        self.charter_out
+            .lock()
+            .unwrap()
+            .get(&(cluster, namespace.to_string()))
+            .cloned()
     }
 
     /// Set (or clear, with `None`) an in-session SLO target override for a
@@ -697,6 +723,11 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             *net.discover_warnings.lock().unwrap() = Vec::new();
                             *net.browse_req.lock().unwrap() = None;
                             *net.browse_out.lock().unwrap() = BrowseOut::default();
+                            // The Charter is the old cluster's access — drop it and
+                            // bump the gen so an in-flight probe can't repopulate.
+                            *net.charter_req.lock().unwrap() = None;
+                            net.charter_out.lock().unwrap().clear();
+                            net.charter_gen.fetch_add(1, Ordering::Relaxed);
                             // A same-named pod on the new cluster must re-resolve.
                             log_target = None;
                             log_container = None;
@@ -805,6 +836,42 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     }
                 }
                 last_browse = breq.map(|k| k.label());
+
+                // Self-scoped RBAC (the Charter): on request, probe the curated
+                // grid (namespaced cells against the focus ns + cluster-scoped
+                // cells) concurrently and cache it per scope. Read-only self-query.
+                let creq = net.charter_req.lock().unwrap().take();
+                if let Some((cluster, ns)) = creq {
+                    let cached = net
+                        .charter_out
+                        .lock()
+                        .unwrap()
+                        .contains_key(&(cluster, ns.clone()));
+                    if !cached {
+                        let req_gen = net.charter_gen.load(Ordering::Relaxed);
+                        // One concurrent burst (each matrix is join_all); a hung
+                        // authorizer can't freeze the net loop.
+                        let fetch = async {
+                            tokio::join!(
+                                rbac::matrix(hot_client.clone(), charter::namespaced_probes(), &ns),
+                                rbac::matrix(hot_client.clone(), charter::cluster_probes(), &ns),
+                            )
+                        };
+                        // On timeout → empty verdicts → build_charter degrades to
+                        // Trust::Unavailable (the honest path).
+                        let (nsv, clv) = tokio::time::timeout(Duration::from_secs(25), fetch)
+                            .await
+                            .unwrap_or_default();
+                        let charter = charter::build_charter(&ns, &nsv, &clv);
+                        // Store only if no context switch happened mid-burst.
+                        if net.charter_gen.load(Ordering::Relaxed) == req_gen {
+                            net.charter_out
+                                .lock()
+                                .unwrap()
+                                .insert((cluster, ns), Arc::new(charter));
+                        }
+                    }
+                }
 
                 // Confirmed eviction — the only write the app performs. Run it
                 // once, report the result as a transient toast; the watch will

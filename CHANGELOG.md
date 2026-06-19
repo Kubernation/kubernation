@@ -9,6 +9,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **The Charter — self-scoped RBAC.** A new **Help ▸ Charter** modal shows what
+  *you* can do in the cluster — a curated `can-i` grid (✓ allowed / ✗ denied /
+  ? unknown) for the active namespace plus a realm-wide (cluster-scoped) band,
+  with allowed *dangerous* capabilities (exec, secrets-list, rbac-write,
+  SA-token, node patch/proxy) highlighted as the audit finding. Read-only
+  self-query — the exact `SelfSubjectAccessReview` mechanism `kubectl auth can-i`
+  uses (one authoritative apiserver decision per cell, never client-side guessed;
+  an unanswered cell shows `?`, never a fabricated verdict). Kills surprise 403s
+  and doubles as a "which features will work for me here?" check. Pure
+  `state/charter.rs` + `k8s/rbac.rs` (unit-tested); cluster scope togglable by
+  namespace. (Roadmap #6.)
 - **Right-sizing advisor.** A 4th Advisors tab compares each workload's
   per-replica resource **requests** against actual **metrics-server usage** and
   flags **over-provisioned** (reclaimable waste), **under-provisioned**

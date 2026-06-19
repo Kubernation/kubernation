@@ -27,6 +27,7 @@ pub enum MenuAction {
     ChaosOpen,
     NamespaceFilter,
     Advisor(AdvisorTab),
+    Charter,
     Almanac,
 }
 
@@ -174,6 +175,7 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
         Menu {
             title: "Help".to_string(),
             items: vec![
+                Item::act("Charter (your access)", MenuAction::Charter),
                 Item::act("Field guide (almanac)", MenuAction::Almanac),
                 Item::sep(),
                 Item::header(format!("KuberNation v{}", env!("CARGO_PKG_VERSION"))),

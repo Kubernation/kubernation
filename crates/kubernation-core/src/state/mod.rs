@@ -2,6 +2,7 @@ pub mod advisor;
 pub mod attention;
 pub mod blast;
 pub mod chaos;
+pub mod charter;
 pub mod diagnose;
 pub mod filter;
 pub mod inspect;

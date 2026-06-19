@@ -1355,6 +1355,48 @@ what makes the interesting logic unit-testable without a cluster.
   26. Deferred: a per-pod history ring (P90/P95 sizing); per-container suggestions;
   the mid-rollout reclaimable estimate (uses the uniform max request — covered by
   the "directional" disclaimer). Next: self-scoped RBAC matrix (#6).
+- **The Charter — self-scoped RBAC (#6)** (2026-06-19, roadmap item #6;
+  design-workflow vetted — 4 lenses → 3 judges → synthesis): a read-only **Help ▸
+  Charter** modal showing what the *operator* can do — a curated `can-i` grid for
+  the active namespace + a realm-wide (cluster-scoped) band, the DevSecOps
+  beachhead. **Data: SSAR-per-cell, authoritative** — `k8s/rbac.rs`
+  (`can_i`/`matrix` via `SelfSubjectAccessReview`, the exact `kubectl auth can-i`
+  mechanism, `join_all` one burst + 25s timeout) decides every cell; we
+  deliberately **don't** use `SelfSubjectRulesReview` for the grid (it forces
+  client-side wildcard/apiGroup re-matching that can be subtly wrong + misses
+  Node/Webhook authorizers). For a "kills surprise 403s" feature a false ✓/✗ is
+  the one unacceptable failure, so `Verdict::Unknown` is **never fabricated** into
+  allowed/denied (a missing answer renders `?`; an all-unknown grid → a
+  `Trust::Unavailable` banner). **Pure** `state/charter.rs` owns the curated probe
+  set (the OWASP-K03 escalation primitives — exec / secrets-list / rbac-write /
+  SA-token / node patch+proxy — *and* Kubernation's own write surface, so it
+  doubles as "which features work for me here") + `build_charter` (folds positional
+  verdicts → grid + rollups; a short verdict vec degrades the tail to Unknown, no
+  panic) — both unit-tested. Allowed **dangerous** (Critical/High risk)
+  capabilities render in CRIT/WARN — the audit finding; denied is calm Dim (normal
+  for a scoped user). Lives in the read/data layer (NOT `actions.rs` — it writes
+  nothing); the SSAR is a self-query (no escalation, no secret values). Net mirrors
+  the `discover_req`/`browse_out` slot pattern (`charter_req` → `charter_out`
+  cache per (cluster, ns) + a `charter_gen` guard; cleared on context switch).
+  GUI: a `window.rs` modal (`gui/charter.rs`) with a namespace scope toggle + the
+  pure `charter_lines`/`charter_banner` draw-decision fns (unit-tested). Dev flag
+  `--charter [ns]`. Verified live on kind: admin → 34/34 ✓ (22 dangerous granted,
+  highlighted); a restricted ServiceAccount (get/list pods only, via a throwaway
+  kubeconfig) → only those two ✓, everything else ✗ — matching `kubectl auth
+  can-i`. **Adversarial-review hardening** (5 findings fixed): the deployments
+  write-surface cell probes **`patch`, not `update`** (every Kubernation deployment
+  write — scale/restart/image/rollback — is an HTTP PATCH, so `update` gave a false
+  ✓/✗ for the feature's own writes — the one unacceptable failure), pinned by a
+  regression test; a `create networkpolicies` probe was added (the chaos partition's
+  write verb); the banner **splits capability from danger** so a locked-out grid
+  ("0 of N") never renders green (green ⇒ "all good" misread); `charter_lines` groups
+  by label irrespective of authoring order; and the namespace toggle from an
+  out-of-list focus lands deterministically without skipping. 160 core + 21 GUI
+  tests; gui-smoke 27. **Deferred**: the SSRR raw-rules
+  pane (a verbatim, caveated secondary view — never colors a cell); warm-cluster
+  Charter (hot-only, like advisors/SLO); resourceNames-granular cells (the grid
+  answers "can you act on this resource type here"); a "denied on a Kubernation
+  write-verb = CRIT" highlight. Next in the roadmap: hardening scan (#7).
 
 ## The pair (hot/warm)
 
