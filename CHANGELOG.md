@@ -8,6 +8,20 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **Stale "observe-only" text in the in-app Almanac** — it claimed "Kubernation
+  only watches; there are no mutation paths anywhere", which predates the gated
+  write paths (evict / planning turn / Game Day chaos). Now describes the
+  read-first-with-gated-writes posture accurately.
+
+### Changed
+- **README rewritten for newcomers / as a website seed** — explains the game
+  metaphor without assuming Civilization or k9s knowledge, adds a Kubernetes→map
+  mapping table and glyph **legend tables** (replacing a hard-to-read ASCII
+  diagram), documents the current right-column sections and the three write
+  paths + Game Day, and drops an unverifiable latency figure. CLAUDE.md's stale
+  "no log file" note was corrected (the client does write `kubernation.log`).
+
 ### Added
 - **Monospace log overlay.** The log viewer now renders in a fixed-width face
   (Liberation Mono, OFL 1.1 — bundled, same family as the map's serif), so

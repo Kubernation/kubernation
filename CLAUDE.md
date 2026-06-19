@@ -1389,10 +1389,12 @@ and two `Gizmo` customs (CRD in hack/samples-crd.yaml) for projection.
 `make run`/`make pair` pass `--project gizmos.example.com`.
 
 Config / logs: the windowed client is driven by CLI flags (`--context`,
-`--warm`, `--project`, plus the `--screenshot`/`--inspect`/… dev flags); it does
-not read a config file or write a log file (the TUI's `config.rs`/`logging.rs`
-went with it). `tracing` events from core have no subscriber attached, so they're
-dropped — add one to the GUI's `main` if a log file is ever wanted.
+`--warm`, `--project`, `--log-level`, plus the `--screenshot`/`--inspect`/… dev
+flags); it reads no config file. It **does** write a log file —
+`logging.rs::init` installs a `tracing_subscriber` to
+`~/.local/state/kubernation/kubernation.log` (`RUST_LOG` overrides `--log-level`),
+so core's `tracing` events are captured (the no-subscriber gap the TUI removal
+left was fixed). No config-file support yet.
 
 ## Conventions
 

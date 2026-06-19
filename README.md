@@ -4,344 +4,460 @@
   <img src="kubernation-logo-full.png" alt="Kubernation" width="420">
 </p>
 
-**The cluster as a living world.** A windowed (macroquad) client for observing
-Kubernetes, built on the interface grammar of early Sid Meier's Civilization: a
-2D world you explore — zones are continents, nodes are provinces of terrain,
-workloads are cities sited where their pods run — plus a "city screen"
-giving one workload full context, and an attention queue that brings
-problems to you — the *next unit needing orders* — instead of making you
-go hunting through dashboards.
+**Your Kubernetes cluster as an explorable world map.**
 
-This is not a retro skin on k9s. It is a different operator model:
+Kubernation is a desktop application that renders a Kubernetes cluster the way a
+turn-based strategy game renders its world. Instead of scrolling tables of pods
+and nodes, you look at a map: each node is a patch of terrain whose colour shows
+its health, each workload is a city sited on the node its pods run on, and the
+problems that need you are surfaced in a queue — the **next thing needing your
+attention** — rather than buried in dashboards you have to go hunting through.
 
-- **Spatial, not tabular.** Your resources project onto a stable world
-  map; geography means something (failure domains, placement, drift).
-- **Attention-driven.** Failing pods, stuck rollouts, pending PVCs, nodes
-  under pressure — aggregated, ranked, and one keypress (`N`) from their
-  full context (and `L` straight into the offending pod's logs).
-- **Near observe-only.** Kubernation reads the cluster and does not change it —
-  with deliberate, gated, RBAC-aware writes: **pod eviction** (a real delete),
-  **committing a planning turn** (apply staged scale / cordon / restart / image,
-  server-side dry-run validated), and **Game Day chaos drills** (resilience
-  experiments that inject a real, confirmed, reversible failure). The entire write
-  surface is one small file (`k8s/actions.rs`); staging itself never writes.
+If you've played a 4X strategy game — the explore-and-build kind, like
+*Civilization* — the interface will feel familiar (a world you pan and zoom,
+cities with name banners, a right-hand info column, drill-down "city screens").
+If you haven't, you don't need to — every
+game term below is explained, and the underlying objects are always plain
+Kubernetes (a "city" is a Deployment, a "province" is a node).
 
-![Kubernation](docs/gui-world.png)
+> **New here?** Jump to **[The world](#the-world-how-kubernetes-becomes-a-map)**
+> for the one-table explanation of how Kubernetes maps onto the game, then
+> **[Quick start](#quick-start)** to run it.
 
-*(A real capture from `make dev`: a classic-4X isometric world — crashy's city
-flies a warning flag, the `✦` structures on the isle of kubernation-demo are
-live custom resources, daemonsets pave roads across the provinces.)*
+![A Kubernation world](docs/gui-world.png)
 
-> A ratatui terminal UI shipped first; it was removed 2026-06-18 to focus on the
-> one windowed frontend — k9s already serves the headless-terminal niche, and the
-> 4X metaphor is a graphical one. The pure data/model core (`kubernation-core`)
-> is unchanged.
+*A live cluster from `make dev`: an isometric world where one city (`crashy`)
+flies a warning flag, the `✦` structures on the southern island are custom
+resources, and DaemonSets pave roads across the provinces.*
+
+---
+
+## Why a map?
+
+Most Kubernetes UIs — `kubectl`, and table/dashboard tools like k9s, Lens, or
+Headlamp — present your cluster as lists you filter and sort. That works, but it
+hides two things a map makes obvious: **where** things run (failure domains,
+placement, drift between clusters) and **what matters right now**. Kubernation is
+built around three ideas:
+
+- **Spatial, not tabular.** Resources project onto a stable world map, and the
+  geography means something — a node's terrain is its health, a workload's city
+  moves when its pods reschedule, two clusters sit side by side so drift is
+  visible at a glance.
+- **Attention-driven.** Crash-looping pods, stalled rollouts, pending volumes,
+  nodes under pressure, burning error budgets — all aggregated and ranked into one
+  **attention queue**. Press `N` to fly to the next problem, `L` to jump straight
+  into the offending pod's logs.
+- **Read-first, with deliberate writes.** Kubernation observes by default. It can
+  change the cluster, but only through a few explicit, confirmed, RBAC-checked
+  actions (evict a pod, commit a batch of staged changes, run a chaos drill) —
+  and every line of write code lives in one small, auditable file.
+
+---
 
 ## Quick start
 
-Requirements: Rust (stable), Docker, `kind`, `kubectl`.
+**Requirements:** Rust (stable), Docker, [`kind`](https://kind.sigs.k8s.io/), and
+`kubectl`.
+
+Spin up a local 4-node cluster with sample workloads and launch the app:
 
 ```sh
-make dev          # create a 4-node kind cluster, apply samples, launch the client
+make dev
 ```
 
-Or against any cluster you can already reach:
+Or point it at any cluster your kubeconfig can already reach:
 
 ```sh
 cargo run --release -- --context <kubeconfig-context>
 ```
 
-Useful targets: `make smoke` (headless connect + world summary — a UI-free
-core check), `make lint`, `make test`, `make kind-down`.
+Other useful targets: `make smoke` (a headless connect-and-summarize check, no
+window), `make lint`, `make test`, `make kind-down`.
 
-### Hot/warm pair
+---
 
-```sh
-make warm-up warm-drift   # second kind cluster + deliberate drift
-make pair                 # both worlds side by side
-```
+## The world: how Kubernetes becomes a map
 
-Or against real clusters: `kubernation --context prod --warm prod-standby`.
-The standby rises as a second archipelago east of the hot one (detailed
-below); cities carry sync chips, and the attention queue merges both worlds
-with `H`/`W` tags plus a single aggregate drift concern.
+Everything on screen is a real Kubernetes object. The mapping is:
 
-### The map
+| Kubernetes object | On the map | Notes |
+| --- | --- | --- |
+| Zone / failure domain | a **continent** | nodes in the same `topology.kubernetes.io/zone` cluster together |
+| Node | a **province** of terrain | the terrain's colour/texture is the node's health |
+| Workload (Deployment, StatefulSet) | a **city** | population = ready replicas; sited on the node running most of its pods, so it *moves when its pods do* |
+| Pod | a **citizen** of its city / **garrison** of its node | listed inside the city and province drill-downs |
+| DaemonSet | a **road** | paved across every node it runs on (it isn't a city — it's everywhere) |
+| Service | a **harbor** on the city's coast | the shoreline is the network boundary |
+| Ingress | a **gate** on the coast | external traffic enters here |
+| PersistentVolumeClaim | a **granary** inland of the city | yellow if the claim is unbound |
+| Job / CronJob | an **expedition** / **scheduled structure** | on the workload's "namespace island" |
+| Custom resource (projected) | a **structure** (`✦`) | on the namespace island |
+| A problem | an **attention-queue entry** + a flag on the map | ranked by severity |
 
-The `kubernation-core` world is rendered as a real strategy-game view
-(macroquad), on a classic-4X **isometric 2:1 diamond** map — the
-rectangular model underneath stays the canonical coordinate system; the
-GUI projects it to diamonds (render-only). **All-original procedural
-terrain** (health-tinted, dithered land diamonds keyed to node health,
-inked shorelines, trees on healthy land); **procedural settlements** that
-grow from a single hut to a walled keep with population, each with a solid
-population box and a **serif name banner** (the classic city-label
-convention) — plus warning banners over troubled cities; namespace isles
-with structure marks, hover tooltips, right-drag panning, wheel zoom around
-the cursor, minimap click-to-jump, smooth camera flights on `]`/`[` and
-`N`, and detail drill-downs: click a city for its **city window**, click
-land for its **province window** — both centered modals (below). The chrome
-is classic-4X: a **dropdown menu bar** (Game / View / Orders / Advisors /
-World / Help), a **docked right column** (WORLD minimap · STATUS · SELECTION),
-and a cartographic **map title** over the board. **Click any pod row** to
-tail its logs in a live overlay (refreshed every couple of seconds):
+A docked column on the right is your at-a-glance dashboard, mirroring a strategy
+game's info panel: **WORLD** (a minimap — click to recenter), **STATUS** (context,
+node/pod counts, the concern roll-up, cluster CPU/memory trend), **ATTENTION**
+(the live problem queue — click a row to fly there), **FORWARDS** (any live
+port-forwards), and **SELECTION** (whatever tile you last clicked or are hovering).
 
-![GUI logs](docs/gui-logs.png)
+---
 
-Clicking a city opens a **4X-style city window** — the city screen
-reframed for Kubernetes: replicas/updated gauges, a pod **census** grid +
-clickable pod list, **improvements** (Services / Ingress / PVCs / config),
+## Feature tour
+
+### Navigating the map
+
+Drag (or `WASD`/arrows) to pan, scroll to zoom around the cursor, `F` to fit the
+whole world, `]`/`[` to sail to the next/previous city, and click the minimap to
+recenter. The map is rendered on a classic isometric **2:1 diamond** grid with
+all-original procedural art — health-tinted, dithered land, inked shorelines,
+trees on healthy ground, and procedural cities that grow from a single hut to a
+walled keep as their population rises, each with a population chip and a serif
+name banner. As you zoom out, detail generalizes (cities collapse into province
+badges) so a big cluster stays readable. Nothing here is a sprite asset — it's all
+drawn from geometry, so the binary stays self-contained.
+
+The chrome is a dropdown **menu bar** (Game · View · Orders · Game Day · Advisors
+· World · Help) plus the docked right column and a cartographic map title.
+
+### Drill-downs: cities and provinces
+
+Click a city to open its **city window** — the workload in full: replica and
+update gauges, a pod **census** grid, a clickable pod list, **improvements** it
+owns (Services, Ingresses, PVCs, ConfigMap/Secret references), an availability
+**treasury** (see [Reliability](#reliability-slos--the-error-budget-treasury)),
 and a **chronicle** of recent events.
 
-![GUI city](docs/gui-city.png)
+![City window](docs/gui-city.png)
 
-Clicking land opens the matching **province (node) window**: zone & health,
-cpu/mem gauges, the **garrison** of pods stationed there, the node's
-**terrain** (runtime / kubelet / OS / arch), and its **conditions**.
+Click open land to open the matching **province (node) window**: zone and health,
+CPU/memory gauges with trend sparklines, the **garrison** of pods stationed there,
+the node's **terrain** facts (container runtime, kubelet, OS, arch), and its
+conditions.
 
-![GUI node](docs/gui-node.png)
+![Province window](docs/gui-node.png)
 
-**Map views.** The **View** menu recolors the whole board (and the minimap)
-like a classic-4X map display: **Terrain** (node health, the default),
-**Pressure** (cpu/mem heat), **Replicas** (worst workload health per node —
-red where a city is understrength), or **Namespace** (a per-namespace hue, a
-political/territory map). The active view is named in the title and STATUS so
-a recolored terrain isn't mistaken for `NotReady`:
+### Logs
 
-![GUI map views](docs/gui-overlay.png)
+Click any pod row — in a city's citizens list or a province's garrison — to tail
+its logs in a live overlay (refreshed every couple of seconds, rendered in a
+monospace face so timestamps and columns line up). Lines are tinted by guessed
+severity; `/` filters (space-separated terms AND together, `!term` excludes), `p`
+shows the previous (crashed) container, `T` toggles timestamps, `s` widens the
+history window, `c` copies, `w` exports. From the attention queue, `L` opens the
+logs of the exact pod behind a concern.
 
-![GUI menu bar](docs/gui-menu.png)
+![Log overlay](docs/gui-logs.png)
 
-More Kubernetes kinds read as geography (see the Almanac legend below for the
-exact marks): a city's network exposure is moored off its east coast — Service
-**harbors** (anchors) and Ingress **gates** (arches), each on the latitude of
-the city it serves; persistent storage is a **granary** (silo) inland of any
-city that mounts PVCs (cyan when Bound, yellow when pending); and batch work
-lands on the **namespace islands** — Jobs as expeditions (a pennant + status,
-yellow when failed), CronJobs as clocks showing their schedule, beside the
-custom-resource structures:
+### Map views
 
-![GUI batch](docs/gui-batch.png)
+The **View** menu recolours the whole board (and the minimap) like a strategy
+game's map modes:
 
-Press **`?`** (or `F1`, or the **Help** menu) for the **Almanac** — an in-app
-reference, drawn on a reusable popup-window system, that documents the map's
-whole visual vocabulary with the *actual marks* beside each definition, plus
-the world metaphor, controls, and how to read state. Legend entries that
-have a live example light up with a `>` — click one to fly the camera
-straight to it (`1`-`4` / `←→` switch pages):
+- **Terrain** — node health (the default).
+- **Pressure** — CPU/memory heat per node.
+- **Replicas** — the worst workload health on each node (red where a city is
+  understrength).
+- **Namespace** — a stable hue per namespace, a political/territory map.
 
-![GUI Almanac](docs/gui-almanac.png)
+The active view is named in the title and STATUS so a recoloured map is never
+mistaken for a health signal.
 
-**Advisors.** The **Advisors** menu opens the classic-4X advisor screens —
-read-only summary reports of the whole realm that complement the attention
-queue: **Health** (provinces/nodes by health, citizens/pods by phase,
-cities/workloads at strength), **Storage** (granaries/PVCs bound vs. pending,
-with the pending claims), and **Network** (harbors/services + gates/ingresses,
-plus orphan gates and idle harbors). The reports are pure functions of the
-observed world (`kubernation-core`), unit-tested and cluster-wide:
+![Map views](docs/gui-overlay.png)
 
-![GUI advisors](docs/gui-advisors.png)
+![Menu bar](docs/gui-menu.png)
 
-**The planning turn.** Intervention is framed as deliberate *staged* changes,
-not imperative edits. Set replicas from a city window (`plan replicas [−] N
-[+]`) or cordon a node from its province window; the change is staged, not
-applied. Press **`t`** (or the **Orders** menu's End of Turn) for the
-End-of-Turn review — a from→to diff of everything staged, with per-row unstage and
-Discard. **Commit** (behind a confirm) applies the turn to the cluster: each
-staged change is **server-side dry-run validated first** — which also enforces
-RBAC — so a turn the cluster would reject is blocked before any real write,
-and per-row results show right in the review. Staging itself never writes; only
-Commit does.
+### More Kubernetes kinds as geography
 
-![GUI planning turn](docs/gui-plan.png)
+Beyond nodes and workloads, the rest of the cluster reads as terrain too: a
+city's **harbors** (Services) and **gates** (Ingresses) moor off its east coast on
+the latitude of the city they serve; a **granary** (PVC) sits inland of any city
+that mounts storage (cyan when bound, yellow when pending); and batch work lands
+on the **namespace islands** in the southern sea — Jobs as expeditions (with a
+status pennant, yellow when failed), CronJobs as clocks showing their schedule,
+beside any projected custom resources.
 
-**Evict a pod.** The one direct cluster action: hover a pod in a city's
-**citizens** (or a node's **garrison**) list and an **`evict`** button
-appears; clicking it raises a confirm, and on confirm Kubernation issues a
-real `DELETE` (a managed pod is recreated by its controller; a bare pod is
-gone). It is the only write the app performs — one small, auditable path
-(`k8s/actions.rs`) behind an explicit confirm. It is **RBAC-aware**: the
-button is disabled (**`locked`**) unless a `SelfSubjectAccessReview` says you
-may delete pods in that namespace.
+![Batch and islands](docs/gui-batch.png)
+
+### The Almanac (in-app field guide)
+
+Press `?` (or `F1`, or **Help**) for the **Almanac** — an in-app reference that
+documents the entire visual vocabulary with the *actual marks* drawn beside each
+definition (so it can never drift from the map), plus the world metaphor, the
+controls, and how to read state. Legend entries that have a live example light up
+with a `>`; click one to fly straight to it.
+
+![Almanac](docs/gui-almanac.png)
+
+### Advisors
+
+The **Advisors** menu opens read-only summary reports of the whole realm that
+complement the attention queue — **Health** (nodes by health, pods by phase,
+workloads at strength), **Storage** (PVCs bound vs. pending), and **Network**
+(Services and Ingresses, plus orphaned Ingresses and idle Services). They're pure
+functions of the observed cluster and always cluster-wide.
+
+![Advisors](docs/gui-advisors.png)
+
+### Reliability: SLOs & the error-budget treasury
+
+Each city window shows an availability **SLO** and the **error budget** it spends
+down — a coin gauge that's full when the workload stays up, drains when it flaps,
+and is exhausted when availability falls below target. Availability is derived
+from pod readiness over a recent window, so it needs **no Prometheus or
+metrics-server** — it works on any cluster. Set a per-workload target with the
+in-window stepper or a `kubernation.io/slo-target` annotation; a burning or
+exhausted budget also raises an attention-queue concern.
+
+### Acting on the cluster
+
+Kubernation performs only a handful of writes, each explicit, confirmed, and
+RBAC-checked — and all of them live in one small file (`crates/kubernation-core/src/k8s/actions.rs`).
+
+**Evict a pod.** Hover a pod in a city's citizens (or node's garrison) list and an
+`evict` button appears; on confirm, Kubernation issues a real `DELETE` (a managed
+pod is recreated by its controller; a bare pod is gone). The button is disabled
+(`locked`) unless an RBAC check says you may delete pods there.
 
 ![Evict confirm](docs/gui-evict.png)
 
-**Game Day (chaos).** The **Game Day** menu opens a chaos console — resilience
-drills that inject a *real* failure and let you watch the realm respond (the
-attention queue lights up with a "raid underway", the blast radius spreads, the
-treasury spends). Pick a target and an experiment — **kill one / a percentage /
-all pods**, **outage** (scale to 0), **scale spike** (surge), **broken image**,
-**node failure** (cordon + drain), **cordon freeze**, or **partition** (a deny-all
-NetworkPolicy: both / ingress / egress) — or a compound **tier** (Skirmish / Raid
-/ Siege) that sequences several into one drill. The console previews the exact
-dry-run steps, the blast radius, and the error-budget cost *before* you run it (a
-CRIT-confirmed write); a **scorecard** then reports the response — steady-state,
-recovery time, **MTTD** (did the attention queue even notice?), a recovery-curve
-sparkline, and budget spent. It reuses the existing gated write primitives (so it
-adds no new verb beyond the partition's NetworkPolicy), is RBAC-gated and
-all-or-nothing, and **refuses control-plane / system targets** (fail-closed).
-Reversible drills offer **Restore** — manual, auto-after-60s, or automatically on
-quit / context switch, so a drill never strands the cluster.
+**The planning turn.** Changes are *staged*, not applied imperatively. Step a
+city's replicas, or stage a cordon / rolling restart / image change; press `t`
+(or **Orders ▸ End of Turn**) for a from→to review of everything staged, with
+per-row unstage and discard. **Commit** validates every change with a server-side
+dry-run first (which also enforces RBAC), so a change the cluster would reject is
+blocked before anything is written — all-or-nothing. Staging never writes; only
+Commit does.
 
-![GUI Game Day](docs/gui-chaos.png)
+![Planning turn](docs/gui-plan.png)
 
-Press **`c`** to switch the hot
-cluster from a context picker — no restart. Labels use **Fira Sans** with
-**Liberation Serif** for place-name banners (both bundled OFL); the map is
-all original procedural geometry (no sprite assets), so the binary stays
-self-contained.
+**Game Day (chaos).** The **Game Day** menu opens a chaos-engineering console:
+inject a *real* failure and watch the cluster respond — the attention queue lights
+up ("raid underway"), the blast radius spreads across the map, the error budget
+spends. Pick a target and an experiment:
 
-With `--warm` (`make pair`) the standby cluster rises as a **second
-archipelago** east of the hot one — one sea, free panning between them,
-`F` fits both on screen:
+- **kill one / a percentage / all pods**, **outage** (scale to 0), **scale spike**
+  (a surge), **broken image**, **node failure** (cordon + drain), **cordon freeze**
+  (cordon, no drain), or **partition** (a deny-all NetworkPolicy — both directions,
+  ingress-only, or egress-only);
+- or a compound **difficulty tier** — **Skirmish**, **Raid**, or **Siege** — that
+  sequences several experiments into one drill.
 
-![GUI pair](docs/gui-pair.png)
+The console previews the exact steps, the blast radius, and the budget cost
+*before* you run it (a confirmed write); afterward a **scorecard** reports the
+response: a steady-state check, recovery time, **MTTD** (how long the attention
+queue took to notice — Kubernation grading its own observability), a recovery
+sparkline, and budget spent. Everything reuses the existing gated write primitives
+(so chaos adds no new powers beyond the NetworkPolicy), control-plane and system
+namespaces are refused, and reversible drills auto-restore — on demand, after a
+timer, or automatically when you quit or switch clusters — so a drill never
+strands the cluster.
 
-Every city carries a sync chip beside its population box (`=` in sync,
-`#r`/`#i` drift, `-w` missing on warm), tooltips and panels are tagged
-HOT/WARM, the city panel gains a pair line, and the attention strip
-merges both worlds with `[H]`/`[W]` tags plus the single aggregate
-drift concern.
+![Game Day](docs/gui-chaos.png)
 
-### Performance rig
+**Port-forward.** Hover a pod row and click **fwd** to open a local
+`127.0.0.1` tunnel to it (the port is auto-resolved; RBAC-checked). Live forwards
+appear in the right column's FORWARDS section with a stop button. This changes
+nothing on the cluster, but it's gated like a write.
+
+### Two clusters: the hot/warm pair
+
+Run with `--warm` (`make pair`) and a standby cluster rises as a **second
+archipelago** east of the first — one sea, free panning between them, `F` fits
+both:
 
 ```sh
-make perf-up      # kwok-simulated cluster: 100 nodes (5 zones), 1000 pods
-make perf         # run the client against it
-make perf-test    # release-mode budget test: model rebuild < 100ms
-make perf-down
+kubernation --context prod --warm prod-standby
 ```
 
-Measured on an M4 Max: a full world rebuild (map + workloads + attention — what
-the client recomputes each tick) at 100 nodes / 1000 pods takes **~1ms**
-(`make perf-test`); against the live kwok cluster, 40 freshly scaled-up pods
-were reflected in the UI **81ms** after `kubectl scale` returned. World churn
-coalesces at the tick (250ms default), so a noisy cluster can't make the UI lag.
+Every city carries a **sync chip** showing how it compares to its twin (`=` in
+sync, replica/image drift, missing-on-warm), tooltips and windows are tagged
+HOT/WARM, and the attention queue merges both worlds (entries tagged `[H]`/`[W]`)
+plus a single aggregate "drift" concern.
 
-## Controls
+![Hot/warm pair](docs/gui-pair.png)
 
-Mouse-first, with a classic-4X menu bar and a few keys (the in-app **Almanac**,
-`?`, has the full list):
-
-| Input | Action |
-| --- | ------ |
-| drag · `WASD`/arrows · wheel | pan · pan · zoom (cursor-anchored) |
-| `F` · `]`/`[` | fit the world · sail to next / previous city |
-| click land / city / harbor | open the node / city drill-down window |
-| click a pod row | tail its logs (overlay) |
-| hover a pod row → **fwd** | port-forward it to `127.0.0.1` (RBAC-gated; stop from the FORWARDS column) |
-| `y` | inspect YAML (the read-only dossier) |
-| `N` · `L` | next concern · tail that concern's offending pod |
-| `B` | blast radius — highlight what a selected node/city (or focused concern) affects |
-| `:` | resource browser — any kind |
-| `Esc` | close the topmost overlay |
-| `?` / `F1` | the Almanac (legend · controls · how to read state) |
-| menu bar | switch context · fit · map overlay · namespace · advisors · quit |
+---
 
 ## Reading the world
 
-```
-≈ z-a · 1 ≈                    ≈ z-b · 1 ≈
- ▣ kubernation-worker ●5 ≣3      ~  ▣ kubernation-worker2 ●6 ≣3
- ,    ,    ,    ,    ,         ,   ◍0‼   ,    ,    ,
-    ,    ,    ,    ,    ,  ~      ,crashy   ,    ,
-                 ~              ,◍3  ,    ,    , ∏Ψ
-       ~                  ~   ,  web    ,    ,    ,   (gate · harbor)
-  ≈ kubernation-demo ≈  ·   ~
-   ◷ CronJob/nightly 0 2 * * *
-   ◈ Job/migrate 1/1 ✓
-   ✦ gizmo/alpha-frob…          ~
- · ✦ gizmo/beta-frobn…
-```
+On the map, each of these is drawn as a small **procedural shape and colour** —
+not a literal text character. The glyphs below are a **legend shorthand** (the
+in-app Almanac shows the exact drawn mark beside each definition).
 
-Zones are **continents**; each node is a **province** of land whose
-terrain texture tells its state (`,` grass · `=` cordon fence · `∩`
-drought/pressure · `×` wasteland/NotReady). Workloads are **cities**
-(`◍N` — population = ready replicas, flagged `‼`/`!` when concerning)
-sited on the province hosting most of their pods, so a city *migrates
-when its pods do*. DaemonSets pave `≣` roads instead of building cities.
-A city's network exposure is moored off its **east coast**: Services are
-`Ψ` **harbors**, Ingresses are `∏` **gates** (the shoreline is the network
-boundary). Persistent storage sits inland: a `⊞` **granary** west of any
-city that mounts PVCs (yellow if a claim is unbound). Anything with no place
-on the land lives on **namespace islands** in the southern sea: projected
-custom resources (`✦`), zero-pod workloads (`◌`), and batch work — Jobs as
-`◈` **expeditions** (with completion status) and CronJobs as `◷` schedules.
-Walk anywhere with `h/j/k/l`; `]`/`[` sail city to city; `Enter` opens
-whatever you stand on.
+### Map marks
 
-Pods keep their glyphs in city and node screens: `●` ready · `◐` starting
-· `○` pending · `◌` terminating · `✗` failing · `◆` succeeded. The cpu/mem
-gauges show **scheduling pressure** (requests ÷ allocatable) by default;
-calm is green, elevated (≥70%) yellow, high (≥90%) red. Install
-metrics-server (`make metrics-up`) and the gauges switch automatically to
-**live usage** — the status bar reads `gauges live`, node detail shows
-`cpu use`, the GUI panel says `live usage`. No metrics-server, no problem:
-it falls back to requests on its own.
+| Mark | Element | Meaning |
+| --- | --- | --- |
+| `▣` `▤` `▥` `▦` | province (node) | healthy · cordoned · under pressure · NotReady |
+| city + a population chip | workload | the number is ready replicas; the building grows with it |
+| `‼` `!` | flag over a city | a critical · warning concern lives there |
+| `Ψ` | harbor (east coast) | a Service |
+| `∏` | gate (east coast) | an Ingress |
+| `⊞` | granary (inland) | a PVC — yellow if unbound |
+| `◈` | expedition (island) | a Job — yellow if failed |
+| `◷` | clock (island) | a CronJob — shows its schedule |
+| `✦` | structure (island) | a projected custom resource |
+| `◌` | encampment (island) | a zero-pod workload |
+| `≣` | road | a DaemonSet |
 
-A docked right column rides beside the map: **WORLD** (the minimap — green land
-on blue ocean, a frame marking your viewport; click to recenter), **STATUS**
-(provinces/cities/pods/concerns — your people and gold), and **SELECTION**
-(whatever you clicked or hover — city, province, structure, or open sea).
+### Pod states
 
-### Projecting custom resources
+Inside the city and province windows, each pod keeps a glyph:
+
+| `●` | `◐` | `○` | `◌` | `✗` | `◆` |
+| --- | --- | --- | --- | --- | --- |
+| ready | running, not ready | pending | terminating | failing | succeeded |
+
+### Gauges
+
+The CPU/memory gauges show **scheduling pressure** (requests ÷ allocatable) by
+default — green is calm, yellow ≥ 70%, red ≥ 90%. Install metrics-server
+(`make metrics-up`) and they switch automatically to **live usage**, labelled so
+you can tell which you're looking at; with no metrics-server they quietly fall
+back to requests.
+
+### Colour discipline
+
+The palette is deliberately restrained: parchment chrome, green land, blue ocean
+— with **saturated red and yellow reserved strictly for things that need
+attention**, so trouble pops against terrain instead of competing with it.
+
+---
+
+## Controls
+
+Kubernation is mouse-first with a strategy-game menu bar and a few keys. The
+in-app Almanac (`?`) always has the complete, current list.
+
+| Input | Action |
+| --- | --- |
+| drag · `WASD`/arrows · scroll | pan · pan · zoom (cursor-anchored) |
+| `F` · `]` / `[` | fit the world · sail to next / previous city |
+| click land / city / harbor | open the province / city drill-down |
+| click a pod row | tail its logs |
+| hover a pod row → **fwd** | port-forward it to `127.0.0.1` |
+| `y` | inspect a resource's YAML (read-only "dossier") |
+| `N` · `L` · `B` | next concern · tail its pod's logs · its blast radius (what else it would take down) |
+| `:` | resource browser — list/inspect *any* kind |
+| `t` | the End-of-Turn planning review |
+| `c` · `Esc` | switch cluster context · close the topmost overlay |
+| `?` / `F1` | the Almanac |
+| menu bar | context · fit · map view · namespace filter · advisors · Game Day · quit |
+
+Two more ways to explore any object, including kinds that aren't on the map:
+
+- **`y` — the YAML inspector.** A read-only dossier of a workload, node, or pod,
+  with `managedFields` and last-applied noise stripped. It only inspects *watched*
+  kinds, so Secrets and ConfigMaps are never read this way.
+- **`:` — the resource browser.** A k9s-style escape hatch: pick any kind the API
+  server knows, list its instances, and open one's YAML. Secret values are
+  redacted (keys and sizes shown, contents masked), so secret contents never
+  surface.
+
+---
+
+## Architecture & design
+
+Kubernation is a Cargo workspace with a clean split:
+
+- **`kubernation-core`** — the data + model layer, with **no UI dependencies**:
+  the Kubernetes client and watch/reflector layer, and a set of **pure functions**
+  that turn observed cluster state into render-ready models (the map geometry, the
+  attention queue, SLOs, blast radius, chaos plans, advisor reports). Because this
+  logic is pure, the interesting behaviour is unit-tested without a cluster or a
+  display.
+- **`kubernation`** — the windowed client (built on [macroquad](https://macroquad.rs/)):
+  a background thread runs the watchers and publishes snapshots; the render loop
+  draws the isometric world and panels, never blocking on the cluster.
+
+**Data flow.** Reflectors keep an in-memory view of the cluster current and push
+payload-free "something changed" signals through one channel. Input redraws
+immediately (sub-100ms); cluster changes rebuild the models at a tick cadence
+(250ms) — coalesced, so a noisy cluster can't make the UI lag.
+
+**Posture.** Read-by-default; the entire write surface is one auditable file, every
+write confirmed and RBAC-checked. There is deliberately **no exec/attach/shell**
+(a graphical app can't host a PTY, and arbitrary exec would break the read-first
+guarantee), and Secret contents are never surfaced. It's an operator-laptop tool —
+it talks to a cluster through your kubeconfig and runs no in-cluster agent.
+
+**Performance.** A full model rebuild (map + workloads + attention) at 100 nodes /
+1000 pods takes ~1ms on an M4 Max (`make perf-test`). World rebuilds are coalesced
+at a 250ms tick and input redraws stay sub-100ms, so a busy cluster never makes
+the UI lag. A built-in rig stands a big synthetic cluster up:
 
 ```sh
-kubernation --context prod --project certificates.cert-manager.io --project gizmos.example.com
+make perf-up      # kwok-simulated: 100 nodes (5 zones), 1000 pods
+make perf         # run the client against it
+make perf-down
 ```
 
-Each `--project` (or config `projections = [...]`) resolves the CRD at
-connect and watches its instances live; they appear as `✦` structures on
-their namespace's island. CRDs absent on a cluster are skipped quietly —
-a hot/warm pair may project asymmetrically.
+**The conceptual model.** The CNCF landscape's layers, reframed as concentric
+zones of operator agency: provisioning is the continent (out of scope), runtime is
+terrain (the node window), orchestration is the game board (the map), application
+definition is what your cities produce (the city window), observability is a
+property of every view, and platform metadata is the politics of the world (the
+status line). The original design brief is
+[kubernation-tui-mvp-prompt.md](kubernation-tui-mvp-prompt.md); the architecture
+and the full decision log live in [CLAUDE.md](CLAUDE.md).
 
-The palette is **atlas**: parchment chrome, green terrain, white city labels,
-blue ocean — with red and yellow strictly reserved for things needing attention.
+> **History.** A terminal (TUI) frontend shipped first and was removed in mid-2026
+> to focus on the single windowed client — the headless-terminal niche is well
+> served by k9s, and the map metaphor is inherently graphical. The pure
+> `kubernation-core` was untouched by that change.
 
-## The conceptual model
-
-The CNCF landscape's layers, reframed as concentric zones of operator
-agency: provisioning is the continent (out of scope), runtime is terrain
-(node detail), orchestration is the game board (the map), app definition is
-what your cities produce (the city screen), observability is a property of
-every view, platforms are the politics of the world (status bar). The full
-design brief is in [kubernation-tui-mvp-prompt.md](kubernation-tui-mvp-prompt.md);
-architecture and decisions live in [CLAUDE.md](CLAUDE.md).
+---
 
 ## Configuration
 
-The client is driven by CLI flags — `--context`, `--kubeconfig`, `--warm`,
-`--project` (repeatable), `--log-level`. Diagnostics are written to
-`~/.local/state/kubernation/kubernation.log` (`RUST_LOG` also honored). The
-headless `make smoke` check is a separate, UI-free core example. (The removed
-TUI also had a `config.toml`; the windowed client has no config file yet.)
+The client is driven by CLI flags — `--context`, `--kubeconfig`, `--warm <context>`,
+`--project <crd>` (repeatable, to project a custom resource onto the islands), and
+`--log-level`. Diagnostics are written to
+`~/.local/state/kubernation/kubernation.log` (`RUST_LOG` is also honored). There is
+no config file yet.
 
-## Status
+Projecting custom resources:
 
-Near observe-only — gated writes only (confirmed **pod eviction**, a **committed
-planning turn**, and **Game Day chaos drills** — all sequenced through one
-auditable write file) plus one active-but-non-mutating capability, RBAC-gated
-**port-forward**; everything else reads. Built well past the MVP: the
-isometric world map, hot/warm cluster pairs, metrics-server live usage (with
-cpu/mem trend sparklines), the
-minimap + map overlays, pod log tailing (severity coloring, timestamps, filters,
-concern→logs), blast-radius impact highlighting, availability SLOs + error-budget
-"treasury" (per-workload targets), Game Day chaos drills, the connectivity /
-storage / batch map layers, the resource
-browser (`:any kind`), the read-only YAML inspector, the in-app Almanac, the
-advisor screens, the city + province drill-down windows, and the **planning
-turn** — staging interventions, previewing the diff, and committing it
-(server-side dry-run + RBAC + confirm), and **Game Day chaos drills** — nine
-experiments + compound difficulty tiers, with a steady-state/MTTD/recovery
-scorecard and restore-on-exit. Deferred, by design: more interventions, external
-managed services, deeper chaos (mesh-based latency/stress, persisted run history),
-and the bigger log tiers (all-containers picker, multi-pod tailing). See CLAUDE.md
-for the full list and the reasoning.
+```sh
+kubernation --context prod \
+  --project certificates.cert-manager.io \
+  --project gizmos.example.com
+```
 
-## Trademark
+Each `--project` resolves the CRD at connect and watches its instances live; they
+appear as `✦` structures on their namespace's island. A CRD that's absent on a
+cluster is skipped quietly (so a hot/warm pair may project asymmetrically).
 
-*Kubernation is an independent, unaffiliated homage. It is not associated
-with, endorsed by, or sponsored by Take-Two Interactive Software, Inc.,
-Firaxis Games, or the Civilization franchise. Sid Meier's Civilization and
-Civ are trademarks of Take-Two Interactive, referenced here only to describe
-this project's design inspiration.*
+---
+
+## Status & roadmap
+
+Kubernation is well past its MVP and in active development. **Built today:** the
+isometric world map with overlays and a minimap; city/node drill-downs; the
+attention queue; the Almanac and Advisor screens; log tailing (severity colours,
+filters, timestamps, history, previous-container, concern→logs); metrics-server
+live usage with CPU/memory trend sparklines; blast-radius impact highlighting;
+availability SLOs + the error-budget treasury (per-workload targets); the resource
+browser (any kind) and read-only YAML inspector; the hot/warm cluster pair; the
+network/storage/batch/custom-resource map layers; RBAC-gated port-forward; and the
+three write paths — pod eviction, the planning turn, and Game Day chaos (nine
+experiments + difficulty tiers, with a steady-state/MTTD/recovery scorecard and
+restore-on-exit).
+
+**Deliberately deferred:** deeper chaos that needs a service mesh or in-cluster
+agent (latency/CPU stress injection), persisted run history, external managed
+services on the map, and the larger log tiers (multi-container picker, whole-app
+multi-pod tailing). See [CLAUDE.md](CLAUDE.md) for the complete list and the
+reasoning behind each decision.
+
+---
+
+## Trademark & inspiration
+
+*Kubernation is an independent, unaffiliated homage. It is not associated with,
+endorsed by, or sponsored by Take-Two Interactive Software, Inc., Firaxis Games,
+or the Civilization franchise. "Sid Meier's Civilization" and "Civ" are trademarks
+of Take-Two Interactive, referenced here only to describe this project's design
+inspiration.* Bundled fonts (Fira Sans, Liberation Serif, Liberation Mono) are
+licensed under the SIL Open Font License 1.1; see `crates/kubernation/assets/CREDITS.md`.

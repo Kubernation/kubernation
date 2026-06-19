@@ -479,9 +479,9 @@ fn page_world(cx: &mut Ctx) {
     cx.para(
         "An attention queue surfaces what needs focus and parks your cursor on it: 4X's \"next unit needing orders\", not a wall of dashboards.",
     );
-    cx.heading("Observe-only");
+    cx.heading("Read-first, gated writes");
     cx.para(
-        "Kubernation only watches. There are no mutation paths anywhere — exploring the world never changes the cluster.",
+        "Kubernation reads by default — exploring the world never changes the cluster. A few deliberate writes exist, each confirmed and RBAC-checked: evict a pod, commit a planning turn (scale/cordon/restart/image), and Game Day chaos drills. Port-forward is active but non-mutating. The whole write surface is one small auditable file.",
     );
 }
 
