@@ -6,7 +6,7 @@
 //!   status band →  replicas / updated gauges, rollout, strategy, attention
 //!   citizens    →  a pod census grid + a clickable pod list (tail logs)
 //!   improvements→  owned resources (svc / ingress / pvc / cm / secret)
-//!   history     →  rollout revisions + the image change that's live (Deploys)
+//!   history     →  rollout revisions + the live image change + roll-back (Deploys)
 //!   chronicle   →  recent events
 //!
 //! Fixed size with caps + "+N more" (4X's panels don't scroll).
@@ -642,6 +642,8 @@ pub fn draw_city(
                 ry += 16.0;
             }
         }
+        // A staged rollback (the planning turn's 5th verb) highlights its target.
+        let staged_rev = planned.rolled_back(r);
         for rev in revs.iter().take(3) {
             let img = rev.images.first().map(|(_, i)| i.as_str()).unwrap_or("");
             let mark = if rev.current { " *" } else { "  " };
@@ -652,14 +654,33 @@ pub fn draw_city(
                 format_age_opt(rev.created.as_ref()),
                 img
             );
-            let col = if rev.current { INK } else { DIM };
+            let staged_here = staged_rev == Some(rev.number);
+            let col = if staged_here {
+                WARN
+            } else if rev.current {
+                INK
+            } else {
+                DIM
+            };
             text(
-                ascii(&truncate_str(&line, 46)),
+                ascii(&truncate_str(&line, 34)),
                 right_x,
                 ry + 12.0,
                 12.0,
                 col,
             );
+            // Stage a roll-back to a prior (non-current) revision. Committed
+            // through the same dry-run/commit rail as the other staged changes.
+            if !rev.current {
+                let rb = Rect::new(b.x + b.w - 86.0, ry, 80.0, 16.0);
+                let label = if staged_here { "staged" } else { "rollback" };
+                if crate::window::row_button(rb, mouse, click, label) && !staged_here {
+                    act.stage = Some(Intervention::Rollback {
+                        workload: r.clone(),
+                        to_revision: rev.number,
+                    });
+                }
+            }
             ry += 16.0;
         }
     }

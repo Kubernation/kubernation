@@ -14,6 +14,7 @@
 
 use super::model::{WorkloadKind, WorkloadRef};
 use super::observed::ObservedWorld;
+use super::rollout;
 
 /// One staged change the operator intends. Latest-wins per target inside a
 /// [`PlannedWorld`].
@@ -36,6 +37,14 @@ pub enum Intervention {
         workload: WorkloadRef,
         container: String,
         image: String,
+    },
+    /// Roll a Deployment back to a prior revision (restore that revision's pod
+    /// template — like `kubectl rollout undo --to-revision`). Carries only the
+    /// revision *number* (Eq-safe); the apply path resolves that revision's
+    /// template from the cluster. Deployment-only (RS-tracked revisions).
+    Rollback {
+        workload: WorkloadRef,
+        to_revision: i64,
     },
 }
 
@@ -68,7 +77,32 @@ impl PlannedWorld {
                 container,
                 image,
             } => self.stage_set_image(workload, container, image),
+            Intervention::Rollback {
+                workload,
+                to_revision,
+            } => self.stage_rollback(workload, to_revision),
         }
+    }
+
+    /// Stage (or replace) a rollback intent for a workload, latest-wins.
+    pub fn stage_rollback(&mut self, workload: WorkloadRef, to_revision: i64) {
+        self.interventions
+            .retain(|i| !matches!(i, Intervention::Rollback { workload: w, .. } if *w == workload));
+        self.interventions.push(Intervention::Rollback {
+            workload,
+            to_revision,
+        });
+    }
+
+    /// The staged rollback target revision for a workload, if any.
+    pub fn rolled_back(&self, workload: &WorkloadRef) -> Option<i64> {
+        self.interventions.iter().find_map(|i| match i {
+            Intervention::Rollback {
+                workload: w,
+                to_revision,
+            } if w == workload => Some(*to_revision),
+            _ => None,
+        })
     }
 
     /// Stage (or replace) a container-image change for a workload, latest-wins
@@ -225,6 +259,21 @@ pub fn plan_diff(observed: &ObservedWorld, planned: &PlannedWorld) -> Vec<PlanCh
                     noop: current.as_deref() == Some(image.as_str()),
                 }
             }
+            Intervention::Rollback {
+                workload,
+                to_revision,
+            } => {
+                let current = rollout::revisions(observed, workload)
+                    .first()
+                    .map(|r| r.number);
+                PlanChange {
+                    target: workload.to_string(),
+                    field: "rollback",
+                    from: current.map_or_else(|| "?".into(), |n| format!("rev {n}")),
+                    to: format!("rev {to_revision}"),
+                    noop: current == Some(*to_revision),
+                }
+            }
         })
         .collect()
 }
@@ -375,6 +424,61 @@ mod tests {
             plan_diff(&world, &p)
                 .iter()
                 .find(|c| c.field == "image")
+                .unwrap()
+                .noop
+        );
+    }
+
+    #[test]
+    fn rollback_stages_latest_wins_and_diffs_from_current_revision() {
+        use crate::state::rollout::REVISION_ANNOTATION;
+        use k8s_openapi::api::apps::v1::ReplicaSetSpec;
+        use k8s_openapi::api::core::v1::{Container, PodSpec, PodTemplateSpec};
+        use std::collections::BTreeMap;
+
+        let mk_rs = |name: &str, rev: &str, image: &str| {
+            let mut r = fx::replicaset("demo", name, "web");
+            r.metadata.annotations =
+                Some(BTreeMap::from([(REVISION_ANNOTATION.into(), rev.into())]));
+            r.spec = Some(ReplicaSetSpec {
+                template: Some(PodTemplateSpec {
+                    spec: Some(PodSpec {
+                        containers: vec![Container {
+                            name: "main".into(),
+                            image: Some(image.into()),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+            r
+        };
+
+        let (world, mut s) = fx::world();
+        s.replicaset(mk_rs("web-1", "1", "web:1.0"));
+        s.replicaset(mk_rs("web-2", "2", "web:1.1")); // current = rev 2
+
+        let mut p = PlannedWorld::default();
+        p.stage_rollback(wref("web"), 1);
+        assert_eq!(p.rolled_back(&wref("web")), Some(1));
+        // Latest-wins per workload.
+        p.stage_rollback(wref("web"), 1);
+        assert_eq!(p.len(), 1);
+
+        let diff = plan_diff(&world, &p);
+        let rb = diff.iter().find(|c| c.field == "rollback").unwrap();
+        assert_eq!((rb.from.as_str(), rb.to.as_str()), ("rev 2", "rev 1"));
+        assert!(!rb.noop);
+
+        // Rolling back to the current revision is a no-op.
+        p.stage_rollback(wref("web"), 2);
+        assert!(
+            plan_diff(&world, &p)
+                .iter()
+                .find(|c| c.field == "rollback")
                 .unwrap()
                 .noop
         );

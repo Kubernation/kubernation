@@ -265,7 +265,8 @@ pub fn iv_namespace(iv: &Intervention) -> Option<&str> {
     match iv {
         Intervention::Scale { workload, .. }
         | Intervention::Restart { workload }
-        | Intervention::SetImage { workload, .. } => Some(&workload.namespace),
+        | Intervention::SetImage { workload, .. }
+        | Intervention::Rollback { workload, .. } => Some(&workload.namespace),
         Intervention::Cordon { .. } => None,
     }
 }
@@ -291,6 +292,13 @@ fn intervention_summary(iv: &Intervention) -> String {
             image,
         } => format!(
             "set {}/{} [{container}] -> {image}",
+            workload.namespace, workload.name
+        ),
+        Intervention::Rollback {
+            workload,
+            to_revision,
+        } => format!(
+            "rollback {}/{} -> rev {to_revision}",
             workload.namespace, workload.name
         ),
     }

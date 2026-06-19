@@ -481,7 +481,7 @@ fn page_world(cx: &mut Ctx) {
     );
     cx.heading("Read-first, gated writes");
     cx.para(
-        "Kubernation reads by default — exploring the world never changes the cluster. A few deliberate writes exist, each confirmed and RBAC-checked: evict a pod, commit a planning turn (scale/cordon/restart/image), and Game Day chaos drills. Port-forward is active but non-mutating. The whole write surface is one small auditable file.",
+        "Kubernation reads by default — exploring the world never changes the cluster. A few deliberate writes exist, each confirmed and RBAC-checked: evict a pod, commit a planning turn (scale/cordon/restart/image/rollback), and Game Day chaos drills. Port-forward is active but non-mutating. The whole write surface is one small auditable file.",
     );
 }
 

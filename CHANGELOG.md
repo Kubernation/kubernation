@@ -9,6 +9,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Rollback — the planning turn's 5th verb.** A Deployment's city window HISTORY
+  section now has a `rollback` button on each prior revision; it stages a rollback
+  (restore that revision's pod template) reviewed and committed through the same
+  server-side-dry-run + confirm rail as the other staged changes. New
+  `Intervention::Rollback { workload, to_revision }` (Eq-safe — the apply path
+  resolves the target revision's template from the live cluster). Deployment-only.
+  Verified live: web rolled `nginx:1.28-alpine` → `nginx:1.27-alpine`. (Roadmap #4.)
 - **Rollout history + revision diff.** A Deployment's city window now has a
   HISTORY section listing its recent revisions (newest first, the current one
   marked) with the container image each ran, plus the image change that produced

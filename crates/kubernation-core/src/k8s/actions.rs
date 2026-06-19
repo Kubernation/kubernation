@@ -26,7 +26,7 @@ use kube::Client;
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 
 use crate::state::chaos::NetpolSpec;
-use crate::state::model::WorkloadKind;
+use crate::state::model::{WorkloadKind, WorkloadRef};
 use crate::state::planned::Intervention;
 
 /// Evict (delete) a single pod. A pod owned by a controller (Deployment,
@@ -170,7 +170,69 @@ pub async fn apply_intervention(
                     .map_err(to_err),
             }
         }
+        Intervention::Rollback {
+            workload,
+            to_revision,
+        } => {
+            if workload.kind != WorkloadKind::Deployment {
+                return Err("rollback is only supported for Deployments".into());
+            }
+            let ns = workload.namespace.as_str();
+            // Resolve the target revision's pod template from the live cluster
+            // (the rollback restores it). Reading lives here in the write file —
+            // it's part of executing the write, and reading live (not the cached
+            // store) keeps the rollback authoritative.
+            let template = revision_template_live(client.clone(), workload, *to_revision).await?;
+            let tmpl = serde_json::to_value(&template).map_err(|e| e.to_string())?;
+            // Merge patch of spec.template: the containers array (image/env/
+            // resources) is replaced wholesale by the target revision's, which is
+            // the rollback. (Like `kubectl rollout undo`, the common case.)
+            let patch = Patch::Merge(serde_json::json!({ "spec": { "template": tmpl } }));
+            Api::<Deployment>::namespaced(client, ns)
+                .patch(&workload.name, &pp, &patch)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
     }
+}
+
+/// Find a Deployment revision's pod template by LISTing its ReplicaSets live and
+/// matching the `deployment.kubernetes.io/revision` annotation. Used by the
+/// Rollback apply path. Errors if the revision can't be found.
+async fn revision_template_live(
+    client: Client,
+    workload: &WorkloadRef,
+    to_revision: i64,
+) -> Result<k8s_openapi::api::core::v1::PodTemplateSpec, String> {
+    use k8s_openapi::api::apps::v1::ReplicaSet;
+    let api: Api<ReplicaSet> = Api::namespaced(client, workload.namespace.as_str());
+    let list = api
+        .list(&kube::api::ListParams::default())
+        .await
+        .map_err(|e| e.to_string())?;
+    list.items
+        .into_iter()
+        .filter(|rs| {
+            rs.metadata
+                .owner_references
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .any(|o| {
+                    o.controller == Some(true) && o.kind == "Deployment" && o.name == workload.name
+                })
+        })
+        .find(|rs| {
+            rs.metadata
+                .annotations
+                .as_ref()
+                .and_then(|a| a.get("deployment.kubernetes.io/revision"))
+                .and_then(|v| v.parse::<i64>().ok())
+                == Some(to_revision)
+        })
+        .and_then(|rs| rs.spec.and_then(|s| s.template))
+        .ok_or_else(|| format!("revision {to_revision} not found for {}", workload.name))
 }
 
 /// One change's commit result, for the End-of-Turn review to display.
@@ -435,6 +497,13 @@ pub fn iv_label(iv: &Intervention) -> String {
             image,
         } => format!(
             "set image {} {}/{} [{container}] → {image}",
+            workload.kind, workload.namespace, workload.name
+        ),
+        Intervention::Rollback {
+            workload,
+            to_revision,
+        } => format!(
+            "rollback {} {}/{} → rev {to_revision}",
             workload.kind, workload.namespace, workload.name
         ),
     }

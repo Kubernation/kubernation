@@ -1269,6 +1269,40 @@ what makes the interesting logic unit-testable without a cluster.
   gaps: flip-watch overrides a manual `B`-dismiss during the ~30s raid window;
   MTTD can misreport a "monitoring gap" when the drill target is hidden by the
   active namespace filter.
+- **Incident-value roadmap, items #1–#4** (2026-06-19, user "start building in the
+  order you are recommending" from `docs/ROADMAP.md`'s top-10): four front-loaded,
+  posture-safe, high-frequency incident features, each pure-core + unit-tested with
+  a thin GUI surface. **#1 Pod-not-Ready explainer** (`state/diagnose.rs`):
+  `diagnose(reason, restarts, oom) -> Option<Diagnosis>{kind, reason, explain,
+  hint}` turns a pod's raw reason (CrashLoopBackOff / ImagePull / Config /
+  Unschedulable / NotReady-probe / Pending / OOM-overrides-crash / generic) into a
+  plain-English why + next-action hint; hung on `CityPod`/`NodePodRow.diag`; the
+  city + province windows show a `why:`/`fix:` line for the worst not-ready pod.
+  **#2 Runbook hints** (`attention::next_action(&Concern) -> Option<String>`):
+  keyed on the concern's stable `key` prefix (+ probe) → the in-app verb to act on
+  it (`L: logs`, `B: blast`, click→open, pvc→StorageClass, orphan-ingress→backend,
+  idle-svc→selector, slo→TREASURY, pair→HOT/WARM); the sidebar ATTENTION section
+  shows `next: <hint>` for the focused concern. **#3 Rollout history**
+  (`state/rollout.rs`): a pure resolver over the watched ReplicaSet store —
+  `revisions(world, wr)` (newest first, current marked, from
+  `deployment.kubernetes.io/revision` + RS pod template), `previous()`,
+  `image_changes(from, to)`, `revision_template()`; Deployment-only (STS/DS
+  revisions live in unwatched ControllerRevisions); the city window grew a HISTORY
+  section (prior→current image delta + recent revisions). **#4 Rollback — the
+  planning turn's 5th verb** (`Intervention::Rollback{workload, to_revision: i64}`,
+  Eq-safe so `ChaosStep`'s Eq derive still holds): the HISTORY section's per-revision
+  `rollback` button stages it; `plan_diff` shows `rev X → rev Y`; `actions::
+  apply_intervention` resolves the target revision's pod template **from the live
+  cluster** (a LIST in the one write file — keeps the apply world-free, so no
+  net/chaos signature churn) and merge-patches `spec.template` (containers array
+  replaced wholesale, like `kubectl rollout undo`), through the same all-or-nothing
+  dry-run/commit gate. Dev flag `--rollback <substr>` (+ `--plan-go` to commit).
+  Verified live on kind: crashy's explainer reads "CrashLoopBackOff … 159 restarts
+  / tail the previous container (p)"; web's HISTORY shows the 1.27→1.28 image
+  delta; a staged rollback rolled web `nginx:1.28-alpine` (rev 7) →
+  `nginx:1.27-alpine` (rev 8) and rolled out clean. 135 core tests; gui-smoke 25.
+  Deferred (next in the roadmap): right-sizing advisor (#5), self-scoped RBAC
+  matrix (#6), hardening scan (#7).
 
 ## The pair (hot/warm)
 
@@ -1347,9 +1381,10 @@ change. Summary:
   offending pod's logs · `B` blast radius (highlight what a selected node/city —
   or the focused concern — affects: cities → harbors → gates).
 - **Resource browser:** `:` (any kind — pick → table → click a row's YAML).
-- **Planning turn:** city window steppers stage scale / restart / image, the
-  province window stages cordon; **Orders ▸ End of Turn** reviews + commits
-  (confirm modal). **Evict** a pod from its row (real delete, RBAC-gated, confirm).
+- **Planning turn:** city window steppers stage scale / restart / image and the
+  HISTORY section's `rollback` button stages a roll-back; the province window
+  stages cordon; **Orders ▸ End of Turn** reviews + commits (confirm modal).
+  **Evict** a pod from its row (real delete, RBAC-gated, confirm).
 - **Port-forward:** hover a pod row → **fwd** opens a `127.0.0.1` tunnel to it
   (RBAC-gated; default port = its containerPort or selecting-Service targetPort);
   the right column's **FORWARDS** section lists live forwards with an **x** to

@@ -102,6 +102,11 @@ struct Args {
     /// (development verification)
     #[arg(long)]
     plan: bool,
+    /// Stage a rollback of the first matching Deployment (SUBSTR) to its
+    /// previous revision and open the End-of-Turn review (dev verification of
+    /// the rollback verb; pair with --plan-go to commit it).
+    #[arg(long, value_name = "SUBSTR")]
+    rollback: Option<String>,
     /// Center the camera on a named city / node / island at --zoom (default
     /// 1.4) without opening a panel, so coast & island marks render
     /// (development verification of map shots)
@@ -1170,6 +1175,24 @@ async fn main() {
                         planned.stage_cordon(p.tile.name.clone(), true);
                     }
                     plan_open = true;
+                }
+                if let Some(sub) = &args.rollback {
+                    // Stage a rollback of the first matching Deployment to its
+                    // previous (last-known-good) revision, then open the review.
+                    if let Some(r) = s
+                        .hot
+                        .models
+                        .world
+                        .cities()
+                        .map(|c| c.r.clone())
+                        .find(|r| r.name.contains(sub.as_str()))
+                    {
+                        let revs = kubernation_core::state::rollout::revisions(&s.hot.observed, &r);
+                        if let Some(prev) = kubernation_core::state::rollout::previous(&revs) {
+                            planned.stage_rollback(r, prev.number);
+                            plan_open = true;
+                        }
+                    }
                 }
             }
             // Dev: exercise the concern→logs `L` jump once attention lands.
