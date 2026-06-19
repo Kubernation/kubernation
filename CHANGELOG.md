@@ -29,18 +29,29 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   first).
 
 ### Added
-- **Game Day — chaos drills (standard Kubernetes resources).** A new Game Day
-  menu opens a chaos console: pick a workload, choose an experiment — **kill one
-  pod**, **kill all pods**, or an **outage** (scale to 0, with Restore) — preview
-  its blast radius + the budget it'll spend, then run it (a real, CRIT-confirmed
-  failure). A **scorecard** shows the cluster's response: recovery time, budget
-  spent, self-healed or not. It reuses the existing gated write primitives
-  (`evict_pod`, scale patch) so it adds **no new verb or resource type**; control-
-  plane / system namespaces are never targetable (fail-closed in the core +
-  re-checked at execution); RBAC-gated and hot-cluster-only. Node-failure,
-  NetworkPolicy partition, and service-mesh fault injection are deferred to later
-  passes. Drill planning + guards are pure + unit-tested; verified live on kind
-  (killed a `web` pod, controller recovered in ~1s).
+- **Game Day — chaos drills.** A new Game Day menu opens a chaos console: pick a
+  target, choose an experiment, preview its blast radius + the budget it'll spend,
+  then run it (a real, CRIT-confirmed failure). A **scorecard** shows the
+  cluster's response: recovery time, budget spent, self-healed or not. Six
+  experiments across two passes:
+  - **Pass 1 (workload kills, no new verb):** **kill one pod**, **kill all
+    pods**, and an **outage** (scale to 0, with Restore) — reusing the existing
+    gated write primitives (`evict_pod`, scale patch).
+  - **Pass 2:** **node failure** (cordon the node + drain its pods, Restore
+    uncordons — existing verbs), **broken image** (roll a workload onto an
+    unresolvable `*.invalid` ref → ImagePullBackOff, caught by readiness so the
+    old replicas keep serving; Restore re-applies the captured original — existing
+    verb), and **partition** (a deny-all NetworkPolicy scoped to the workload's
+    pods, Restore deletes it — the **one new write verb/resource type** chaos
+    adds; its effect depends on the CNI enforcing NetworkPolicy). The scorecard
+    adapts per experiment class (workload dip/recover + budget, node pods-drained
+    + cordon state, isolation note).
+  Control-plane / system namespaces and control-plane nodes are never targetable
+  (fail-closed in the pure core + re-checked at execution, covering every step
+  including the restore); the patchable steps are server-side dry-run-gated
+  (which also enforces RBAC); hot-cluster-only. Service-mesh fault injection
+  (Istio/Linkerd) is deferred to a later pass. Drill planning + guards are pure +
+  unit-tested; verified live on kind.
 - **Per-workload / configurable SLO targets.** The treasury's SLO target is no
   longer fixed at 99% — set it per workload via a `kubernation.io/slo-target`
   annotation (e.g. "99.9", read-only/declarative) or the city window's new SLO

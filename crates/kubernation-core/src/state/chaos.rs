@@ -3,13 +3,17 @@
 //! blast radius spreads, the attention queue lights up, the treasury spends).
 //! The 4X framing is a "raid" on a city; the k8s nouns stay greppable.
 //!
-//! **Pass 1 reuses the existing write primitives** — `evict_pod` (delete) and
-//! `apply_intervention(Scale)` (patch `spec.replicas`) — so chaos adds **no new
-//! verb and no new resource type**; the RBAC surface is exactly `delete pods` +
-//! `patch scale`, already gated. Three reversible experiments: kill one pod,
-//! kill all pods (the controller recreates), and an outage (scale to 0) with an
-//! explicit restore. Node-failure (cordon+drain), NetworkPolicy partition, and
-//! mesh fault-injection are deferred to later passes.
+//! **Pass 1** reused the existing write primitives — `evict_pod` (delete) and
+//! `apply_intervention(Scale)` (patch `spec.replicas`): kill one pod, kill all
+//! pods (the controller recreates), and an outage (scale to 0) with an explicit
+//! restore. **Pass 2** adds three more, reusing the same primitives where it can
+//! and adding exactly one new write surface: **node failure** (Cordon + drain
+//! the node's pods, restore = uncordon — all existing verbs), **broken image**
+//! (SetImage onto an unresolvable ref → ImagePullBackOff, restore = the captured
+//! original — existing verb), and **partition** (a deny-all NetworkPolicy scoped
+//! to the workload's pods, restore = delete it — the one new verb/resource type
+//! chaos adds, in `actions::apply_partition`/`delete_partition`). Mesh
+//! fault-injection (Istio/Linkerd) is deferred to a later pass.
 //!
 //! This module is **pure** (no client / no I/O): it *plans* a drill against the
 //! observed world — enumerating the concrete steps, capturing the restore
@@ -43,7 +47,12 @@ pub fn node_protected(node: &Node) -> bool {
     })
 }
 
-/// A chaos experiment the operator can run against a workload.
+/// The image a broken-image drill rolls onto — a reserved-TLD ref that can
+/// never resolve (RFC-6761 `.invalid`), so the workload goes ImagePullBackOff
+/// and the cause is self-announcing in events. Restored to the captured original.
+pub const BAD_IMAGE: &str = "kubernation.invalid/chaos/broken:does-not-exist";
+
+/// A chaos experiment. Most target a workload; node-failure targets a node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Experiment {
     /// Delete one representative pod (the controller recreates it).
@@ -52,14 +61,37 @@ pub enum Experiment {
     KillAll { workload: WorkloadRef },
     /// Scale the workload to 0 (a real outage), restorable to its current count.
     Outage { workload: WorkloadRef },
+    /// Cordon a node and drain (evict) every pod on it; restore = uncordon.
+    NodeFailure { node: String },
+    /// Roll the workload onto a broken image (ImagePullBackOff); restore = the
+    /// captured original image.
+    BrokenImage { workload: WorkloadRef },
+    /// Isolate the workload with a deny-all NetworkPolicy; restore = delete it.
+    Partition { workload: WorkloadRef },
 }
 
 impl Experiment {
-    pub fn workload(&self) -> &WorkloadRef {
+    /// What the drill targets (for the blast radius + scorecard).
+    pub fn subject(&self) -> Subject {
+        match self {
+            Experiment::NodeFailure { node } => Subject::Node(node.clone()),
+            Experiment::KillOne { workload }
+            | Experiment::KillAll { workload }
+            | Experiment::Outage { workload }
+            | Experiment::BrokenImage { workload }
+            | Experiment::Partition { workload } => Subject::Workload(workload.clone()),
+        }
+    }
+
+    /// The target workload, or `None` for a node-scoped experiment.
+    pub fn workload(&self) -> Option<&WorkloadRef> {
         match self {
             Experiment::KillOne { workload }
             | Experiment::KillAll { workload }
-            | Experiment::Outage { workload } => workload,
+            | Experiment::Outage { workload }
+            | Experiment::BrokenImage { workload }
+            | Experiment::Partition { workload } => Some(workload),
+            Experiment::NodeFailure { .. } => None,
         }
     }
 
@@ -69,27 +101,48 @@ impl Experiment {
             Experiment::KillOne { .. } => "kill one pod",
             Experiment::KillAll { .. } => "kill all pods",
             Experiment::Outage { .. } => "outage (scale to 0)",
+            Experiment::NodeFailure { .. } => "node failure (cordon + drain)",
+            Experiment::BrokenImage { .. } => "broken image",
+            Experiment::Partition { .. } => "partition (deny-all)",
         }
     }
 }
 
-/// One concrete cluster step — always an *existing* primitive, never a new verb.
+/// A deny-all NetworkPolicy descriptor (the k8s object is built in `actions.rs`
+/// — `chaos.rs` stays client-free).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetpolSpec {
+    pub namespace: String,
+    pub name: String,
+    /// `matchLabels` for the policy's `podSelector` (the workload's pods).
+    pub pod_selector: std::collections::BTreeMap<String, String>,
+}
+
+/// One concrete cluster step. Every variant is an existing primitive *except*
+/// the NetworkPolicy create/delete the partition experiment adds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChaosStep {
     /// Delete a pod (`actions::evict_pod`).
     Evict { namespace: String, pod: String },
-    /// Apply a Scale intervention (`actions::apply_intervention`).
-    Scale(Intervention),
+    /// Apply any planning intervention — Scale / Cordon / SetImage
+    /// (`actions::apply_intervention`).
+    Apply(Intervention),
+    /// Create a deny-all NetworkPolicy (`actions::apply_partition`) — the one
+    /// new write verb/resource type chaos adds.
+    Partition(NetpolSpec),
+    /// Delete a chaos NetworkPolicy by name (`actions::delete_partition`),
+    /// idempotent (a 404 is success).
+    Unpartition { namespace: String, name: String },
 }
 
-/// A planned drill: the inject steps, the (optional) restore, why it was
+/// A planned drill: the inject steps, the restore steps (undo), why it was
 /// refused (if so), and the blast size at plan time.
 #[derive(Debug, Clone)]
 pub struct ChaosPlan {
     pub steps: Vec<ChaosStep>,
-    /// Interventions that undo the drill (Outage → scale back); empty for kills
-    /// (the controller recreates pods on its own).
-    pub restore: Vec<Intervention>,
+    /// Steps that undo the drill (Outage → scale back, partition → unpartition,
+    /// node → uncordon); empty for kills (the controller recreates pods).
+    pub restore: Vec<ChaosStep>,
     /// Set when a guard blocks the drill (protected target, DaemonSet, no pods).
     pub refused: Option<String>,
     /// `blast_radius(...).len()` for the target — the predicted reach.
@@ -124,14 +177,48 @@ fn workload_pods(world: &ObservedWorld, wr: &WorkloadRef) -> Vec<(String, String
     pods
 }
 
+/// Pods scheduled on a node, sorted, *excluding protected namespaces* (a
+/// node-failure drill must never drain the cluster's own system pods).
+fn pods_on_node(world: &ObservedWorld, node: &str) -> Vec<(String, String)> {
+    let mut pods: Vec<(String, String)> = world
+        .pods
+        .state()
+        .iter()
+        .filter(|p| p.spec.as_ref().and_then(|s| s.node_name.as_deref()) == Some(node))
+        .filter_map(|p| Some((p.metadata.namespace.clone()?, p.metadata.name.clone()?)))
+        .filter(|(ns, _)| !ns_protected(ns))
+        .collect();
+    pods.sort();
+    pods
+}
+
+/// The chaos NetworkPolicy name for a workload (DNS-1123-safe).
+fn netpol_name(wr: &WorkloadRef) -> String {
+    format!("kubernation-chaos-{}", wr.name)
+}
+
+/// The namespace an intervention writes to (`None` for node-scoped Cordon) —
+/// used by the frontend's fail-closed protected-namespace re-check.
+pub fn iv_namespace(iv: &Intervention) -> Option<&str> {
+    match iv {
+        Intervention::Scale { workload, .. }
+        | Intervention::Restart { workload }
+        | Intervention::SetImage { workload, .. } => Some(&workload.namespace),
+        Intervention::Cordon { .. } => None,
+    }
+}
+
 /// Resolve an experiment against the observed world into a concrete plan —
 /// PURE (no client). Refuses protected targets fail-closed, captures the
-/// restore value, and computes the blast size.
+/// restore steps, and computes the blast size.
 pub fn plan_chaos(world: &ObservedWorld, exp: &Experiment) -> ChaosPlan {
-    let wr = exp.workload();
-    let blast = blast_radius(world, &Subject::Workload(wr.clone())).len();
+    let blast = blast_radius(world, &exp.subject()).len();
 
-    if ns_protected(&wr.namespace) {
+    // Workload experiments refuse protected namespaces up front; node-failure
+    // has its own control-plane guard below.
+    if let Some(wr) = exp.workload()
+        && ns_protected(&wr.namespace)
+    {
         return ChaosPlan::refuse(blast, format!("{} is a protected namespace", wr.namespace));
     }
 
@@ -167,14 +254,14 @@ pub fn plan_chaos(world: &ObservedWorld, exp: &Experiment) -> ChaosPlan {
             }
             match current_replicas(world, workload) {
                 Some(n) if n > 0 => ChaosPlan {
-                    steps: vec![ChaosStep::Scale(Intervention::Scale {
+                    steps: vec![ChaosStep::Apply(Intervention::Scale {
                         workload: workload.clone(),
                         replicas: 0,
                     })],
-                    restore: vec![Intervention::Scale {
+                    restore: vec![ChaosStep::Apply(Intervention::Scale {
                         workload: workload.clone(),
                         replicas: n,
-                    }],
+                    })],
                     refused: None,
                     blast,
                 },
@@ -182,12 +269,110 @@ pub fn plan_chaos(world: &ObservedWorld, exp: &Experiment) -> ChaosPlan {
                 None => ChaosPlan::refuse(blast, "replicas unknown"),
             }
         }
+        Experiment::NodeFailure { node } => {
+            let Some(n) = world
+                .nodes
+                .state()
+                .into_iter()
+                .find(|n| n.metadata.name.as_deref() == Some(node))
+            else {
+                return ChaosPlan::refuse(blast, "node not found");
+            };
+            if node_protected(&n) {
+                return ChaosPlan::refuse(blast, "control-plane node — refused");
+            }
+            let pods = pods_on_node(world, node);
+            if pods.is_empty() {
+                return ChaosPlan::refuse(blast, "no drainable pods on this node");
+            }
+            // Cordon first, then drain every (non-system) pod.
+            let mut steps = vec![ChaosStep::Apply(Intervention::Cordon {
+                node: node.clone(),
+                on: true,
+            })];
+            steps.extend(
+                pods.into_iter()
+                    .map(|(namespace, pod)| ChaosStep::Evict { namespace, pod }),
+            );
+            ChaosPlan {
+                steps,
+                restore: vec![ChaosStep::Apply(Intervention::Cordon {
+                    node: node.clone(),
+                    on: false,
+                })],
+                refused: None,
+                blast,
+            }
+        }
+        Experiment::BrokenImage { workload } => {
+            let Some(container) = crate::state::model::workload_primary_container(world, workload)
+            else {
+                return ChaosPlan::refuse(blast, "no container to break");
+            };
+            // The original image must be captured or restore is impossible.
+            let Some(original) = crate::state::planned::current_image(world, workload, &container)
+            else {
+                return ChaosPlan::refuse(blast, "cannot read the current image (no restore)");
+            };
+            ChaosPlan {
+                steps: vec![ChaosStep::Apply(Intervention::SetImage {
+                    workload: workload.clone(),
+                    container: container.clone(),
+                    image: BAD_IMAGE.to_string(),
+                })],
+                restore: vec![ChaosStep::Apply(Intervention::SetImage {
+                    workload: workload.clone(),
+                    container,
+                    image: original,
+                })],
+                refused: None,
+                blast,
+            }
+        }
+        Experiment::Partition { workload } => {
+            let labels = crate::state::model::workload_template_labels(world, workload);
+            if labels.is_empty() {
+                // An empty podSelector denies the WHOLE namespace — never do that.
+                return ChaosPlan::refuse(
+                    blast,
+                    "no pod labels — a deny-all would hit the whole namespace",
+                );
+            }
+            let name = netpol_name(workload);
+            ChaosPlan {
+                steps: vec![ChaosStep::Partition(NetpolSpec {
+                    namespace: workload.namespace.clone(),
+                    name: name.clone(),
+                    pod_selector: labels,
+                })],
+                restore: vec![ChaosStep::Unpartition {
+                    namespace: workload.namespace.clone(),
+                    name,
+                }],
+                refused: None,
+                blast,
+            }
+        }
     }
+}
+
+/// What class of scorecard to render — the experiments have different shapes
+/// (a workload's budget/recovery, a node's multi-workload drain, an isolation
+/// with no readiness signal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScoreKind {
+    /// Outage / KillOne / KillAll / BrokenImage — the dip/recover + budget model.
+    Workload,
+    /// Node-failure — pods drained + cordon state.
+    Node { pods_drained: usize, cordoned: bool },
+    /// Partition — a deny-all NetworkPolicy; readiness doesn't dip.
+    Isolation,
 }
 
 /// A game-day scorecard: what the drill did and how the cluster responded.
 #[derive(Debug, Clone)]
 pub struct ChaosScorecard {
+    pub kind: ScoreKind,
     pub experiment: String,
     pub target: String,
     pub blast: usize,
@@ -211,8 +396,22 @@ pub enum ScoreRole {
     Info,
 }
 
+/// The recovery line for a dip/recover-model scorecard.
+fn recovery_line(s: &ChaosScorecard) -> (String, ScoreRole) {
+    if !s.dipped {
+        ("stayed up — no outage".into(), ScoreRole::Good)
+    } else {
+        match (s.recovered, s.recover_secs) {
+            (true, Some(secs)) => (format!("self-healed in {secs:.0}s"), ScoreRole::Good),
+            (true, None) => ("self-healed".into(), ScoreRole::Good),
+            (false, _) => ("not recovered yet…".into(), ScoreRole::Warn),
+        }
+    }
+}
+
 /// The scorecard rendered as text lines + roles — pure draw-decision logic,
-/// testable without a GL context.
+/// testable without a GL context. Branches on `kind` so each experiment class
+/// tells an honest story.
 pub fn scorecard_lines(s: &ChaosScorecard) -> Vec<(String, ScoreRole)> {
     let mut out = vec![
         (format!("{} on {}", s.experiment, s.target), ScoreRole::Info),
@@ -221,37 +420,88 @@ pub fn scorecard_lines(s: &ChaosScorecard) -> Vec<(String, ScoreRole)> {
             ScoreRole::Info,
         ),
     ];
-    // Recovery — only meaningful once the target actually went down. A kill the
-    // workload shrugged off (other replicas stayed up) reads as "stayed up", not
-    // a phantom "self-healed in 0s" before any outage even registered.
-    if !s.dipped {
-        out.push(("stayed up — no outage".into(), ScoreRole::Good));
-    } else {
-        match (s.recovered, s.recover_secs) {
-            (true, Some(secs)) => out.push((format!("self-healed in {secs:.0}s"), ScoreRole::Good)),
-            (true, None) => out.push(("self-healed".into(), ScoreRole::Good)),
-            (false, _) => out.push(("not recovered yet…".into(), ScoreRole::Warn)),
+    match s.kind {
+        ScoreKind::Workload => {
+            out.push(recovery_line(s));
+            if let (Some(before), Some(after)) = (&s.budget_before, &s.budget_after) {
+                let spent = (before.budget_remaining - after.budget_remaining).max(0.0);
+                let role = if spent > 0.001 {
+                    ScoreRole::Warn
+                } else {
+                    ScoreRole::Good
+                };
+                out.push((
+                    format!(
+                        "budget {:.0}% -> {:.0}% (spent {:.0}%)",
+                        before.budget_remaining * 100.0,
+                        after.budget_remaining * 100.0,
+                        spent * 100.0
+                    ),
+                    role,
+                ));
+            }
+        }
+        ScoreKind::Node {
+            pods_drained,
+            cordoned,
+        } => {
+            out.push((format!("{pods_drained} pod(s) drained"), ScoreRole::Info));
+            out.push(recovery_line(s)); // "workloads back to full strength?"
+            if cordoned {
+                out.push((
+                    "node still cordoned — Restore to uncordon".into(),
+                    ScoreRole::Warn,
+                ));
+            }
+        }
+        ScoreKind::Isolation => {
+            // A partition doesn't drop readiness — suppress the dip/recover model.
+            out.push(("deny-all NetworkPolicy applied".into(), ScoreRole::Info));
+            out.push((
+                "isolates traffic — readiness won't dip; Restore removes it".into(),
+                ScoreRole::Info,
+            ));
+            out.push((
+                "effect depends on the CNI enforcing NetworkPolicy".into(),
+                ScoreRole::Warn,
+            ));
         }
     }
-    // Budget spent.
-    if let (Some(before), Some(after)) = (&s.budget_before, &s.budget_after) {
-        let spent = (before.budget_remaining - after.budget_remaining).max(0.0);
-        let role = if spent > 0.001 {
-            ScoreRole::Warn
-        } else {
-            ScoreRole::Good
-        };
-        out.push((
-            format!(
-                "budget {:.0}% -> {:.0}% (spent {:.0}%)",
-                before.budget_remaining * 100.0,
-                after.budget_remaining * 100.0,
-                spent * 100.0
-            ),
-            role,
-        ));
-    }
     out
+}
+
+/// Extra preview lines for the chaos window, per experiment — pure, testable.
+/// (The common lines — steps/blast/budget — the GUI renders directly.)
+pub fn preview_lines(exp: &Experiment, plan: &ChaosPlan) -> Vec<(String, ScoreRole)> {
+    if plan.is_refused() {
+        return Vec::new();
+    }
+    match exp {
+        Experiment::BrokenImage { .. } => vec![
+            (format!("roll onto {BAD_IMAGE}"), ScoreRole::Warn),
+            (
+                "restore re-applies the current image".into(),
+                ScoreRole::Info,
+            ),
+        ],
+        Experiment::Partition { .. } => vec![
+            (
+                "deny-all NetworkPolicy (a new resource)".into(),
+                ScoreRole::Info,
+            ),
+            (
+                "effect depends on the CNI enforcing NetworkPolicy".into(),
+                ScoreRole::Warn,
+            ),
+        ],
+        Experiment::NodeFailure { .. } => {
+            vec![(
+                "graceful drain (evict), then Restore to uncordon".into(),
+                ScoreRole::Info,
+            )]
+        }
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -288,12 +538,12 @@ mod tests {
         assert_eq!(plan.steps.len(), 1);
         assert!(matches!(
             &plan.steps[0],
-            ChaosStep::Scale(Intervention::Scale { replicas: 0, .. })
+            ChaosStep::Apply(Intervention::Scale { replicas: 0, .. })
         ));
         // Restore scales back to the captured count (3).
         assert!(matches!(
             &plan.restore[0],
-            Intervention::Scale { replicas: 3, .. }
+            ChaosStep::Apply(Intervention::Scale { replicas: 3, .. })
         ));
     }
 
@@ -375,6 +625,7 @@ mod tests {
     #[test]
     fn scorecard_lines_report_recovery_and_spend() {
         let base = ChaosScorecard {
+            kind: ScoreKind::Workload,
             experiment: "outage (scale to 0)".into(),
             target: "demo/web".into(),
             blast: 2,
@@ -412,5 +663,142 @@ mod tests {
                 .iter()
                 .any(|(t, _)| t.contains("self-healed in 3s"))
         );
+    }
+
+    #[test]
+    fn node_failure_cordons_then_drains_and_restores() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        seed_web(&mut s); // 3 web pods, all on n1
+        let plan = plan_chaos(&world, &Experiment::NodeFailure { node: "n1".into() });
+        assert!(!plan.is_refused(), "{:?}", plan.refused);
+        // Cordon first, then one evict per drainable pod.
+        assert_eq!(plan.steps.len(), 4);
+        assert!(matches!(
+            &plan.steps[0],
+            ChaosStep::Apply(Intervention::Cordon { on: true, .. })
+        ));
+        assert!(matches!(&plan.steps[1], ChaosStep::Evict { .. }));
+        // Restore uncordons.
+        assert!(matches!(
+            &plan.restore[0],
+            ChaosStep::Apply(Intervention::Cordon { on: false, .. })
+        ));
+    }
+
+    #[test]
+    fn node_failure_refuses_missing_node_and_empty_node() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        // Node exists but has no (non-system) pods → refused.
+        assert!(plan_chaos(&world, &Experiment::NodeFailure { node: "n1".into() }).is_refused());
+        // Node doesn't exist → refused.
+        assert!(
+            plan_chaos(
+                &world,
+                &Experiment::NodeFailure {
+                    node: "ghost".into()
+                }
+            )
+            .is_refused()
+        );
+    }
+
+    #[test]
+    fn broken_image_captures_original_and_refuses_without() {
+        // Fixture deployments have no container image → can't restore → refused.
+        let (world, mut s) = fx::world();
+        seed_web(&mut s);
+        assert!(plan_chaos(&world, &Experiment::BrokenImage { workload: web() }).is_refused());
+
+        // A deployment whose container carries an image → captured + restorable.
+        let (world2, mut s2) = fx::world();
+        let mut d = fx::deployment("demo", "web", 3, 3);
+        if let Some(c) = d
+            .spec
+            .as_mut()
+            .and_then(|sp| sp.template.spec.as_mut())
+            .and_then(|ps| ps.containers.first_mut())
+        {
+            c.image = Some("nginx:1.25".into());
+        }
+        s2.deployment(d);
+        let plan = plan_chaos(&world2, &Experiment::BrokenImage { workload: web() });
+        assert!(!plan.is_refused(), "{:?}", plan.refused);
+        assert!(matches!(
+            &plan.steps[0],
+            ChaosStep::Apply(Intervention::SetImage { image, .. }) if image == BAD_IMAGE
+        ));
+        assert!(matches!(
+            &plan.restore[0],
+            ChaosStep::Apply(Intervention::SetImage { image, .. }) if image == "nginx:1.25"
+        ));
+    }
+
+    #[test]
+    fn partition_uses_pod_labels_and_restores() {
+        let (world, mut s) = fx::world();
+        seed_web(&mut s); // template labels {app: web}
+        let plan = plan_chaos(&world, &Experiment::Partition { workload: web() });
+        assert!(!plan.is_refused(), "{:?}", plan.refused);
+        match &plan.steps[0] {
+            ChaosStep::Partition(spec) => {
+                assert_eq!(spec.namespace, "demo");
+                assert_eq!(spec.name, "kubernation-chaos-web");
+                assert_eq!(
+                    spec.pod_selector.get("app").map(String::as_str),
+                    Some("web")
+                );
+            }
+            other => panic!("expected Partition step, got {other:?}"),
+        }
+        assert!(matches!(
+            &plan.restore[0],
+            ChaosStep::Unpartition { name, .. } if name == "kubernation-chaos-web"
+        ));
+    }
+
+    #[test]
+    fn partition_refused_without_pod_labels() {
+        // A deployment whose pod template carries no labels → a deny-all would
+        // hit the whole namespace, so it's refused.
+        let (world, mut s) = fx::world();
+        let mut d = fx::deployment("demo", "web", 3, 3);
+        if let Some(t) = d.spec.as_mut().map(|sp| &mut sp.template) {
+            t.metadata = Some(Default::default());
+        }
+        s.deployment(d);
+        assert!(plan_chaos(&world, &Experiment::Partition { workload: web() }).is_refused());
+    }
+
+    #[test]
+    fn node_and_isolation_scorecards_tell_their_own_story() {
+        let node_card = ChaosScorecard {
+            kind: ScoreKind::Node {
+                pods_drained: 3,
+                cordoned: true,
+            },
+            experiment: "node failure (cordon + drain)".into(),
+            target: "node n1".into(),
+            blast: 3,
+            budget_before: None,
+            budget_after: None,
+            dipped: false,
+            recovered: false,
+            recover_secs: None,
+        };
+        let lines = scorecard_lines(&node_card);
+        assert!(lines.iter().any(|(t, _)| t.contains("3 pod(s) drained")));
+        assert!(lines.iter().any(|(t, _)| t.contains("still cordoned")));
+
+        let iso_card = ChaosScorecard {
+            kind: ScoreKind::Isolation,
+            experiment: "partition (deny-all)".into(),
+            ..node_card
+        };
+        let lines = scorecard_lines(&iso_card);
+        assert!(lines.iter().any(|(t, _)| t.contains("NetworkPolicy")));
+        // An isolation never claims a recovery/dip.
+        assert!(!lines.iter().any(|(t, _)| t.contains("self-healed")));
     }
 }

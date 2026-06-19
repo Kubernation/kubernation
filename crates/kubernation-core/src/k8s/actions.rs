@@ -13,14 +13,19 @@
 //! so a turn the cluster would reject never half-applies. Both frontends call
 //! it, keeping the "decide to write for real" step inside this one file.
 
+use std::collections::BTreeMap;
+
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use k8s_openapi::api::authorization::v1::{
     ResourceAttributes, SelfSubjectAccessReview, SelfSubjectAccessReviewSpec,
 };
 use k8s_openapi::api::core::v1::{Node, Pod};
+use k8s_openapi::api::networking::v1::{NetworkPolicy, NetworkPolicySpec};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use kube::Client;
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 
+use crate::state::chaos::NetpolSpec;
 use crate::state::model::WorkloadKind;
 use crate::state::planned::Intervention;
 
@@ -221,25 +226,97 @@ pub async fn commit_interventions(client: Client, ivs: &[Intervention]) -> Commi
     }
 }
 
+/// The label every chaos-created NetworkPolicy carries, so a partition is
+/// recognizable (and findable) as ours.
+pub fn partition_label() -> (&'static str, &'static str) {
+    ("app.kubernetes.io/managed-by", "kubernation-chaos")
+}
+
+/// Apply (create-or-update) a deny-all NetworkPolicy scoped to a workload's
+/// pods — the partition experiment's one new write. A no-rule policy with
+/// `policyTypes: [Ingress, Egress]` denies all traffic in both directions for
+/// pods matching the selector. Uses server-side apply (idempotent), so a repeat
+/// run is harmless. `dry_run` gates it (validation + RBAC) without persisting.
+pub async fn apply_partition(
+    client: Client,
+    spec: &NetpolSpec,
+    dry_run: bool,
+) -> Result<(), String> {
+    // Fail closed: an empty `podSelector` matches EVERY pod in the namespace, so
+    // a deny-all with no selector would isolate the whole namespace. The pure
+    // planner already refuses this, but the failsafe also lives here in the one
+    // write file so the primitive is safe in isolation.
+    if spec.pod_selector.is_empty() {
+        return Err(
+            "refusing a chaos partition with an empty podSelector (it would deny the whole namespace)"
+                .into(),
+        );
+    }
+    let (lk, lv) = partition_label();
+    let np = NetworkPolicy {
+        metadata: ObjectMeta {
+            name: Some(spec.name.clone()),
+            namespace: Some(spec.namespace.clone()),
+            labels: Some(BTreeMap::from([(lk.to_string(), lv.to_string())])),
+            ..Default::default()
+        },
+        spec: Some(NetworkPolicySpec {
+            pod_selector: Some(LabelSelector {
+                match_labels: Some(spec.pod_selector.clone()),
+                ..Default::default()
+            }),
+            // No ingress/egress rules + both policy types = deny everything.
+            policy_types: Some(vec!["Ingress".into(), "Egress".into()]),
+            ..Default::default()
+        }),
+    };
+    let pp = PatchParams {
+        dry_run,
+        field_manager: Some("kubernation-chaos".into()),
+        ..Default::default()
+    };
+    let api: Api<NetworkPolicy> = Api::namespaced(client, &spec.namespace);
+    api.patch(&spec.name, &pp, &Patch::Apply(&np))
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Delete a chaos NetworkPolicy by name. Idempotent: a `404` (already gone) is
+/// success, so a restore is safe to retry.
+pub async fn delete_partition(client: Client, namespace: &str, name: &str) -> Result<(), String> {
+    let api: Api<NetworkPolicy> = Api::namespaced(client, namespace);
+    match api.delete(name, &DeleteParams::default()).await {
+        Ok(_) => Ok(()),
+        Err(kube::Error::Api(ae)) if ae.code == 404 => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Execute a confirmed chaos drill: a sequence of existing primitives (pod
-/// deletes + Scale patches) — chaos adds **no new verb**. Scale steps are
-/// dry-run-gated first (the same server-side dry-run that enforces RBAC); if all
-/// pass, every step runs best-effort with a per-step result. Pod-kill RBAC is
-/// enforced by the apiserver on each `DELETE` (a forbidden delete fails its
-/// row); unlike the evict control there's no up-front `can_evict_pod` probe, so
-/// a user lacking `delete pods` sees per-step "forbidden" rows rather than a
-/// disabled button. Reuses `CommitRow`/`CommitOutcome` so the UI shows it like a
-/// commit.
+/// deletes and Scale/Cordon/SetImage patches) plus the one partition verb chaos
+/// adds (create/delete a deny-all NetworkPolicy). The dry-run-able steps (the
+/// Apply patches and Partition creates) are server-side dry-run-gated first
+/// (which also enforces RBAC); if all pass, every step runs best-effort with a
+/// per-step result. Pod-kill and netpol-delete RBAC is enforced by the apiserver
+/// on each request (a forbidden op fails its row); unlike the evict control
+/// there's no up-front `can_evict_pod` probe, so a user lacking permission sees
+/// per-step "forbidden" rows rather than a disabled button. Reuses
+/// `CommitRow`/`CommitOutcome` so the UI shows it like a commit.
 pub async fn run_chaos(client: Client, steps: &[crate::state::chaos::ChaosStep]) -> CommitOutcome {
     use crate::state::chaos::ChaosStep;
-    // Gate: dry-run the Scale steps (evicts aren't dry-runnable).
+    // Gate: dry-run the patchable steps (evicts + netpol deletes aren't gated;
+    // a forbidden one fails its own row below).
     let mut dry_fail = Vec::new();
     for step in steps {
-        if let ChaosStep::Scale(iv) = step
-            && let Err(detail) = apply_intervention(client.clone(), iv, true).await
-        {
+        let dry = match step {
+            ChaosStep::Apply(iv) => apply_intervention(client.clone(), iv, true).await,
+            ChaosStep::Partition(spec) => apply_partition(client.clone(), spec, true).await,
+            ChaosStep::Evict { .. } | ChaosStep::Unpartition { .. } => continue,
+        };
+        if let Err(detail) = dry {
             dry_fail.push(CommitRow {
-                label: iv_label(iv),
+                label: chaos_step_label(step),
                 ok: false,
                 detail,
             });
@@ -254,18 +331,16 @@ pub async fn run_chaos(client: Client, steps: &[crate::state::chaos::ChaosStep])
     // Run every step for real.
     let mut rows = Vec::new();
     for step in steps {
-        let (label, res) = match step {
-            ChaosStep::Evict { namespace, pod } => (
-                format!("kill pod {namespace}/{pod}"),
-                evict_pod(client.clone(), namespace, pod).await,
-            ),
-            ChaosStep::Scale(iv) => (
-                iv_label(iv),
-                apply_intervention(client.clone(), iv, false).await,
-            ),
+        let res = match step {
+            ChaosStep::Evict { namespace, pod } => evict_pod(client.clone(), namespace, pod).await,
+            ChaosStep::Apply(iv) => apply_intervention(client.clone(), iv, false).await,
+            ChaosStep::Partition(spec) => apply_partition(client.clone(), spec, false).await,
+            ChaosStep::Unpartition { namespace, name } => {
+                delete_partition(client.clone(), namespace, name).await
+            }
         };
         rows.push(CommitRow {
-            label,
+            label: chaos_step_label(step),
             ok: res.is_ok(),
             detail: res.err().unwrap_or_default(),
         });
@@ -273,6 +348,21 @@ pub async fn run_chaos(client: Client, steps: &[crate::state::chaos::ChaosStep])
     CommitOutcome {
         applied: true,
         rows,
+    }
+}
+
+/// Short human label for a chaos step (drill-result rows).
+fn chaos_step_label(step: &crate::state::chaos::ChaosStep) -> String {
+    use crate::state::chaos::ChaosStep;
+    match step {
+        ChaosStep::Evict { namespace, pod } => format!("kill pod {namespace}/{pod}"),
+        ChaosStep::Apply(iv) => iv_label(iv),
+        ChaosStep::Partition(spec) => {
+            format!("partition {}/{} (deny-all)", spec.namespace, spec.name)
+        }
+        ChaosStep::Unpartition { namespace, name } => {
+            format!("remove partition {namespace}/{name}")
+        }
     }
 }
 

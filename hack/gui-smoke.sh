@@ -35,6 +35,7 @@ STATES=(
   "blast-node|--blast kubernation-worker"
   "blast-workload|--blast web"
   "chaos|--chaos web"
+  "chaos-node|--chaos web --chaos-exp node-failure"
 )
 
 fail=0

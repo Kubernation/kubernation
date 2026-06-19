@@ -559,7 +559,7 @@ fn page_reading(cx: &mut Ctx) {
     );
     cx.heading("Game Day (chaos)");
     cx.para(
-        "The Game Day menu opens a chaos drill: pick a workload, choose an experiment (outage / kill one pod / kill all pods), preview its blast radius + budget cost, then run it — a real, confirmed failure on standard Kubernetes resources. A scorecard shows the cluster's response (recovery time, budget spent); an outage offers Restore. Control-plane and system namespaces are never targetable.",
+        "The Game Day menu opens a chaos drill: pick a target, choose an experiment, preview its blast radius + budget cost, then run it — a real, confirmed failure. Workload experiments: outage (scale to 0), kill one pod, kill all pods, broken image (roll onto an unresolvable ref), and partition (a deny-all NetworkPolicy). Node failure cordons a node and drains its pods. A scorecard shows the cluster's response (recovery time, budget spent); reversible drills offer Restore. Control-plane / system namespaces and control-plane nodes are never targetable.",
     );
     cx.heading("Attention");
     cx.para(

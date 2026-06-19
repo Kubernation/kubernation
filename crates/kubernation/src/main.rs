@@ -47,6 +47,8 @@ use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::Target;
 use kubernation_core::state::blast::{Subject, blast_radius};
 use kubernation_core::state::filter::NamespaceFilter;
+use kubernation_core::state::model::WorkloadRef;
+use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::slo;
 use kubernation_core::state::world::Region;
 use macroquad::prelude::*;
@@ -134,6 +136,11 @@ struct Args {
     /// verification of the chaos write path
     #[arg(long)]
     chaos_go: bool,
+    /// With --chaos-go, which experiment to run (kill-one [default] / kill-all /
+    /// outage / broken-image / partition / node-failure). node-failure targets
+    /// the first non-control-plane node hosting the --chaos target's pods.
+    #[arg(long, value_name = "KIND")]
+    chaos_exp: Option<String>,
     /// Hold the intro splash (the full Kubernation scene) — replays it, and
     /// with --screenshot captures it (development verification / demo)
     #[arg(long)]
@@ -200,6 +207,69 @@ struct PendingChaos {
     line1: String,
     line2: String,
     action: String,
+}
+
+/// Build the net-thread `ChaosRun` for a (non-refused) experiment + plan:
+/// resolve the subject, the readiness-watch set, and the scorecard class. Shared
+/// by the Game Day window's Run handler and the `--chaos-go` dev path.
+fn build_chaos_run(
+    observed: &ObservedWorld,
+    exp: &kubernation_core::state::chaos::Experiment,
+    plan: &kubernation_core::state::chaos::ChaosPlan,
+) -> net::ChaosRun {
+    use kubernation_core::state::chaos::{ChaosStep, Experiment, ScoreKind};
+    let subject = exp.subject();
+    let (watch, score_kind) = match &subject {
+        Subject::Workload(wr) => {
+            let kind = if matches!(exp, Experiment::Partition { .. }) {
+                ScoreKind::Isolation
+            } else {
+                ScoreKind::Workload
+            };
+            (vec![wr.clone()], kind)
+        }
+        Subject::Node(node) => {
+            // The node's hosted workloads are what recovers; watch their
+            // readiness. Match the *drained* population (see `pods_on_node`):
+            // skip system namespaces, and skip DaemonSets — a DS pod reschedules
+            // onto the same cordoned node, so its counts are noise, not recovery.
+            use kubernation_core::state::model::WorkloadKind;
+            let watch: Vec<WorkloadRef> = blast_radius(observed, &Subject::Node(node.clone()))
+                .items
+                .iter()
+                .filter_map(|b| match &b.item {
+                    kubernation_core::state::blast::Affected::Workload(w) => Some(w.clone()),
+                    _ => None,
+                })
+                .filter(|w| {
+                    !kubernation_core::state::chaos::ns_protected(&w.namespace)
+                        && w.kind != WorkloadKind::DaemonSet
+                })
+                .collect();
+            let pods_drained = plan
+                .steps
+                .iter()
+                .filter(|st| matches!(st, ChaosStep::Evict { .. }))
+                .count();
+            (
+                watch,
+                ScoreKind::Node {
+                    pods_drained,
+                    cordoned: true,
+                },
+            )
+        }
+    };
+    net::ChaosRun {
+        cluster: ClusterId::Hot,
+        experiment: exp.label().to_string(),
+        subject,
+        score_kind,
+        blast: plan.blast,
+        steps: plan.steps.clone(),
+        restore: plan.restore.clone(),
+        watch,
+    }
 }
 
 fn window_conf() -> Conf {
@@ -1297,7 +1367,15 @@ async fn main() {
                         .iter()
                         .find(|w| w.r.name.contains(needle.as_str()))
                         .map(|w| w.r.clone());
-                    chaos = Some(Chaos::new(target));
+                    let mut c = Chaos::new(target);
+                    if let Some(kind) = args
+                        .chaos_exp
+                        .as_deref()
+                        .and_then(chaos::ChaosKind::from_flag)
+                    {
+                        c.set_kind(kind);
+                    }
+                    chaos = Some(c);
                     chaos_just_opened = true;
                 }
             } // end world navigation (suspended while the picker is open)
@@ -1978,33 +2056,43 @@ async fn main() {
                             kubernation_core::state::chaos::plan_chaos(&s.hot.observed, &exp);
                         if !plan.is_refused() {
                             use kubernation_core::state::chaos::Experiment;
-                            let wr = exp.workload().clone();
-                            let line1 = match &exp {
-                                Experiment::Outage { .. } => {
-                                    format!(
-                                        "Scale {}/{} to 0 — a real outage.",
-                                        wr.namespace, wr.name
+                            let evicts = plan
+                                .steps
+                                .iter()
+                                .filter(|st| {
+                                    matches!(
+                                        st,
+                                        kubernation_core::state::chaos::ChaosStep::Evict { .. }
                                     )
-                                }
-                                Experiment::KillOne { .. } => {
-                                    format!("Delete one pod of {}/{}.", wr.namespace, wr.name)
-                                }
-                                Experiment::KillAll { .. } => format!(
-                                    "Delete all {} pod(s) of {}/{}.",
-                                    plan.steps.len(),
-                                    wr.namespace,
-                                    wr.name
+                                })
+                                .count();
+                            let line1 = match &exp {
+                                Experiment::Outage { workload } => format!(
+                                    "Scale {}/{} to 0 — a real outage.",
+                                    workload.namespace, workload.name
                                 ),
+                                Experiment::KillOne { workload } => format!(
+                                    "Delete one pod of {}/{}.",
+                                    workload.namespace, workload.name
+                                ),
+                                Experiment::KillAll { workload } => format!(
+                                    "Delete all {evicts} pod(s) of {}/{}.",
+                                    workload.namespace, workload.name
+                                ),
+                                Experiment::BrokenImage { workload } => format!(
+                                    "Roll {}/{} onto an unresolvable image.",
+                                    workload.namespace, workload.name
+                                ),
+                                Experiment::Partition { workload } => format!(
+                                    "Isolate {}/{} with a deny-all NetworkPolicy.",
+                                    workload.namespace, workload.name
+                                ),
+                                Experiment::NodeFailure { node } => {
+                                    format!("Cordon {node} and drain its {evicts} pod(s).")
+                                }
                             };
                             pending_chaos = Some(PendingChaos {
-                                run: net::ChaosRun {
-                                    cluster: ClusterId::Hot,
-                                    experiment: exp.label().to_string(),
-                                    target: wr,
-                                    blast: plan.blast,
-                                    steps: plan.steps,
-                                    restore: plan.restore,
-                                },
+                                run: build_chaos_run(&s.hot.observed, &exp, &plan),
                                 title: "Run chaos drill?".into(),
                                 line1,
                                 line2: format!("Blast radius: {} affected.", plan.blast),
@@ -2018,27 +2106,25 @@ async fn main() {
                     if let Some(sess) = net.chaos_session()
                         && !sess.restore.is_empty()
                     {
-                        let steps = sess
-                            .restore
-                            .iter()
-                            .cloned()
-                            .map(kubernation_core::state::chaos::ChaosStep::Scale)
-                            .collect();
                         pending_chaos = Some(PendingChaos {
                             run: net::ChaosRun {
                                 cluster: ClusterId::Hot,
                                 experiment: format!("restore {}", sess.experiment),
-                                target: sess.target.clone(),
+                                subject: sess.subject.clone(),
+                                // A restore's honest frame is "did the cluster
+                                // come back" — the recovery line — not the
+                                // original injection's static notes (which would
+                                // wrongly claim "still cordoned" / "policy
+                                // applied" after the undo).
+                                score_kind: kubernation_core::state::chaos::ScoreKind::Workload,
                                 blast: 0,
-                                steps,
+                                steps: sess.restore.clone(),
                                 restore: Vec::new(),
+                                watch: sess.watch.clone(),
                             },
                             title: "Restore?".into(),
-                            line1: format!(
-                                "Scale {}/{} back up.",
-                                sess.target.namespace, sess.target.name
-                            ),
-                            line2: "Undo the outage.".into(),
+                            line1: format!("Undo the drill on {}.", sess.target_label),
+                            line2: "Restore the cluster.".into(),
                             action: "Restore".into(),
                         });
                         chaos_confirm_just_opened = true;
@@ -2112,27 +2198,46 @@ async fn main() {
             net.request_commit(planned.interventions().to_vec());
         }
 
-        // Dev: auto-run the chaos drill (REALLY injects — a KillOne, which the
-        // controller recovers) a few frames after the window opens.
+        // Dev: auto-run the chaos drill (REALLY injects — by default a KillOne,
+        // which the controller recovers) a few frames after the window opens.
+        // `--chaos-exp` picks which of the six experiments to run.
         if args.chaos_go
             && frames_synced == 30
             && let Some(c) = &chaos
             && let Some(wr) = &c.target
             && let Some(s) = snap.as_ref()
         {
-            let exp = kubernation_core::state::chaos::Experiment::KillOne {
-                workload: wr.clone(),
+            use kubernation_core::state::chaos::Experiment;
+            let w = wr.clone();
+            let exp = match args.chaos_exp.as_deref() {
+                Some("kill-all") => Experiment::KillAll { workload: w },
+                Some("outage") => Experiment::Outage { workload: w },
+                Some("broken-image") => Experiment::BrokenImage { workload: w },
+                Some("partition") => Experiment::Partition { workload: w },
+                Some("node-failure") => {
+                    // The first non-control-plane node hosting the target's pods.
+                    let node = s
+                        .hot
+                        .observed
+                        .pods
+                        .state()
+                        .iter()
+                        .filter(|p| {
+                            p.metadata.namespace.as_deref() == Some(wr.namespace.as_str())
+                                && p.metadata
+                                    .name
+                                    .as_deref()
+                                    .is_some_and(|n| n.starts_with(&wr.name))
+                        })
+                        .find_map(|p| p.spec.as_ref().and_then(|sp| sp.node_name.clone()))
+                        .unwrap_or_default();
+                    Experiment::NodeFailure { node }
+                }
+                _ => Experiment::KillOne { workload: w },
             };
             let plan = kubernation_core::state::chaos::plan_chaos(&s.hot.observed, &exp);
             if !plan.is_refused() {
-                net.request_chaos(net::ChaosRun {
-                    cluster: ClusterId::Hot,
-                    experiment: exp.label().to_string(),
-                    target: wr.clone(),
-                    blast: plan.blast,
-                    steps: plan.steps,
-                    restore: plan.restore,
-                });
+                net.request_chaos(build_chaos_run(&s.hot.observed, &exp, &plan));
             }
         }
 

@@ -8,7 +8,7 @@ use std::fmt;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use k8s_openapi::api::core::v1::{Container, Node, Pod, PodTemplateSpec};
 use k8s_openapi::api::networking::v1::Ingress;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
 
 use super::attention::{self, Concern, Severity, Target};
 use super::filter::NamespaceFilter;
@@ -715,6 +715,59 @@ fn template_labels(t: Option<&PodTemplateSpec>) -> BTreeMap<String, String> {
     t.and_then(|t| t.metadata.as_ref())
         .and_then(|m| m.labels.clone())
         .unwrap_or_default()
+}
+
+/// The pod template of a workload, from the right store. Shared by the chaos
+/// helpers below.
+fn workload_template(world: &ObservedWorld, wr: &WorkloadRef) -> Option<PodTemplateSpec> {
+    let ns = wr.namespace.as_str();
+    let name = wr.name.as_str();
+    let is = |m: &ObjectMeta| m.namespace.as_deref() == Some(ns) && m.name.as_deref() == Some(name);
+    match wr.kind {
+        WorkloadKind::Deployment => world
+            .deployments
+            .state()
+            .into_iter()
+            .find(|d| is(&d.metadata))
+            .and_then(|d| d.spec.as_ref().map(|s| s.template.clone())),
+        WorkloadKind::StatefulSet => world
+            .statefulsets
+            .state()
+            .into_iter()
+            .find(|s| is(&s.metadata))
+            .and_then(|s| s.spec.as_ref().map(|sp| sp.template.clone())),
+        WorkloadKind::DaemonSet => world
+            .daemonsets
+            .state()
+            .into_iter()
+            .find(|d| is(&d.metadata))
+            .and_then(|d| d.spec.as_ref().map(|s| s.template.clone())),
+    }
+}
+
+/// A workload's pod-template labels — the `podSelector` a chaos partition uses.
+pub(crate) fn workload_template_labels(
+    world: &ObservedWorld,
+    wr: &WorkloadRef,
+) -> BTreeMap<String, String> {
+    workload_template(world, wr)
+        .as_ref()
+        .map(|t| template_labels(Some(t)))
+        .unwrap_or_default()
+}
+
+/// A workload's first container name (the broken-image drill's target — matches
+/// `build_city`'s `primary_container`).
+pub(crate) fn workload_primary_container(
+    world: &ObservedWorld,
+    wr: &WorkloadRef,
+) -> Option<String> {
+    workload_template(world, wr)?
+        .spec?
+        .containers
+        .first()
+        .map(|c| c.name.clone())
+        .filter(|n| !n.is_empty())
 }
 
 fn collect_refs(containers: &[Container], out: &mut BTreeSet<(&'static str, String)>) {

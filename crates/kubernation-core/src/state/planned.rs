@@ -230,7 +230,11 @@ pub fn plan_diff(observed: &ObservedWorld, planned: &PlannedWorld) -> Vec<PlanCh
 }
 
 /// The observed image of a named container in a workload's pod template.
-fn current_image(world: &ObservedWorld, r: &WorkloadRef, container: &str) -> Option<String> {
+pub(crate) fn current_image(
+    world: &ObservedWorld,
+    r: &WorkloadRef,
+    container: &str,
+) -> Option<String> {
     let ns = r.namespace.as_str();
     let name = r.name.as_str();
     let from_template = |tmpl: Option<&k8s_openapi::api::core::v1::PodTemplateSpec>| {

@@ -18,9 +18,10 @@ use std::time::Duration;
 use kubernation_core::events::{ClusterId, WorldDelta};
 use kubernation_core::k8s::{actions, browse, client, logs, portforward, watch};
 use kubernation_core::state::attention::{Concern, Target};
-use kubernation_core::state::chaos;
+use kubernation_core::state::blast::Subject;
+use kubernation_core::state::chaos::{self, ScoreKind};
 use kubernation_core::state::filter::NamespaceFilter;
-use kubernation_core::state::model::{Models, WorkloadRef, build_workloads};
+use kubernation_core::state::model::{Models, WorkloadRef, WorkloadRow, build_workloads};
 use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::planned::Intervention;
@@ -92,12 +93,19 @@ pub struct ForwardInfo {
 pub struct ChaosRun {
     pub cluster: ClusterId,
     pub experiment: String,
-    pub target: WorkloadRef,
+    /// What the drill targets (a workload or a node).
+    pub subject: Subject,
+    /// Which scorecard class to render for this experiment.
+    pub score_kind: ScoreKind,
     pub blast: usize,
     pub steps: Vec<chaos::ChaosStep>,
-    /// Interventions that undo the drill (Outage → scale back); the scorecard's
-    /// Restore button re-submits these as another run. Empty for kills.
-    pub restore: Vec<Intervention>,
+    /// Steps that undo the drill (Outage → scale back, node → uncordon,
+    /// partition → delete the policy); the scorecard's Restore re-submits them as
+    /// another run. Empty for kills (the controller recreates pods).
+    pub restore: Vec<chaos::ChaosStep>,
+    /// Workloads whose readiness to watch for the recovery signal — the target
+    /// itself, or a node's hosted workloads.
+    pub watch: Vec<WorkloadRef>,
 }
 
 /// The live game-day session — the net thread tracks the cluster's response
@@ -106,19 +114,53 @@ pub struct ChaosRun {
 pub struct ChaosSession {
     pub cluster: ClusterId,
     pub experiment: String,
-    pub target: WorkloadRef,
+    pub subject: Subject,
+    pub score_kind: ScoreKind,
+    /// Display label for the target (a `ns/name` workload or `node <n>`).
+    pub target_label: String,
     pub blast: usize,
     pub budget_before: Option<SloStatus>,
     pub budget_after: Option<SloStatus>,
-    /// The target was observed down (`ready == 0`) after the drill.
+    /// The target was observed degraded after the drill (a workload outage:
+    /// `ready == 0`; a node drill: watched workloads below desired).
     pub dipped: bool,
     pub recovered: bool,
     pub recover_secs: Option<f64>,
-    pub restore: Vec<Intervention>,
+    pub restore: Vec<chaos::ChaosStep>,
+    /// Workloads whose readiness drives the recovery signal.
+    pub watch: Vec<WorkloadRef>,
     /// The run's per-step result (errors surface here).
     pub outcome: Option<PlanOutcome>,
     /// Net-tick at run start (recovery time is measured from here).
     started_tick: u64,
+}
+
+/// Does a chaos step touch a protected target (a system namespace, or a
+/// control-plane node for a Cordon)? The fail-closed re-check the net thread
+/// runs on every step before executing a drill — defense-in-depth behind the
+/// pure `plan_chaos` guards.
+fn chaos_step_protected(step: &chaos::ChaosStep, world: &ObservedWorld) -> bool {
+    match step {
+        chaos::ChaosStep::Evict { namespace, .. } => chaos::ns_protected(namespace),
+        chaos::ChaosStep::Partition(spec) => chaos::ns_protected(&spec.namespace),
+        chaos::ChaosStep::Unpartition { namespace, .. } => chaos::ns_protected(namespace),
+        chaos::ChaosStep::Apply(iv) => match chaos::iv_namespace(iv) {
+            Some(ns) => chaos::ns_protected(ns),
+            // A node-scoped Cordon — fail closed: allow only if the node resolves
+            // to a known, non-control-plane node. Unknown/renamed ⇒ protected.
+            None => {
+                if let Intervention::Cordon { node, .. } = iv {
+                    let known_safe = world.nodes.state().iter().any(|n| {
+                        n.metadata.name.as_deref() == Some(node.as_str())
+                            && !chaos::node_protected(n)
+                    });
+                    !known_safe
+                } else {
+                    false
+                }
+            }
+        },
+    }
 }
 
 pub struct WorldSnap {
@@ -852,34 +894,37 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // recovery + spend on the SLO samples below.
                 let chaos_run = net.chaos_req.lock().unwrap().take();
                 if let Some(run) = chaos_run {
-                    // Fail-closed re-check of EVERY step's effective namespace —
-                    // not just the target — so a (future) UI bug that decoupled
-                    // a Scale step's namespace from the target can't slip a
-                    // control-plane scale-to-0 past the guard.
-                    let protected = chaos::ns_protected(&run.target.namespace)
-                        || run.steps.iter().any(|s| match s {
-                            chaos::ChaosStep::Evict { namespace, .. } => {
-                                chaos::ns_protected(namespace)
-                            }
-                            chaos::ChaosStep::Scale(
-                                kubernation_core::state::planned::Intervention::Scale {
-                                    workload,
-                                    ..
-                                },
-                            ) => chaos::ns_protected(&workload.namespace),
-                            chaos::ChaosStep::Scale(_) => false,
-                        });
+                    // Fail-closed re-check of EVERY step — inject AND restore —
+                    // so a (future) UI bug that decoupled a step's namespace/node
+                    // from the target can't slip a control-plane mutation past
+                    // the guard. Covers all four step kinds (incl. a Cordon's
+                    // node, re-verified against the live node objects).
+                    let protected = run
+                        .steps
+                        .iter()
+                        .chain(run.restore.iter())
+                        .any(|s| chaos_step_protected(s, &hot_handle.world));
                     if protected {
                         *net.evict_status.lock().unwrap() =
-                            Some("chaos refused: protected namespace".into());
+                            Some("chaos refused: protected target".into());
                         evict_set = Some(ticks);
                     } else {
-                        let (t, _) =
-                            slo_cfg.resolve(&run.target, slo_ann.get(&run.target).copied());
-                        let budget_before = slo.status(&run.target, t);
+                        let target_label = match &run.subject {
+                            Subject::Workload(wr) => format!("{}/{}", wr.namespace, wr.name),
+                            Subject::Node(n) => format!("node {n}"),
+                        };
+                        // Budget tracking only makes sense for a single workload
+                        // subject (a node drill spans many).
+                        let budget_before = match &run.subject {
+                            Subject::Workload(wr) => {
+                                let (t, _) = slo_cfg.resolve(wr, slo_ann.get(wr).copied());
+                                slo.status(wr, t)
+                            }
+                            Subject::Node(_) => None,
+                        };
                         *net.evict_status.lock().unwrap() = Some(format!(
-                            "running chaos: {} on {}/{}",
-                            run.experiment, run.target.namespace, run.target.name
+                            "running chaos: {} on {target_label}",
+                            run.experiment
                         ));
                         // Bounded so a hung call can't freeze the net loop.
                         let outcome = tokio::time::timeout(
@@ -899,7 +944,9 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         *net.chaos_session.lock().unwrap() = Some(ChaosSession {
                             cluster: run.cluster,
                             experiment: run.experiment,
-                            target: run.target,
+                            subject: run.subject,
+                            score_kind: run.score_kind,
+                            target_label,
                             blast: run.blast,
                             budget_before,
                             budget_after: budget_before,
@@ -907,6 +954,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             recovered: false,
                             recover_secs: None,
                             restore: run.restore,
+                            watch: run.watch,
                             outcome,
                             started_tick: ticks,
                         });
@@ -982,31 +1030,60 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         .filter_map(|r| r.slo_target.map(|t| (r.r.clone(), t)))
                         .collect();
                     slo.record(&rows);
-                    // Chaos scorecard: track the target's live budget + recovery
-                    // from the fresh hot rows (chaos is hot-only in pass 1).
+                    // Chaos scorecard: track the cluster's response from the fresh
+                    // hot rows (chaos is hot-only). Branches on the subject:
+                    // a workload tracks its own outage/recovery + budget; a node
+                    // drill tracks its drained workloads back to full strength.
                     if let Some(sess) = net.chaos_session.lock().unwrap().as_mut()
                         && sess.cluster == ClusterId::Hot
                     {
-                        let (t, _) =
-                            slo_cfg.resolve(&sess.target, slo_ann.get(&sess.target).copied());
-                        // Keep the prior reading when the target has no SLO right
-                        // now (an Outage scaled it to 0 → the ring is pruned) —
-                        // otherwise the scorecard's budget line vanishes mid-drill.
-                        if let Some(s) = slo.status(&sess.target, t) {
-                            sess.budget_after = Some(s);
-                        }
-                        // Recovery only counts once the target actually went down
-                        // (ready == 0). A kill the workload shrugged off (other
-                        // replicas stayed up) never dips → "stayed up", not a
-                        // phantom "self-healed" before the outage even registered.
-                        if let Some(row) = rows.iter().find(|r| r.r == sess.target) {
-                            if row.ready == 0 {
-                                sess.dipped = true;
+                        let secs = ticks.saturating_sub(sess.started_tick) as f64 * 0.25;
+                        match &sess.subject {
+                            Subject::Workload(wr) => {
+                                let (t, _) = slo_cfg.resolve(wr, slo_ann.get(wr).copied());
+                                // Keep the prior reading when the target has no
+                                // SLO right now (an Outage scaled it to 0 → the
+                                // ring is pruned) — else the budget line vanishes.
+                                if let Some(s) = slo.status(wr, t) {
+                                    sess.budget_after = Some(s);
+                                }
+                                // Recovery counts once the target actually went
+                                // down (ready == 0). A kill it shrugged off (other
+                                // replicas stayed up) never dips → "stayed up".
+                                if let Some(row) = rows.iter().find(|r| &r.r == wr) {
+                                    if row.ready == 0 {
+                                        sess.dipped = true;
+                                    }
+                                    if sess.dipped && !sess.recovered && row.ready >= 1 {
+                                        sess.recovered = true;
+                                        sess.recover_secs = Some(secs);
+                                    }
+                                }
                             }
-                            if sess.dipped && !sess.recovered && row.ready >= 1 {
-                                sess.recovered = true;
-                                sess.recover_secs =
-                                    Some(ticks.saturating_sub(sess.started_tick) as f64 * 0.25);
+                            Subject::Node(_) => {
+                                // Watch the drained workloads in aggregate: dip
+                                // when below desired, recover when back to full.
+                                let watched: Vec<&WorkloadRow> = sess
+                                    .watch
+                                    .iter()
+                                    .filter_map(|wr| rows.iter().find(|r| &r.r == wr))
+                                    .collect();
+                                if !watched.is_empty() {
+                                    let ready: i32 = watched.iter().map(|r| r.ready).sum();
+                                    let desired: i32 =
+                                        watched.iter().map(|r| r.desired.max(0)).sum();
+                                    if ready < desired {
+                                        sess.dipped = true;
+                                    }
+                                    if sess.dipped
+                                        && !sess.recovered
+                                        && ready >= desired
+                                        && ready >= 1
+                                    {
+                                        sess.recovered = true;
+                                        sess.recover_secs = Some(secs);
+                                    }
+                                }
                             }
                         }
                     }

@@ -1,12 +1,15 @@
-//! The Game Day window — a chaos drill console. Pick a workload (a "city" to
-//! raid), choose an experiment (outage / kill one / kill all), preview its
+//! The Game Day window — a chaos drill console. Pick a target (a workload "city"
+//! to raid, or a node "province" to fail), choose an experiment, preview its
 //! blast radius + the budget it'll spend, then run it (a confirmed, real write).
 //! After it runs, a scorecard shows the cluster's response (recovery time +
-//! budget spent), and an outage offers a Restore. The drill logic + guards are
-//! pure in `kubernation_core::state::chaos`; this is the modal on `window.rs`.
+//! budget spent), and a reversible drill offers a Restore. The drill logic +
+//! guards are pure in `kubernation_core::state::chaos`; this is the modal on
+//! `window.rs`.
 
+use kubernation_core::state::blast::Subject;
 use kubernation_core::state::chaos::{
-    ChaosScorecard, Experiment, ScoreRole, ns_protected, plan_chaos, scorecard_lines,
+    ChaosScorecard, Experiment, ScoreRole, node_protected, ns_protected, plan_chaos, preview_lines,
+    scorecard_lines,
 };
 use kubernation_core::state::model::WorkloadRef;
 use macroquad::prelude::*;
@@ -17,31 +20,53 @@ use crate::text::{text, text_bold, text_size};
 use crate::theme::*;
 use crate::window::draw_window;
 
-const W: f32 = 760.0;
-const H: f32 = 560.0;
+const W: f32 = 780.0;
+const H: f32 = 580.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ChaosKind {
     Outage,
     KillOne,
     KillAll,
+    BrokenImage,
+    Partition,
+    NodeFailure,
 }
 
 impl ChaosKind {
-    const ALL: [ChaosKind; 3] = [ChaosKind::Outage, ChaosKind::KillOne, ChaosKind::KillAll];
+    const ALL: [ChaosKind; 6] = [
+        ChaosKind::Outage,
+        ChaosKind::KillOne,
+        ChaosKind::KillAll,
+        ChaosKind::BrokenImage,
+        ChaosKind::Partition,
+        ChaosKind::NodeFailure,
+    ];
     fn label(self) -> &'static str {
         match self {
             ChaosKind::Outage => "Outage (scale to 0)",
             ChaosKind::KillOne => "Kill one pod",
             ChaosKind::KillAll => "Kill all pods",
+            ChaosKind::BrokenImage => "Broken image roll",
+            ChaosKind::Partition => "Partition (deny-all)",
+            ChaosKind::NodeFailure => "Node failure (drain)",
         }
     }
-    fn experiment(self, wr: WorkloadRef) -> Experiment {
-        match self {
-            ChaosKind::Outage => Experiment::Outage { workload: wr },
-            ChaosKind::KillOne => Experiment::KillOne { workload: wr },
-            ChaosKind::KillAll => Experiment::KillAll { workload: wr },
-        }
+    /// Node-scoped experiments pick a node, not a workload.
+    fn is_node(self) -> bool {
+        matches!(self, ChaosKind::NodeFailure)
+    }
+    /// Parse the dev `--chaos-exp` flag value.
+    pub fn from_flag(s: &str) -> Option<ChaosKind> {
+        Some(match s {
+            "kill-one" => ChaosKind::KillOne,
+            "kill-all" => ChaosKind::KillAll,
+            "outage" => ChaosKind::Outage,
+            "broken-image" => ChaosKind::BrokenImage,
+            "partition" => ChaosKind::Partition,
+            "node-failure" => ChaosKind::NodeFailure,
+            _ => return None,
+        })
     }
 }
 
@@ -51,13 +76,14 @@ pub enum ChaosAction {
     Close,
     /// Raise the confirm for this experiment, then run it.
     Run(Experiment),
-    /// Re-submit the live session's restore (scale back up).
+    /// Re-submit the live session's restore (undo the drill).
     Restore,
 }
 
-/// The Game Day modal's state: the chosen target + experiment.
+/// The Game Day modal's state: the chosen target(s) + experiment.
 pub struct Chaos {
     pub target: Option<WorkloadRef>,
+    node_target: Option<String>,
     kind: ChaosKind,
 }
 
@@ -65,8 +91,49 @@ impl Chaos {
     pub fn new(target: Option<WorkloadRef>) -> Self {
         Chaos {
             target,
+            node_target: None,
             kind: ChaosKind::Outage,
         }
+    }
+
+    /// Pre-select an experiment kind (dev `--chaos-exp`).
+    pub fn set_kind(&mut self, kind: ChaosKind) {
+        self.kind = kind;
+    }
+
+    /// The experiment for the current kind + selection, if a target is chosen.
+    fn experiment(&self) -> Option<Experiment> {
+        match self.kind {
+            ChaosKind::Outage => self
+                .target
+                .clone()
+                .map(|w| Experiment::Outage { workload: w }),
+            ChaosKind::KillOne => self
+                .target
+                .clone()
+                .map(|w| Experiment::KillOne { workload: w }),
+            ChaosKind::KillAll => self
+                .target
+                .clone()
+                .map(|w| Experiment::KillAll { workload: w }),
+            ChaosKind::BrokenImage => self
+                .target
+                .clone()
+                .map(|w| Experiment::BrokenImage { workload: w }),
+            ChaosKind::Partition => self
+                .target
+                .clone()
+                .map(|w| Experiment::Partition { workload: w }),
+            ChaosKind::NodeFailure => self
+                .node_target
+                .clone()
+                .map(|n| Experiment::NodeFailure { node: n }),
+        }
+    }
+
+    /// The subject the current experiment targets (for scorecard matching).
+    fn subject(&self) -> Option<Subject> {
+        self.experiment().map(|e| e.subject())
     }
 
     pub fn draw(
@@ -92,66 +159,17 @@ impl Chaos {
         let left_w = b.w * 0.42;
         let right_x = b.x + b.w * 0.47;
 
-        // --- LEFT: target picker (hot workloads) ------------------------------
-        text_bold("RAID TARGET", left_x, top + 12.0, 14.0, PARCHMENT);
-        let row_h = 18.0;
-        let mut ly = top + 26.0;
-        let max_rows = (((bottom - ly) / row_h) as usize).max(1);
-        // Protected (control-plane / system) namespaces aren't targetable.
-        let workloads: Vec<&_> = snap
-            .hot
-            .models
-            .workloads
-            .iter()
-            .filter(|w| !ns_protected(&w.r.namespace))
-            .collect();
-        for wl in workloads.iter().take(max_rows) {
-            let rect = Rect::new(left_x, ly, left_w, row_h);
-            let is_target = self.target.as_ref() == Some(&wl.r);
-            if rect.contains(mouse) {
-                draw_rectangle(
-                    rect.x,
-                    rect.y,
-                    rect.w,
-                    rect.h,
-                    Color::new(1.0, 1.0, 1.0, 0.06),
-                );
-            }
-            if is_target {
-                draw_rectangle(rect.x, rect.y + 1.0, 3.0, row_h - 2.0, CRIT);
-            }
-            let label = format!(
-                "{} {}/{}",
-                wl.r.kind,
-                wl.r.namespace,
-                truncate_str(&wl.r.name, 22)
-            );
-            text(
-                ascii(&label),
-                left_x + 8.0,
-                ly + 13.0,
-                12.0,
-                if is_target { INK } else { PARCHMENT },
-            );
-            if click && rect.contains(mouse) {
-                self.target = Some(wl.r.clone());
-            }
-            ly += row_h;
-        }
-        if workloads.len() > max_rows {
-            text(
-                format!("+{} more", workloads.len() - max_rows),
-                left_x + 8.0,
-                ly + 12.0,
-                12.0,
-                DIM,
-            );
+        // --- LEFT: target picker (workloads, or nodes for a node drill) -------
+        if self.kind.is_node() {
+            self.draw_node_picker(snap, left_x, left_w, top, bottom, mouse, click);
+        } else {
+            self.draw_workload_picker(snap, left_x, left_w, top, bottom, mouse, click);
         }
 
         // --- RIGHT: experiment + preview + run --------------------------------
         let mut ry = top;
         text_bold("EXPERIMENT", right_x, ry + 12.0, 14.0, PARCHMENT);
-        ry += 24.0;
+        ry += 22.0;
         for k in ChaosKind::ALL {
             let rect = Rect::new(right_x, ry, b.w * 0.5, 20.0);
             let on = self.kind == k;
@@ -171,21 +189,25 @@ impl Chaos {
             if click && rect.contains(mouse) {
                 self.kind = k;
             }
-            ry += 24.0;
+            ry += 22.0;
         }
-        ry += 10.0;
+        ry += 8.0;
 
         // Preview the drill for the chosen target.
         text_bold("PREVIEW", right_x, ry + 12.0, 14.0, PARCHMENT);
-        ry += 22.0;
+        ry += 20.0;
         let mut runnable: Option<Experiment> = None;
-        match &self.target {
+        match self.experiment() {
             None => {
-                text("pick a target on the left", right_x, ry + 12.0, 13.0, DIM);
+                let hint = if self.kind.is_node() {
+                    "pick a node on the left"
+                } else {
+                    "pick a target on the left"
+                };
+                text(hint, right_x, ry + 12.0, 13.0, DIM);
                 ry += 18.0;
             }
-            Some(wr) => {
-                let exp = self.kind.experiment(wr.clone());
+            Some(exp) => {
                 let plan = plan_chaos(&snap.hot.observed, &exp);
                 if let Some(why) = &plan.refused {
                     text(
@@ -213,7 +235,11 @@ impl Chaos {
                         STRUCT,
                     );
                     ry += 18.0;
-                    if let Some(st) = snap.hot.slo.get(wr) {
+                    // The per-workload budget, only when a single workload is hit.
+                    if !self.kind.is_node()
+                        && let Some(wr) = &self.target
+                        && let Some(st) = snap.hot.slo.get(wr)
+                    {
                         text(
                             ascii(&format!(
                                 "error budget now {:.0}%",
@@ -225,6 +251,11 @@ impl Chaos {
                             DIM,
                         );
                         ry += 18.0;
+                    }
+                    // Experiment-specific notes (broken-image ref, CNI caveat, …).
+                    for (line, role) in preview_lines(&exp, &plan) {
+                        text(ascii(&line), right_x, ry + 12.0, 12.0, role_color(role));
+                        ry += 16.0;
                     }
                     if !plan.restore.is_empty() {
                         text("(restorable)", right_x, ry + 12.0, 12.0, GOOD);
@@ -269,16 +300,17 @@ impl Chaos {
         }
 
         // --- SCORECARD (after a drill) — spans the bottom ---------------------
-        // Only for the currently-open target, so a lingering session from a
-        // different workload doesn't show under an unrelated preview.
+        // Only for the currently-selected subject, so a lingering session from a
+        // different target doesn't show under an unrelated preview.
         let mut restore_clicked = false;
-        if let Some(sess) = session.filter(|s| self.target.as_ref() == Some(&s.target)) {
-            let sy = bottom - 120.0;
+        if let Some(sess) = session.filter(|s| self.subject().as_ref() == Some(&s.subject)) {
+            let sy = bottom - 124.0;
             draw_line(b.x, sy, b.x + b.w, sy, 1.0, darker(PARCHMENT, 0.5));
             text_bold("SCORECARD", b.x, sy + 16.0, 14.0, PARCHMENT);
             let card = ChaosScorecard {
+                kind: sess.score_kind,
                 experiment: sess.experiment.clone(),
-                target: format!("{}/{}", sess.target.namespace, sess.target.name),
+                target: sess.target_label.clone(),
                 blast: sess.blast,
                 budget_before: sess.budget_before,
                 budget_after: sess.budget_after,
@@ -289,7 +321,7 @@ impl Chaos {
             let mut cy = sy + 34.0;
             for (line, role) in scorecard_lines(&card) {
                 text(ascii(&line), b.x + 8.0, cy, 13.0, role_color(role));
-                cy += 17.0;
+                cy += 16.0;
             }
             // Per-step errors, if any.
             if let Some(out) = &sess.outcome {
@@ -340,6 +372,138 @@ impl Chaos {
             return ChaosAction::Close;
         }
         ChaosAction::None
+    }
+
+    /// The hot workloads list (protected namespaces filtered out).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_workload_picker(
+        &mut self,
+        snap: &Snapshot,
+        left_x: f32,
+        left_w: f32,
+        top: f32,
+        bottom: f32,
+        mouse: Vec2,
+        click: bool,
+    ) {
+        text_bold("RAID TARGET", left_x, top + 12.0, 14.0, PARCHMENT);
+        let row_h = 18.0;
+        let mut ly = top + 26.0;
+        let max_rows = (((bottom - ly) / row_h) as usize).max(1);
+        let workloads: Vec<&_> = snap
+            .hot
+            .models
+            .workloads
+            .iter()
+            .filter(|w| !ns_protected(&w.r.namespace))
+            .collect();
+        for wl in workloads.iter().take(max_rows) {
+            let rect = Rect::new(left_x, ly, left_w, row_h);
+            let is_target = self.target.as_ref() == Some(&wl.r);
+            if rect.contains(mouse) {
+                draw_rectangle(
+                    rect.x,
+                    rect.y,
+                    rect.w,
+                    rect.h,
+                    Color::new(1.0, 1.0, 1.0, 0.06),
+                );
+            }
+            if is_target {
+                draw_rectangle(rect.x, rect.y + 1.0, 3.0, row_h - 2.0, CRIT);
+            }
+            let label = format!(
+                "{} {}/{}",
+                wl.r.kind,
+                wl.r.namespace,
+                truncate_str(&wl.r.name, 22)
+            );
+            text(
+                ascii(&label),
+                left_x + 8.0,
+                ly + 13.0,
+                12.0,
+                if is_target { INK } else { PARCHMENT },
+            );
+            if click && rect.contains(mouse) {
+                self.target = Some(wl.r.clone());
+            }
+            ly += row_h;
+        }
+        if workloads.len() > max_rows {
+            text(
+                format!("+{} more", workloads.len() - max_rows),
+                left_x + 8.0,
+                ly + 12.0,
+                12.0,
+                DIM,
+            );
+        }
+    }
+
+    /// The hot nodes list (control-plane nodes filtered out).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_node_picker(
+        &mut self,
+        snap: &Snapshot,
+        left_x: f32,
+        left_w: f32,
+        top: f32,
+        bottom: f32,
+        mouse: Vec2,
+        click: bool,
+    ) {
+        text_bold("TARGET NODE", left_x, top + 12.0, 14.0, PARCHMENT);
+        let row_h = 18.0;
+        let mut ly = top + 26.0;
+        let max_rows = (((bottom - ly) / row_h) as usize).max(1);
+        let nodes: Vec<String> = snap
+            .hot
+            .observed
+            .nodes
+            .state()
+            .iter()
+            .filter(|n| !node_protected(n))
+            .filter_map(|n| n.metadata.name.clone())
+            .collect();
+        for name in nodes.iter().take(max_rows) {
+            let rect = Rect::new(left_x, ly, left_w, row_h);
+            let is_target = self.node_target.as_deref() == Some(name.as_str());
+            if rect.contains(mouse) {
+                draw_rectangle(
+                    rect.x,
+                    rect.y,
+                    rect.w,
+                    rect.h,
+                    Color::new(1.0, 1.0, 1.0, 0.06),
+                );
+            }
+            if is_target {
+                draw_rectangle(rect.x, rect.y + 1.0, 3.0, row_h - 2.0, CRIT);
+            }
+            text(
+                ascii(&truncate_str(name, 32)),
+                left_x + 8.0,
+                ly + 13.0,
+                12.0,
+                if is_target { INK } else { PARCHMENT },
+            );
+            if click && rect.contains(mouse) {
+                self.node_target = Some(name.clone());
+            }
+            ly += row_h;
+        }
+        if nodes.is_empty() {
+            text("no drainable nodes", left_x + 8.0, ly + 12.0, 12.0, DIM);
+        } else if nodes.len() > max_rows {
+            text(
+                format!("+{} more", nodes.len() - max_rows),
+                left_x + 8.0,
+                ly + 12.0,
+                12.0,
+                DIM,
+            );
+        }
     }
 }
 
