@@ -303,18 +303,18 @@ pub async fn delete_partition(client: Client, namespace: &str, name: &str) -> Re
 
 /// Execute a confirmed chaos drill: a sequence of existing primitives (pod
 /// deletes and Scale/Cordon/SetImage patches) plus the one partition verb chaos
-/// adds (create/delete a deny-all NetworkPolicy). The dry-run-able steps (the
-/// Apply patches and Partition creates) are server-side dry-run-gated first
-/// (which also enforces RBAC); if all pass, every step runs best-effort with a
-/// per-step result. Pod-kill and netpol-delete RBAC is enforced by the apiserver
-/// on each request (a forbidden op fails its row); unlike the evict control
-/// there's no up-front `can_evict_pod` probe, so a user lacking permission sees
-/// per-step "forbidden" rows rather than a disabled button. Reuses
+/// adds (create/delete a deny-all NetworkPolicy). **All-or-nothing at the gate:**
+/// the dry-run-able steps (Apply patches + Partition creates) are server-side
+/// dry-run-gated (which enforces RBAC), and pod-delete permission is pre-flighted
+/// with a `SelfSubjectAccessReview` per evicting namespace (evicts can't be
+/// dry-run). If any gate fails, **nothing is written** and the forbidden rows are
+/// returned — so a cordon+drain whose drain is forbidden can't half-apply (cordon
+/// then stop). Only if every gate passes does each step run for real. Reuses
 /// `CommitRow`/`CommitOutcome` so the UI shows it like a commit.
 pub async fn run_chaos(client: Client, steps: &[crate::state::chaos::ChaosStep]) -> CommitOutcome {
     use crate::state::chaos::ChaosStep;
-    // Gate: dry-run the patchable steps (evicts + netpol deletes aren't gated;
-    // a forbidden one fails its own row below).
+    // Gate part 1: dry-run the patchable steps (netpol deletes aren't gated; a
+    // forbidden one fails its own row, and a 404 is success anyway).
     let mut dry_fail = Vec::new();
     for step in steps {
         let dry = match step {
@@ -328,6 +328,27 @@ pub async fn run_chaos(client: Client, steps: &[crate::state::chaos::ChaosStep])
                 ok: false,
                 detail,
             });
+        }
+    }
+    // Gate part 2: pre-flight `delete pods` RBAC for every namespace we'd evict
+    // in (evicts aren't dry-runnable). This is what makes a drain all-or-nothing.
+    let mut evict_ns: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for step in steps {
+        if let ChaosStep::Evict { namespace, .. } = step {
+            evict_ns.insert(namespace.as_str());
+        }
+    }
+    for ns in evict_ns {
+        let allowed = can_evict_pod(client.clone(), ns).await;
+        let row = |detail: String| CommitRow {
+            label: format!("delete pods in {ns}"),
+            ok: false,
+            detail,
+        };
+        match allowed {
+            Ok(true) => {}
+            Ok(false) => dry_fail.push(row("forbidden — no `delete pods` permission".into())),
+            Err(e) => dry_fail.push(row(e)),
         }
     }
     if !dry_fail.is_empty() {

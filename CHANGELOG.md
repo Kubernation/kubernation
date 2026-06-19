@@ -28,6 +28,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
     `deny [both|ingress|egress]` — egress = "lost its backend", ingress = "out of
     rotation"). The Game Day window grew per-experiment knobs (kill %, surge
     factor, partition direction).
+  - **Safety triad.** **Restore-on-exit** — quitting with a live, restorable
+    drill undoes it first (uncordon / scale back / unpartition) so you never
+    strand the cluster, with an 8s backstop so exit can't hang. **Auto-restore** —
+    an opt-in "auto-restore after 60s" toggle on restorable drills. (Immediate
+    undo is the existing Restore button.)
+  - **All-or-nothing RBAC gate.** A drill now pre-flights `delete pods` permission
+    per evicting namespace (evicts can't be dry-run) alongside the existing
+    dry-run gate, so a cordon+drain whose drain is forbidden can't half-apply
+    (cordon then stop) — nothing is written unless every step is permitted.
 
 ### Changed
 - **The attention queue moved from the bottom strip into a docked ATTENTION

@@ -106,6 +106,9 @@ pub struct ChaosRun {
     /// Workloads whose readiness to watch for the recovery signal — the target
     /// itself, or a node's hosted workloads.
     pub watch: Vec<WorkloadRef>,
+    /// If set, the net thread auto-runs the restore this many seconds after the
+    /// drill (opt-in "auto-undo"). Ignored when there's nothing to restore.
+    pub auto_restore_secs: Option<f64>,
 }
 
 /// The live game-day session — the net thread tracks the cluster's response
@@ -133,6 +136,8 @@ pub struct ChaosSession {
     pub outcome: Option<PlanOutcome>,
     /// Net-tick at run start (recovery time is measured from here).
     started_tick: u64,
+    /// If set, the net thread auto-runs the restore at this tick (opt-in undo).
+    auto_restore_tick: Option<u64>,
 }
 
 /// Does a chaos step touch a protected target (a system namespace, or a
@@ -941,6 +946,11 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             ),
                             None => "chaos: timed out".into(),
                         });
+                        // Arm auto-restore only when there's something to undo.
+                        let auto_restore_tick = run
+                            .auto_restore_secs
+                            .filter(|_| !run.restore.is_empty())
+                            .map(|secs| ticks + (secs / 0.25).max(1.0) as u64);
                         *net.chaos_session.lock().unwrap() = Some(ChaosSession {
                             cluster: run.cluster,
                             experiment: run.experiment,
@@ -957,10 +967,40 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             watch: run.watch,
                             outcome,
                             started_tick: ticks,
+                            auto_restore_tick,
                         });
                         evict_set = Some(ticks);
                         dirty.store(true, Ordering::Relaxed);
                     }
+                }
+
+                // Auto-restore: if a live hot session armed it and the deadline
+                // passed, run the restore now (opt-in "auto-undo"). The restore
+                // steps were vetted fail-closed when the drill was created.
+                let auto_restore: Option<Vec<chaos::ChaosStep>> = {
+                    let g = net.chaos_session.lock().unwrap();
+                    g.as_ref()
+                        .filter(|s| s.cluster == ClusterId::Hot && !s.restore.is_empty())
+                        .and_then(|s| s.auto_restore_tick)
+                        .filter(|deadline| ticks >= *deadline)
+                        .map(|_| g.as_ref().map(|s| s.restore.clone()).unwrap_or_default())
+                };
+                if let Some(restore_steps) = auto_restore {
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(25),
+                        actions::run_chaos(hot_client.clone(), &restore_steps),
+                    )
+                    .await;
+                    if let Some(s) = net.chaos_session.lock().unwrap().as_mut() {
+                        s.restore.clear(); // restored — drop the Restore button
+                        s.auto_restore_tick = None;
+                        // The injection's static notes ("still cordoned" / "policy
+                        // applied") are stale post-undo; show the recovery frame.
+                        s.score_kind = ScoreKind::Workload;
+                    }
+                    *net.evict_status.lock().unwrap() = Some("chaos: auto-restored".into());
+                    evict_set = Some(ticks);
+                    dirty.store(true, Ordering::Relaxed);
                 }
 
                 // Answer any pending evict-permission (RBAC) probes; cache the

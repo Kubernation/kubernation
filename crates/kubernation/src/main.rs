@@ -215,6 +215,7 @@ fn build_chaos_run(
     observed: &ObservedWorld,
     exp: &kubernation_core::state::chaos::Experiment,
     plan: &kubernation_core::state::chaos::ChaosPlan,
+    auto_restore_secs: Option<f64>,
 ) -> net::ChaosRun {
     use kubernation_core::state::chaos::{ChaosStep, Experiment, ScoreKind};
     let subject = exp.subject();
@@ -268,6 +269,7 @@ fn build_chaos_run(
         steps: plan.steps.clone(),
         restore: plan.restore.clone(),
         watch,
+        auto_restore_secs,
     }
 }
 
@@ -443,6 +445,16 @@ async fn main() {
     let mut splash_frames: u32 = 0;
     const SPLASH_SECS: f64 = 2.4;
 
+    // Restore-on-exit: never strand the cluster. When the operator quits with a
+    // live, restorable chaos drill, undo it (uncordon / scale back / unpartition)
+    // before the process exits. `prevent_quit` makes the window-close button set
+    // `is_quit_requested` instead of killing us, so we get a frame to react.
+    if shot.is_none() {
+        prevent_quit();
+    }
+    let mut want_quit = false;
+    let mut quitting: Option<f64> = None;
+
     loop {
         let snap = net.snapshot();
         let status = net.status();
@@ -582,8 +594,8 @@ async fn main() {
         // While typing into the log filter or the city image field, single-key
         // shortcuts are text, not commands.
         let typing = (log_open && log_filter_active) || city_image_edit.is_some();
-        if is_key_pressed(KeyCode::Q) && !typing {
-            break;
+        if (is_key_pressed(KeyCode::Q) && !typing) || is_quit_requested() {
+            want_quit = true;
         }
         // ?, /, or F1 toggle the Almanac (in-app reference). Track an open
         // *this frame* so the same click/press doesn't immediately dismiss it.
@@ -1905,7 +1917,7 @@ async fn main() {
                 picker_just_opened = picker;
             }
             Some(MenuAction::Fit) => pending_fit = true,
-            Some(MenuAction::Quit) => break,
+            Some(MenuAction::Quit) => want_quit = true,
             Some(MenuAction::SetOverlay(o)) => overlay = o,
             Some(MenuAction::EndTurn) => {
                 // The review draws next frame; by then the press edge is gone,
@@ -2082,7 +2094,7 @@ async fn main() {
                     // window only shows a session matching the open target.
                     chaos = None;
                 }
-                Some(ChaosAction::Run(exp)) => {
+                Some(ChaosAction::Run { exp, auto_restore }) => {
                     if let Some(s) = snap.as_ref() {
                         let plan =
                             kubernation_core::state::chaos::plan_chaos(&s.hot.observed, &exp);
@@ -2136,8 +2148,9 @@ async fn main() {
                                     format!("Cordon {node} (freeze scheduling, no drain).")
                                 }
                             };
+                            let auto = auto_restore.then_some(60.0);
                             pending_chaos = Some(PendingChaos {
-                                run: build_chaos_run(&s.hot.observed, &exp, &plan),
+                                run: build_chaos_run(&s.hot.observed, &exp, &plan, auto),
                                 title: "Run chaos drill?".into(),
                                 line1,
                                 line2: format!("Blast radius: {} affected.", plan.blast),
@@ -2166,6 +2179,7 @@ async fn main() {
                                 steps: sess.restore.clone(),
                                 restore: Vec::new(),
                                 watch: sess.watch.clone(),
+                                auto_restore_secs: None,
                             },
                             title: "Restore?".into(),
                             line1: format!("Undo the drill on {}.", sess.target_label),
@@ -2297,7 +2311,9 @@ async fn main() {
             };
             let plan = kubernation_core::state::chaos::plan_chaos(&s.hot.observed, &exp);
             if !plan.is_refused() {
-                net.request_chaos(build_chaos_run(&s.hot.observed, &exp, &plan));
+                // Dev: arm a short auto-restore so the auto-undo is observable in
+                // the screenshot hold (a no-op for non-restorable kills).
+                net.request_chaos(build_chaos_run(&s.hot.observed, &exp, &plan, Some(3.0)));
             }
         }
 
@@ -2409,6 +2425,50 @@ async fn main() {
         {
             get_screen_data().export_png(&path.to_string_lossy());
             break;
+        }
+
+        // Restore-on-exit dance: on a quit request, if a live hot drill still has
+        // un-undone restore steps, run the restore first, then exit (with an 8s
+        // backstop so quitting can never hang). Otherwise exit immediately.
+        if want_quit && quitting.is_none() {
+            want_quit = false;
+            let pending = net
+                .chaos_session()
+                .filter(|s| s.cluster == ClusterId::Hot && !s.restore.is_empty());
+            match pending {
+                Some(sess) => {
+                    net.request_chaos(net::ChaosRun {
+                        cluster: ClusterId::Hot,
+                        experiment: format!("restore {}", sess.experiment),
+                        subject: sess.subject.clone(),
+                        score_kind: kubernation_core::state::chaos::ScoreKind::Workload,
+                        blast: 0,
+                        steps: sess.restore.clone(),
+                        restore: Vec::new(),
+                        watch: sess.watch.clone(),
+                        auto_restore_secs: None,
+                    });
+                    quitting = Some(get_time());
+                }
+                None => break,
+            }
+        }
+        if let Some(started) = quitting {
+            // A small "restoring…" banner while we wait for the undo to land.
+            let msg = "Restoring the drill before exit…";
+            let m = text_size(msg, 18.0);
+            let bw = m.width + 32.0;
+            let bx = (screen_width() - bw) / 2.0;
+            let by = screen_height() / 2.0 - 20.0;
+            stone_panel(bx, by, bw, 40.0);
+            text(msg, bx + 16.0, by + 26.0, 18.0, STONE_INK);
+            let done = net
+                .chaos_session()
+                .map(|s| s.restore.is_empty())
+                .unwrap_or(true);
+            if done || get_time() - started > 8.0 {
+                break;
+            }
         }
 
         next_frame().await;

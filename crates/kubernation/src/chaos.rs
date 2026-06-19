@@ -86,9 +86,13 @@ impl ChaosKind {
 pub enum ChaosAction {
     None,
     Close,
-    /// Raise the confirm for this experiment, then run it.
-    Run(Experiment),
-    /// Re-submit the live session's restore (undo the drill).
+    /// Raise the confirm for this experiment, then run it. `auto_restore` arms
+    /// the net thread to auto-undo a restorable drill after a delay.
+    Run {
+        exp: Experiment,
+        auto_restore: bool,
+    },
+    /// Re-submit the live session's restore (undo the drill now).
     Restore,
 }
 
@@ -101,6 +105,8 @@ pub struct Chaos {
     kill_pct: u8,
     spike_factor: u32,
     partition_dir: PartitionDir,
+    /// Arm the net thread to auto-undo a restorable drill after a delay.
+    auto_restore: bool,
 }
 
 impl Chaos {
@@ -112,6 +118,7 @@ impl Chaos {
             kill_pct: 50,
             spike_factor: 3,
             partition_dir: PartitionDir::Both,
+            auto_restore: false,
         }
     }
 
@@ -221,6 +228,7 @@ impl Chaos {
         text_bold("PREVIEW", right_x, ry + 12.0, 14.0, PARCHMENT);
         ry += 20.0;
         let mut runnable: Option<Experiment> = None;
+        let mut restorable = false;
         match self.experiment() {
             None => {
                 let hint = if self.kind.is_node() {
@@ -296,12 +304,45 @@ impl Chaos {
                     if !plan.restore.is_empty() {
                         text("(restorable)", right_x, ry + 12.0, 12.0, GOOD);
                         ry += 16.0;
+                        restorable = true;
                     }
                     runnable = Some(exp);
                 }
             }
         }
-        ry += 8.0;
+        ry += 6.0;
+
+        // Auto-restore toggle (only meaningful for a restorable drill).
+        if restorable {
+            let box_r = Rect::new(right_x, ry, 16.0, 16.0);
+            draw_rectangle(
+                box_r.x,
+                box_r.y,
+                box_r.w,
+                box_r.h,
+                if self.auto_restore {
+                    darker(GOOD, 0.7)
+                } else {
+                    darker(PLATE, 1.2)
+                },
+            );
+            draw_rectangle_lines(box_r.x, box_r.y, box_r.w, box_r.h, 1.0, STONE_EDGE);
+            if self.auto_restore {
+                text("x", box_r.x + 4.0, box_r.y + 13.0, 14.0, INK);
+            }
+            text(
+                "auto-restore after 60s",
+                right_x + 22.0,
+                ry + 13.0,
+                13.0,
+                PARCHMENT,
+            );
+            if click && box_r.contains(mouse) {
+                self.auto_restore = !self.auto_restore;
+            }
+            ry += 22.0;
+        }
+        ry += 2.0;
 
         // Run button (CRIT — destructive).
         let run_btn = Rect::new(right_x, ry, 170.0, 26.0);
@@ -332,7 +373,7 @@ impl Chaos {
         );
         let mut act_run = None;
         if click && enabled && run_btn.contains(mouse) {
-            act_run = runnable;
+            act_run = runnable.map(|exp| (exp, restorable && self.auto_restore));
         }
 
         // --- SCORECARD (after a drill) — spans the bottom ---------------------
@@ -398,8 +439,8 @@ impl Chaos {
         }
 
         // Action precedence: run > restore > close.
-        if let Some(exp) = act_run {
-            return ChaosAction::Run(exp);
+        if let Some((exp, auto_restore)) = act_run {
+            return ChaosAction::Run { exp, auto_restore };
         }
         if restore_clicked {
             return ChaosAction::Restore;
