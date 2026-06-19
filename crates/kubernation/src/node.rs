@@ -6,12 +6,17 @@
 //!   garrison   →  the pods stationed here (census grid + list, tail logs)
 //!   terrain    →  runtime / kubelet / OS / arch attributes
 //!   conditions →  node conditions
+//!   annals     →  recent changes touching this province (events + its pods)
 
 use macroquad::prelude::*;
 
 use kubernation_core::events::ClusterId;
+use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::model::{MetricSource, NodeHealth, PodState, build_node_detail};
 use kubernation_core::state::planned::{Intervention, PlannedWorld};
+use kubernation_core::state::timeline::{
+    SUBJECT_CAP, TIMELINE_WINDOW_MIN, TimelineOpts, TimelineScope, build_timeline,
+};
 
 use kubernation_core::util::format_usage;
 
@@ -342,6 +347,51 @@ pub fn draw_node(
             text(ascii(k), right_x, ry + 12.0, 13.0, INK);
             text(v, right_x + 150.0, ry + 12.0, 13.0, col);
             ry += row_h;
+        }
+    }
+
+    // ANNALS — recent changes touching this province: its node events, the pods
+    // stationed on it, and this session's operator actions on it.
+    ry += 10.0;
+    text_bold("ANNALS", right_x, ry + 12.0, 15.0, PARCHMENT);
+    ry += 22.0;
+    let now = kubernation_core::util::now();
+    let ops = net.operator_actions();
+    let tl = build_timeline(
+        observed,
+        &TimelineOpts {
+            scope: TimelineScope::Node(name.to_string()),
+            filter: &NamespaceFilter::All,
+            window_min: TIMELINE_WINDOW_MIN,
+            cap: SUBJECT_CAP,
+        },
+        &ops,
+        now,
+    );
+    if tl.entries.is_empty() {
+        text("no recent changes", right_x, ry + 12.0, 13.0, DIM);
+    } else {
+        let cap = (((col_bottom - ry) / 16.0) as usize).max(1);
+        for ln in crate::timeline::annals_lines(&tl, now, cap) {
+            if ry > col_bottom {
+                break;
+            }
+            if ln.fault_line_above {
+                draw_line(right_x, ry + 3.0, b.x + b.w - 8.0, ry + 3.0, 1.0, CRIT);
+                ry += 6.0;
+            }
+            let mut s = format!("{} {}", ln.glyph, ln.text);
+            if ln.suspect {
+                s.push_str("  (before failure)");
+            }
+            text(
+                ascii(&truncate_str(&s, 44)),
+                right_x,
+                ry + 12.0,
+                12.0,
+                crate::timeline::role_color(ln.role),
+            );
+            ry += 16.0;
         }
     }
 

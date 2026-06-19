@@ -736,7 +736,7 @@ mod tests {
         assert_eq!(row.mem.verdict, RsVerdict::Over);
         let sug = row.cpu.suggested.unwrap();
         assert!(
-            sug < 0.5 && sug >= 0.05 / 0.65,
+            (0.05 / 0.65..0.5).contains(&sug),
             "down-size, above usage/util: {sug}"
         );
         assert_eq!(row.measured_pods, 2);

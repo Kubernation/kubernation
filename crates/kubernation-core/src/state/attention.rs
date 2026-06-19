@@ -79,22 +79,23 @@ pub struct Concern {
 pub fn next_action(c: &Concern) -> Option<String> {
     let logs = c.probe.is_some();
     let s = match c.key.split(':').next().unwrap_or("") {
-        // Workload / bare-pod / job concerns: logs are the first move.
+        // Workload / bare-pod / job concerns: logs are the first move; the
+        // timeline (`T`) answers "what changed right before this broke".
         "w" => {
             if logs {
-                "L: tail logs · B: blast radius · click: open the city"
+                "L: tail logs · B: blast radius · T: what changed · click: open the city"
             } else {
-                "B: blast radius · click: open the city"
+                "B: blast radius · T: what changed · click: open the city"
             }
         }
         "b" | "j" => {
             if logs {
-                "L: tail the offending pod's logs"
+                "L: tail the offending pod's logs · T: what changed"
             } else {
-                "open the target to see its pods + events"
+                "open the target to see its pods + events · T: what changed"
             }
         }
-        "n" => "B: blast radius · click: open the province",
+        "n" => "B: blast radius · T: what changed · click: open the province",
         "p" => "check the PVC's StorageClass and whether a PV can bind",
         "i" => "the Ingress backend Service is missing — fix the backend name",
         "s" => "the Service selector matches no pods — check its selector / pod labels",

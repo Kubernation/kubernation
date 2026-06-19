@@ -14,6 +14,7 @@ pub mod pair;
 pub mod planned;
 pub mod rollout;
 pub mod slo;
+pub mod timeline;
 pub mod world;
 
 #[cfg(any(test, feature = "fixtures"))]

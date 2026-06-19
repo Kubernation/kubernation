@@ -1491,6 +1491,81 @@ what makes the interesting logic unit-testable without a cluster.
   can push it down on a short window). Accepted: Info-severity rows share the
   healthy stone colour — the severity glyph is the distinguisher (same convention
   as the ATTENTION column).
+- **Change timeline — "The Annals" (#9)** (2026-06-19, roadmap item #9;
+  design-workflow vetted — 4 lenses → 3 judges → synthesis): a recent, classified
+  change-feed answering "what changed?", the **third triage axis** beside the
+  attention queue (what's wrong) and blast/impact (#8, what else is affected).
+  **Pure core** `state/timeline.rs` (`build_timeline(world, opts, ops, now) ->
+  Timeline`, unit-tested) merges three sources newest-first: (a) the recent-events
+  ring (`recent_events()`, bounded ~500, deduped — recent, not an audit log); (b)
+  ReplicaSet **revisions** via `rollout::revisions` — the **authoritative deploy
+  record** (the ring dedups `ScalingReplicaSet` by reason and would hide
+  intermediate rollouts, so deploys come from the RS store, Deployment-only); and
+  (d) an injected `&[OperatorAction]` slice of **in-session operator actions** —
+  the GUI owns these facts (commits/evicts/chaos) and passes them in, keeping core
+  pure + persistence-free. `classify_reason` maps event reasons → (ChangeKind,
+  Severity), **regression-pinned against `attention.rs`'s vocabulary**; `now` is
+  passed in (clockless core — the accepted windowed-recency exception, like
+  `attention::build`). **Rules:** event-sourced entries are windowed
+  (`TIMELINE_WINDOW_MIN`=15), Deploy + operator entries always kept (full rollout
+  history / sparse in-session actions); untimed entries trail at a deterministic
+  key-sorted tail (never epoch-0, never the fault-line anchor / a suspect); cluster
+  scope applies the `NamespaceFilter` and **drops PodChurn** (Started/Killing
+  floods the realm view) while subject scopes keep it; a Deploy entry suppresses
+  the redundant per-pod `SuccessfulCreate`/`SuccessfulDelete` on its covered RS.
+  **Correlation is honest adjacency only** (matching the blast core's refusal to
+  fabricate edges): ordering + a `first_trouble` fault line + a render-time
+  "(before the failure)" suspect cue (a change within `CORRELATION_WINDOW_MIN`=10
+  before the first failure) — never "caused by". **GUI** `gui/timeline.rs`: the
+  pure `annals_lines(tl, now, cap)` draw-decision fn (unit-tested incl. the
+  **colour-discipline** invariant — only Failure/Warning+ + warn/crit operator
+  actions get red/yellow; benign Deploy/Scale/churn stay cyan/calm/dim), plus the
+  cluster-wide `Annals` **modal** (window.rs) opened from **View ▸ Annals**, the
+  **`H`** key (History — top-level `T` is the planning turn, log-overlay `T` is
+  timestamps, so `H` was the free mnemonic), and `--annals`. The **city + node
+  windows replaced their separate HISTORY + CHRONICLE lists with one merged ANNALS
+  section** (scope=Workload/Node), the city keeping its per-revision `rollback`
+  button (reads the Deploy entry's revision; current revision excluded). **net.rs**
+  holds a bounded (~64) in-session `operator_actions: Arc<Vec<OperatorAction>>`
+  ring, appended on a successful **hot** eviction, each applied commit intervention
+  (`op_action_for`, only when `outcome.applied` — never a failed/blocked commit),
+  and a new non-restore **hot** chaos drill; cleared on context switch (no
+  cross-cluster leak, no cross-run persistence). Glyphs are **ascii-safe** (the GUI
+  `theme::ascii` maps non-allowlist chars to `?`, so detail uses `->`/`(none)` and
+  the row glyphs are `*`/`^`/`↔`/`#`/`!`/`·`). READ-ONLY (no new write verb — the
+  only write touched is the existing rollback staging). Core re-exports `Time` +
+  `jiff` (`lib.rs`) so the UI crate can name the time types. Verified live on kind:
+  the modal shows crashy's BackOff failures (with `×16143` counts) above the
+  "trouble begins here" line, then web's rollout history (`rev 7->8 · nginx:…`);
+  the city ANNALS shows the merged feed + working rollback (staged `rev 8 -> rev
+  7`). 186 core + 32 GUI tests; gui-smoke 29. **Deferred** (the `Timeline` struct
+  is shaped for these): postmortem/markdown export (`timeline_markdown` over the
+  same struct); an alert-correlation engine (widen the suspect set to #8's
+  blast radius); STS/DS revision history (ControllerRevisions unwatched); bulk
+  object-creation entries (`ChangeKind::WatchedCreation` arm); warm-cluster Annals;
+  configurable/wider window; SLO-burn-onset anchoring of `first_trouble`.
+  **Adversarial-review fixes** (9 confirmed → 6 distinct): (HIGH) the Annals modal
+  was missing from the **world-navigation suspend gate** (it opens over the bare
+  map, so `panel_modal` didn't cover it) — a click on/through it leaked to map
+  select / panel-open underneath; added `annals.is_some()`. (HIGH) the commit
+  handler logged an operator action for **every** intervention when
+  `outcome.applied` — but `applied` only means the dry-run passed; a real PATCH can
+  still fail per-row, so a *phantom* write could become a false correlation
+  suspect; now gated per row (`zip(rows).filter(|r| r.ok)`), matching the evict
+  path's `res.is_ok()`. (MEDIUM/LOW) `touches` matched events by a raw
+  workload-name prefix (build_city's heuristic), leaking a **sibling** (`web` vs
+  `web-api`) and a same-named pod in **another namespace**; reworked to match the
+  workload + its ReplicaSets exactly (ns,name) plus an **RS-name prefix** for pods
+  (the RS pod-template-hash disambiguates siblings *and* still catches a now-deleted
+  pod whose events linger in the ring; STS/DS with no RS fall back to the
+  workload-name prefix), and node-scope pod matching is now (ns,name)-qualified.
+  (MEDIUM) the suspect cue used `0..=window` so a change at the *exact* failure
+  instant was flagged "before the failure" — now strictly `1..=window`. (LOW)
+  `annals_lines`' `age` read the wall clock (non-deterministic, inconsistent with
+  the `now`-based `bucket`) — added `util::format_age_at(now, then)` /
+  `format_age_opt_at`. (LOW) `CityModel.events` was dead after the city dropped
+  CHRONICLE — removed it (and its per-render ring scan). New regression tests pin
+  each. 186 core + 32 GUI tests; gui-smoke 29.
 
 ## The pair (hot/warm)
 

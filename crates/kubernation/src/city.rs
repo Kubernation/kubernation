@@ -6,17 +6,21 @@
 //!   status band →  replicas / updated gauges, rollout, strategy, attention
 //!   citizens    →  a pod census grid + a clickable pod list (tail logs)
 //!   improvements→  owned resources (svc / ingress / pvc / cm / secret)
-//!   history     →  rollout revisions + the live image change + roll-back (Deploys)
-//!   chronicle   →  recent events
+//!   annals      →  one merged change-feed (rollouts + events + your actions),
+//!                  with a roll-back button on prior Deployment revisions
 //!
 //! Fixed size with caps + "+N more" (4X's panels don't scroll).
 
 use macroquad::prelude::*;
 
 use kubernation_core::events::ClusterId;
+use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::model::{WorkloadRef, build_city};
 use kubernation_core::state::planned::{Intervention, PlannedWorld};
 use kubernation_core::state::slo::{self, BudgetState, SloStatus};
+use kubernation_core::state::timeline::{
+    ChangeKind, SUBJECT_CAP, TIMELINE_WINDOW_MIN, TimelineOpts, TimelineScope, build_timeline,
+};
 use kubernation_core::util::{format_age_opt, format_usage};
 
 use crate::net::Snapshot;
@@ -609,94 +613,79 @@ pub fn draw_city(
         ry += row_h;
     }
 
-    // ROLLOUT HISTORY — Deployment revisions (newest first) + the image change
-    // that produced the current one ("which change is live / broke it?").
-    // Deployment-only; hidden for StatefulSet/DaemonSet (their revisions live in
-    // ControllerRevisions, which Kubernation doesn't watch).
-    let revs = kubernation_core::state::rollout::revisions(observed, r);
-    if !revs.is_empty() {
-        ry += 10.0;
-        text_bold(
-            format!("HISTORY ({})", revs.len()),
-            right_x,
-            ry + 12.0,
-            15.0,
-            PARCHMENT,
-        );
-        ry += 22.0;
-        if let Some(prev) = kubernation_core::state::rollout::previous(&revs) {
-            for ch in kubernation_core::state::rollout::image_changes(prev, &revs[0]) {
-                let line = format!(
-                    "{}: {} -> {}",
-                    ch.container,
-                    ch.from.as_deref().unwrap_or("(none)"),
-                    ch.to.as_deref().unwrap_or("(none)")
-                );
-                text(
-                    ascii(&truncate_str(&line, 46)),
-                    right_x,
-                    ry + 12.0,
-                    12.0,
-                    WARN,
-                );
-                ry += 16.0;
-            }
-        }
-        // A staged rollback (the planning turn's 5th verb) highlights its target.
+    // ANNALS — one merged, classified, chronological change-feed (rollouts +
+    // recent events + this session's operator actions), replacing the old
+    // separate HISTORY + CHRONICLE lists. A non-current Deployment revision row
+    // carries a `rollback` button (the planning turn's 5th verb).
+    ry += 10.0;
+    text_bold("ANNALS", right_x, ry + 12.0, 15.0, PARCHMENT);
+    ry += 22.0;
+    let now = kubernation_core::util::now();
+    let ops = net.operator_actions();
+    let tl = build_timeline(
+        observed,
+        &TimelineOpts {
+            scope: TimelineScope::Workload(r.clone()),
+            filter: &NamespaceFilter::All,
+            window_min: TIMELINE_WINDOW_MIN,
+            cap: SUBJECT_CAP,
+        },
+        &ops,
+        now,
+    );
+    if tl.entries.is_empty() {
+        let msg = if tl.deployment_only_note {
+            "no recent changes (rollout history is Deployment-only)"
+        } else {
+            "no recent changes"
+        };
+        text(msg, right_x, ry + 12.0, 13.0, DIM);
+    } else {
+        // The current (highest) revision can't be rolled back to.
+        let current_rev = tl
+            .entries
+            .iter()
+            .filter(|e| e.kind == ChangeKind::Deploy)
+            .filter_map(|e| e.revision)
+            .max();
         let staged_rev = planned.rolled_back(r);
-        for rev in revs.iter().take(3) {
-            let img = rev.images.first().map(|(_, i)| i.as_str()).unwrap_or("");
-            let mark = if rev.current { " *" } else { "  " };
-            let line = format!(
-                "rev {}{}  {}  {}",
-                rev.number,
-                mark,
-                format_age_opt(rev.created.as_ref()),
-                img
-            );
-            let staged_here = staged_rev == Some(rev.number);
-            let col = if staged_here {
-                WARN
-            } else if rev.current {
-                INK
-            } else {
-                DIM
-            };
-            text(
-                ascii(&truncate_str(&line, 34)),
-                right_x,
-                ry + 12.0,
-                12.0,
-                col,
-            );
-            // Stage a roll-back to a prior (non-current) revision. Committed
-            // through the same dry-run/commit rail as the other staged changes.
-            if !rev.current {
+        let cap = (((col_bottom - ry) / 16.0) as usize).max(1);
+        let lines = crate::timeline::annals_lines(&tl, now, cap);
+        for (i, ln) in lines.iter().enumerate() {
+            if ry > col_bottom {
+                break;
+            }
+            if ln.fault_line_above {
+                draw_line(right_x, ry + 3.0, b.x + b.w - 8.0, ry + 3.0, 1.0, CRIT);
+                ry += 6.0;
+            }
+            // A non-current Deployment revision can be staged for roll-back.
+            let entry = (!ln.glyph.is_empty()).then(|| tl.entries.get(i)).flatten();
+            let rollback_rev = entry
+                .filter(|e| e.kind == ChangeKind::Deploy)
+                .and_then(|e| e.revision.filter(|rev| Some(*rev) != current_rev));
+            let mut s = format!("{} {}", ln.glyph, ln.text);
+            if ln.suspect {
+                s.push_str("  (before failure)");
+            }
+            let width = if rollback_rev.is_some() { 30 } else { 46 };
+            let mut col = crate::timeline::role_color(ln.role);
+            if let Some(rev) = rollback_rev {
+                let staged_here = staged_rev == Some(rev);
+                if staged_here {
+                    col = WARN;
+                }
                 let rb = Rect::new(b.x + b.w - 86.0, ry, 80.0, 16.0);
                 let label = if staged_here { "staged" } else { "rollback" };
                 if crate::window::row_button(rb, mouse, click, label) && !staged_here {
                     act.stage = Some(Intervention::Rollback {
                         workload: r.clone(),
-                        to_revision: rev.number,
+                        to_revision: rev,
                     });
                 }
             }
-            ry += 16.0;
-        }
-    }
-
-    ry += 10.0;
-    text_bold("CHRONICLE", right_x, ry + 12.0, 15.0, PARCHMENT);
-    ry += 22.0;
-    if city.events.is_empty() {
-        text("no recent events", right_x, ry + 12.0, 13.0, DIM);
-    } else {
-        let ev_max = (((col_bottom - ry) / 16.0) as usize).max(1);
-        for e in city.events.iter().take(ev_max) {
-            let col = if e.warning { WARN } else { DIM };
-            let line = format!("{} x{} {}", e.reason, e.count.max(1), e.message);
             text(
-                ascii(&truncate_str(&line, 46)),
+                ascii(&truncate_str(&s, width)),
                 right_x,
                 ry + 12.0,
                 12.0,

@@ -28,6 +28,7 @@ use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::planned::Intervention;
 use kubernation_core::state::slo::{self, SloConfig, SloStatus, SloTracker};
+use kubernation_core::state::timeline::{OpVerb, OperatorAction};
 
 /// Which pod's logs the UI wants tailed, and how. The poll re-fetches whenever
 /// any of these change (`PartialEq`), so toggling previous/timestamps/window
@@ -271,6 +272,89 @@ pub struct Net {
     charter_req: Mutex<Option<(ClusterId, String)>>,
     charter_out: Mutex<HashMap<(ClusterId, String), Arc<Charter>>>,
     charter_gen: AtomicU64,
+    /// In-session log of operator actions Kubernation itself performed (commits /
+    /// evicts / chaos drills) — the uniquely-knowable, most-correlatable source
+    /// for the Annals change-feed. An `Arc` so the per-frame pull is a refcount
+    /// bump; bounded + cleared on context switch (no cross-run persistence).
+    operator_actions: Mutex<Arc<Vec<OperatorAction>>>,
+}
+
+/// Cap on the in-session operator-action log (matches the chaos chronicle's
+/// in-session-ring spirit).
+const OP_LOG_CAP: usize = 64;
+
+/// Proper resource kind for a workload (the Annals entry's `kind`, cosmetic —
+/// the `touches` predicate matches on namespace + name).
+fn workload_kind_str(k: kubernation_core::state::model::WorkloadKind) -> &'static str {
+    use kubernation_core::state::model::WorkloadKind;
+    match k {
+        WorkloadKind::Deployment => "Deployment",
+        WorkloadKind::StatefulSet => "StatefulSet",
+        WorkloadKind::DaemonSet => "DaemonSet",
+    }
+}
+
+/// Turn a just-committed staged intervention into an Annals operator-action.
+fn op_action_for(iv: &Intervention) -> OperatorAction {
+    let when = kubernation_core::util::now();
+    match iv {
+        Intervention::Scale { workload, replicas } => OperatorAction {
+            when,
+            verb: OpVerb::Scale,
+            namespace: workload.namespace.clone(),
+            name: workload.name.clone(),
+            kind: workload_kind_str(workload.kind).into(),
+            detail: format!("scaled to {replicas}"),
+            severity: Severity::Info,
+        },
+        Intervention::Cordon { node, on } => OperatorAction {
+            when,
+            verb: OpVerb::Cordon,
+            namespace: String::new(),
+            name: node.clone(),
+            kind: "Node".into(),
+            detail: if *on {
+                "cordoned".into()
+            } else {
+                "uncordoned".into()
+            },
+            severity: Severity::Info,
+        },
+        Intervention::Restart { workload } => OperatorAction {
+            when,
+            verb: OpVerb::Restart,
+            namespace: workload.namespace.clone(),
+            name: workload.name.clone(),
+            kind: workload_kind_str(workload.kind).into(),
+            detail: "rolling restart".into(),
+            severity: Severity::Info,
+        },
+        Intervention::SetImage {
+            workload,
+            container,
+            image,
+        } => OperatorAction {
+            when,
+            verb: OpVerb::SetImage,
+            namespace: workload.namespace.clone(),
+            name: workload.name.clone(),
+            kind: workload_kind_str(workload.kind).into(),
+            detail: format!("set {container} = {image}"),
+            severity: Severity::Info,
+        },
+        Intervention::Rollback {
+            workload,
+            to_revision,
+        } => OperatorAction {
+            when,
+            verb: OpVerb::Rollback,
+            namespace: workload.namespace.clone(),
+            name: workload.name.clone(),
+            kind: workload_kind_str(workload.kind).into(),
+            detail: format!("rolled back to rev {to_revision}"),
+            severity: Severity::Info,
+        },
+    }
 }
 
 /// One finished game-day drill, for the in-session chronicle.
@@ -347,7 +431,23 @@ impl Net {
             charter_req: Mutex::new(None),
             charter_out: Mutex::new(HashMap::new()),
             charter_gen: AtomicU64::new(0),
+            operator_actions: Mutex::new(Arc::new(Vec::new())),
         })
+    }
+
+    /// The in-session operator-action log (the Annals' "(you)" source).
+    pub fn operator_actions(&self) -> Arc<Vec<OperatorAction>> {
+        self.operator_actions.lock().unwrap().clone()
+    }
+
+    /// Append an operator action to the in-session log (newest-first, capped).
+    /// Called from the net loop when a commit / evict / chaos drill completes.
+    fn push_op(&self, action: OperatorAction) {
+        let mut g = self.operator_actions.lock().unwrap();
+        let mut v: Vec<OperatorAction> = (**g).clone();
+        v.insert(0, action);
+        v.truncate(OP_LOG_CAP);
+        *g = Arc::new(v);
     }
 
     /// Request a (re-)probe of the self-scoped RBAC grid for `(cluster, ns)`.
@@ -713,6 +813,8 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             *net.chaos_req.lock().unwrap() = None;
                             *net.chaos_session.lock().unwrap() = None;
                             net.chaos_history.lock().unwrap().clear();
+                            // The operator-action log belonged to the old cluster.
+                            *net.operator_actions.lock().unwrap() = Arc::new(Vec::new());
                             // Namespaces differ across clusters — reset.
                             *net.ns_filter.lock().unwrap() = NamespaceFilter::All;
                             // Discovered kinds + any open browse are the old
@@ -890,10 +992,22 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     *net.evict_status.lock().unwrap() =
                         Some(format!("evicting {}/{} …", ev.namespace, ev.pod));
                     let res = actions::evict_pod(client, &ev.namespace, &ev.pod).await;
-                    *net.evict_status.lock().unwrap() = Some(match res {
+                    *net.evict_status.lock().unwrap() = Some(match &res {
                         Ok(()) => format!("evicted {}/{}", ev.namespace, ev.pod),
                         Err(e) => format!("evict failed: {e}"),
                     });
+                    // Record a successful hot-cluster eviction in the Annals.
+                    if ev.cluster == ClusterId::Hot && res.is_ok() {
+                        net.push_op(OperatorAction {
+                            when: kubernation_core::util::now(),
+                            verb: OpVerb::Evict,
+                            namespace: ev.namespace.clone(),
+                            name: ev.pod.clone(),
+                            kind: "Pod".into(),
+                            detail: format!("evicted {}", ev.pod),
+                            severity: Severity::Warning,
+                        });
+                    }
                     evict_set = Some(ticks);
                     dirty.store(true, Ordering::Relaxed);
                 }
@@ -1037,6 +1151,18 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             outcome.rows.len()
                         )
                     });
+                    // Record in the Annals only the changes that REALLY applied.
+                    // `applied` means every dry-run passed, but an individual real
+                    // PATCH can still fail (409 / admission / transient) — so gate
+                    // per row (rows are 1:1 with `ivs`) and never log a phantom
+                    // write that could become a false correlation suspect.
+                    if outcome.applied {
+                        for (iv, row) in ivs.iter().zip(outcome.rows.iter()) {
+                            if row.ok {
+                                net.push_op(op_action_for(iv));
+                            }
+                        }
+                    }
                     *net.plan_outcome.lock().unwrap() = Some(outcome);
                     evict_set = Some(ticks);
                     dirty.store(true, Ordering::Relaxed);
@@ -1115,6 +1241,27 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             let mut h = net.chaos_history.lock().unwrap();
                             h.insert(0, ChaosRecord::from_session(prev));
                             h.truncate(10);
+                        }
+                        // Log the drill in the Annals (a real new drill, not an
+                        // undo) so a failure can be correlated against it.
+                        if !run.is_restore && run.cluster == ClusterId::Hot {
+                            let (op_ns, op_name, op_kind) = match &run.subject {
+                                Subject::Workload(wr) => (
+                                    wr.namespace.clone(),
+                                    wr.name.clone(),
+                                    workload_kind_str(wr.kind).to_string(),
+                                ),
+                                Subject::Node(n) => (String::new(), n.clone(), "Node".into()),
+                            };
+                            net.push_op(OperatorAction {
+                                when: kubernation_core::util::now(),
+                                verb: OpVerb::Chaos,
+                                namespace: op_ns,
+                                name: op_name,
+                                kind: op_kind,
+                                detail: format!("chaos: {}", run.experiment),
+                                severity: Severity::Critical,
+                            });
                         }
                         // Arm auto-restore only when there's something to undo.
                         let auto_restore_tick = run

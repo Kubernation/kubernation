@@ -12,7 +12,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
 
 use super::attention::{self, Concern, Severity, Target};
 use super::filter::NamespaceFilter;
-use super::observed::{ObservedWorld, RecentEvent};
+use super::observed::ObservedWorld;
 use super::world::{
     BatchEntry, BatchKind, CoastKind, ExposureEntry, StorageEntry, WorldModel, build_world,
 };
@@ -747,7 +747,6 @@ pub struct CityModel {
     pub age: Option<Time>,
     pub pods: Vec<CityPod>,
     pub owned: Vec<OwnedRes>,
-    pub events: Vec<RecentEvent>, // newest first
     /// First container of the pod template — the default target for a staged
     /// image change (`kubectl set image`). None if the template is absent.
     pub primary_container: Option<String>,
@@ -1257,7 +1256,6 @@ pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
 
     // Member pods via the ownership chain.
     let mut pods: Vec<CityPod> = Vec::new();
-    let mut pod_names: BTreeSet<String> = BTreeSet::new();
     let mut pvc_names: BTreeSet<String> = BTreeSet::new();
     for p in world.pods.state() {
         if idx.workload_of(&p).as_ref() != Some(r) {
@@ -1265,7 +1263,6 @@ pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
         }
         let (state, reason) = pod_state(&p);
         let name = p.metadata.name.clone().unwrap_or_default();
-        pod_names.insert(name.clone());
         for v in p
             .spec
             .as_ref()
@@ -1384,19 +1381,6 @@ pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
         });
     }
 
-    // Recent events touching the workload, its replicasets, or its pods.
-    let prefix = format!("{}-", r.name);
-    let mut events: Vec<RecentEvent> = world
-        .recent_events()
-        .into_iter()
-        .filter(|e| {
-            e.namespace == r.namespace
-                && (e.name == r.name || e.name.starts_with(&prefix) || pod_names.contains(&e.name))
-        })
-        .collect();
-    events.reverse(); // ring is oldest-first
-    events.truncate(30);
-
     let primary_container = template
         .as_ref()
         .and_then(|t| t.spec.as_ref())
@@ -1415,7 +1399,6 @@ pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
         age,
         pods,
         owned,
-        events,
         primary_container,
     })
 }

@@ -14,12 +14,19 @@ pub fn fnv1a64(s: &str) -> u64 {
     h
 }
 
-/// Compact single-unit age: "12s", "5m", "3h", "2d".
-pub fn format_age(then: &Time) -> String {
-    let secs = jiff::Timestamp::now()
-        .duration_since(then.0)
-        .as_secs()
-        .max(0);
+/// The current wall-clock instant. A thin re-export so callers (incl. the GUI,
+/// which has no direct jiff dep) can stamp/pass `now` without importing jiff —
+/// the timeline builder takes `now` as a parameter (clockless core), and the GUI
+/// stamps operator actions at action time with this.
+pub fn now() -> jiff::Timestamp {
+    jiff::Timestamp::now()
+}
+
+/// Compact single-unit age relative to `now`: "12s", "5m", "3h", "2d". `now` is
+/// passed in so callers that already hold a frame instant render deterministically
+/// (and consistently with any companion bucketing computed from the same `now`).
+pub fn format_age_at(now: jiff::Timestamp, then: &Time) -> String {
+    let secs = now.duration_since(then.0).as_secs().max(0);
     match secs {
         0..=59 => format!("{secs}s"),
         60..=3599 => format!("{}m", secs / 60),
@@ -28,8 +35,19 @@ pub fn format_age(then: &Time) -> String {
     }
 }
 
+/// Compact single-unit age vs the wall clock: "12s", "5m", "3h", "2d".
+pub fn format_age(then: &Time) -> String {
+    format_age_at(jiff::Timestamp::now(), then)
+}
+
 pub fn format_age_opt(then: Option<&Time>) -> String {
     then.map(format_age).unwrap_or_else(|| "?".into())
+}
+
+/// `format_age_at` over an optional time, "?" when absent.
+pub fn format_age_opt_at(now: jiff::Timestamp, then: Option<&Time>) -> String {
+    then.map(|t| format_age_at(now, t))
+        .unwrap_or_else(|| "?".into())
 }
 
 /// "1.5Gi", "512Mi", "3.2Ti" — binary units, one decimal where it matters.

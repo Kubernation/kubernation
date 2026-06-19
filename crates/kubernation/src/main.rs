@@ -30,6 +30,7 @@ mod plan;
 mod sidebar;
 mod text;
 mod theme;
+mod timeline;
 mod window;
 
 use std::path::PathBuf;
@@ -199,6 +200,10 @@ struct Args {
     /// namespace (development verification of the RBAC matrix)
     #[arg(long, value_name = "NS", num_args = 0..=1, default_missing_value = "")]
     charter: Option<String>,
+    /// Open the Annals (change timeline) on sync (development verification of the
+    /// change-feed modal)
+    #[arg(long)]
+    annals: bool,
     /// With --inspect, also open the object inspector (YAML) on the inspected
     /// city/node (development verification of the inspector)
     #[arg(long)]
@@ -495,6 +500,8 @@ async fn main() {
     let mut inspector: Option<Inspector> = None;
     // The resource browser (`:` — any kind) — a modal window.
     let mut browser: Option<Browser> = None;
+    // The Annals (change timeline — "what changed in the realm") — a modal window.
+    let mut annals: Option<timeline::Annals> = None;
     // Dev: one-shot arm for the --browse verification flag.
     let mut browse_armed = false;
     // A transient toast (copy / export feedback): (message, expiry time).
@@ -679,6 +686,7 @@ async fn main() {
         let mut charter_just_opened = false;
         let mut inspector_just_opened = false;
         let mut browser_just_opened = false;
+        let mut annals_just_opened = false;
         // Frame-local: true only on the frame the chaos window / its confirm
         // opened, so the opening click can't reach a button.
         let mut chaos_just_opened = false;
@@ -688,6 +696,7 @@ async fn main() {
             && !typing
             && advisor.is_none()
             && charter.is_none()
+            && annals.is_none()
             && chaos.is_none()
             && browser.is_none()
         {
@@ -705,6 +714,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && annals.is_none()
             && chaos.is_none()
             && browser.is_none()
             && !picker
@@ -712,6 +722,29 @@ async fn main() {
         {
             plan_open = !plan_open;
             plan_just_opened = plan_open;
+        }
+        // `h` opens the Annals (change timeline — "what changed in the realm").
+        if is_key_pressed(KeyCode::H)
+            && snap.is_some()
+            && !typing
+            && !log_open
+            && panel.is_none()
+            && almanac.is_none()
+            && advisor.is_none()
+            && charter.is_none()
+            && chaos.is_none()
+            && browser.is_none()
+            && inspector.is_none()
+            && !plan_open
+            && !picker
+            && !ns_picker
+        {
+            if annals.is_some() {
+                annals = None;
+            } else {
+                annals = Some(timeline::Annals::new());
+                annals_just_opened = true;
+            }
         }
         // `:` opens the resource browser — discover kinds if needed. Detect the
         // produced ':' CHARACTER rather than a physical Shift+Semicolon chord, so
@@ -724,6 +757,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && annals.is_none()
             && chaos.is_none()
             && !plan_open
             && !picker
@@ -764,6 +798,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && annals.is_none()
             && chaos.is_none()
             && browser.is_none()
             && !plan_open
@@ -809,6 +844,8 @@ async fn main() {
                 advisor = None;
             } else if charter.is_some() {
                 charter = None;
+            } else if annals.is_some() {
+                annals = None;
             } else if inspector.is_some() {
                 // The inspector sits on top of its panel / the browser — close
                 // it first.
@@ -1042,6 +1079,13 @@ async fn main() {
                 c.scroll_by(wheel);
             }
         }
+        // The Annals swallows the wheel to scroll the feed.
+        if let Some(a) = annals.as_mut() {
+            let (_, wheel) = mouse_wheel();
+            if wheel.abs() > 0.0 {
+                a.scroll_by(wheel);
+            }
+        }
         // The inspector swallows the wheel to scroll its YAML; `c` copies the
         // document to the clipboard, `w` exports it to a file.
         if let Some(i) = inspector.as_mut() {
@@ -1076,6 +1120,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && annals.is_none()
             && chaos.is_none()
             && browser.is_none()
             && !panel_modal
@@ -1205,6 +1250,9 @@ async fn main() {
                     };
                     charter = Some(CharterView::new(focus));
                 }
+                if args.annals {
+                    annals = Some(timeline::Annals::new());
+                }
                 if let Some(m) = &args.menu {
                     open_menu = match m.as_str() {
                         "game" => Some(0),
@@ -1285,6 +1333,7 @@ async fn main() {
                 || chaos.is_some()
                 || pending_chaos.is_some()
                 || browser.is_some()
+                || annals.is_some()
                 || panel_modal
                 || plan_open
                 || open_menu.is_some()
@@ -1552,6 +1601,7 @@ async fn main() {
                 && almanac.is_none()
                 && advisor.is_none()
                 && charter.is_none()
+                && annals.is_none()
                 && chaos.is_none()
                 && browser.is_none()
                 && inspector.is_none()
@@ -1595,6 +1645,7 @@ async fn main() {
                 && almanac.is_none()
                 && advisor.is_none()
                 && charter.is_none()
+                && annals.is_none()
                 && chaos.is_none()
                 && browser.is_none()
                 && inspector.is_none()
@@ -1746,6 +1797,7 @@ async fn main() {
                     && almanac.is_none()
                     && advisor.is_none()
                     && charter.is_none()
+                    && annals.is_none()
                     && chaos.is_none()
                     && browser.is_none()
                     && !panel_modal
@@ -1826,6 +1878,7 @@ async fn main() {
                     && almanac.is_none()
                     && advisor.is_none()
                     && charter.is_none()
+                    && annals.is_none()
                     && chaos.is_none()
                     && browser.is_none()
                     && !panel_modal
@@ -2068,6 +2121,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && annals.is_none()
             && chaos.is_none()
             && browser.is_none()
             && !plan_open
@@ -2143,6 +2197,10 @@ async fn main() {
             Some(MenuAction::Almanac) => {
                 almanac = Some(Almanac::new());
                 almanac_just_opened = true;
+            }
+            Some(MenuAction::Annals) => {
+                annals = Some(timeline::Annals::new());
+                annals_just_opened = true;
             }
             None => {}
         }
@@ -2268,6 +2326,27 @@ async fn main() {
                 .map(|c| c.draw(snap.as_deref(), &net, mouse, click));
             if let Some(CharterAction::Close) = action {
                 charter = None;
+            }
+        }
+
+        // The Annals (change timeline), drawn on top (own clicks, not the opening
+        // one). Reads the world from the snapshot + this session's operator-action
+        // log + the active namespace filter.
+        if annals.is_some() {
+            let click = is_mouse_button_pressed(MouseButton::Left) && !annals_just_opened;
+            let ops = net.operator_actions();
+            let action = annals.as_mut().map(|a| {
+                a.draw(
+                    snap.as_deref(),
+                    &ops,
+                    &ns_filter_now,
+                    kubernation_core::util::now(),
+                    mouse,
+                    click,
+                )
+            });
+            if let Some(timeline::AnnalsAction::Close) = action {
+                annals = None;
             }
         }
 

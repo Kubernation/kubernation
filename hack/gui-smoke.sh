@@ -21,6 +21,7 @@ STATES=(
   "advisor-rightsizing|--advisor rightsizing"
   "advisor-hardening|--advisor hardening"
   "charter|--charter"
+  "annals|--annals"
   "browse-pick|--browse"
   "browse-table|--browse configmaps"
   "city|--inspect web"

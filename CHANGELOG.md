@@ -9,6 +9,19 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Change timeline — "The Annals".** A recent, classified change-feed answering
+  "what changed?" — the third triage axis beside the attention queue (what's
+  wrong) and the blast/impact panel (what else is affected). A cluster-wide modal
+  (View ▸ Annals, or the `H` key) merges the recent-events ring, Deployment
+  rollout history (the authoritative deploy record), and this session's operator
+  actions (commits / evicts / chaos drills) into one newest-first feed; failures
+  are coloured, a **"trouble begins here"** fault line marks the first failure,
+  and a change just before it is flagged **"(before the failure)"** — honest
+  adjacency, never fabricated causality. The city and node windows replace their
+  old separate HISTORY + CHRONICLE lists with the same merged **ANNALS** section
+  (the city keeps its per-revision `rollback` button). Read-only; the event ring
+  is a bounded ~15-min window, stated in the footer — not a full audit log.
+  (Roadmap #9.)
 - **Dependency / impact triage panel.** The blast-radius overlay (`B`) now also
   lists what a troubled node/workload affects — an **IMPACT** section in the right
   column: the cascade of cities → harbors (services) → gates (ingresses) with hop
