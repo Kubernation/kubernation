@@ -143,6 +143,11 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                     MenuAction::SetOverlay(Overlay::Coverage),
                 )
                 .check(ctx.overlay == Overlay::Coverage),
+                Item::act(
+                    "Saturation (strain)",
+                    MenuAction::SetOverlay(Overlay::Saturation),
+                )
+                .check(ctx.overlay == Overlay::Saturation),
                 Item::sep(),
                 Item::act("Annals (what changed) — H", MenuAction::Annals),
             ],

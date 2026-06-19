@@ -9,6 +9,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Saturation overlay — the 4th golden signal.** A new **View ▸ Saturation
+  (strain)** map overlay tints each province by how full it is toward its hard
+  limits: the worst of cpu/mem usage, **scheduled pods vs the kubelet max-pods**,
+  and the kubelet **Disk/Mem/PID-pressure** conditions. Unlike the cpu/mem
+  Pressure overlay, it catches the silent scheduling failure — a node at max-pods
+  (or under a kubelet condition) lights up red even while cpu/mem look calm. The
+  province SELECTION names the binding dimension (e.g. `pods 105/110`,
+  `DiskPressure (pegged)`); the province window shows a strain line; a node near
+  max-pods (≥95%) raises one queue concern. Pod-count + conditions need no
+  metrics-server; disk/PID are shown only via the kubelet's own conditions (never
+  a fabricated percentage).
 - **Postmortem / after-action export.** One click writes a markdown after-action
   report of the current session — cluster context, the realm-defense posture, the
   open concerns (each with its next-action hint), the change timeline (the Annals,

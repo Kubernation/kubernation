@@ -4,6 +4,7 @@
 
 use kubernation_core::state::attention::Severity;
 use kubernation_core::state::model::NodeHealth;
+use kubernation_core::state::saturation::SatLevel;
 use kubernation_core::util::fnv1a64;
 use macroquad::prelude::*;
 
@@ -138,6 +139,18 @@ pub fn pressure_pair(ratio: f64) -> (Color, Color) {
     } else {
         0
     })
+}
+
+/// Land pair for the **Saturation** ("strain") overlay — by the node's worst
+/// saturation level. Calm recedes to idle land (so a flagged province pops),
+/// Elevated → amber, High → red — reusing the shared heat palette so it reads in
+/// the same severity grammar as Pressure/Replicas.
+pub fn sat_pair(level: SatLevel) -> (Color, Color) {
+    match level {
+        SatLevel::Calm => idle_land_pair(),
+        SatLevel::Elevated => heat_pair(1),
+        SatLevel::High => heat_pair(2),
+    }
 }
 
 /// Desaturated grey-green land for a province with nothing to encode under the

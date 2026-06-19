@@ -534,7 +534,11 @@ fn page_controls(cx: &mut Ctx) {
     cx.key("Q", "quit");
     cx.heading("Menu bar");
     cx.para(
-        "The top bar holds the menus: Game (context, fit, quit), View (the map overlay — terrain health, cpu/mem pressure, replica health, or namespace territory), Orders (end of turn, discard), Advisors (Health / Storage / Network / Right-sizing / Hardening summaries), World (namespace filter), Help (Charter — your RBAC access — and the field guide). Click a title to open it.",
+        "The top bar holds the menus: Game (context, fit, export after-action report, quit), View (the map overlay — terrain health, cpu/mem pressure, replica health, namespace territory, walls, or saturation; and the Annals), Orders (end of turn, discard), Game Day (chaos drills), Advisors (Health / Storage / Network / Right-sizing / Hardening / Posture summaries), World (namespace filter), Help (Charter — your RBAC access — and the field guide). Click a title to open it.",
+    );
+    cx.heading("Saturation overlay (strain)");
+    cx.para(
+        "The 4th golden signal — how full a province is toward its hard limits: cpu/mem usage, scheduled pods vs the kubelet max-pods, and the kubelet Disk/PID/Mem-pressure conditions. Red = at/over a limit and refusing or evicting work; the province SELECTION names the binding dimension (e.g. 'pods 105/110', 'DiskPressure (pegged)'). Distinct from Pressure, which shows cpu/mem utilization only — Saturation also lights up a node at max-pods or under a kubelet condition while cpu/mem look calm (and needs no metrics-server for those axes).",
     );
 }
 

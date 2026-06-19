@@ -14,6 +14,7 @@ use super::model::{
     ingress_backends, pod_oom_killed, pod_restarts, pod_state, prefer_previous,
 };
 use super::observed::ObservedWorld;
+use super::saturation::SAT_PODS_HIGH;
 
 /// How long ago a Warning event may have fired and still surface here.
 const EVENT_WINDOW_MIN: i64 = 15;
@@ -429,6 +430,20 @@ pub fn build(
                         tile.mem_ratio * 100.0
                     ),
                 )
+            } else if tile
+                .saturation
+                .pod_ratio()
+                .is_some_and(|r| r >= SAT_PODS_HIGH)
+            {
+                // Pod-slot exhaustion — the silent scheduling failure cpu/mem
+                // can't show (a node at max-pods refuses new pods regardless).
+                (
+                    Severity::Warning,
+                    format!(
+                        "{} (near max)",
+                        tile.saturation.pod_label().unwrap_or("pods")
+                    ),
+                )
             } else if tile.cordoned {
                 (Severity::Info, "cordoned".to_string())
             } else {
@@ -743,6 +758,108 @@ mod tests {
         let map = build_map(world);
         let rows = build_workloads(world);
         build(world, &map, &rows, &NamespaceFilter::All)
+    }
+
+    #[test]
+    fn pod_slot_exhaustion_fires_one_warning() {
+        let (world, mut s) = fx::world();
+        let mut n = fx::node("crowded", Some("z-a"));
+        n.status.as_mut().unwrap().allocatable = Some(fx::quantities(&[
+            ("cpu", "4"),
+            ("memory", "8Gi"),
+            ("pods", "10"),
+        ]));
+        s.node(n);
+        // 10 running (1.0 ratio ≥ 0.95) + 2 terminal that must NOT count.
+        for i in 0..10 {
+            s.pod(fx::pod("demo", &format!("p{i}"), Some("crowded")));
+        }
+        s.pod(fx::pod_phase(
+            fx::pod("demo", "done", Some("crowded")),
+            "Succeeded",
+        ));
+        s.pod(fx::pod_phase(
+            fx::pod("demo", "bad", Some("crowded")),
+            "Failed",
+        ));
+
+        let cs = concerns(&world);
+        let slot: Vec<_> = cs.iter().filter(|c| c.title.contains("near max")).collect();
+        assert_eq!(
+            slot.len(),
+            1,
+            "exactly one pod-slot concern (city in trouble)"
+        );
+        assert_eq!(slot[0].severity, Severity::Warning);
+        assert!(slot[0].key.starts_with("n:crowded"));
+        assert!(slot[0].title.contains("pods 10/10"));
+        assert!(next_action(slot[0]).unwrap().contains("open the province"));
+    }
+
+    #[test]
+    fn pod_slot_concern_absent_without_allocatable_pods() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("plain", Some("z-a"))); // fixture node has no "pods" key
+        for i in 0..50 {
+            s.pod(fx::pod("demo", &format!("p{i}"), Some("plain")));
+        }
+        let cs = concerns(&world);
+        assert!(
+            !cs.iter().any(|c| c.title.contains("near max")),
+            "no fabricated pod-slot concern when allocatable[pods] is absent"
+        );
+    }
+
+    #[test]
+    fn cpu_high_outranks_pod_slot_exhaustion() {
+        // A node that is BOTH cpu-bound and pod-bound surfaces the cpu headline
+        // (the if/else order), not "near max" — and its saturation is still High.
+        let (world, mut s) = fx::world();
+        let mut n = fx::node("dual", Some("z-a"));
+        n.status.as_mut().unwrap().allocatable = Some(fx::quantities(&[
+            ("cpu", "1"),
+            ("memory", "8Gi"),
+            ("pods", "10"),
+        ]));
+        s.node(n);
+        // 10 pods each requesting ~0.5 cpu → 5 cores requested vs 1 allocatable
+        // (cpu_ratio ≫ 0.9) AND 10/10 pods (pod_ratio 1.0 ≥ 0.95).
+        for i in 0..10 {
+            s.pod(fx::pod_requests(
+                fx::pod("demo", &format!("p{i}"), Some("dual")),
+                "500m",
+                "16Mi",
+            ));
+        }
+        let cs = concerns(&world);
+        let node_concerns: Vec<_> = cs.iter().filter(|c| c.key.starts_with("n:dual")).collect();
+        assert_eq!(node_concerns.len(), 1, "one concern per node");
+        assert!(
+            node_concerns[0].title.contains("cpu"),
+            "cpu-high outranks pod-slot: {}",
+            node_concerns[0].title
+        );
+        assert!(!node_concerns[0].title.contains("near max"));
+    }
+
+    #[test]
+    fn not_ready_outranks_pod_slot_exhaustion() {
+        let (world, mut s) = fx::world();
+        let mut n = fx::node_with_condition(fx::node("down", Some("z-a")), "Ready", "False");
+        n.status.as_mut().unwrap().allocatable = Some(fx::quantities(&[
+            ("cpu", "4"),
+            ("memory", "8Gi"),
+            ("pods", "10"),
+        ]));
+        s.node(n);
+        for i in 0..10 {
+            s.pod(fx::pod("demo", &format!("p{i}"), Some("down")));
+        }
+        let cs = concerns(&world);
+        let node_concerns: Vec<_> = cs.iter().filter(|c| c.key.starts_with("n:down")).collect();
+        assert_eq!(node_concerns.len(), 1, "one concern per node");
+        assert_eq!(node_concerns[0].severity, Severity::Critical);
+        assert!(node_concerns[0].title.contains("NotReady"));
     }
 
     #[test]

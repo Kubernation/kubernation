@@ -53,6 +53,9 @@ pub enum Overlay {
     Namespace,
     /// NetworkPolicy segmentation — "walls" (unwalled cities pop amber).
     Coverage,
+    /// The 4th golden signal — "strain": worst of cpu/mem/pod-count + the
+    /// kubelet Disk/Mem/PID-pressure conditions per province.
+    Saturation,
 }
 
 impl Overlay {
@@ -64,6 +67,7 @@ impl Overlay {
             Overlay::Replicas => "replicas",
             Overlay::Namespace => "namespace",
             Overlay::Coverage => "walls",
+            Overlay::Saturation => "saturation",
         }
     }
 }
@@ -196,6 +200,7 @@ fn overlay_pair(overlay: Overlay, prov: &Province, walls: Option<&WallData>) -> 
         Overlay::Coverage => walls
             .map(|w| coverage_pair(&prov.cities, w))
             .unwrap_or_else(|| iso_terrain_pair(prov.tile.health)),
+        Overlay::Saturation => sat_pair(prov.tile.saturation.worst_level()),
     }
 }
 
@@ -1982,6 +1987,16 @@ mod tests {
         assert_eq!(Overlay::Pressure.label(), "pressure");
         assert_eq!(Overlay::Replicas.label(), "replicas");
         assert_eq!(Overlay::Namespace.label(), "namespace");
+        assert_eq!(Overlay::Coverage.label(), "walls");
+        assert_eq!(Overlay::Saturation.label(), "saturation");
+    }
+
+    #[test]
+    fn sat_pair_maps_level_to_severity_palette() {
+        use kubernation_core::state::saturation::SatLevel;
+        assert_eq!(sat_pair(SatLevel::Calm), idle_land_pair());
+        assert_eq!(sat_pair(SatLevel::Elevated), heat_pair(1));
+        assert_eq!(sat_pair(SatLevel::High), heat_pair(2));
     }
 
     fn city(ns: &str, ready: i32, desired: i32, sev: Option<Severity>) -> City {

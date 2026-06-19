@@ -1718,6 +1718,64 @@ what makes the interesting logic unit-testable without a cluster.
   per-subject "postmortem for THIS workload" (build_timeline already scopes); a
   structured JSON/SARIF sibling; stronger content-based secret redaction;
   inlining logs; warm-cluster report.
+- **Saturation overlay — the 4th golden signal** (2026-06-19, the roadmap
+  "Next"-tier item *Saturation overlay — the 4th golden signal*; design-workflow
+  vetted — 4 lenses → 3 judges → synthesis): a new **View ▸ Saturation (strain)**
+  map overlay. **Pure core** `state/saturation.rs` (`saturate_node(cpu_ratio,
+  mem_ratio, nonterminal_pods, alloc_pods: Option<f64>, abnormal) ->
+  NodeSaturation`, unit-tested): rolls up the worst of cpu/mem (reuse the node
+  ratios, bucket on the documented 0.7/0.9), **pod-count** (nonterminal scheduled
+  pods ÷ `allocatable["pods"]`, tighter buckets `SAT_PODS_ELEVATED`=0.85/`HIGH`=0.95
+  — the headline new signal, the silent max-pods scheduling failure cpu/mem can't
+  show, computable with NO metrics-server), and the kubelet **Disk/Mem/PID-pressure
+  conditions** (boolean *pegged* High dims, `SatDim.ratio: None` — the only honest
+  representation of disk/PID, never a fabricated %). `NodeSaturation{dims, worst}`
+  + `worst_dim` (a condition counts as effective 1.0) + `worst_level` +
+  `pod_ratio`/`pod_label`. **Decision: ADD a distinct overlay, do NOT
+  rename/supersede `Pressure`** — Saturation is a strict superset (worst-of-N vs
+  `max(cpu,mem)`); on a cpu/mem-bound node they agree (the honest answer), and
+  Saturation additionally lights up the pod-slot / condition cases Pressure stays
+  green for. **Degrade-dark honesty (load-bearing):** the pod-count dim is OMITTED
+  (never assume 110, no divide-by-zero) when `allocatable["pods"]` is absent/≤0;
+  there is deliberately **no numeric disk/PID dimension** (no node-usage source —
+  a module doc forbids adding a fabricated one). **Wiring (no new plumbing):**
+  `model::node_allocatable(node, key)` generalizes the cpu/memory allocatable
+  reads; `NodeTile` gains a `saturation: NodeSaturation` field (NodeSaturation
+  derives Default) computed once in `build_node_tile` (nonterminal = pods_on_node
+  minus Succeeded/Failed via a new `pod_terminal`), so it rides `Province.tile`
+  into `draw.rs` with zero `Models`/`build_world` churn. **GUI:** `Overlay::
+  Saturation` + `theme::sat_pair(SatLevel)` (Calm→idle land so a flagged province
+  pops, Elevated→amber, High→red — reusing the heat palette); `panels::
+  saturation_lines(&NodeSaturation)` (pure draw-decision fn, unit-tested — non-calm
+  dims worst-first, "(pegged)" for conditions, "strain: calm" otherwise) shown in
+  the province SELECTION/tooltip ONLY under the Saturation overlay (the
+  distinguisher Pressure lacks; `region_lines`/`draw_tooltip` gained an `overlay`
+  param); a province-window strain line; menu radio "Saturation (strain)";
+  `--overlay saturation`; Almanac paragraph contrasting strain vs pressure;
+  gui-smoke `overlay-saturation`. **Attention:** ONE new node concern (pod-slot
+  exhaustion, Warning, `pod_ratio ≥ 0.95`) inserted in the existing if/else-if node
+  loop after cpu/mem-high + before cordon, so NotReady/conditions/cpu-mem outrank
+  it and `covered_nodes` keeps it one-per-node; reuses the `n:` next_action. No
+  Disk/Mem/PID concern (already covered by the `abnormal` arm). READ-ONLY; no new
+  write verb. 234 core + 41 GUI tests; gui-smoke 33. **Verified live on kind** with
+  the definitive distinctness proof: 100 pause pods (requesting nothing) pinned to
+  a worker pushed it to 105/110 pods — the node reads **healthy + cpu 2%/mem 6%**
+  yet **`strain: high · pods 105/110`**, its province tints **RED under Saturation
+  but GREEN under Pressure**, and the pod-slot concern fires. **Adversarial-review
+  hardening** (3 confirmed, all low): `worst_dim` now picks among the dims AT the
+  worst *level* (tie-broken by ratio) so it can never name a lower-level dim than
+  `worst_level`/the tint — the pod buckets (0.85/0.95) being tighter than cpu/mem's
+  (0.7/0.9) made a raw max-by-ratio able to name an Elevated pod dim on a High
+  province; the city SELECTION/tooltip now also shows the host node's strain under
+  the overlay (it was only on bare province land — the distinguisher was lost on
+  the settlement, `Region::City(p, c)` carries the province); and regression tests
+  pin both worst_dim agreement and that a cpu-AND-pod-bound node surfaces the cpu
+  headline (subordination by if/else order). **Deferred** (the
+  struct/`Option<f64>` are shaped for these): an Advisors ▸ Saturation tab
+  (`SaturationReport`); a numeric disk/PID dim via a future kubelet Summary-API
+  reader; a pod-count history ring + trend (leading-indicator) coloring; per-pod
+  saturation; folding Pressure into Saturation (kept distinct so the new dims are
+  visibly additive).
 
 ## The pair (hot/warm)
 
@@ -1813,8 +1871,8 @@ change. Summary:
   **Run drill** (real, confirmed, RBAC-gated; control-plane/system namespaces
   refused). A scorecard shows recovery + budget spent; an outage offers Restore.
 - **Esc** closes the topmost overlay · the menus carry switch-context, fit, the
-  map overlay (terrain/pressure/replicas/namespace), namespace filter, advisors,
-  Almanac, quit.
+  map overlay (terrain/pressure/replicas/namespace/walls/saturation), namespace
+  filter, advisors, Almanac, quit.
 
 ## Dev loop
 

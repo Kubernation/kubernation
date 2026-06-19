@@ -13,6 +13,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
 use super::attention::{self, Concern, Severity, Target};
 use super::filter::NamespaceFilter;
 use super::observed::ObservedWorld;
+use super::saturation::{self, NodeSaturation};
 use super::world::{
     BatchEntry, BatchKind, CoastKind, ExposureEntry, StorageEntry, WorldModel, build_world,
 };
@@ -276,6 +277,10 @@ pub struct NodeTile {
     pub mem_ratio: f64,
     pub metric_source: MetricSource,
     pub pods: Vec<PodGlyph>,
+    /// Saturation rollup (the 4th golden signal) — worst of cpu/mem/pod-count +
+    /// the kubelet Disk/Mem/PID-pressure conditions. Computed once here so it
+    /// rides `Province.tile` into the Saturation overlay with no extra plumbing.
+    pub saturation: NodeSaturation,
 }
 
 /// What the node gauges are measuring.
@@ -375,27 +380,35 @@ fn sum_pod_resources(pod: &Pod, limits: bool) -> (f64, f64) {
     (cpu, mem)
 }
 
+/// A node `status.allocatable` quantity by key (e.g. "cpu", "memory", "pods",
+/// "ephemeral-storage") in canonical units (cores / bytes / plain count).
+/// `None` when the key is absent — callers must NOT fabricate a default.
+pub fn node_allocatable(node: &Node, key: &str) -> Option<f64> {
+    node.status
+        .as_ref()
+        .and_then(|s| s.allocatable.as_ref())
+        .and_then(|a| a.get(key))
+        .and_then(quantity::value)
+}
+
+/// True when a pod's phase is terminal (Succeeded/Failed) — excluded from the
+/// node's scheduling load (requests + pod-count saturation).
+fn pod_terminal(pod: &Pod) -> bool {
+    matches!(
+        pod.status.as_ref().and_then(|s| s.phase.as_deref()),
+        Some("Succeeded") | Some("Failed")
+    )
+}
+
 /// Sum of CPU/memory *requests* of non-terminal pods on this node, divided
 /// by allocatable. Missing allocatable yields 0 (gauge renders empty).
 pub fn node_request_ratios(node: &Node, pods: &[&Pod]) -> (f64, f64) {
-    let alloc = node.status.as_ref().and_then(|s| s.allocatable.as_ref());
-    let alloc_cpu = alloc
-        .and_then(|a| a.get("cpu"))
-        .and_then(quantity::value)
-        .unwrap_or(0.0);
-    let alloc_mem = alloc
-        .and_then(|a| a.get("memory"))
-        .and_then(quantity::value)
-        .unwrap_or(0.0);
+    let alloc_cpu = node_allocatable(node, "cpu").unwrap_or(0.0);
+    let alloc_mem = node_allocatable(node, "memory").unwrap_or(0.0);
 
     let (mut cpu, mut mem) = (0.0, 0.0);
     for pod in pods {
-        let phase = pod
-            .status
-            .as_ref()
-            .and_then(|s| s.phase.as_deref())
-            .unwrap_or("");
-        if phase == "Succeeded" || phase == "Failed" {
+        if pod_terminal(pod) {
             continue;
         }
         let (c, m) = sum_pod_requests(pod);
@@ -408,15 +421,8 @@ pub fn node_request_ratios(node: &Node, pods: &[&Pod]) -> (f64, f64) {
 
 /// Live usage ÷ allocatable for a node (cores and bytes already canonical).
 fn node_usage_ratios(node: &Node, usage: NodeUsage) -> (f64, f64) {
-    let alloc = node.status.as_ref().and_then(|s| s.allocatable.as_ref());
-    let alloc_cpu = alloc
-        .and_then(|a| a.get("cpu"))
-        .and_then(quantity::value)
-        .unwrap_or(0.0);
-    let alloc_mem = alloc
-        .and_then(|a| a.get("memory"))
-        .and_then(quantity::value)
-        .unwrap_or(0.0);
+    let alloc_cpu = node_allocatable(node, "cpu").unwrap_or(0.0);
+    let alloc_mem = node_allocatable(node, "memory").unwrap_or(0.0);
     let ratio = |used: f64, alloc: f64| if alloc > 0.0 { used / alloc } else { 0.0 };
     (ratio(usage.cpu, alloc_cpu), ratio(usage.mem, alloc_mem))
 }
@@ -465,6 +471,15 @@ pub fn build_node_tile(
         NodeHealth::Healthy
     };
 
+    // Saturation (4th golden signal): worst of cpu/mem/pod-count + the kubelet
+    // pressure conditions. Pod-count uses NON-terminal scheduled pods over
+    // allocatable["pods"] (omitted entirely when allocatable["pods"] is absent —
+    // never assume a default). Computed once here so it rides Province.tile.
+    let nonterminal = pods_on_node.iter().filter(|p| !pod_terminal(p)).count() as u32;
+    let alloc_pods = node_allocatable(node, "pods");
+    let saturation =
+        saturation::saturate_node(cpu_ratio, mem_ratio, nonterminal, alloc_pods, &abnormal);
+
     let mut pods: Vec<PodGlyph> = pods_on_node
         .iter()
         .map(|p| PodGlyph {
@@ -487,6 +502,7 @@ pub fn build_node_tile(
         mem_ratio,
         metric_source,
         pods,
+        saturation,
     }
 }
 
@@ -1851,6 +1867,50 @@ mod tests {
         // When metrics-server is unavailable, usage is None.
         world.metrics.lock().unwrap().available = false;
         assert!(build_city(&world, &r).unwrap().pods[0].usage.is_none());
+    }
+
+    #[test]
+    fn node_allocatable_parses_pods() {
+        let n = fx::node("n", None); // fixture has cpu/memory, no "pods"
+        assert_eq!(node_allocatable(&n, "cpu"), Some(4.0));
+        assert_eq!(node_allocatable(&n, "pods"), None);
+        let mut n2 = fx::node("n2", None);
+        n2.status.as_mut().unwrap().allocatable = Some(fx::quantities(&[
+            ("cpu", "4"),
+            ("memory", "8Gi"),
+            ("pods", "110"),
+        ]));
+        assert_eq!(node_allocatable(&n2, "pods"), Some(110.0));
+    }
+
+    #[test]
+    fn saturation_flows_into_node_tile() {
+        use super::saturation::{SatDimKind, SatLevel};
+        let mut n = fx::node("n", None);
+        n.status.as_mut().unwrap().allocatable = Some(fx::quantities(&[
+            ("cpu", "4"),
+            ("memory", "8Gi"),
+            ("pods", "10"),
+        ]));
+        // 10 running + 2 terminal (excluded) → 10/10 non-terminal = High.
+        let mut pods: Vec<Pod> = (0..10)
+            .map(|i| fx::pod("d", &format!("p{i}"), Some("n")))
+            .collect();
+        pods.push(fx::pod_phase(fx::pod("d", "ok", Some("n")), "Succeeded"));
+        pods.push(fx::pod_phase(fx::pod("d", "bad", Some("n")), "Failed"));
+        let refs: Vec<&Pod> = pods.iter().collect();
+        let tile = build_node_tile(&n, &refs, &OwnerIndex::default(), None);
+        assert_eq!(
+            tile.saturation.pod_ratio(),
+            Some(1.0),
+            "terminal pods excluded"
+        );
+        assert_eq!(tile.saturation.worst, SatLevel::High);
+        assert_eq!(tile.saturation.worst_dim().unwrap().0, SatDimKind::Pods);
+
+        // A node without allocatable["pods"] omits the pod dimension entirely.
+        let bare = build_node_tile(&fx::node("b", None), &refs, &OwnerIndex::default(), None);
+        assert_eq!(bare.saturation.pod_ratio(), None);
     }
 
     #[test]

@@ -611,7 +611,7 @@ pub fn draw_sidebar(
     // Compute the lines first so an empty result (e.g. open sea in a single
     // cluster) falls back to the placeholder rather than a bare header.
     let lines = sel
-        .map(|(sw, local)| region_lines(sw, local, snap))
+        .map(|(sw, local)| region_lines(sw, local, snap, overlay))
         .unwrap_or_default();
     if lines.is_empty() {
         text("click a tile to inspect", x, y, 13.0, STONE_INK_DIM);

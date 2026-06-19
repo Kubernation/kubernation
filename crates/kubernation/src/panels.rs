@@ -7,10 +7,11 @@
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::logline::{self, FilterExpr, Level};
 use kubernation_core::state::model::{NodeHealth, PodState, WorkloadRef};
+use kubernation_core::state::saturation::{NodeSaturation, SatLevel};
 use kubernation_core::state::world::{CoastKind, Region};
 use macroquad::prelude::*;
 
-use crate::draw::SceneWorld;
+use crate::draw::{Overlay, SceneWorld};
 use crate::net::{LogTail, Snapshot};
 use crate::text::{
     mono_text, mono_text_size, name_text, name_text_size, text, text_bold, text_size,
@@ -120,7 +121,12 @@ fn cluster_tag(id: ClusterId) -> (&'static str, Color) {
 /// The text lines describing whatever is at `local` in `sw` — shared by the
 /// hover tooltip and the right column's SELECTION panel. Empty for open sea in
 /// a single-cluster session (nothing worth saying).
-pub fn region_lines(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot) -> Vec<(String, Color)> {
+pub fn region_lines(
+    sw: &SceneWorld,
+    local: (u16, u16),
+    snap: &Snapshot,
+    overlay: Overlay,
+) -> Vec<(String, Color)> {
     let paired = snap.warm.is_some();
     let mut lines: Vec<(String, Color)> = Vec::new();
     if paired {
@@ -138,7 +144,7 @@ pub fn region_lines(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot) -> Vec<
         lines.push((format!("-> {}", m.workload.name), STONE_INK_DIM));
     } else {
         match sw.world.region_at(local.0, local.1) {
-            Region::City(_, c) => {
+            Region::City(p, c) => {
                 lines.push((c.r.name.clone(), STONE_INK));
                 let gap = if c.ready < c.desired {
                     STONE_WARN
@@ -171,6 +177,11 @@ pub fn region_lines(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot) -> Vec<
                 {
                     lines.push((st.describe(sw.id), sync_on_stone(st)));
                 }
+                // The city sits on the tinted province — show its host node's
+                // strain too, so the distinguisher isn't lost on the settlement.
+                if overlay == Overlay::Saturation {
+                    lines.extend(saturation_lines(&p.tile.saturation));
+                }
             }
             Region::Province(p) => {
                 lines.push((p.tile.name.clone(), STONE_INK));
@@ -184,6 +195,11 @@ pub fn region_lines(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot) -> Vec<
                     format!("{} . {} pods", health.0, p.tile.pods.len()),
                     health.1,
                 ));
+                // Under the Saturation overlay, name the binding strain
+                // dimension(s) — the distinguisher the Pressure overlay lacks.
+                if overlay == Overlay::Saturation {
+                    lines.extend(saturation_lines(&p.tile.saturation));
+                }
             }
             Region::Structure(_, s) => {
                 lines.push((format!("{}/{}", s.kind, s.name), STONE_INK));
@@ -205,8 +221,41 @@ pub fn region_lines(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot) -> Vec<
     lines
 }
 
-pub fn draw_tooltip(sw: &SceneWorld, local: (u16, u16), snap: &Snapshot, mouse: Vec2) {
-    let lines = region_lines(sw, local, snap);
+/// PURE draw-decision fn: the per-dimension saturation breakdown for a province
+/// — the strain dimensions that are non-calm (worst first), each named + colored
+/// by its own level on the stone column. A fully-calm node yields one "calm"
+/// line. Unit-tested (the testability policy). Conditions render "(pegged)"; an
+/// omitted dimension (no honest source) simply isn't in `sat.dims`.
+pub fn saturation_lines(sat: &NodeSaturation) -> Vec<(String, Color)> {
+    let ink = |l: SatLevel| match l {
+        SatLevel::Calm => STONE_INK_DIM,
+        SatLevel::Elevated => STONE_WARN,
+        SatLevel::High => STONE_CRIT,
+    };
+    let mut strained: Vec<_> = sat
+        .dims
+        .iter()
+        .filter(|d| d.level > SatLevel::Calm)
+        .collect();
+    strained.sort_by_key(|d| std::cmp::Reverse(d.level));
+    if strained.is_empty() {
+        return vec![("strain: calm".into(), STONE_INK_DIM)];
+    }
+    let mut lines = vec![("strain:".into(), ink(sat.worst_level()))];
+    for d in strained {
+        lines.push((format!("  {}", d.label), ink(d.level)));
+    }
+    lines
+}
+
+pub fn draw_tooltip(
+    sw: &SceneWorld,
+    local: (u16, u16),
+    snap: &Snapshot,
+    overlay: Overlay,
+    mouse: Vec2,
+) {
+    let lines = region_lines(sw, local, snap, overlay);
     if lines.is_empty() {
         return;
     }
@@ -888,11 +937,42 @@ mod tests {
             attention: Arc::new(Vec::new()),
         };
         let worlds = scene(&snap);
-        let lines = region_lines(&worlds[0], (cx, cy), &snap);
+        let lines = region_lines(&worlds[0], (cx, cy), &snap, Overlay::Terrain);
         assert!(
             lines.iter().any(|(t, _)| t.contains("web")),
             "the SELECTION/tooltip lines should name the workload: {lines:?}"
         );
+    }
+
+    #[test]
+    fn saturation_lines_name_strained_dims_and_peg_conditions() {
+        use kubernation_core::state::saturation::saturate_node;
+        // A pod-bound + DiskPressure node: the binding dims are named, the
+        // condition is "(pegged)", and calm cpu/mem are omitted.
+        let sat = saturate_node(0.20, 0.30, 108, Some(110.0), &["Disk"]);
+        let lines = saturation_lines(&sat);
+        let joined: String = lines
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(
+            joined.contains("pods 108/110"),
+            "names the pod-slot strain: {joined}"
+        );
+        assert!(
+            joined.contains("DiskPressure (pegged)"),
+            "condition pegged, no %: {joined}"
+        );
+        assert!(!joined.contains("cpu"), "calm cpu omitted: {joined}");
+        // High dims color CRIT.
+        assert!(lines.iter().any(|(_, c)| *c == STONE_CRIT));
+
+        // A fully-calm node yields one calm line.
+        let calm = saturate_node(0.2, 0.3, 10, Some(110.0), &[]);
+        let cl = saturation_lines(&calm);
+        assert_eq!(cl.len(), 1);
+        assert!(cl[0].0.contains("calm"));
     }
 
     #[test]

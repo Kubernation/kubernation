@@ -56,7 +56,7 @@ security feature (10). Rollback (4) follows history (3) because it depends on it
 - NetworkPolicy coverage map (M)
 - Multi-burn-rate SLO alerting (M) — two-window burn over the treasury rings
 - Alert-fatigue dedup + actionability tags (M)
-- Saturation overlay — the 4th golden signal (M)
+- Saturation overlay — the 4th golden signal (M) — ✅ shipped (v0.49.0)
 - Secret-hygiene audit, no values (M)
 - Live-spec drift — declared vs running (M)
 - Postmortem / after-action export — one local file (M) — ✅ shipped (v0.48.0)

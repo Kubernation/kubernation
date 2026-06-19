@@ -184,9 +184,9 @@ struct Args {
     #[arg(long, value_name = "PCT")]
     slo_target: Option<String>,
     /// Start with a map overlay active: "terrain" (default), "pressure"
-    /// (cpu/mem heat), "replicas" (workload health), "namespace" (territory)
-    /// or "walls" (NetworkPolicy segmentation). Set from the View menu at
-    /// runtime; flag is for shots.
+    /// (cpu/mem heat), "replicas" (workload health), "namespace" (territory),
+    /// "walls" (NetworkPolicy segmentation) or "saturation" (the 4th golden
+    /// signal — strain). Set from the View menu at runtime; flag is for shots.
     #[arg(long, value_name = "MODE")]
     overlay: Option<String>,
     /// Open a chrome menu on sync — game / view / orders / advisors / world /
@@ -473,6 +473,7 @@ async fn main() {
         Some("replicas") => Overlay::Replicas,
         Some("namespace") => Overlay::Namespace,
         Some("walls") => Overlay::Coverage,
+        Some("saturation") => Overlay::Saturation,
         _ => Overlay::Terrain,
     };
     // Menu "Fit view" can't reach `bounds` from the chrome draw, so it defers
@@ -1927,7 +1928,7 @@ async fn main() {
                     && !minimap_drag
                     && let Some((sw, local)) = hovered
                 {
-                    draw_tooltip(sw, local, s, mouse);
+                    draw_tooltip(sw, local, s, overlay, mouse);
                 }
 
                 // The End-of-Turn review takes over the center when open;

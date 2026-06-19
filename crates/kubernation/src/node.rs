@@ -14,6 +14,7 @@ use kubernation_core::events::ClusterId;
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::model::{MetricSource, NodeHealth, PodState, build_node_detail};
 use kubernation_core::state::planned::{Intervention, PlannedWorld};
+use kubernation_core::state::saturation::SatLevel;
 use kubernation_core::state::timeline::{
     SUBJECT_CAP, TIMELINE_WINDOW_MIN, TimelineOpts, TimelineScope, build_timeline,
 };
@@ -127,6 +128,23 @@ pub fn draw_node(
         y += sh + 4.0;
     }
     y += 18.0;
+    // Saturation strain — the worst-dimension verdict + the pod-slot ratio (the
+    // 4th-golden-signal axis cpu/mem can't show; cpu/mem are the gauges above,
+    // the kubelet conditions the "pressure" flags). Calm reads dim.
+    {
+        let sat = &t.saturation;
+        let (word, col) = match sat.worst_level() {
+            SatLevel::Calm => ("calm", DIM),
+            SatLevel::Elevated => ("elevated", WARN),
+            SatLevel::High => ("high", CRIT),
+        };
+        let mut txt = format!("strain: {word}");
+        if let Some(lbl) = sat.pod_label() {
+            txt.push_str(&format!(" · {lbl}"));
+        }
+        text(txt.as_str(), b.x, y + 12.0, 13.0, col);
+        y += 18.0;
+    }
     text(
         format!("{} pods stationed", detail.pods.len()),
         b.x,
