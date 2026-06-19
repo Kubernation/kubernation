@@ -1,6 +1,8 @@
 //! Bundled-font text rendering. macroquad's built-in font is a blurry
-//! bitmap with ASCII-only coverage; we ship Fira Sans (OFL, see
-//! assets/fonts/OFL.txt) and route every label through these helpers.
+//! bitmap with ASCII-only coverage; we ship Fira Sans (UI), Liberation Serif
+//! Bold (map place-name banners), and Liberation Mono (the log overlay) — all
+//! OFL 1.1 (see assets/fonts/OFL.txt) — and route every label through these
+//! helpers.
 
 use std::cell::RefCell;
 
@@ -12,10 +14,14 @@ const SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/FiraSans-SemiBold.ttf");
 // A serif (Liberation Serif Bold, OFL 1.1 — Times-metric) for classic-4X
 // place-name banners on the map, the way old strategy maps label cities.
 const SERIF: &[u8] = include_bytes!("../assets/fonts/LiberationSerif-Bold.ttf");
+// A fixed-width face (Liberation Mono, OFL 1.1 — Courier-metric) for the log
+// overlay, so timestamps + columns line up the way logs are meant to read.
+const MONO: &[u8] = include_bytes!("../assets/fonts/LiberationMono-Regular.ttf");
 
 thread_local! {
     static FONTS: RefCell<Option<(Font, Font)>> = const { RefCell::new(None) };
     static SERIF_FONT: RefCell<Option<Font>> = const { RefCell::new(None) };
+    static MONO_FONT: RefCell<Option<Font>> = const { RefCell::new(None) };
 }
 
 /// Load the bundled fonts; falls back to the built-in font if parsing
@@ -28,6 +34,8 @@ pub fn init() {
     }
     let serif = load_ttf_font_from_bytes(SERIF).ok();
     SERIF_FONT.with(|f| *f.borrow_mut() = serif);
+    let mono = load_ttf_font_from_bytes(MONO).ok();
+    MONO_FONT.with(|f| *f.borrow_mut() = mono);
 }
 
 fn with_font<T>(bold: bool, f: impl FnOnce(Option<&Font>) -> T) -> T {
@@ -101,6 +109,37 @@ pub fn name_text(s: impl AsRef<str>, x: f32, y: f32, size: f32, color: Color) {
 
 pub fn name_text_size(s: impl AsRef<str>, size: f32) -> TextDimensions {
     SERIF_FONT.with(|sf| match sf.borrow().as_ref() {
+        Some(font) => measure_text(s.as_ref(), Some(font), size as u16, 1.0),
+        None => measure_text(s.as_ref(), None, size as u16, 1.0),
+    })
+}
+
+/// Monospace text rendering for the log overlay (Liberation Mono). Falls back to
+/// the proportional sans face if the mono font failed to parse.
+pub fn mono_text(s: impl AsRef<str>, x: f32, y: f32, size: f32, color: Color) {
+    let drew = MONO_FONT.with(|mf| {
+        mf.borrow().as_ref().map(|font| {
+            draw_text_ex(
+                s.as_ref(),
+                x,
+                y,
+                TextParams {
+                    font: Some(font),
+                    font_size: size as u16,
+                    color,
+                    ..Default::default()
+                },
+            )
+        })
+    });
+    if drew.is_none() {
+        text(s, x, y, size, color);
+    }
+}
+
+/// Measure a string in the monospace face (for the log filter caret, etc.).
+pub fn mono_text_size(s: impl AsRef<str>, size: f32) -> TextDimensions {
+    MONO_FONT.with(|mf| match mf.borrow().as_ref() {
         Some(font) => measure_text(s.as_ref(), Some(font), size as u16, 1.0),
         None => measure_text(s.as_ref(), None, size as u16, 1.0),
     })

@@ -9,6 +9,10 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Monospace log overlay.** The log viewer now renders in a fixed-width face
+  (Liberation Mono, OFL 1.1 — bundled, same family as the map's serif), so
+  timestamps and columns line up the way logs are meant to read. Severity tinting
+  + width-fitting are unchanged; the overlay chrome stays in the UI sans face.
 - **Game Day enhancements (round 3).** Making the chaos console safer, more
   legible, and more measurable:
   - **Dry-run preview** — the drill's PREVIEW now lists the concrete steps that

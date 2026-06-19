@@ -12,7 +12,9 @@ use macroquad::prelude::*;
 
 use crate::draw::SceneWorld;
 use crate::net::{LogTail, Snapshot};
-use crate::text::{name_text, name_text_size, text, text_bold, text_size};
+use crate::text::{
+    mono_text, mono_text_size, name_text, name_text_size, text, text_bold, text_size,
+};
 use crate::theme::*;
 
 pub const CHROME_H: f32 = 32.0;
@@ -381,8 +383,9 @@ pub fn draw_logs(
     let plain = Color::new(0.80, 0.84, 0.80, 1.0);
     let mut ly = body_top;
     for raw in &all[start..end] {
-        // Bound to the panel width (no clipping in macroquad).
-        let s = fit_width(raw, 13.0, body_w);
+        // Bound to the panel width (no clipping in macroquad) — monospace so
+        // timestamps + columns line up the way logs read.
+        let s = fit_width_mono(raw, 13.0, body_w);
         // Tint by guessed severity so an error stands out (text unchanged).
         let color = match logline::classify(raw) {
             Level::Error => CRIT,
@@ -390,7 +393,7 @@ pub fn draw_logs(
             Level::Debug => DIM,
             Level::Info | Level::Plain => plain,
         };
-        text(ascii(&s), x + 14.0, ly, 13.0, color);
+        mono_text(ascii(&s), x + 14.0, ly, 13.0, color);
         ly += line_h;
     }
     // Position readout: hidden-above count, or "following" at the tail.
@@ -441,6 +444,24 @@ pub(crate) fn fit_width(s: &str, size: f32, max_w: f32) -> String {
     let mut out: String = chars[..lo].iter().collect();
     out.push('…');
     out
+}
+
+/// `fit_width` for the fixed-width log face: every glyph has the same advance,
+/// so the fit is a single char-width division — no binary search.
+pub(crate) fn fit_width_mono(s: &str, size: f32, max_w: f32) -> String {
+    if max_w <= 0.0 {
+        return String::new();
+    }
+    if mono_text_size(s, size).width <= max_w {
+        return s.to_string();
+    }
+    let cw = mono_text_size("M", size).width.max(1.0);
+    let max_chars = (max_w / cw).floor() as usize;
+    if max_chars <= 1 {
+        return "…".into();
+    }
+    let cut: String = s.chars().take(max_chars - 1).collect();
+    format!("{cut}…")
 }
 
 // --- evict confirm ------------------------------------------------------
