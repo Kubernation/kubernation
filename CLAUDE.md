@@ -1229,10 +1229,41 @@ what makes the interesting logic unit-testable without a cluster.
   gate; the net protected-namespace re-check now covers Scale steps too; and
   `run_chaos`'s doc no longer claims a pod-kill RBAC pre-check it doesn't do (the
   apiserver enforces per-DELETE). Verified live (KillOne on `web` → "stayed up —
-  no outage"). **Deferred to later
-  passes:** node-failure (cordon+drain), NetworkPolicy partition, Istio/mesh
-  fault injection + latency/cpu stress (need a mesh/exec), timed auto-restore,
-  warm-cluster chaos, persisted run history.
+  no outage"). Node-failure + NetworkPolicy partition shipped in pass 2.
+- **Game Day — round 3 (legibility / safety / depth)** (2026-06-18, user
+  "do all of the quick wins and mediums" from the chaos-ideation roadmap;
+  design + adversarial-review workflows): a broad enrichment of the chaos console
+  in five batches, all reusing the existing write primitives (no new verb beyond
+  pass 2's netpol). **Legibility:** `plan_summary` dry-run step list in the
+  PREVIEW; `MAX_KILL_PODS=50` fail-closed blast cap on every mass-eviction path;
+  `budget_verdict` (breach/spend/untouched) tying the scorecard to the treasury.
+  **Four new experiments** (pure planner arms + GUI knobs): `KillPercent{pct}`,
+  `ScaleSpike{factor}` (capped like the kills), `CordonFreeze` (cordon, no drain),
+  and a directional `Partition` (`PartitionDir{Both,Ingress,Egress}` →
+  `policy_types`). **Safety triad:** restore-on-exit (`prevent_quit` + a
+  quit-intercept that runs the restore before exit, 27s backstop > the 25s worker
+  timeout), opt-in auto-restore (`auto_restore_secs` → `auto_restore_tick`), and
+  restore-on-context-switch (undo with the OLD client before reconnecting) — so a
+  drill never strands the cluster; plus an all-or-nothing RBAC gate (`run_chaos`
+  SSAR-pre-flights `delete pods` per evicting namespace + a self-contained
+  protected-ns failsafe). **Observability:** a steady-state gate (`healthy_before`
+  — "baseline noisy" when the target was already degraded), **MTTD** (when the
+  attention queue first flagged the drill — Kubernation measuring its own
+  observability), and a recovery-curve sparkline. **4X loop:** a live "raid
+  underway" attention concern, flip-watch (auto blast-radius on the live raid),
+  and an in-session CHRONICLE of finished drills. An operator undo is labelled
+  "restored", never "self-healed". The interesting logic stays pure + unit-tested
+  in `state/chaos.rs` (the scorecard/verdict/cap/summary/steady-state are pure
+  draw-decision fns); the GUI window grew to 9 experiments + knobs + dry-run +
+  scorecard (recovery sparkline) + chronicle. **Deferred** (teed up for a future
+  pass): difficulty tiers (Skirmish/Raid/Siege — need a *compound* multi-step run
+  model, not the single-`Experiment` path); collateral-concern correlation;
+  markdown after-action report (a local-file write); persisted run history;
+  warm-cluster chaos + a hot→warm failover drill; mesh/sidecar stress + latency
+  (need Istio/Linkerd or an injected Job — no exec by posture). Two known minor
+  gaps: flip-watch overrides a manual `B`-dismiss during the ~30s raid window;
+  MTTD can misreport a "monitoring gap" when the drill target is hidden by the
+  active namespace filter.
 
 ## The pair (hot/warm)
 
