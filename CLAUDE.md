@@ -1397,6 +1397,54 @@ what makes the interesting logic unit-testable without a cluster.
   Charter (hot-only, like advisors/SLO); resourceNames-granular cells (the grid
   answers "can you act on this resource type here"); a "denied on a Kubernation
   write-verb = CRIT" highlight. Next in the roadmap: hardening scan (#7).
+- **Security / hardening scan (#7)** (2026-06-19, roadmap item #7; design-workflow
+  vetted — 4 lenses → 3 judges → synthesis): a 5th **Advisors ▸ Hardening** tab +
+  attention-queue concerns, linting each workload's pod *template* for security
+  misconfigurations. **Pure core** `state/harden.rs`: `scan_template(&PodTemplateSpec)
+  -> Vec<Finding>` (takes a template directly so every rule is unit-testable without
+  a cluster) + `hardening_report(&world)` (iterates `build_workloads`, resolves via
+  the now-`pub(crate)` `model::workload_template`, buckets by worst severity). **Rules**
+  (each tagged with the standard it maps to): HARD01 privileged / HARD02 host-namespace
+  / HARD03 dangerous-capability (add outside the PSS-baseline allow-set) / HARD04
+  hostPath → **Critical** (PSS-baseline); HARD10 effective-run-as-root / HARD11
+  allowPrivilegeEscalation≠false / HARD12 caps-not-dropped-ALL / HARD13
+  writable-root-fs → **Warning** (PSS-restricted); HARD20 no cpu+mem limits / HARD21
+  `:latest`-or-untagged (a `@sha256` digest is never flagged) / HARD22 automount
+  SA-token → **Info** (Popeye/OWASP). **Local `HSeverity`** (mapped to
+  `attention::Severity` only at the net boundary — no core→attention cycle).
+  **Scope:** regular containers + native sidecars (`restartPolicy:Always`
+  initContainers); plain init/ephemeral excluded; Deploy/STS/DS only. **Dedup:**
+  privileged suppresses HARD11+HARD12 on that container. **Honesty (load-bearing):**
+  **seccomp + default-ServiceAccount are deliberately NOT checked** — the kubelet's
+  `SeccompDefault` makes a static-template seccomp check false-positive, and the SA
+  object isn't watched — and the footer states it's a curated subset, not full PSS
+  compliance. `norm_cap` strips `CAP_`/uppercases so `CAP_SYS_ADMIN`==`SYS_ADMIN`.
+  **Queue:** ONLY a `worst==Critical` workload becomes **one aggregated Concern**
+  (hot-only, respects the namespace filter, suppressed if a stronger concern already
+  flags it — "city in trouble, not 40 alarms"); Warning/Info are advisor-only. The
+  `next_action` gained a `harden:` arm → "open Advisors ▸ Hardening". **READ-ONLY**
+  (lives in `state/`, no new write verb), cluster-wide advisor, metrics-free. GUI:
+  the pure `gui/advisor::hardening_lines` (testability-policy draw fn) + the 5th tab
+  (`--advisor hardening` / Key5 / menu). Dev flag `--advisor hardening`. Verified live
+  on kind: "0/9 fortified · 2 critical · 6 warning" — kindnet + kube-proxy correctly
+  Critical (real hostNetwork+hostPath), demo workloads PSS-restricted Warnings,
+  metrics-server Info; the 2 criticals appear as one aggregated queue concern each
+  with the runbook hint. **Adversarial-review hardening** (7 findings fixed): the
+  queue dedup now suppresses a hardening Critical only when an EQUAL-severity
+  (Critical) concern already covers the workload — a mere Warning/Info no longer
+  masks a Critical security finding; **protected namespaces (kube-system/…) are
+  excluded from the *queue*** (their CNI/kube-proxy posture isn't the operator's to
+  fix and would permanently squat the queue — still shown in the advisor tab); the
+  green "fortified" all-clear fires only when something was actually scanned clean
+  (never on an empty/all-unresolved cluster); the headline separates the axes
+  (`N critical · N warning · N info · N clean of T`) instead of a misleading
+  clean/total fraction that Info nits drove to ~0; HARD20 fires on *either* missing
+  limit (a missing memory limit is the real OOM risk), naming which; and the
+  standard tag lists distinct standards for a mixed bucket. 171 core + 22 GUI tests;
+  gui-smoke 28. **Deferred** (the report's `counts_by_*` are the raw material): the
+  posture score (0–100, its own roadmap item); seccomp + default-SA
+  (false-positive-prone); Jobs/CronJobs/bare pods;
+  hostPort/AppArmor/SELinux/sysctls/probes; PSA-enforcement simulation.
 
 ## The pair (hot/warm)
 

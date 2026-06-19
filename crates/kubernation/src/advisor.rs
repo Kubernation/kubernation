@@ -1,15 +1,16 @@
 //! The advisor screens — classic-4X "advisors" (Civ's F1 Berater) over the
-//! pure core reports (`kubernation_core::state::advisor`). Four read-only
-//! summary tabs: Health (state of the realm), Storage (granaries), Network
-//! (harbors & gates), and Right-sizing (requests vs metrics-server usage —
-//! waste / risk / scheduler-blind). Opened from the Advisors menu; a modal
-//! window like the Almanac, sharing its window/tab/scroll machinery.
-//! Cluster-wide (hot).
+//! pure core reports. Five read-only summary tabs: Health (state of the realm),
+//! Storage (granaries), Network (harbors & gates), Right-sizing (requests vs
+//! metrics-server usage — waste / risk / scheduler-blind), and Hardening
+//! (security misconfigurations — OWASP-K01 / Pod Security Standards / Popeye).
+//! Opened from the Advisors menu; a modal window like the Almanac, sharing its
+//! window/tab/scroll machinery. Cluster-wide (hot).
 
 use kubernation_core::state::advisor::{
     HealthReport, NetworkReport, RightSizingReport, RsRow, RsVerdict, StorageReport, health_report,
     network_report, rightsizing_report, storage_report,
 };
+use kubernation_core::state::harden::{self, HardeningReport, WorkloadFindings};
 use kubernation_core::util::human_bytes;
 use macroquad::prelude::*;
 
@@ -24,14 +25,16 @@ pub enum AdvisorTab {
     Storage,
     Network,
     RightSizing,
+    Hardening,
 }
 
 impl AdvisorTab {
-    pub const ALL: [AdvisorTab; 4] = [
+    pub const ALL: [AdvisorTab; 5] = [
         AdvisorTab::Health,
         AdvisorTab::Storage,
         AdvisorTab::Network,
         AdvisorTab::RightSizing,
+        AdvisorTab::Hardening,
     ];
     fn idx(self) -> usize {
         match self {
@@ -39,6 +42,7 @@ impl AdvisorTab {
             AdvisorTab::Storage => 1,
             AdvisorTab::Network => 2,
             AdvisorTab::RightSizing => 3,
+            AdvisorTab::Hardening => 4,
         }
     }
 }
@@ -79,10 +83,17 @@ impl Advisor {
     }
 
     pub fn draw(&mut self, snap: Option<&Snapshot>, mouse: Vec2, click: bool) -> AdvisorAction {
-        let labels = ["Health", "Storage", "Network", "Right-sizing", "Close"];
+        let labels = [
+            "Health",
+            "Storage",
+            "Network",
+            "Right-sizing",
+            "Hardening",
+            "Close",
+        ];
         let win = draw_window(
             "Advisors — state of the realm",
-            vec2(680.0, 540.0),
+            vec2(760.0, 540.0),
             &labels,
             self.tab.idx(),
         );
@@ -98,6 +109,7 @@ impl Advisor {
                 AdvisorTab::Storage => page_storage(&mut cx, &storage_report(obs)),
                 AdvisorTab::Network => page_network(&mut cx, &network_report(obs)),
                 AdvisorTab::RightSizing => page_rightsizing(&mut cx, &rightsizing_report(obs)),
+                AdvisorTab::Hardening => page_hardening(&mut cx, &harden::hardening_report(obs)),
             }
         } else {
             cx.note("the world is not yet explored", DIM);
@@ -410,6 +422,152 @@ fn page_rightsizing(cx: &mut Ctx, r: &RightSizingReport) {
     }
 }
 
+// --- hardening page (pure line builder + renderer) --------------------------
+
+/// One workload's worst-severity findings as a compact "summary [standard]".
+fn hf_summary(wf: &WorkloadFindings) -> String {
+    let top: Vec<_> = wf
+        .findings
+        .iter()
+        .filter(|f| f.severity == wf.worst)
+        .collect();
+    // The distinct standards across the shown findings — never mislabel a mixed
+    // bucket (e.g. an Info row with both a Popeye + an OWASP-K01 finding).
+    let std = harden::standards_tag(&top);
+    let mut parts: Vec<String> = top
+        .iter()
+        .take(2)
+        .map(|f| match &f.container {
+            Some(c) => format!("{} ({c})", f.detail),
+            None => f.detail.clone(),
+        })
+        .collect();
+    if top.len() > 2 {
+        parts.push(format!("+{} more", top.len() - 2));
+    }
+    format!("{} [{std}]", parts.join("; "))
+}
+
+fn hardening_section(
+    out: &mut Vec<(String, RsRole)>,
+    heading: &str,
+    rows: &[WorkloadFindings],
+    role: RsRole,
+) {
+    if rows.is_empty() {
+        return;
+    }
+    out.push((heading.to_string(), RsRole::Heading));
+    for wf in rows.iter().take(RS_CAP) {
+        out.push((
+            format!(
+                "{} {}/{} — {}",
+                wf.r.kind,
+                wf.r.namespace,
+                wf.r.name,
+                hf_summary(wf)
+            ),
+            role,
+        ));
+    }
+    if rows.len() > RS_CAP {
+        out.push((format!("+{} more", rows.len() - RS_CAP), RsRole::Dim));
+    }
+}
+
+/// PURE: the hardening advisor's lines as (text, role). Unit-tested.
+pub fn hardening_lines(r: &HardeningReport) -> Vec<(String, RsRole)> {
+    let mut out: Vec<(String, RsRole)> = Vec::new();
+    // Separate the axes rather than a single "clean/total fortified" fraction —
+    // Info-level hygiene nits (no limits / automount) trip almost every default
+    // workload, so a fraction would read ~0/N and overstate the danger.
+    out.push((
+        format!(
+            "DEFENSE — {} critical · {} warning · {} info · {} clean of {} workloads",
+            r.critical.len(),
+            r.warning.len(),
+            r.info.len(),
+            r.workloads_clean,
+            r.workloads_total
+        ),
+        RsRole::Headline,
+    ));
+    out.push((
+        "curated subset: PSS-baseline + PSS-restricted + OWASP-K01 + Popeye — not full PSS compliance".to_string(),
+        RsRole::Dim,
+    ));
+    let by_std = |s: &str| r.counts_by_standard.get(s).copied().unwrap_or(0);
+    out.push((
+        format!(
+            "findings: PSS-baseline {} · PSS-restricted {} · OWASP-K01 {} · Popeye {}",
+            by_std("PSS-baseline"),
+            by_std("PSS-restricted"),
+            by_std("OWASP-K01"),
+            by_std("Popeye")
+        ),
+        RsRole::Dim,
+    ));
+    if r.unresolved > 0 {
+        out.push((
+            format!("{} workload(s) not yet resolved", r.unresolved),
+            RsRole::Dim,
+        ));
+    }
+
+    // The all-clear is GREEN only when something was actually scanned clean —
+    // never when the cluster is empty or every template is still unresolved
+    // (a reassuring green there would be a false all-clear).
+    let nothing_found = r.critical.is_empty() && r.warning.is_empty() && r.info.is_empty();
+    if r.workloads_total == 0 {
+        out.push(("no workloads to scan".to_string(), RsRole::Dim));
+    } else if nothing_found && r.unresolved == 0 && r.workloads_clean > 0 {
+        out.push((
+            "every workload is fortified against the checked controls".to_string(),
+            RsRole::Good,
+        ));
+    } else if nothing_found && r.unresolved > 0 {
+        out.push((
+            "scan pending — templates not yet resolved".to_string(),
+            RsRole::Dim,
+        ));
+    }
+    hardening_section(
+        &mut out,
+        "CRITICAL (escalation / breakout)",
+        &r.critical,
+        RsRole::Crit,
+    );
+    hardening_section(
+        &mut out,
+        "WARNING (PSS-restricted gaps)",
+        &r.warning,
+        RsRole::Warn,
+    );
+    hardening_section(&mut out, "INFO (hygiene)", &r.info, RsRole::Dim);
+
+    out.push((
+        "read-only — fix in the manifest/Helm chart and redeploy. Bare pods & Jobs not scanned; seccomp & default-SA deferred (often set at the namespace default).".to_string(),
+        RsRole::Dim,
+    ));
+    out
+}
+
+fn page_hardening(cx: &mut Ctx, r: &HardeningReport) {
+    for (line, role) in hardening_lines(r) {
+        let (color, bold) = match role {
+            RsRole::Headline | RsRole::Heading => (PARCHMENT, true),
+            RsRole::Good => (GOOD, false),
+            RsRole::Warn => (WARN, false),
+            RsRole::Crit => (CRIT, false),
+            RsRole::Dim => (DIM, false),
+        };
+        let size = if bold { 15.0 } else { 13.0 };
+        let avail = cx.body.w - if bold { 10.0 } else { 22.0 };
+        let shown = crate::panels::fit_width(&ascii(&line), size, avail);
+        cx.row(&shown, color, bold);
+    }
+}
+
 /// Token color for a count that's bad when non-zero (else dim).
 fn warn_if(n: usize, col: Color) -> Color {
     if n > 0 { col } else { DIM }
@@ -581,6 +739,66 @@ mod tests {
             lines
                 .iter()
                 .any(|(s, role)| s.starts_with("over-provisioned: 15") && *role == RsRole::Warn)
+        );
+    }
+
+    #[test]
+    fn hardening_lines_headline_sections_and_honesty() {
+        use kubernation_core::state::harden::{Finding, HSeverity, Standard, WorkloadFindings};
+        use kubernation_core::state::model::{WorkloadKind, WorkloadRef};
+
+        let wr = |n: &str| WorkloadRef {
+            kind: WorkloadKind::Deployment,
+            namespace: "demo".into(),
+            name: n.into(),
+        };
+        let crit = WorkloadFindings {
+            r: wr("bad"),
+            worst: HSeverity::Critical,
+            findings: vec![Finding {
+                rule_id: "HARD01",
+                standard: Standard::PssBaseline,
+                severity: HSeverity::Critical,
+                container: Some("c".into()),
+                detail: "privileged: true".into(),
+            }],
+            unresolved: false,
+        };
+        let mut report = HardeningReport {
+            workloads_total: 3,
+            workloads_clean: 2,
+            ..Default::default()
+        };
+        report.critical.push(crit);
+        *report.counts_by_standard.entry("PSS-baseline").or_default() += 1;
+
+        let lines = hardening_lines(&report);
+        // Headline separates the axes (no misleading clean/total fraction).
+        assert!(lines[0].1 == RsRole::Headline);
+        assert!(lines[0].0.contains("1 critical") && lines[0].0.contains("2 clean of 3"));
+        // Honesty line present.
+        assert!(
+            lines
+                .iter()
+                .any(|(s, _)| s.contains("not full PSS compliance"))
+        );
+        // The critical workload appears under CRITICAL with its standard tag.
+        assert!(lines.iter().any(|(s, role)| s.contains("demo/bad")
+            && s.contains("[PSS-baseline]")
+            && *role == RsRole::Crit));
+        // Footer honesty.
+        assert!(lines.last().unwrap().0.contains("read-only"));
+
+        // A fully-clean report shows the fortified line.
+        let clean = HardeningReport {
+            workloads_total: 2,
+            workloads_clean: 2,
+            ..Default::default()
+        };
+        assert!(
+            hardening_lines(&clean)
+                .iter()
+                .any(|(s, r)| s.contains("every workload is fortified") && *r == RsRole::Good)
         );
     }
 }

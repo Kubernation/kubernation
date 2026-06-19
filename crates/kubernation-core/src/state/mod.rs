@@ -5,6 +5,7 @@ pub mod chaos;
 pub mod charter;
 pub mod diagnose;
 pub mod filter;
+pub mod harden;
 pub mod inspect;
 pub mod logline;
 pub mod model;

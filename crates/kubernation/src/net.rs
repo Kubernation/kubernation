@@ -22,6 +22,7 @@ use kubernation_core::state::blast::Subject;
 use kubernation_core::state::chaos::{self, ScoreKind};
 use kubernation_core::state::charter::{self, Charter};
 use kubernation_core::state::filter::NamespaceFilter;
+use kubernation_core::state::harden;
 use kubernation_core::state::model::{Models, WorkloadRef, WorkloadRow, build_workloads};
 use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::pair::PairSync;
@@ -1441,6 +1442,40 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         }
                     }
                 }
+                // Hardening: a workload with a CRITICAL insecure config (privileged,
+                // host namespace, dangerous cap, hostPath) — ONE aggregated concern,
+                // hot-only. Suppress only if an EQUAL-severity (Critical) concern
+                // already covers it, so a mere Warning/Info never masks a Critical
+                // security finding; system namespaces (kube-system/…) stay
+                // advisor-only — their CNI/kube-proxy posture isn't the operator's
+                // to fix and would permanently squat the queue. ("city in trouble,
+                // not 40 alarms", without hiding the real Criticals.)
+                let flagged_crit: HashSet<(ClusterId, WorkloadRef)> = merged
+                    .iter()
+                    .filter(|c| c.severity == Severity::Critical)
+                    .filter_map(|c| match &c.target {
+                        Target::Workload(wr) => Some((c.cluster, wr.clone())),
+                        _ => None,
+                    })
+                    .collect();
+                for wf in &harden::hardening_report(&hot_handle.world).critical {
+                    if filter.matches(&wf.r.namespace)
+                        && !chaos::ns_protected(&wf.r.namespace)
+                        && !flagged_crit.contains(&(ClusterId::Hot, wf.r.clone()))
+                        && let Some(hc) = harden::workload_concern(wf)
+                    {
+                        merged.push(Concern {
+                            severity: Severity::Critical,
+                            title: hc.title,
+                            detail: hc.detail,
+                            target: Target::Workload(wf.r.clone()),
+                            probe: None,
+                            key: hc.key,
+                            cluster: ClusterId::Hot,
+                        });
+                    }
+                }
+
                 // Game Day: while a drill is fresh, announce the raid in the queue
                 // (the product's spine) so `n`/`B` route to it; drops after ~30s.
                 if let Some(sess) = net.chaos_session.lock().unwrap().as_ref()

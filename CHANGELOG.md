@@ -9,6 +9,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Security / hardening scan.** A 5th **Advisors ▸ Hardening** tab lints every
+  workload's pod template for security misconfigurations — privileged containers,
+  host namespaces, dangerous capabilities, hostPath mounts (Critical); run-as-root,
+  allowPrivilegeEscalation, un-dropped capabilities, writable root filesystem
+  (PSS-restricted Warnings); missing resource limits, `:latest`/untagged images,
+  automount SA token (Info) — each tagged with the standard it maps to (OWASP-K01 /
+  PSS-baseline / PSS-restricted / Popeye). Critical misconfigs also surface in the
+  attention queue as **one aggregated concern per workload** (never per-finding).
+  Read-only; pure `state/harden.rs` (unit-tested); honest about being a curated
+  subset (seccomp + default-SA deferred to avoid false positives at the namespace
+  default). (Roadmap #7.)
 - **The Charter — self-scoped RBAC.** A new **Help ▸ Charter** modal shows what
   *you* can do in the cluster — a curated `can-i` grid (✓ allowed / ✗ denied /
   ? unknown) for the active namespace plus a realm-wide (cluster-scoped) band,

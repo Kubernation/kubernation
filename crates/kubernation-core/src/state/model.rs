@@ -761,7 +761,10 @@ fn template_labels(t: Option<&PodTemplateSpec>) -> BTreeMap<String, String> {
 
 /// The pod template of a workload, from the right store. Shared by the chaos
 /// helpers below.
-fn workload_template(world: &ObservedWorld, wr: &WorkloadRef) -> Option<PodTemplateSpec> {
+pub(crate) fn workload_template(
+    world: &ObservedWorld,
+    wr: &WorkloadRef,
+) -> Option<PodTemplateSpec> {
     let ns = wr.namespace.as_str();
     let name = wr.name.as_str();
     let is = |m: &ObjectMeta| m.namespace.as_deref() == Some(ns) && m.name.as_deref() == Some(name);

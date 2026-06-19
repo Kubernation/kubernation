@@ -99,6 +99,7 @@ pub fn next_action(c: &Concern) -> Option<String> {
         "i" => "the Ingress backend Service is missing — fix the backend name",
         "s" => "the Service selector matches no pods — check its selector / pod labels",
         "e" => "open the target to read its recent events",
+        "harden" => "insecure config — open Advisors ▸ Hardening (realm defense)",
         "slo" => "error budget burning — open the city's TREASURY (SLO) band",
         "pair" => "compare HOT vs WARM (sync chips + the workload list)",
         "chaos-raid" => "drill underway — B: watch the blast; the scorecard tracks recovery",

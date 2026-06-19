@@ -163,6 +163,10 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                     "Right-sizing (requests vs usage)",
                     MenuAction::Advisor(AdvisorTab::RightSizing),
                 ),
+                Item::act(
+                    "Hardening (realm defense)",
+                    MenuAction::Advisor(AdvisorTab::Hardening),
+                ),
             ],
         },
         Menu {
