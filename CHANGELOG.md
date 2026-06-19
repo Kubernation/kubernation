@@ -9,6 +9,19 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Right-sizing advisor.** A 4th Advisors tab compares each workload's
+  per-replica resource **requests** against actual **metrics-server usage** and
+  flags **over-provisioned** (reclaimable waste), **under-provisioned**
+  (CPU-throttle / memory-OOM risk), and **scheduler-blind** (no requests)
+  workloads — each with a directional suggested request (VPA-style floors +
+  target-utilization headroom) and a cluster-wide reclaimable-cpu/mem total in
+  node-equivalents (never invented dollars). Read-only; metrics-server only
+  (degrades dark to just the scheduler-blind list when absent); honest about the
+  single-sample basis. Pure `state/advisor.rs::rightsizing_report` + unit-tested
+  classification (mean for over, *peak* for memory-under since it's
+  incompressible; a `measured==0` guard so a momentarily-unsampled workload is
+  never a false "waste"; a floor-negation guard so "waste" never suggests a
+  *raise*). (Roadmap #5.)
 - **Rollback — the planning turn's 5th verb.** A Deployment's city window HISTORY
   section now has a `rollback` button on each prior revision; it stages a rollback
   (restore that revision's pod template) reviewed and committed through the same

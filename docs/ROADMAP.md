@@ -24,7 +24,7 @@ identity; interesting logic lives in pure, unit-tested core.
 | 2 | **Runbook / next-action hints on concerns** | Cheapest high-signal win — every concern points to its in-app verb. | S | ✅ shipped (v0.38.0) |
 | 3 | **Rollout history + revision diff** | "Which change broke it?" Pure over the watched ReplicaSet store; unblocks #4. | M | ✅ shipped (v0.39.0) |
 | 4 | **Rollback (staged turn — 5th planning verb)** | The #1 incident remediation, on the existing dry-run/commit rail. | M | ✅ shipped (v0.40.0) |
-| 5 | **Right-sizing advisor** (requests vs usage) | Biggest cost + reliability lever; metrics rings already kept; no Prometheus. | M | todo |
+| 5 | **Right-sizing advisor** (requests vs usage) | Biggest cost + reliability lever; metrics rings already kept; no Prometheus. | M | ✅ shipped (v0.41.0) |
 | 6 | **Self-scoped RBAC matrix (SSAR)** | Reuses the existing SSAR; kills surprise-403s; zero extra perms. DevSecOps beachhead. | M | todo |
 | 7 | **Security / hardening scan** (OWASP K01 + PodSecurity + sanitizer) | Live deployed-state lint into the queue + an advisor tab. | M | todo |
 | 8 | **Dependency / impact triage panel** | Promotes the blast-radius flash into a navigable incident list. | M | todo |

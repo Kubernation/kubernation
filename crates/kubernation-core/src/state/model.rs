@@ -151,8 +151,9 @@ pub fn pod_oom_killed(pod: &Pod) -> bool {
 // ---------------------------------------------------------------------------
 // Workload identity & pod ownership
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum WorkloadKind {
+    #[default]
     Deployment,
     StatefulSet,
     DaemonSet,
@@ -325,6 +326,55 @@ pub fn node_ready(node: &Node) -> bool {
     node_condition(node, "Ready").as_deref() == Some("True")
 }
 
+/// Sum of one pod's CPU (cores) / memory (bytes) *requests* over its
+/// `spec.containers` plus any **native sidecar** initContainers
+/// (`restartPolicy: Always`, GA since k8s 1.29) — those run concurrently with
+/// the app containers for the pod's whole life, so the scheduler reserves them
+/// and metrics-server reports their usage. Plain (run-to-completion) init
+/// containers are excluded (they don't run concurrently). The shared
+/// request-summing primitive (`node_request_ratios` + the right-sizing advisor).
+pub(crate) fn sum_pod_requests(pod: &Pod) -> (f64, f64) {
+    sum_pod_resources(pod, false)
+}
+
+/// Same shape as [`sum_pod_requests`] but for `limits` (used by the right-sizing
+/// advisor for QoS + the throttle/OOM escalation).
+pub(crate) fn sum_pod_limits(pod: &Pod) -> (f64, f64) {
+    sum_pod_resources(pod, true)
+}
+
+fn sum_pod_resources(pod: &Pod, limits: bool) -> (f64, f64) {
+    let (mut cpu, mut mem) = (0.0, 0.0);
+    let Some(spec) = pod.spec.as_ref() else {
+        return (cpu, mem);
+    };
+    // Regular containers + native sidecars (restartPolicy:Always initContainers),
+    // which are the containers that hold a reservation for the pod's whole life.
+    let sidecars = spec
+        .init_containers
+        .iter()
+        .flatten()
+        .filter(|c| c.restart_policy.as_deref() == Some("Always"));
+    for c in spec.containers.iter().chain(sidecars) {
+        let map = c.resources.as_ref().and_then(|r| {
+            if limits {
+                r.limits.as_ref()
+            } else {
+                r.requests.as_ref()
+            }
+        });
+        cpu += map
+            .and_then(|r| r.get("cpu"))
+            .and_then(quantity::value)
+            .unwrap_or(0.0);
+        mem += map
+            .and_then(|r| r.get("memory"))
+            .and_then(quantity::value)
+            .unwrap_or(0.0);
+    }
+    (cpu, mem)
+}
+
 /// Sum of CPU/memory *requests* of non-terminal pods on this node, divided
 /// by allocatable. Missing allocatable yields 0 (gauge renders empty).
 pub fn node_request_ratios(node: &Node, pods: &[&Pod]) -> (f64, f64) {
@@ -348,19 +398,9 @@ pub fn node_request_ratios(node: &Node, pods: &[&Pod]) -> (f64, f64) {
         if phase == "Succeeded" || phase == "Failed" {
             continue;
         }
-        if let Some(spec) = pod.spec.as_ref() {
-            for c in &spec.containers {
-                let req = c.resources.as_ref().and_then(|r| r.requests.as_ref());
-                cpu += req
-                    .and_then(|r| r.get("cpu"))
-                    .and_then(quantity::value)
-                    .unwrap_or(0.0);
-                mem += req
-                    .and_then(|r| r.get("memory"))
-                    .and_then(quantity::value)
-                    .unwrap_or(0.0);
-            }
-        }
+        let (c, m) = sum_pod_requests(pod);
+        cpu += c;
+        mem += m;
     }
     let ratio = |used: f64, alloc: f64| if alloc > 0.0 { used / alloc } else { 0.0 };
     (ratio(cpu, alloc_cpu), ratio(mem, alloc_mem))

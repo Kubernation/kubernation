@@ -1303,6 +1303,58 @@ what makes the interesting logic unit-testable without a cluster.
   `nginx:1.27-alpine` (rev 8) and rolled out clean. 135 core tests; gui-smoke 25.
   Deferred (next in the roadmap): right-sizing advisor (#5), self-scoped RBAC
   matrix (#6), hardening scan (#7).
+- **Right-sizing advisor (#5)** (2026-06-19, roadmap item #5; design-workflow
+  vetted — 4 lenses → 3 judges → synthesis — then adversarially reviewed): a 4th
+  **Advisors** tab comparing each workload's per-replica resource *requests* to
+  metrics-server *usage*. **Pure core** `state/advisor::rightsizing_report(&world)`
+  → `RightSizingReport` (over/under/unrequested `RsRow`s + reclaimable cpu/mem +
+  node-equivalents), built by grouping running member pods per workload
+  (`OwnerIndex`), summing requests/limits (extracted `model::sum_pod_requests`/
+  `sum_pod_limits`, `spec.containers` only — init excluded) and usage
+  (`world.pod_usage`, latest sample, mean over the pods that reported). **Classify
+  (test-pinned consts):** Over when mean usage < 0.5·request; Under when
+  CPU-mean ≥ 0.9·request or **memory-PEAK** ≥ 0.8·request (incompressible — the
+  hottest replica OOMs, not the average); Unrequested when `request==0` with
+  running pods (a static fact — survives degrade-dark); a `measured_pods==0`
+  guard yields **Unknown** (never a false "waste" when a workload is momentarily
+  unsampled); `request:=limit` for limits-only pods; **limit-ratio** escalation
+  notes (CFS throttle / OOMKill). **Recommend** (VPA-style): `usage ÷ target-util`
+  (0.65 cpu / 0.50 mem) clamped to the peak + VPA floors (25m / 250Mi), rounded
+  up — and a **floor-negation guard** demotes an "Over" whose suggestion would
+  *raise* the request (tiny workload below the floor) back to RightSized, so
+  "waste" never suggests an increase. **reclaimable = Σ(request−suggested)·
+  measured_pods** over Over rows (never invented dollars; node-equivalents via the
+  median node allocatable cpu). **READ-ONLY** (advice only — editing
+  `resources.requests` is deliberately *not* a 6th write verb; the footer says
+  apply via kubectl/manifest), **cluster-wide** (not namespace-scoped, like the
+  other advisors), **metrics-server only** (degrades dark to just the
+  scheduler-blind list — the only finding needing no metrics), and honest about
+  the single-sample basis ("directional, not a multi-day VPA fit"). GUI: a pure
+  `gui/advisor::rightsizing_lines(&report) -> Vec<(text, RsRole)>` (the
+  testability-policy draw-decision fn, unit-tested) rendered by `page_rightsizing`;
+  the tab is `--advisor rightsizing` / Key4 / the Advisors menu. **Deferred** (the
+  struct is shaped for it): a per-pod usage history ring for true P90/P95 sizing;
+  per-container suggestions; latency/throttle-event signals (need a source
+  metrics.k8s.io lacks). Verified live on kind (metrics-server up): coredns/kindnet/
+  metrics-server/web/db flagged CPU-over with `~target` < request; kube-proxy +
+  local-path-provisioner scheduler-blind (BestEffort); reclaimable 590m cpu.
+  **Adversarial-review hardening** (12 confirmed findings fixed): a memory-Under
+  now always recommends a genuine *raise* (suggest_mem clamps to peak·1.25, and a
+  symmetric guard demotes any Over/Under whose suggestion would contradict its
+  bucket) and the Under row shows the *peak* (the driver), not the mean — killing
+  a `300Mi<90Mi ~raise 256Mi` contradiction; **native sidecars**
+  (`restartPolicy:Always` initContainers) are counted in the request sum to match
+  what metrics-server measures (also fixes `node_request_ratios`); only **Ready**
+  pods feed the usage mean (a crash-looping replica no longer drags a healthy
+  workload into a false Over — verified live: crashy → "not measured", not waste);
+  reclaimable is summed per-resource (a cpu saving on an Under-bucket row still
+  counts); **NodeMetrics-up-but-PodMetrics-empty** degrades dark instead of a
+  false "all right-sized"; the count strip drops the misleading "X / Y" for a
+  `not measured: N` line so the parts sum to total; rows truncate to the window
+  width; QoS float-eq uses a relative tolerance. 153 core + 18 GUI tests; gui-smoke
+  26. Deferred: a per-pod history ring (P90/P95 sizing); per-container suggestions;
+  the mid-rollout reclaimable estimate (uses the uniform max request — covered by
+  the "directional" disclaimer). Next: self-scoped RBAC matrix (#6).
 
 ## The pair (hot/warm)
 

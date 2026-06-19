@@ -534,7 +534,7 @@ fn page_controls(cx: &mut Ctx) {
     cx.key("Q", "quit");
     cx.heading("Menu bar");
     cx.para(
-        "The top bar holds the menus: Game (context, fit, quit), View (the map overlay — terrain health, cpu/mem pressure, replica health, or namespace territory), Orders (end of turn, discard), Advisors (Health / Storage / Network summaries), World (namespace filter), Help. Click a title to open it.",
+        "The top bar holds the menus: Game (context, fit, quit), View (the map overlay — terrain health, cpu/mem pressure, replica health, or namespace territory), Orders (end of turn, discard), Advisors (Health / Storage / Network / Right-sizing summaries), World (namespace filter), Help. Click a title to open it.",
     );
 }
 

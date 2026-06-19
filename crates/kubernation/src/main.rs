@@ -189,7 +189,7 @@ struct Args {
     /// help (development verification of the menu bar dropdowns)
     #[arg(long, value_name = "NAME")]
     menu: Option<String>,
-    /// Open an advisor screen on sync — health / storage / network
+    /// Open an advisor screen on sync — health / storage / network / rightsizing
     /// (development verification of the advisor windows)
     #[arg(long, value_name = "NAME")]
     advisor: Option<String>,
@@ -976,7 +976,7 @@ async fn main() {
                 a.cycle(1);
             }
         }
-        // The advisor window likewise swallows the wheel and 1-3 / ←→ tabs.
+        // The advisor window likewise swallows the wheel and 1-4 / ←→ tabs.
         if let Some(a) = advisor.as_mut() {
             let (_, wheel) = mouse_wheel();
             if wheel.abs() > 0.0 {
@@ -986,6 +986,7 @@ async fn main() {
                 (KeyCode::Key1, AdvisorTab::Health),
                 (KeyCode::Key2, AdvisorTab::Storage),
                 (KeyCode::Key3, AdvisorTab::Network),
+                (KeyCode::Key4, AdvisorTab::RightSizing),
             ] {
                 if is_key_pressed(k) {
                     a.go(t);
@@ -1147,6 +1148,7 @@ async fn main() {
                     advisor = Some(Advisor::new(match a.as_str() {
                         "storage" => AdvisorTab::Storage,
                         "network" => AdvisorTab::Network,
+                        "rightsizing" => AdvisorTab::RightSizing,
                         _ => AdvisorTab::Health,
                     }));
                 }

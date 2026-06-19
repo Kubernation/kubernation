@@ -158,6 +158,10 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                     "Network (harbors & gates)",
                     MenuAction::Advisor(AdvisorTab::Network),
                 ),
+                Item::act(
+                    "Right-sizing (requests vs usage)",
+                    MenuAction::Advisor(AdvisorTab::RightSizing),
+                ),
             ],
         },
         Menu {

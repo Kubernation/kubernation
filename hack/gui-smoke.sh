@@ -18,6 +18,7 @@ STATES=(
   "map|"
   "almanac|--almanac"
   "advisor|--advisor health"
+  "advisor-rightsizing|--advisor rightsizing"
   "browse-pick|--browse"
   "browse-table|--browse configmaps"
   "city|--inspect web"

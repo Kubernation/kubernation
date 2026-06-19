@@ -269,6 +269,84 @@ pub fn pod_requests(mut p: Pod, cpu: &str, mem: &str) -> Pod {
     p
 }
 
+/// Set the first container's requests and/or limits; an empty string omits
+/// that quantity (e.g. `pod_requests_limits(p, "100m", "128Mi", "", "256Mi")`
+/// sets cpu/mem requests + a mem limit only).
+pub fn pod_requests_limits(
+    mut p: Pod,
+    cpu_req: &str,
+    mem_req: &str,
+    cpu_lim: &str,
+    mem_lim: &str,
+) -> Pod {
+    let map = |cpu: &str, mem: &str| {
+        let pairs: Vec<(&str, &str)> = [("cpu", cpu), ("memory", mem)]
+            .into_iter()
+            .filter(|(_, v)| !v.is_empty())
+            .collect();
+        if pairs.is_empty() {
+            None
+        } else {
+            Some(quantities(&pairs))
+        }
+    };
+    if let Some(c) = p.spec.as_mut().and_then(|s| s.containers.first_mut()) {
+        c.resources = Some(ResourceRequirements {
+            requests: map(cpu_req, mem_req),
+            limits: map(cpu_lim, mem_lim),
+            ..Default::default()
+        });
+    }
+    p
+}
+
+/// Append a native sidecar — an initContainer with `restartPolicy: Always` —
+/// carrying the given requests (right-sizing must count it like an app container).
+pub fn pod_native_sidecar(mut p: Pod, cpu: &str, mem: &str) -> Pod {
+    let sidecar = Container {
+        name: "sidecar".into(),
+        restart_policy: Some("Always".into()),
+        resources: Some(ResourceRequirements {
+            requests: Some(quantities(&[("cpu", cpu), ("memory", mem)])),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    if let Some(spec) = p.spec.as_mut() {
+        spec.init_containers
+            .get_or_insert_with(Vec::new)
+            .push(sidecar);
+    }
+    p
+}
+
+/// Mark a pod's containers not-ready (running but failing readiness) — used to
+/// verify right-sizing excludes warming/crashing replicas from the usage mean.
+pub fn pod_not_ready(mut p: Pod) -> Pod {
+    if let Some(cs) = p
+        .status
+        .as_mut()
+        .and_then(|s| s.container_statuses.as_mut())
+    {
+        for c in cs {
+            c.ready = false;
+        }
+    }
+    p
+}
+
+/// Seed metrics-server usage for a pod (cpu cores, mem bytes) and mark metrics
+/// available — for right-sizing / usage-driven tests.
+pub fn set_pod_usage(world: &ObservedWorld, ns: &str, name: &str, cpu: f64, mem: f64) {
+    if let Ok(mut g) = world.metrics.lock() {
+        g.available = true;
+        g.pods.insert(
+            (ns.to_string(), name.to_string()),
+            crate::k8s::metrics::NodeUsage { cpu, mem },
+        );
+    }
+}
+
 pub fn pod_owned(mut p: Pod, kind: &str, owner: &str) -> Pod {
     p.metadata.owner_references = Some(vec![OwnerReference {
         api_version: "apps/v1".into(),
