@@ -8,8 +8,8 @@
 
 use kubernation_core::state::blast::Subject;
 use kubernation_core::state::chaos::{
-    ChaosScorecard, Experiment, PartitionDir, ScoreRole, node_protected, ns_protected, plan_chaos,
-    plan_summary, preview_lines, scorecard_lines,
+    ChaosScorecard, Experiment, PartitionDir, ScoreRole, Tier, node_protected, ns_protected,
+    plan_chaos, plan_summary, plan_tier, preview_lines, scorecard_lines,
 };
 use kubernation_core::state::model::WorkloadRef;
 use macroquad::prelude::*;
@@ -92,8 +92,21 @@ pub enum ChaosAction {
         exp: Experiment,
         auto_restore: bool,
     },
+    /// Raise the confirm for a compound difficulty tier, then run it.
+    RunTier {
+        tier: Tier,
+        target: WorkloadRef,
+        auto_restore: bool,
+    },
     /// Re-submit the live session's restore (undo the drill now).
     Restore,
+}
+
+/// What the window will run: a single experiment, or a compound tier on a
+/// workload. Resolved each frame from the current selection.
+enum Drill {
+    Exp(Experiment),
+    Tier(Tier, WorkloadRef),
 }
 
 /// The Game Day modal's state: the chosen target(s) + experiment + the
@@ -102,6 +115,8 @@ pub struct Chaos {
     pub target: Option<WorkloadRef>,
     node_target: Option<String>,
     kind: ChaosKind,
+    /// When set, the drill is this compound tier (overrides `kind`).
+    tier: Option<Tier>,
     kill_pct: u8,
     spike_factor: u32,
     partition_dir: PartitionDir,
@@ -115,6 +130,7 @@ impl Chaos {
             target,
             node_target: None,
             kind: ChaosKind::Outage,
+            tier: None,
             kill_pct: 50,
             spike_factor: 3,
             partition_dir: PartitionDir::Both,
@@ -125,6 +141,25 @@ impl Chaos {
     /// Pre-select an experiment kind (dev `--chaos-exp`).
     pub fn set_kind(&mut self, kind: ChaosKind) {
         self.kind = kind;
+        self.tier = None;
+    }
+
+    /// Pre-select a compound tier (dev `--chaos-tier`).
+    pub fn set_tier(&mut self, tier: Tier) {
+        self.tier = Some(tier);
+    }
+
+    /// Whether the left picker should pick a node (only single node-experiments).
+    fn node_mode(&self) -> bool {
+        self.tier.is_none() && self.kind.is_node()
+    }
+
+    /// What the window will run, if a target is chosen.
+    fn drill(&self) -> Option<Drill> {
+        match self.tier {
+            Some(t) => self.target.clone().map(|w| Drill::Tier(t, w)),
+            None => self.experiment().map(Drill::Exp),
+        }
     }
 
     /// The experiment for the current kind + selection, if a target is chosen.
@@ -158,9 +193,12 @@ impl Chaos {
         }
     }
 
-    /// The subject the current experiment targets (for scorecard matching).
+    /// The subject the current drill targets (for scorecard matching).
     fn subject(&self) -> Option<Subject> {
-        self.experiment().map(|e| e.subject())
+        match self.drill()? {
+            Drill::Exp(e) => Some(e.subject()),
+            Drill::Tier(_, w) => Some(Subject::Workload(w)),
+        }
     }
 
     pub fn draw(
@@ -207,7 +245,7 @@ impl Chaos {
         let pick_bottom = bottom - chron_h;
 
         // --- LEFT: target picker (workloads, or nodes for a node drill) -------
-        if self.kind.is_node() {
+        if self.node_mode() {
             self.draw_node_picker(snap, left_x, left_w, top, pick_bottom, mouse, click);
         } else {
             self.draw_workload_picker(snap, left_x, left_w, top, pick_bottom, mouse, click);
@@ -230,13 +268,44 @@ impl Chaos {
             }
         }
 
-        // --- RIGHT: experiment + preview + run --------------------------------
+        // --- RIGHT: tiers + experiment + preview + run ------------------------
         let mut ry = top;
+        // TIERS — compound preset drills. Selecting one overrides the single
+        // experiment; selecting an experiment radio clears the tier.
+        text_bold("TIER", right_x, ry + 12.0, 14.0, PARCHMENT);
+        let mut tx = right_x + 44.0;
+        for t in Tier::ALL {
+            let on = self.tier == Some(t);
+            let w = text_size(t.label(), 13.0).width + 16.0;
+            let rect = Rect::new(tx, ry, w, 20.0);
+            draw_rectangle(
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                if on {
+                    darker(CRIT, 0.7)
+                } else if rect.contains(mouse) {
+                    lighter(PLATE, 1.6)
+                } else {
+                    darker(PLATE, 1.2)
+                },
+            );
+            draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, STONE_EDGE);
+            text(t.label(), rect.x + 8.0, ry + 15.0, 13.0, INK);
+            if click && rect.contains(mouse) {
+                self.tier = if on { None } else { Some(t) };
+            }
+            tx += w + 6.0;
+        }
+        ry += 26.0;
+
         text_bold("EXPERIMENT", right_x, ry + 12.0, 14.0, PARCHMENT);
         ry += 22.0;
         for k in ChaosKind::ALL {
             let rect = Rect::new(right_x, ry, b.w * 0.5, 20.0);
-            let on = self.kind == k;
+            // A tier overrides the single experiment — show none selected then.
+            let on = self.tier.is_none() && self.kind == k;
             if on {
                 draw_rectangle(rect.x, rect.y, rect.w, rect.h, darker(CRIT, 0.7));
             } else if rect.contains(mouse) {
@@ -252,23 +321,26 @@ impl Chaos {
             text(k.label(), right_x + 38.0, ry + 15.0, 13.0, INK);
             if click && rect.contains(mouse) {
                 self.kind = k;
+                self.tier = None;
             }
             ry += 22.0;
         }
         ry += 4.0;
 
-        // Per-experiment knobs (kill %, surge factor, partition direction).
-        ry = self.draw_knobs(right_x, ry, b.w, mouse, click);
+        // Per-experiment knobs (only for single experiments, not tiers).
+        if self.tier.is_none() {
+            ry = self.draw_knobs(right_x, ry, b.w, mouse, click);
+        }
         ry += 6.0;
 
         // Preview the drill for the chosen target.
         text_bold("PREVIEW", right_x, ry + 12.0, 14.0, PARCHMENT);
         ry += 20.0;
-        let mut runnable: Option<Experiment> = None;
+        let mut runnable: Option<Drill> = None;
         let mut restorable = false;
-        match self.experiment() {
+        match self.drill() {
             None => {
-                let hint = if self.kind.is_node() {
+                let hint = if self.node_mode() {
                     "pick a node on the left"
                 } else {
                     "pick a target on the left"
@@ -276,8 +348,11 @@ impl Chaos {
                 text(hint, right_x, ry + 12.0, 13.0, DIM);
                 ry += 18.0;
             }
-            Some(exp) => {
-                let plan = plan_chaos(&snap.hot.observed, &exp);
+            Some(drill) => {
+                let plan = match &drill {
+                    Drill::Exp(e) => plan_chaos(&snap.hot.observed, e),
+                    Drill::Tier(t, w) => plan_tier(&snap.hot.observed, *t, w),
+                };
                 if let Some(why) = &plan.refused {
                     text(
                         ascii(&format!("refused: {why}")),
@@ -316,8 +391,8 @@ impl Chaos {
                         STRUCT,
                     );
                     ry += 18.0;
-                    // The per-workload budget, only when a single workload is hit.
-                    if !self.kind.is_node()
+                    // The per-workload budget (tiers + workload experiments).
+                    if !self.node_mode()
                         && let Some(wr) = &self.target
                         && let Some(st) = snap.hot.slo.get(wr)
                     {
@@ -333,8 +408,14 @@ impl Chaos {
                         );
                         ry += 18.0;
                     }
-                    // Experiment-specific notes (broken-image ref, CNI caveat, …).
-                    for (line, role) in preview_lines(&exp, &plan) {
+                    // Notes: per-experiment caveats, or the tier's composition.
+                    let notes = match &drill {
+                        Drill::Exp(e) => preview_lines(e, &plan),
+                        Drill::Tier(t, _) => {
+                            vec![(format!("tier: {}", t.detail()), ScoreRole::Info)]
+                        }
+                    };
+                    for (line, role) in notes {
                         text(ascii(&line), right_x, ry + 12.0, 12.0, role_color(role));
                         ry += 16.0;
                     }
@@ -343,7 +424,7 @@ impl Chaos {
                         ry += 16.0;
                         restorable = true;
                     }
-                    runnable = Some(exp);
+                    runnable = Some(drill);
                 }
             }
         }
@@ -408,9 +489,9 @@ impl Chaos {
             15.0,
             if enabled { INK } else { DIM },
         );
-        let mut act_run = None;
+        let mut act_run: Option<(Drill, bool)> = None;
         if click && enabled && run_btn.contains(mouse) {
-            act_run = runnable.map(|exp| (exp, restorable && self.auto_restore));
+            act_run = runnable.map(|d| (d, restorable && self.auto_restore));
         }
 
         // --- SCORECARD (after a drill) — spans the bottom ---------------------
@@ -494,8 +575,15 @@ impl Chaos {
         }
 
         // Action precedence: run > restore > close.
-        if let Some((exp, auto_restore)) = act_run {
-            return ChaosAction::Run { exp, auto_restore };
+        if let Some((drill, auto_restore)) = act_run {
+            return match drill {
+                Drill::Exp(exp) => ChaosAction::Run { exp, auto_restore },
+                Drill::Tier(tier, target) => ChaosAction::RunTier {
+                    tier,
+                    target,
+                    auto_restore,
+                },
+            };
         }
         if restore_clicked {
             return ChaosAction::Restore;

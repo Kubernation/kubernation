@@ -140,6 +140,10 @@ struct Args {
     /// the first non-control-plane node hosting the --chaos target's pods.
     #[arg(long, value_name = "KIND")]
     chaos_exp: Option<String>,
+    /// With --chaos, preselect a compound tier (skirmish / raid / siege); with
+    /// --chaos-go, auto-run it on the --chaos target. Overrides --chaos-exp.
+    #[arg(long, value_name = "TIER")]
+    chaos_tier: Option<String>,
     /// Hold the intro splash (the full Kubernation scene) — replays it, and
     /// with --screenshot captures it (development verification / demo)
     #[arg(long)]
@@ -269,6 +273,40 @@ fn build_chaos_run(
         steps: plan.steps.clone(),
         restore: plan.restore.clone(),
         watch,
+        auto_restore_secs,
+        is_restore: false,
+    }
+}
+
+/// Parse the dev `--chaos-tier` flag value.
+fn parse_tier(s: &str) -> Option<kubernation_core::state::chaos::Tier> {
+    use kubernation_core::state::chaos::Tier;
+    match s {
+        "skirmish" => Some(Tier::Skirmish),
+        "raid" => Some(Tier::Raid),
+        "siege" => Some(Tier::Siege),
+        _ => None,
+    }
+}
+
+/// Build the net-thread `ChaosRun` for a compound difficulty tier. Tiers always
+/// target a workload, so the subject + scorecard are Workload and the watch set
+/// is the target itself (the dip/recover model fits the kills the tiers do).
+fn build_tier_run(
+    target: &WorkloadRef,
+    tier: kubernation_core::state::chaos::Tier,
+    plan: &kubernation_core::state::chaos::ChaosPlan,
+    auto_restore_secs: Option<f64>,
+) -> net::ChaosRun {
+    net::ChaosRun {
+        cluster: ClusterId::Hot,
+        experiment: tier.label().to_string(),
+        subject: Subject::Workload(target.clone()),
+        score_kind: kubernation_core::state::chaos::ScoreKind::Workload,
+        blast: plan.blast,
+        steps: plan.steps.clone(),
+        restore: plan.restore.clone(),
+        watch: vec![target.clone()],
         auto_restore_secs,
         is_restore: false,
     }
@@ -1412,6 +1450,9 @@ async fn main() {
                     {
                         c.set_kind(kind);
                     }
+                    if let Some(tier) = args.chaos_tier.as_deref().and_then(parse_tier) {
+                        c.set_tier(tier);
+                    }
                     chaos = Some(c);
                     chaos_just_opened = true;
                 }
@@ -2180,6 +2221,40 @@ async fn main() {
                         }
                     }
                 }
+                Some(ChaosAction::RunTier {
+                    tier,
+                    target,
+                    auto_restore,
+                }) => {
+                    if let Some(s) = snap.as_ref() {
+                        let plan = kubernation_core::state::chaos::plan_tier(
+                            &s.hot.observed,
+                            tier,
+                            &target,
+                        );
+                        if !plan.is_refused() {
+                            let auto = auto_restore.then_some(60.0);
+                            pending_chaos = Some(PendingChaos {
+                                run: build_tier_run(&target, tier, &plan, auto),
+                                title: "Run compound drill?".into(),
+                                line1: format!(
+                                    "{} on {}/{} — {}.",
+                                    tier.label(),
+                                    target.namespace,
+                                    target.name,
+                                    tier.detail()
+                                ),
+                                line2: format!(
+                                    "{} step(s) · blast radius: {} affected.",
+                                    plan.steps.len(),
+                                    plan.blast
+                                ),
+                                action: "Run drill".into(),
+                            });
+                            chaos_confirm_just_opened = true;
+                        }
+                    }
+                }
                 Some(ChaosAction::Restore) => {
                     if let Some(sess) = net.chaos_session()
                         && !sess.restore.is_empty()
@@ -2287,54 +2362,62 @@ async fn main() {
             && let Some(wr) = &c.target
             && let Some(s) = snap.as_ref()
         {
-            use kubernation_core::state::chaos::Experiment;
-            let w = wr.clone();
-            let exp = match args.chaos_exp.as_deref() {
-                Some("kill-all") => Experiment::KillAll { workload: w },
-                Some("kill-percent") => Experiment::KillPercent {
-                    workload: w,
-                    pct: 50,
-                },
-                Some("scale-spike") => Experiment::ScaleSpike {
-                    workload: w,
-                    factor: 3,
-                },
-                Some("outage") => Experiment::Outage { workload: w },
-                Some("broken-image") => Experiment::BrokenImage { workload: w },
-                Some("partition") => Experiment::Partition {
-                    workload: w,
-                    dir: kubernation_core::state::chaos::PartitionDir::Both,
-                },
-                Some(node_exp @ ("node-failure" | "cordon-freeze")) => {
-                    // The first non-control-plane node hosting the target's pods.
-                    let node = s
-                        .hot
-                        .observed
-                        .pods
-                        .state()
-                        .iter()
-                        .filter(|p| {
-                            p.metadata.namespace.as_deref() == Some(wr.namespace.as_str())
-                                && p.metadata
-                                    .name
-                                    .as_deref()
-                                    .is_some_and(|n| n.starts_with(&wr.name))
-                        })
-                        .find_map(|p| p.spec.as_ref().and_then(|sp| sp.node_name.clone()))
-                        .unwrap_or_default();
-                    if node_exp == "cordon-freeze" {
-                        Experiment::CordonFreeze { node }
-                    } else {
-                        Experiment::NodeFailure { node }
-                    }
+            // A tier overrides the single-experiment path.
+            if let Some(tier) = args.chaos_tier.as_deref().and_then(parse_tier) {
+                let plan = kubernation_core::state::chaos::plan_tier(&s.hot.observed, tier, wr);
+                if !plan.is_refused() {
+                    net.request_chaos(build_tier_run(wr, tier, &plan, Some(3.0)));
                 }
-                _ => Experiment::KillOne { workload: w },
-            };
-            let plan = kubernation_core::state::chaos::plan_chaos(&s.hot.observed, &exp);
-            if !plan.is_refused() {
-                // Dev: arm a short auto-restore so the auto-undo is observable in
-                // the screenshot hold (a no-op for non-restorable kills).
-                net.request_chaos(build_chaos_run(&s.hot.observed, &exp, &plan, Some(3.0)));
+            } else {
+                use kubernation_core::state::chaos::Experiment;
+                let w = wr.clone();
+                let exp = match args.chaos_exp.as_deref() {
+                    Some("kill-all") => Experiment::KillAll { workload: w },
+                    Some("kill-percent") => Experiment::KillPercent {
+                        workload: w,
+                        pct: 50,
+                    },
+                    Some("scale-spike") => Experiment::ScaleSpike {
+                        workload: w,
+                        factor: 3,
+                    },
+                    Some("outage") => Experiment::Outage { workload: w },
+                    Some("broken-image") => Experiment::BrokenImage { workload: w },
+                    Some("partition") => Experiment::Partition {
+                        workload: w,
+                        dir: kubernation_core::state::chaos::PartitionDir::Both,
+                    },
+                    Some(node_exp @ ("node-failure" | "cordon-freeze")) => {
+                        // The first non-control-plane node hosting the target's pods.
+                        let node = s
+                            .hot
+                            .observed
+                            .pods
+                            .state()
+                            .iter()
+                            .filter(|p| {
+                                p.metadata.namespace.as_deref() == Some(wr.namespace.as_str())
+                                    && p.metadata
+                                        .name
+                                        .as_deref()
+                                        .is_some_and(|n| n.starts_with(&wr.name))
+                            })
+                            .find_map(|p| p.spec.as_ref().and_then(|sp| sp.node_name.clone()))
+                            .unwrap_or_default();
+                        if node_exp == "cordon-freeze" {
+                            Experiment::CordonFreeze { node }
+                        } else {
+                            Experiment::NodeFailure { node }
+                        }
+                    }
+                    _ => Experiment::KillOne { workload: w },
+                };
+                let plan = kubernation_core::state::chaos::plan_chaos(&s.hot.observed, &exp);
+                if !plan.is_refused() {
+                    // Dev: arm a short auto-restore so the auto-undo is observable
+                    // in the screenshot hold (a no-op for non-restorable kills).
+                    net.request_chaos(build_chaos_run(&s.hot.observed, &exp, &plan, Some(3.0)));
+                }
             }
         }
 

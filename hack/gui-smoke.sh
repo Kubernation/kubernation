@@ -39,6 +39,7 @@ STATES=(
   "chaos-killpct|--chaos web --chaos-exp kill-percent"
   "chaos-spike|--chaos web --chaos-exp scale-spike"
   "chaos-partition|--chaos web --chaos-exp partition"
+  "chaos-tier|--chaos web --chaos-tier siege"
 )
 
 fail=0

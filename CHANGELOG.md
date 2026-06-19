@@ -51,8 +51,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
     and a manual selection still overrides.
   - **Chronicle.** Finished drills accumulate into an in-session CHRONICLE in the
     Game Day window (experiment · target · outcome) — recent history at a glance
-    (no cross-restart persistence). *(Difficulty tiers — composed multi-step
-    drills — are deferred: they need a compound-plan run model.)*
+    (no cross-restart persistence).
+  - **Difficulty tiers (compound drills).** A TIER row — **Skirmish** (kill one),
+    **Raid** (kill ~half), **Siege** (partition + kill all) — composes existing
+    experiments into one sequenced drill with a LIFO restore (so Siege's deny-all
+    is undone after). `plan_tier` is pure + unit-tested; selecting a tier
+    overrides the single-experiment choice. Verified live on kind (Siege: netpol
+    + kill-all, then auto-restore removed the netpol and pods recovered 3/3).
   - **Round-3 review hardening** (adversarial review, 3 medium + cheap lows):
     a context switch with a live restorable drill now **undoes it with the old
     client before switching** (don't strand the cluster, matching restore-on-exit,

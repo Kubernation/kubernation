@@ -1252,12 +1252,17 @@ what makes the interesting logic unit-testable without a cluster.
   observability), and a recovery-curve sparkline. **4X loop:** a live "raid
   underway" attention concern, flip-watch (auto blast-radius on the live raid),
   and an in-session CHRONICLE of finished drills. An operator undo is labelled
-  "restored", never "self-healed". The interesting logic stays pure + unit-tested
-  in `state/chaos.rs` (the scorecard/verdict/cap/summary/steady-state are pure
-  draw-decision fns); the GUI window grew to 9 experiments + knobs + dry-run +
-  scorecard (recovery sparkline) + chronicle. **Deferred** (teed up for a future
-  pass): difficulty tiers (Skirmish/Raid/Siege — need a *compound* multi-step run
-  model, not the single-`Experiment` path); collateral-concern correlation;
+  "restored", never "self-healed". A follow-up shipped the deferred medium —
+  **difficulty tiers** (`Tier{Skirmish,Raid,Siege}` + pure `plan_tier`): named
+  *compound* drills that compose existing experiments into one sequence with a
+  LIFO restore (Siege = Partition + KillAll, undone deny-all-last), run through
+  the same `ChaosRun`/`run_chaos` gate (subject=Workload, watch=[target]); a TIER
+  row in the window overrides the single-experiment choice. The interesting logic
+  stays pure + unit-tested in `state/chaos.rs` (the scorecard/verdict/cap/summary/
+  steady-state/`plan_tier` are pure draw-decision fns); the GUI window grew to a
+  TIER row + 9 experiments + knobs + dry-run + scorecard (recovery sparkline) +
+  chronicle. **Deferred** (teed up for a future
+  pass): collateral-concern correlation;
   markdown after-action report (a local-file write); persisted run history;
   warm-cluster chaos + a hot→warm failover drill; mesh/sidecar stress + latency
   (need Istio/Linkerd or an injected Job — no exec by posture). Two known minor

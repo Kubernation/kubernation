@@ -559,7 +559,7 @@ fn page_reading(cx: &mut Ctx) {
     );
     cx.heading("Game Day (chaos)");
     cx.para(
-        "The Game Day menu opens a chaos drill: pick a target, choose an experiment, preview its blast radius + budget cost, then run it — a real, confirmed failure. Workload experiments: outage (scale to 0), kill one pod, kill all pods, broken image (roll onto an unresolvable ref), and partition (a deny-all NetworkPolicy). Node failure cordons a node and drains its pods. A scorecard shows the cluster's response (recovery time, budget spent); reversible drills offer Restore. Control-plane / system namespaces and control-plane nodes are never targetable.",
+        "The Game Day menu opens a chaos drill: pick a target, choose an experiment (or a compound TIER — Skirmish / Raid / Siege), preview the dry-run steps + blast radius + budget cost, then run it — a real, confirmed failure. Workload experiments: outage (scale to 0), kill one / a percentage / all pods, scale spike (surge), broken image (unresolvable ref), and partition (deny-all / ingress / egress NetworkPolicy). Node failure cordons + drains a node; cordon-freeze cordons without draining. A scorecard shows the response (steady-state, recovery time, MTTD, budget spent); reversible drills offer Restore (manual / auto-after-60s / on exit). Control-plane / system namespaces and control-plane nodes are never targetable.",
     );
     cx.heading("Attention");
     cx.para(

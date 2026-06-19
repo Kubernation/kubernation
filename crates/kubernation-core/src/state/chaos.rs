@@ -563,6 +563,96 @@ pub fn plan_chaos(world: &ObservedWorld, exp: &Experiment) -> ChaosPlan {
     }
 }
 
+/// A difficulty **tier** — a named, preset *compound* drill that composes
+/// several experiments into one sequence (something a single experiment can't
+/// express). All tiers target a workload; they escalate Skirmish → Raid → Siege.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    /// Gentle: kill one pod (the controller recreates it).
+    Skirmish,
+    /// Moderate: lose half the fleet.
+    Raid,
+    /// Severe + compound: isolate the workload AND kill all its pods.
+    Siege,
+}
+
+impl Tier {
+    pub const ALL: [Tier; 3] = [Tier::Skirmish, Tier::Raid, Tier::Siege];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Tier::Skirmish => "Skirmish",
+            Tier::Raid => "Raid",
+            Tier::Siege => "Siege",
+        }
+    }
+
+    /// A one-line description of what the tier does.
+    pub fn detail(self) -> &'static str {
+        match self {
+            Tier::Skirmish => "kill one pod",
+            Tier::Raid => "kill ~half the pods",
+            Tier::Siege => "partition + kill all pods",
+        }
+    }
+
+    /// The experiments this tier composes against `target`, applied in order.
+    pub fn experiments(self, target: &WorkloadRef) -> Vec<Experiment> {
+        let w = target.clone();
+        match self {
+            Tier::Skirmish => vec![Experiment::KillOne { workload: w }],
+            Tier::Raid => vec![Experiment::KillPercent {
+                workload: w,
+                pct: 50,
+            }],
+            Tier::Siege => vec![
+                Experiment::Partition {
+                    workload: w.clone(),
+                    dir: PartitionDir::Both,
+                },
+                Experiment::KillAll { workload: w },
+            ],
+        }
+    }
+}
+
+/// Resolve a tier into one concrete compound plan — PURE. Plans each composed
+/// experiment, then concatenates their steps in order and their restores in
+/// REVERSE order (LIFO — undo the last thing applied first). If any composed
+/// experiment is refused, the whole tier is refused. The blast is the target's.
+pub fn plan_tier(world: &ObservedWorld, tier: Tier, target: &WorkloadRef) -> ChaosPlan {
+    let blast = blast_radius(world, &Subject::Workload(target.clone())).len();
+    let mut steps = Vec::new();
+    let mut restores: Vec<Vec<ChaosStep>> = Vec::new();
+    for exp in tier.experiments(target) {
+        let plan = plan_chaos(world, &exp);
+        if let Some(why) = plan.refused {
+            return ChaosPlan::refuse(blast, format!("{}: {why}", exp.label()));
+        }
+        steps.extend(plan.steps);
+        restores.push(plan.restore);
+    }
+    // Defense-in-depth: bound the compound eviction count too (each sub-plan is
+    // already capped, but the sum could exceed it).
+    let evicts = steps
+        .iter()
+        .filter(|s| matches!(s, ChaosStep::Evict { .. }))
+        .count();
+    if evicts > MAX_KILL_PODS {
+        return ChaosPlan::refuse(
+            blast,
+            format!("would delete {evicts} pods (cap {MAX_KILL_PODS})"),
+        );
+    }
+    let restore = restores.into_iter().rev().flatten().collect();
+    ChaosPlan {
+        steps,
+        restore,
+        refused: None,
+        blast,
+    }
+}
+
 /// What class of scorecard to render — the experiments have different shapes
 /// (a workload's budget/recovery, a node's multi-workload drain, an isolation
 /// with no readiness signal).
@@ -1239,6 +1329,54 @@ mod tests {
         let lines = scorecard_lines(&restored);
         assert!(lines.iter().any(|(t, _)| t.contains("restored")));
         assert!(!lines.iter().any(|(t, _)| t.contains("self-healed")));
+    }
+
+    #[test]
+    fn siege_tier_composes_partition_then_killall_with_lifo_restore() {
+        let (world, mut s) = fx::world();
+        seed_web(&mut s); // 3 pods, template labels {app: web}
+        let plan = plan_tier(&world, Tier::Siege, &web());
+        assert!(!plan.is_refused(), "{:?}", plan.refused);
+        // Steps: partition first, then one evict per pod (3).
+        assert!(matches!(&plan.steps[0], ChaosStep::Partition(_)));
+        assert_eq!(
+            plan.steps
+                .iter()
+                .filter(|s| matches!(s, ChaosStep::Evict { .. }))
+                .count(),
+            3
+        );
+        // Restore is LIFO: the partition (applied first) is undone — KillAll has
+        // no restore, so the only restore step is the Unpartition.
+        assert_eq!(plan.restore.len(), 1);
+        assert!(matches!(&plan.restore[0], ChaosStep::Unpartition { .. }));
+    }
+
+    #[test]
+    fn skirmish_and_raid_tiers_map_to_their_experiments() {
+        let (world, mut s) = fx::world();
+        seed_web(&mut s); // 3 pods
+        // Skirmish = one kill.
+        assert_eq!(plan_tier(&world, Tier::Skirmish, &web()).steps.len(), 1);
+        // Raid = ~50% (2 of 3).
+        assert_eq!(plan_tier(&world, Tier::Raid, &web()).steps.len(), 2);
+    }
+
+    #[test]
+    fn tier_refusal_propagates_from_a_composed_experiment() {
+        // A protected namespace makes every composed experiment refuse.
+        let (world, mut s) = fx::world();
+        s.deployment(fx::deployment("kube-system", "coredns", 2, 2));
+        let plan = plan_tier(
+            &world,
+            Tier::Siege,
+            &WorkloadRef {
+                kind: WorkloadKind::Deployment,
+                namespace: "kube-system".into(),
+                name: "coredns".into(),
+            },
+        );
+        assert!(plan.is_refused());
     }
 
     #[test]
