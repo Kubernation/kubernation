@@ -20,10 +20,11 @@ This is not a retro skin on k9s. It is a different operator model:
   under pressure — aggregated, ranked, and one keypress (`N`) from their
   full context (and `L` straight into the offending pod's logs).
 - **Near observe-only.** Kubernation reads the cluster and does not change it —
-  with two deliberate, gated, RBAC-aware writes: **pod eviction** (a real
-  delete) and **committing a planning turn** (apply staged scale / cordon /
-  restart / image, server-side dry-run validated). The entire write surface is
-  one small file (`k8s/actions.rs`); staging itself never writes.
+  with deliberate, gated, RBAC-aware writes: **pod eviction** (a real delete),
+  **committing a planning turn** (apply staged scale / cordon / restart / image,
+  server-side dry-run validated), and **Game Day chaos drills** (resilience
+  experiments that inject a real, confirmed, reversible failure). The entire write
+  surface is one small file (`k8s/actions.rs`); staging itself never writes.
 
 ![Kubernation](docs/gui-world.png)
 
@@ -164,6 +165,25 @@ button is disabled (**`locked`**) unless a `SelfSubjectAccessReview` says you
 may delete pods in that namespace.
 
 ![Evict confirm](docs/gui-evict.png)
+
+**Game Day (chaos).** The **Game Day** menu opens a chaos console — resilience
+drills that inject a *real* failure and let you watch the realm respond (the
+attention queue lights up with a "raid underway", the blast radius spreads, the
+treasury spends). Pick a target and an experiment — **kill one / a percentage /
+all pods**, **outage** (scale to 0), **scale spike** (surge), **broken image**,
+**node failure** (cordon + drain), **cordon freeze**, or **partition** (a deny-all
+NetworkPolicy: both / ingress / egress) — or a compound **tier** (Skirmish / Raid
+/ Siege) that sequences several into one drill. The console previews the exact
+dry-run steps, the blast radius, and the error-budget cost *before* you run it (a
+CRIT-confirmed write); a **scorecard** then reports the response — steady-state,
+recovery time, **MTTD** (did the attention queue even notice?), a recovery-curve
+sparkline, and budget spent. It reuses the existing gated write primitives (so it
+adds no new verb beyond the partition's NetworkPolicy), is RBAC-gated and
+all-or-nothing, and **refuses control-plane / system targets** (fail-closed).
+Reversible drills offer **Restore** — manual, auto-after-60s, or automatically on
+quit / context switch, so a drill never strands the cluster.
+
+![GUI Game Day](docs/gui-chaos.png)
 
 Press **`c`** to switch the hot
 cluster from a context picker — no restart. Labels use **Fira Sans** with
@@ -311,9 +331,12 @@ storage / batch map layers, the resource
 browser (`:any kind`), the read-only YAML inspector, the in-app Almanac, the
 advisor screens, the city + province drill-down windows, and the **planning
 turn** — staging interventions, previewing the diff, and committing it
-(server-side dry-run + RBAC + confirm). Deferred, by design: more interventions,
-external managed services, chaos layers, and the bigger log tiers (all-containers
-picker, multi-pod tailing). See CLAUDE.md for the full list and the reasoning.
+(server-side dry-run + RBAC + confirm), and **Game Day chaos drills** — nine
+experiments + compound difficulty tiers, with a steady-state/MTTD/recovery
+scorecard and restore-on-exit. Deferred, by design: more interventions, external
+managed services, deeper chaos (mesh-based latency/stress, persisted run history),
+and the bigger log tiers (all-containers picker, multi-pod tailing). See CLAUDE.md
+for the full list and the reasoning.
 
 ## Trademark
 
