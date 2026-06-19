@@ -5,6 +5,8 @@
 //!                the gauge source, and the active namespace filter
 //!   ATTENTION  → the attention queue (relocated from the old bottom strip);
 //!                click a concern to fly there + open its drill-down (= `N`)
+//!   IMPACT     → (while the blast overlay is active) the navigable dependency
+//!                fan-out of the troubled subject — click a row to fly to it
 //!   FORWARDS   → live port-forwards (shown only when any exist), each with a
 //!                stop button — the always-visible home for the tunnels
 //!   SELECTION  → whatever tile is selected/hovered (4X's "moving unit" box),
@@ -15,11 +17,16 @@
 
 use macroquad::prelude::*;
 
+use std::collections::HashMap;
+
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::{Concern, Severity, severity_counts};
+use kubernation_core::state::blast::{Affected, BlastRadius};
 use kubernation_core::state::filter::NamespaceFilter;
+use kubernation_core::state::model::WorkloadRef;
+use kubernation_core::state::world::WorldModel;
 
-use crate::draw::{Camera, MinimapLayout, Overlay, SceneWorld, draw_minimap};
+use crate::draw::{Camera, MinimapLayout, Overlay, SceneWorld, affected_cell, draw_minimap};
 use crate::net::{ForwardInfo, Snapshot};
 use crate::panels::{self, region_lines, truncate_str};
 use crate::text::{text, text_bold};
@@ -31,6 +38,9 @@ use crate::theme::*;
 /// the column on a short window.
 const ATTN_CAP: usize = 6;
 
+/// How many IMPACT rows the column shows before "+N more".
+const IMPACT_CAP: usize = 8;
+
 /// What a frame's interaction with the column asks the caller to do.
 #[derive(Default)]
 pub struct SidebarHit {
@@ -39,6 +49,151 @@ pub struct SidebarHit {
     /// An ATTENTION row was clicked → focus this concern (index into
     /// `snap.attention`), flying to it + opening its drill-down (same as `N`).
     pub focus_concern: Option<usize>,
+    /// An IMPACT row was clicked → fly to + select this (local) cell (the
+    /// affected resource's map position). Open the city if it's a workload.
+    pub focus_impact: Option<(u16, u16)>,
+}
+
+/// The kind of an affected resource (4X noun).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImpactKind {
+    City,
+    Harbor,
+    Gate,
+}
+
+/// One rendered IMPACT row.
+#[derive(Debug, Clone)]
+pub struct ImpactRow {
+    pub label: String,
+    pub color: Color,
+    pub hop: u8,
+    /// The affected workload's own severity (a route inherits its `via`'s); None
+    /// when the affected thing is itself healthy (you'd lose it, but it's up).
+    pub health: Option<Severity>,
+    /// The affected resource's on-map cell (LOCAL coords) to fly to; None when it
+    /// has no position (DaemonSet road, dropped coast marker) → not clickable.
+    pub cell: Option<(u16, u16)>,
+    pub clickable: bool,
+}
+
+/// What the IMPACT section renders for — the memoized blast radius + the cluster
+/// it belongs to (selects the subject world + its `workload_severity`).
+pub struct BlastView<'a> {
+    pub radius: &'a BlastRadius,
+    pub cluster: ClusterId,
+}
+
+fn sev_rank(s: Option<Severity>) -> u8 {
+    match s {
+        Some(Severity::Critical) => 3,
+        Some(Severity::Warning) => 2,
+        Some(Severity::Info) => 1,
+        None => 0,
+    }
+}
+
+/// Build the IMPACT rows from a (memoized) blast radius — health cross-referenced
+/// against the subject cluster's `workload_severity`, cell-resolved against its
+/// `WorldModel` (the same `affected_cell` the map highlight uses, so the list and
+/// the flash can't disagree). **PURE** (no GL) — unit-tested. Order: hop asc,
+/// then worst-health DESC within a hop (a failing dependent floats to the top of
+/// its tier and survives the cap), then label for stability.
+pub fn impact_rows(
+    blast: &BlastRadius,
+    severity: &HashMap<WorkloadRef, Severity>,
+    world: &WorldModel,
+    cap: usize,
+) -> Vec<ImpactRow> {
+    if blast.items.is_empty() {
+        // Honest: no fabricated downstream edges (topology-only).
+        return vec![ImpactRow {
+            label: "nothing downstream derivable".into(),
+            color: STONE_INK_DIM,
+            hop: 0,
+            health: None,
+            cell: None,
+            clickable: false,
+        }];
+    }
+    let mut rows: Vec<ImpactRow> = blast
+        .items
+        .iter()
+        .map(|it| {
+            let (kind, ns, name, via, health) = match &it.item {
+                Affected::Workload(wr) => (
+                    ImpactKind::City,
+                    &wr.namespace,
+                    &wr.name,
+                    None,
+                    severity.get(wr).copied(),
+                ),
+                Affected::Service {
+                    namespace,
+                    name,
+                    via,
+                } => (
+                    ImpactKind::Harbor,
+                    namespace,
+                    name,
+                    Some(&via.name),
+                    severity.get(via).copied(),
+                ),
+                Affected::Ingress {
+                    namespace,
+                    name,
+                    via,
+                } => (
+                    ImpactKind::Gate,
+                    namespace,
+                    name,
+                    Some(&via.name),
+                    severity.get(via).copied(),
+                ),
+            };
+            let kind_word = match kind {
+                ImpactKind::City => "city",
+                ImpactKind::Harbor => "harbor",
+                ImpactKind::Gate => "gate",
+            };
+            let glyph = health
+                .map(|s| format!("{} ", s.glyph()))
+                .unwrap_or_default();
+            let via_suffix = via.map(|v| format!(" via {v}")).unwrap_or_default();
+            // Hop is front-loaded so right-truncation eats the long ns/name (and
+            // the `via` tail) before the diagnostic cascade depth.
+            let label = format!("{glyph}h{} {kind_word} {ns}/{name}{via_suffix}", it.hop);
+            let color = health.map(severity_on_stone).unwrap_or(STONE_INK);
+            let cell = affected_cell(world, &it.item);
+            ImpactRow {
+                label,
+                color,
+                hop: it.hop,
+                health,
+                cell,
+                clickable: cell.is_some(),
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        a.hop
+            .cmp(&b.hop)
+            .then_with(|| sev_rank(b.health).cmp(&sev_rank(a.health)))
+            .then_with(|| a.label.cmp(&b.label))
+    });
+    if rows.len() > cap {
+        let extra = rows.len() - cap;
+        rows.truncate(cap);
+        rows.push(ImpactRow {
+            label: format!("+{extra} more"),
+            color: STONE_INK_DIM,
+            hop: 0,
+            health: None,
+            cell: None,
+            clickable: false,
+        });
+    }
+    rows
 }
 
 /// The attention queue rendered as `(line, color)` rows for the column's
@@ -103,12 +258,14 @@ pub fn draw_sidebar(
     overlay: Overlay,
     concern_idx: usize,
     forwards: &[ForwardInfo],
+    blast: Option<&BlastView>,
     mouse: Vec2,
     click: bool,
     interactive: bool,
 ) -> SidebarHit {
     let mut stop: Option<u16> = None;
     let mut focus: Option<usize> = None;
+    let mut focus_impact: Option<(u16, u16)> = None;
     let col = panels::sidebar_rect();
     stone_panel(col.x, col.y, col.w, col.h);
     let x = col.x + 14.0;
@@ -299,6 +456,59 @@ pub fn draw_sidebar(
         y += 15.0;
     }
 
+    // --- IMPACT (blast radius — only while the overlay is active) ----------
+    // The navigable dependency fan-out of the troubled subject; the on-map flash
+    // + banner stay visible beside it. Click a row to fly to that resource.
+    if let Some(bv) = blast
+        && let Some(sw) = worlds.iter().find(|w| w.id == bv.cluster)
+    {
+        let severity = match bv.cluster {
+            ClusterId::Hot => Some(&snap.hot.models.workload_severity),
+            ClusterId::Warm => snap.warm.as_ref().map(|w| &w.models.workload_severity),
+        };
+        if let Some(severity) = severity {
+            y += 6.0;
+            divider(y);
+            y += 16.0;
+            text_bold(
+                format!("IMPACT ({})", bv.radius.len()),
+                x,
+                y,
+                15.0,
+                STONE_INK,
+            );
+            y += 20.0;
+            // Reserve the SELECTION slot below (a short window won't starve it).
+            let impact_bottom = col.y + col.h - 56.0;
+            for row in impact_rows(bv.radius, severity, sw.world, IMPACT_CAP) {
+                if y > impact_bottom {
+                    break;
+                }
+                let rect = Rect::new(col.x + 6.0, y - 13.0, col.w - 12.0, 17.0);
+                if row.clickable && interactive && rect.contains(mouse) {
+                    draw_rectangle(
+                        rect.x,
+                        rect.y,
+                        rect.w,
+                        rect.h,
+                        Color::new(0.0, 0.0, 0.0, 0.06),
+                    );
+                }
+                text(
+                    ascii(&panels::fit_width(&row.label, 12.0, col.w - 20.0)),
+                    x,
+                    y,
+                    12.0,
+                    row.color,
+                );
+                if row.clickable && interactive && click && rect.contains(mouse) {
+                    focus_impact = row.cell;
+                }
+                y += 16.0;
+            }
+        }
+    }
+
     // --- FORWARDS (only when any are live) --------------------------------
     if !forwards.is_empty() {
         y += 6.0;
@@ -313,7 +523,13 @@ pub fn draw_sidebar(
         );
         y += 20.0;
         let cap = 4;
+        // Reserve the always-present SELECTION slot below (the IMPACT section
+        // above can push FORWARDS down on a short window).
+        let fwd_bottom = col.y + col.h - 40.0;
         for f in forwards.iter().take(cap) {
+            if y > fwd_bottom {
+                break;
+            }
             // Stop button at the column's right edge; the line shows the
             // local→pod mapping (HOT/WARM-tagged in pair mode).
             let stop_btn = Rect::new(col.x + col.w - 26.0, y - 11.0, 18.0, 15.0);
@@ -384,6 +600,7 @@ pub fn draw_sidebar(
     SidebarHit {
         stop_forward: stop,
         focus_concern: focus,
+        focus_impact,
     }
 }
 
@@ -464,5 +681,125 @@ mod tests {
         let wrapped = attention_rows(&cs, false, 6, ATTN_CAP);
         assert!(wrapped[1].0.starts_with("> "));
         assert!(wrapped[0].0.starts_with("  "));
+    }
+
+    // --- IMPACT (blast list) tests ----------------------------------------
+    use kubernation_core::state::blast::{Affected, BlastItem, BlastRadius, Subject, blast_radius};
+    use kubernation_core::state::fixtures as fx;
+    use kubernation_core::state::model::{Models, WorkloadKind};
+
+    fn wr(name: &str) -> WorkloadRef {
+        WorkloadRef {
+            kind: WorkloadKind::Deployment,
+            namespace: "demo".into(),
+            name: name.into(),
+        }
+    }
+    /// An empty WorldModel (no cities) — affected_cell resolves to None, fine for
+    /// tests that only exercise row content / health / ordering / caps.
+    fn empty_world() -> WorldModel {
+        Models::build(&fx::world().0).world
+    }
+
+    #[test]
+    fn impact_rows_orders_labels_and_resolves_cells() {
+        // node n1 hosts web (pod) which has a Service + Ingress → city h1 / harbor
+        // h2 via web / gate h3 via web, all placed (cells resolve, clickable).
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.deployment(fx::deployment("demo", "web", 1, 1));
+        s.replicaset(fx::replicaset("demo", "web-rs", "web"));
+        s.pod(fx::pod_owned(
+            fx::pod("demo", "web-rs-1", Some("n1")),
+            "ReplicaSet",
+            "web-rs",
+        ));
+        s.service(fx::service("demo", "web", &[("app", "web")]));
+        s.ingress(fx::ingress("demo", "web-ing", "web.example", "web"));
+        let m = Models::build(&world);
+        let blast = blast_radius(&world, &Subject::Node("n1".into()));
+        let rows = impact_rows(&blast, &m.workload_severity, &m.world, IMPACT_CAP);
+
+        let city = rows
+            .iter()
+            .find(|r| r.label.contains("city demo/web"))
+            .unwrap();
+        assert_eq!(city.hop, 1);
+        assert!(
+            city.cell.is_some() && city.clickable,
+            "the city is placed → navigable"
+        );
+        let harbor = rows.iter().find(|r| r.label.contains("harbor")).unwrap();
+        assert!(harbor.label.contains("via web") && harbor.hop == 2);
+        let gate = rows.iter().find(|r| r.label.contains("gate")).unwrap();
+        assert_eq!(gate.hop, 3);
+        // ordering is hop-ascending.
+        assert!(rows.windows(2).all(|w| w[0].hop <= w[1].hop));
+    }
+
+    #[test]
+    fn impact_rows_route_inherits_via_health_and_orders_by_it() {
+        let world = empty_world();
+        let bad = wr("api");
+        let mut severity = HashMap::new();
+        severity.insert(bad.clone(), Severity::Critical);
+        // Two hop-1 workloads (one Critical), and a Service fronting the troubled one.
+        let blast = BlastRadius {
+            subject: Subject::Node("n1".into()),
+            items: vec![
+                BlastItem {
+                    item: Affected::Workload(wr("calm")),
+                    hop: 1,
+                },
+                BlastItem {
+                    item: Affected::Workload(bad.clone()),
+                    hop: 1,
+                },
+                BlastItem {
+                    item: Affected::Service {
+                        namespace: "demo".into(),
+                        name: "api".into(),
+                        via: bad.clone(),
+                    },
+                    hop: 2,
+                },
+            ],
+        };
+        let rows = impact_rows(&blast, &severity, &world, IMPACT_CAP);
+        // The troubled workload floats to the top of its hop tier.
+        assert!(rows[0].label.contains("api") && rows[0].health == Some(Severity::Critical));
+        assert!(rows[1].label.contains("calm") && rows[1].health.is_none());
+        // The Service inherits its `via` workload's Critical health (so its row
+        // also carries the severity glyph, hence `contains` not `starts_with`).
+        let svc = rows.iter().find(|r| r.label.contains("harbor")).unwrap();
+        assert_eq!(svc.health, Some(Severity::Critical));
+    }
+
+    #[test]
+    fn impact_rows_empty_is_honest() {
+        let blast = BlastRadius {
+            subject: Subject::Workload(wr("lonely")),
+            items: vec![],
+        };
+        let rows = impact_rows(&blast, &HashMap::new(), &empty_world(), IMPACT_CAP);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].label.contains("nothing downstream") && !rows[0].clickable);
+    }
+
+    #[test]
+    fn impact_rows_caps_with_overflow() {
+        let items: Vec<BlastItem> = (0..IMPACT_CAP + 5)
+            .map(|i| BlastItem {
+                item: Affected::Workload(wr(&format!("w{i:02}"))),
+                hop: 1,
+            })
+            .collect();
+        let blast = BlastRadius {
+            subject: Subject::Node("n1".into()),
+            items,
+        };
+        let rows = impact_rows(&blast, &HashMap::new(), &empty_world(), IMPACT_CAP);
+        assert_eq!(rows.len(), IMPACT_CAP + 1); // cap rows + one overflow
+        assert!(rows.last().unwrap().label == "+5 more" && !rows.last().unwrap().clickable);
     }
 }

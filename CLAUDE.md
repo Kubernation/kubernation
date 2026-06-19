@@ -1445,6 +1445,52 @@ what makes the interesting logic unit-testable without a cluster.
   posture score (0–100, its own roadmap item); seccomp + default-SA
   (false-positive-prone); Jobs/CronJobs/bare pods;
   hostPort/AppArmor/SELinux/sysctls/probes; PSA-enforcement simulation.
+- **Dependency / impact triage panel (#8)** (2026-06-19, roadmap item #8;
+  design-workflow vetted — 3 lenses → 2 judges → synthesis): the blast-radius
+  overlay (`B`) gained a navigable **IMPACT** section in the right column (a 4th
+  consumer of the docked column, between ATTENTION and FORWARDS, shown only while
+  the overlay is active). **No core change** — `state/blast.rs` already computes
+  `BlastRadius`; the panel is a pure GUI list over the *memoized* `blast_cache`
+  (never recomputes the topology walk). `sidebar::impact_rows(blast, &workload_
+  severity, &WorldModel, cap) -> Vec<ImpactRow>` (pure, unit-tested): one row per
+  affected city/harbor/gate with a hop badge, **ordered hop-asc then health-DESC
+  within a hop** (a failing dependent floats to the top of its tier + survives the
+  `IMPACT_CAP`=8 cap → "+N more"), each carrying its resolved LOCAL cell. **Health**
+  cross-refs `Models.workload_severity` — a Workload uses its own, a Service/Ingress
+  **inherits its `via` workload's** (no invented endpoint health; topology-only
+  honesty, like the blast core's refusal of fabricated app edges — an empty radius
+  shows "nothing downstream derivable"). **Navigation:** a clickable row sets
+  `SidebarHit.focus_impact` = the cell; the main loop converts to global
+  (`local + sw.off`), selects + `cam.fly_to`, and opens the city window when
+  `region_at` is a City (coast marks have no panel — the SELECTION box describes
+  them); the blast subject/highlight stay put so you walk the cascade row by row.
+  **DRY:** the per-`Affected`→cell match was lifted from `draw_blast` into
+  `draw::affected_cell` (`pub(crate)`), so the list and the on-map flash resolve
+  through one path and can never disagree. READ-ONLY; reuses the existing `--blast`
+  dev flag. Accepted tradeoff (documented): `workload_severity` is from the
+  filtered `Models` while `blast_cache` is unfiltered, so a filtered-out troubled
+  dependent shows neutral health. Verified live on kind: a blast on the worker node
+  lists 11 affected, crashy floated to the top with its severity marker; the on-map
+  flash + banner stay; clicking flies + opens. 171 core + 26 GUI tests; gui-smoke
+  28. **Deferred**: a keyboard cycle of IMPACT rows; an IMPACT modal / inline
+  per-row actions; true downstream-consumer edges (need a mesh/eBPF — the blast
+  core refuses to fabricate them).
+  **Adversarial-review fixes** (5 confirmed; HIGH + MEDIUM + 2 LOW fixed, 1 LOW
+  accepted): (HIGH) clicking an IMPACT row used to set `selected`, which silently
+  **re-rooted the blast subject** next frame (the subject is re-derived from
+  `selected` each frame) — breaking the "walk the cascade" invariant *and* forcing
+  a fresh topology walk; the handler now flies + opens the city panel **without
+  touching `selected`**, so the subject + highlight stay anchored on the troubled
+  source. (MEDIUM) a city-less subject (a DaemonSet road reached via the
+  focused-concern / raid fallback) made `draw_blast` return None → the banner read
+  "select a subject" while IMPACT showed a full list; the banner now falls back to
+  the radius length (`affected.or(radius.len())`) so it reads "N affected" instead.
+  (LOW) the IMPACT label **front-loads the hop** (`h{n} {kind} {ns}/{name}{via}`)
+  so right-truncation eats the long name/via tail before the diagnostic cascade
+  depth; (LOW) the FORWARDS loop gained a bottom-stop break guard (IMPACT above it
+  can push it down on a short window). Accepted: Info-severity rows share the
+  healthy stone colour — the severity glyph is the distinguisher (same convention
+  as the ATTENTION column).
 
 ## The pair (hot/warm)
 

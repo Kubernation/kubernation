@@ -1659,7 +1659,9 @@ async fn main() {
                 // Blast-radius overlay: the dependency fan-out of the selected
                 // tile (a city/node), else the live raid, else the focused
                 // concern's subject. Drawn over the world; recomputed each frame
-                // (cheap for real sizes).
+                // (cheap for real sizes). `blast_view` feeds the navigable IMPACT
+                // column section beside the on-map flash.
+                let mut blast_view: Option<sidebar::BlastView> = None;
                 if blast_on || raid_subject.is_some() {
                     let subject: Option<(ClusterId, Subject)> = selected
                         .and_then(|cell| locate(&worlds, cell))
@@ -1710,7 +1712,21 @@ async fn main() {
                     } else {
                         blast_cache = None;
                     }
-                    panels::draw_blast_banner(affected, panels::map_width());
+                    // `affected` is None when the subject itself has no on-map
+                    // position (a DaemonSet road) — but it still has a radius, so
+                    // show the affected count rather than "select a subject" (which
+                    // would contradict the populated IMPACT list).
+                    let banner_count =
+                        affected.or_else(|| blast_cache.as_ref().map(|(_, _, b)| b.len()));
+                    panels::draw_blast_banner(banner_count, panels::map_width());
+                    // The IMPACT list reads the same memoized radius (never
+                    // recomputed) — it's a navigable view of the on-map flash.
+                    blast_view = blast_cache
+                        .as_ref()
+                        .map(|(cid, _, radius)| sidebar::BlastView {
+                            radius,
+                            cluster: *cid,
+                        });
                 }
 
                 // The docked right column (WORLD / STATUS / SELECTION) — always
@@ -1742,6 +1758,7 @@ async fn main() {
                     && pending_chaos.is_none();
                 let sidebar_click =
                     is_mouse_button_pressed(MouseButton::Left) && sidebar_interactive;
+                let impact_cluster = blast_view.as_ref().map(|b| b.cluster);
                 let hit = sidebar::draw_sidebar(
                     &worlds,
                     &cam,
@@ -1752,6 +1769,7 @@ async fn main() {
                     overlay,
                     concern_idx,
                     &forwards,
+                    blast_view.as_ref(),
                     mouse,
                     sidebar_click,
                     sidebar_interactive,
@@ -1769,6 +1787,23 @@ async fn main() {
                         &mut cam,
                         &mut panel,
                     );
+                }
+                // An IMPACT row was clicked: fly the camera to the affected
+                // resource (local cell in the blast cluster's world) and open its
+                // city window if it's a workload (coast marks have no panel — the
+                // SELECTION box describes them). Deliberately does NOT set
+                // `selected`: the blast subject is re-derived from `selected` each
+                // frame, so leaving it anchors the subject + highlight on the
+                // troubled source — you walk the cascade row by row without
+                // re-rooting the radius (and without forcing a topology recompute).
+                if let Some(local) = hit.focus_impact
+                    && let Some(cid) = impact_cluster
+                    && let Some(sw) = worlds.iter().find(|sw| sw.id == cid)
+                {
+                    cam.fly_to((local.0 + sw.off, local.1));
+                    if let Region::City(_, c) = sw.world.region_at(local.0, local.1) {
+                        panel = Some(Panel::City(cid, c.r.clone()));
+                    }
                 }
 
                 // Cartographic title cartouche over the top of the map (a

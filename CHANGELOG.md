@@ -9,6 +9,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Dependency / impact triage panel.** The blast-radius overlay (`B`) now also
+  lists what a troubled node/workload affects — an **IMPACT** section in the right
+  column: the cascade of cities → harbors (services) → gates (ingresses) with hop
+  badges, each **clickable to fly to + open** it, and affected resources that are
+  *themselves* already in trouble float to the top of their hop tier with a
+  severity marker (cross-referenced from the attention queue). The on-map flash +
+  banner stay visible beside the list. Pure, unit-tested `impact_rows`; topology-
+  only (no fabricated dependency edges — an empty radius is shown honestly).
+  (Roadmap #8.)
 - **Security / hardening scan.** A 5th **Advisors ▸ Hardening** tab lints every
   workload's pod template for security misconfigurations — privileged containers,
   host namespaces, dangerous capabilities, hostPath mounts (Critical); run-as-root,

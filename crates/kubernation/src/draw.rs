@@ -672,6 +672,27 @@ pub fn draw_selection(cam: &Camera, sel: (u16, u16)) {
 /// The local cell of the coast marker for a specific (kind, namespace, name)
 /// route hanging off workload `via` — a Service can front several workloads
 /// (one marker each), so we highlight only the affected workload's mark.
+/// Resolve an affected resource to its on-map cell (local coords) — the single
+/// path both `draw_blast` (highlight) and the IMPACT list (navigation) use, so
+/// the map and the list can never disagree on where a row flies. `None` when the
+/// resource has no on-map position (a DaemonSet "city" that's a road, a coast
+/// marker dropped by COAST_CAP).
+pub(crate) fn affected_cell(w: &WorldModel, a: &Affected) -> Option<(u16, u16)> {
+    match a {
+        Affected::Workload(wr) => w.city_pos(wr).or_else(|| w.structure_pos(wr)),
+        Affected::Service {
+            namespace,
+            name,
+            via,
+        } => coast_cell(w, CoastKind::Harbor, namespace, name, via),
+        Affected::Ingress {
+            namespace,
+            name,
+            via,
+        } => coast_cell(w, CoastKind::Gate, namespace, name, via),
+    }
+}
+
 fn coast_cell(
     w: &WorldModel,
     kind: CoastKind,
@@ -715,20 +736,7 @@ pub fn draw_blast(cam: &Camera, sw: &SceneWorld, blast: &BlastRadius) -> Option<
     // any with no position — a DaemonSet city, a marker dropped by COAST_CAP).
     let mut targets: Vec<(Vec2, u8)> = Vec::new();
     for it in &blast.items {
-        let cell = match &it.item {
-            Affected::Workload(wr) => w.city_pos(wr).or_else(|| w.structure_pos(wr)),
-            Affected::Service {
-                namespace,
-                name,
-                via,
-            } => coast_cell(w, CoastKind::Harbor, namespace, name, via),
-            Affected::Ingress {
-                namespace,
-                name,
-                via,
-            } => coast_cell(w, CoastKind::Gate, namespace, name, via),
-        };
-        if let Some(p) = cell {
+        if let Some(p) = affected_cell(w, &it.item) {
             targets.push((center(p), it.hop));
         }
     }
