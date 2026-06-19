@@ -129,7 +129,27 @@ pub fn draw_node(
         13.0,
         PARCHMENT,
     );
-    y += 22.0;
+    y += 18.0;
+    // Why-not-Ready explainer for the worst pod stationed here (root cause + fix).
+    if let Some(d) = detail
+        .pods
+        .iter()
+        .find(|p| p.state == kubernation_core::state::model::PodState::Failing && p.diag.is_some())
+        .or_else(|| detail.pods.iter().find(|p| p.diag.is_some()))
+        .and_then(|p| p.diag.as_ref())
+    {
+        text(
+            ascii(&format!("why: {} - {}", d.reason, d.explain)),
+            b.x,
+            y + 12.0,
+            12.0,
+            WARN,
+        );
+        y += 15.0;
+        text(ascii(&format!("fix: {}", d.hint)), b.x, y + 12.0, 12.0, DIM);
+        y += 16.0;
+    }
+    y += 4.0;
 
     // PLAN: stage cordon / uncordon. Preview-only — records intent, no writes.
     {

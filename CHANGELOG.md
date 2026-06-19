@@ -8,6 +8,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Pod-not-Ready explainer.** The city + province windows now show a plain-English
+  "why / fix" for a degraded workload's worst pod — turning the raw Kubernetes
+  reason (`CrashLoopBackOff`, `ImagePullBackOff`, `Unschedulable`, OOMKilled, a
+  failing readiness probe, a missing ConfigMap/Secret, …) into one sentence plus
+  the next action (often an in-app verb, e.g. "tail the previous container (p)").
+  Pure `state/diagnose.rs` (unit-tested); OOM is distinguished from a generic
+  crash, and high restart counts are called out. (Roadmap #1.)
+
 ### Fixed
 - **Stale "observe-only" text in the in-app Almanac** — it claimed "Kubernation
   only watches; there are no mutation paths anywhere", which predates the gated

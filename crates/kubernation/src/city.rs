@@ -293,6 +293,26 @@ pub fn draw_city(
         DIM,
     );
     y += 16.0;
+    // Why-not-Ready explainer: the worst pod's root cause + next action. Prefer a
+    // failing pod, else the first pod that carries a diagnosis.
+    if let Some(d) = city
+        .pods
+        .iter()
+        .find(|p| p.state == kubernation_core::state::model::PodState::Failing && p.diag.is_some())
+        .or_else(|| city.pods.iter().find(|p| p.diag.is_some()))
+        .and_then(|p| p.diag.as_ref())
+    {
+        text(
+            ascii(&format!("why: {} - {}", d.reason, d.explain)),
+            b.x,
+            y + 12.0,
+            13.0,
+            WARN,
+        );
+        y += 16.0;
+        text(ascii(&format!("fix: {}", d.hint)), b.x, y + 12.0, 12.0, DIM);
+        y += 16.0;
+    }
     if let Some(pair) = &snap.pair
         && let Some(st) = pair.state(r)
     {

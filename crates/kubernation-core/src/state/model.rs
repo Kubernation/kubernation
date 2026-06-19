@@ -683,6 +683,8 @@ pub struct CityPod {
     pub node: String,
     /// Live usage from metrics-server, if reporting (cpu cores, mem bytes).
     pub usage: Option<NodeUsage>,
+    /// Plain-English "why isn't this Ready" + next action (None when healthy).
+    pub diag: Option<crate::state::diagnose::Diagnosis>,
 }
 
 #[derive(Debug, Clone)]
@@ -1232,11 +1234,13 @@ pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
             }
         }
         let usage = world.pod_usage(&r.namespace, &name);
+        let restarts = pod_restarts(&p);
+        let diag = crate::state::diagnose::diagnose(&reason, restarts, pod_oom_killed(&p));
         pods.push(CityPod {
             name,
             state,
             reason,
-            restarts: pod_restarts(&p),
+            restarts,
             age: p.metadata.creation_timestamp.clone(),
             node: p
                 .spec
@@ -1244,6 +1248,7 @@ pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
                 .and_then(|s| s.node_name.clone())
                 .unwrap_or_default(),
             usage,
+            diag,
         });
     }
     pods.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1386,6 +1391,8 @@ pub struct NodePodRow {
     pub owner: Option<WorkloadRef>,
     /// Live usage from metrics-server, if reporting (cpu cores, mem bytes).
     pub usage: Option<NodeUsage>,
+    /// Plain-English "why isn't this Ready" + next action (None when healthy).
+    pub diag: Option<crate::state::diagnose::Diagnosis>,
 }
 
 #[derive(Debug, Clone)]
@@ -1486,15 +1493,18 @@ pub fn build_node_detail(world: &ObservedWorld, name: &str) -> Option<NodeDetail
             let namespace = p.metadata.namespace.clone().unwrap_or_default();
             let name = p.metadata.name.clone().unwrap_or_default();
             let usage = world.pod_usage(&namespace, &name);
+            let restarts = pod_restarts(p);
+            let diag = crate::state::diagnose::diagnose(&reason, restarts, pod_oom_killed(p));
             NodePodRow {
                 namespace,
                 name,
                 state,
                 reason,
-                restarts: pod_restarts(p),
+                restarts,
                 age: p.metadata.creation_timestamp.clone(),
                 owner: idx.workload_of(p),
                 usage,
+                diag,
             }
         })
         .collect();
