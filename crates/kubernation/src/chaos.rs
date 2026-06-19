@@ -8,8 +8,8 @@
 
 use kubernation_core::state::blast::Subject;
 use kubernation_core::state::chaos::{
-    ChaosScorecard, Experiment, ScoreRole, node_protected, ns_protected, plan_chaos, preview_lines,
-    scorecard_lines,
+    ChaosScorecard, Experiment, ScoreRole, node_protected, ns_protected, plan_chaos, plan_summary,
+    preview_lines, scorecard_lines,
 };
 use kubernation_core::state::model::WorkloadRef;
 use macroquad::prelude::*;
@@ -219,14 +219,26 @@ impl Chaos {
                     );
                     ry += 18.0;
                 } else {
+                    // Dry-run: list the concrete steps that would run (capped).
                     text(
-                        ascii(&format!("{} cluster step(s)", plan.steps.len())),
+                        ascii(&format!("dry run - {} step(s):", plan.steps.len())),
                         right_x,
                         ry + 12.0,
                         13.0,
                         INK,
                     );
-                    ry += 18.0;
+                    ry += 17.0;
+                    for line in plan_summary(&plan, 5) {
+                        text(
+                            ascii(&format!("- {line}")),
+                            right_x + 8.0,
+                            ry + 11.0,
+                            12.0,
+                            DIM,
+                        );
+                        ry += 15.0;
+                    }
+                    ry += 3.0;
                     text(
                         ascii(&format!("blast radius: {} affected", plan.blast)),
                         right_x,

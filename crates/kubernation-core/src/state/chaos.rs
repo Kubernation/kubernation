@@ -28,6 +28,7 @@ use crate::state::blast::{Subject, blast_radius};
 use crate::state::model::{OwnerIndex, WorkloadKind, WorkloadRef};
 use crate::state::observed::ObservedWorld;
 use crate::state::planned::{Intervention, current_replicas};
+use crate::state::slo::BudgetState;
 use crate::state::slo::SloStatus;
 
 /// Namespaces a drill must never target — the cluster's own control plane.
@@ -51,6 +52,13 @@ pub fn node_protected(node: &Node) -> bool {
 /// never resolve (RFC-6761 `.invalid`), so the workload goes ImagePullBackOff
 /// and the cause is self-announcing in events. Restored to the captured original.
 pub const BAD_IMAGE: &str = "kubernation.invalid/chaos/broken:does-not-exist";
+
+/// A safety cap on how many pods a single drill may delete at once. A drill that
+/// would evict more than this is **refused** (fail-closed) — a guardrail against
+/// fat-fingering a cluster-wide raid. Reversible patches (scale/cordon/netpol)
+/// aren't counted; only the destructive pod deletions are. Generous enough that
+/// normal game-days pass; low enough to catch a runaway.
+pub const MAX_KILL_PODS: usize = 50;
 
 /// A chaos experiment. Most target a workload; node-failure targets a node.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,6 +216,52 @@ pub fn iv_namespace(iv: &Intervention) -> Option<&str> {
     }
 }
 
+/// A one-line human summary of a planned intervention (for the dry-run preview).
+fn intervention_summary(iv: &Intervention) -> String {
+    match iv {
+        Intervention::Scale { workload, replicas } => {
+            format!(
+                "scale {}/{} -> {replicas}",
+                workload.namespace, workload.name
+            )
+        }
+        Intervention::Cordon { node, on } => {
+            format!("{} node {node}", if *on { "cordon" } else { "uncordon" })
+        }
+        Intervention::Restart { workload } => {
+            format!("restart {}/{}", workload.namespace, workload.name)
+        }
+        Intervention::SetImage {
+            workload,
+            container,
+            image,
+        } => format!(
+            "set {}/{} [{container}] -> {image}",
+            workload.namespace, workload.name
+        ),
+    }
+}
+
+/// A one-line human summary of a concrete step — the dry-run "what will happen".
+pub fn step_summary(step: &ChaosStep) -> String {
+    match step {
+        ChaosStep::Evict { namespace, pod } => format!("kill pod {namespace}/{pod}"),
+        ChaosStep::Apply(iv) => intervention_summary(iv),
+        ChaosStep::Partition(s) => format!("deny-all netpol {}/{}", s.namespace, s.name),
+        ChaosStep::Unpartition { namespace, name } => format!("remove netpol {namespace}/{name}"),
+    }
+}
+
+/// The drill's concrete steps as capped one-line summaries (the dry-run preview
+/// the confirm shows) — PURE + testable. Beyond `cap`, a "+N more" line.
+pub fn plan_summary(plan: &ChaosPlan, cap: usize) -> Vec<String> {
+    let mut out: Vec<String> = plan.steps.iter().take(cap).map(step_summary).collect();
+    if plan.steps.len() > cap {
+        out.push(format!("+{} more step(s)", plan.steps.len() - cap));
+    }
+    out
+}
+
 /// Resolve an experiment against the observed world into a concrete plan —
 /// PURE (no client). Refuses protected targets fail-closed, captures the
 /// restore steps, and computes the blast size.
@@ -237,6 +291,12 @@ pub fn plan_chaos(world: &ObservedWorld, exp: &Experiment) -> ChaosPlan {
             let pods = workload_pods(world, workload);
             if pods.is_empty() {
                 return ChaosPlan::refuse(blast, "no pods to kill");
+            }
+            if pods.len() > MAX_KILL_PODS {
+                return ChaosPlan::refuse(
+                    blast,
+                    format!("would delete {} pods (cap {MAX_KILL_PODS})", pods.len()),
+                );
             }
             ChaosPlan {
                 steps: pods
@@ -284,6 +344,12 @@ pub fn plan_chaos(world: &ObservedWorld, exp: &Experiment) -> ChaosPlan {
             let pods = pods_on_node(world, node);
             if pods.is_empty() {
                 return ChaosPlan::refuse(blast, "no drainable pods on this node");
+            }
+            if pods.len() > MAX_KILL_PODS {
+                return ChaosPlan::refuse(
+                    blast,
+                    format!("would drain {} pods (cap {MAX_KILL_PODS})", pods.len()),
+                );
             }
             // Cordon first, then drain every (non-system) pod.
             let mut steps = vec![ChaosStep::Apply(Intervention::Cordon {
@@ -396,6 +462,28 @@ pub enum ScoreRole {
     Info,
 }
 
+/// A headline verdict on what the drill cost the error budget (the treasury) —
+/// PURE + testable. Breach is loud (the drill pushed availability under the
+/// SLO); a spend is a warning; an untouched budget is reassuring.
+pub fn budget_verdict(before: &SloStatus, after: &SloStatus) -> (String, ScoreRole) {
+    let spent = (before.budget_remaining - after.budget_remaining).max(0.0);
+    if after.state == BudgetState::Breached {
+        ("drill BREACHED the error budget".into(), ScoreRole::Bad)
+    } else if spent > 0.001 {
+        (
+            format!(
+                "spent {:.0}% of budget ({:.0}% -> {:.0}% left)",
+                spent * 100.0,
+                before.budget_remaining * 100.0,
+                after.budget_remaining * 100.0
+            ),
+            ScoreRole::Warn,
+        )
+    } else {
+        ("error budget untouched".into(), ScoreRole::Good)
+    }
+}
+
 /// The recovery line for a dip/recover-model scorecard.
 fn recovery_line(s: &ChaosScorecard) -> (String, ScoreRole) {
     if !s.dipped {
@@ -424,21 +512,7 @@ pub fn scorecard_lines(s: &ChaosScorecard) -> Vec<(String, ScoreRole)> {
         ScoreKind::Workload => {
             out.push(recovery_line(s));
             if let (Some(before), Some(after)) = (&s.budget_before, &s.budget_after) {
-                let spent = (before.budget_remaining - after.budget_remaining).max(0.0);
-                let role = if spent > 0.001 {
-                    ScoreRole::Warn
-                } else {
-                    ScoreRole::Good
-                };
-                out.push((
-                    format!(
-                        "budget {:.0}% -> {:.0}% (spent {:.0}%)",
-                        before.budget_remaining * 100.0,
-                        after.budget_remaining * 100.0,
-                        spent * 100.0
-                    ),
-                    role,
-                ));
+                out.push(budget_verdict(before, after));
             }
         }
         ScoreKind::Node {
@@ -800,5 +874,69 @@ mod tests {
         assert!(lines.iter().any(|(t, _)| t.contains("NetworkPolicy")));
         // An isolation never claims a recovery/dip.
         assert!(!lines.iter().any(|(t, _)| t.contains("self-healed")));
+    }
+
+    #[test]
+    fn kill_all_over_the_cap_is_refused() {
+        let (world, mut s) = fx::world();
+        s.deployment(fx::deployment("demo", "web", MAX_KILL_PODS as i32 + 1, 0));
+        s.replicaset(fx::replicaset("demo", "web-rs", "web"));
+        for i in 0..(MAX_KILL_PODS + 1) {
+            s.pod(fx::pod_owned(
+                fx::pod("demo", &format!("web-rs-{i}"), Some("n1")),
+                "ReplicaSet",
+                "web-rs",
+            ));
+        }
+        let plan = plan_chaos(&world, &Experiment::KillAll { workload: web() });
+        assert!(plan.is_refused());
+        assert!(plan.refused.unwrap().contains("cap"));
+    }
+
+    #[test]
+    fn plan_summary_lists_steps_and_overflow() {
+        let (world, mut s) = fx::world();
+        seed_web(&mut s); // 3 pods
+        let plan = plan_chaos(&world, &Experiment::KillAll { workload: web() });
+        // cap below the step count → first N summaries + a "+M more" line.
+        let lines = plan_summary(&plan, 2);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("kill pod demo/web-rs-"));
+        assert_eq!(lines[2], "+1 more step(s)");
+        // An Outage summarises the scale step.
+        let outage = plan_chaos(&world, &Experiment::Outage { workload: web() });
+        assert!(plan_summary(&outage, 10)[0].contains("scale demo/web -> 0"));
+    }
+
+    #[test]
+    fn budget_verdict_classifies_breach_spend_and_untouched() {
+        use crate::state::slo::TargetSource;
+        let slo = |remaining: f64, state: BudgetState| SloStatus {
+            sli: 0.0,
+            target: 0.99,
+            budget_remaining: remaining,
+            burn: 0.0,
+            samples: 100,
+            state,
+            source: TargetSource::Default,
+        };
+        // Breach is loud regardless of the delta.
+        let (t, r) = budget_verdict(
+            &slo(0.5, BudgetState::Healthy),
+            &slo(0.0, BudgetState::Breached),
+        );
+        assert!(t.contains("BREACHED") && r == ScoreRole::Bad);
+        // A spend without breach is a warning, with the percentages.
+        let (t, r) = budget_verdict(
+            &slo(0.9, BudgetState::Healthy),
+            &slo(0.7, BudgetState::Healthy),
+        );
+        assert!(t.contains("spent 20%") && r == ScoreRole::Warn);
+        // No spend → reassuring.
+        let (t, r) = budget_verdict(
+            &slo(0.8, BudgetState::Healthy),
+            &slo(0.8, BudgetState::Healthy),
+        );
+        assert!(t.contains("untouched") && r == ScoreRole::Good);
     }
 }

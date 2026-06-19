@@ -8,6 +8,19 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Game Day enhancements (round 3).** Making the chaos console safer, more
+  legible, and more measurable:
+  - **Dry-run preview** — the drill's PREVIEW now lists the concrete steps that
+    would run ("kill pod demo/web-…", "scale demo/web → 0"), so you see exactly
+    what a drill does before running it.
+  - **Blast cap** — a drill that would delete more than `MAX_KILL_PODS` (50) pods
+    at once is refused (fail-closed), a guardrail against a fat-fingered
+    cluster-wide raid.
+  - **Budget-breach verdict** — the scorecard headlines what the drill cost the
+    error budget: "drill BREACHED the error budget" / "spent N% of budget" /
+    "error budget untouched", tying chaos to the treasury.
+
 ### Changed
 - **The attention queue moved from the bottom strip into a docked ATTENTION
   section in the right column**, between STATUS and FORWARDS — and its rows are
