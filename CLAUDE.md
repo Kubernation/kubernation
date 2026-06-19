@@ -1622,6 +1622,52 @@ what makes the interesting logic unit-testable without a cluster.
   cluster); and the honest-limits doc + advisor footer now state that matching is
   on **pod-template** labels (a policy keyed on a pod-only label reads unwalled).
   **This completes the Top-10 incident-value roadmap (#1–#10).**
+- **Posture score — "realm defense"** (2026-06-19, the roadmap "Next"-tier item
+  *Posture score, after the scans land*; design-workflow vetted — 3 lenses → 2
+  judges → synthesis): a 0-100 severity-weighted rating + tier capping the
+  security trio. **Pure core** `state/posture.rs` (`posture_report(world) ->
+  PostureReport`, unit-tested) is the **single importer** of both security scans
+  (`harden::hardening_report` #7 + `netpol::coverage_report` #10, one call each —
+  so the score can't disagree with the tabs it summarizes). **Methodology:** two
+  start-at-100-and-deduct axis sub-scores, blended `0.6*fortifications +
+  0.4*walls` (pod-security heavier — breakout > lateral movement). FORTIFICATIONS
+  = `100 − 22·crit − 6·warn − min(1.5·info, 10)` over **operator** workloads
+  (worst-severity bucketed, one deduction each); WALLS = `100 − 14·unwalled_exposed
+  − 5·wide_open_ns`. **System namespaces** (`chaos::ns_protected`: kube-system/…)
+  are scored **separately** (`system_critical`/`_warning`, surfaced dimmed) and
+  **never deducted** — the distro's CNI/kube-proxy Criticals aren't the operator's
+  to fix (the load-bearing exclusion, mirroring the #7 queue). **Two anti-traps**
+  (test-pinned): a high linear CRIT weight + **no presence floor** so one
+  privileged pod visibly dents (fort 78), and an **Info cap** (10) so hygiene nits
+  can't tank a crit-free realm (fort ≥ 90). **Honest:** `score = None` ⇒
+  *Unscanned* (never a green all-clear on an empty / all-mid-sync cluster); a
+  curated-subset footer (not CIS/full-PSS); *Defended* is parchment/neutral, NOT
+  green/cyan (colour discipline). **Banding:** ≥90 Fortified / ≥70 Defended / ≥40
+  Exposed / else Breached. **Explainable:** ranked `factors` (one per non-empty
+  operator bucket, points-desc) name up to 3 offenders + the target tab; the Info
+  bucket carries a `capped` flag. **GUI:** a 6th **Advisors ▸ Posture** tab (pure
+  `advisor::posture_lines` — headline + per-axis sub-scores each tinted by its own
+  band so a Breached WALLS axis stays red even under a Defended blend + ranked WHY
+  + footer) and a **DEFENSE chip** in the STATUS column (pure `sidebar::
+  posture_chip`, tier→stone colour). **Perf:** the report is memoized once per
+  tick on `net::WorldSnap.posture` — the chip is on the 60fps sidebar, so it must
+  not re-scan per frame; the tab reads the same memoized field. Menu item,
+  `--advisor posture`, `Key6`, gui-smoke `advisor-posture`. Read-only; no new write
+  verb. Verified live on kind: **DEFENSE 74/100 — DEFENDED** (fort 70 from 5
+  PSS-restricted warnings, walls 81 from web's K07 + a wide-open namespace;
+  kindnet/kube-proxy's 2 system Criticals excluded + shown dimmed). 209 core + 39
+  GUI tests; gui-smoke 31. **Deferred** (structs sized for them): an RBAC-danger
+  3rd axis (needs a cluster-wide RBAC scan, not the self-scoped Charter #6); CIS/
+  full-PSS compliance; a posture trend ring; per-namespace sub-scores; clickable
+  factor→tab jump; a map overlay tinting provinces by posture; warm-cluster posture.
+  **Adversarial-review fix** (1 confirmed, MEDIUM): the `scanned` gate mixed
+  operator-scope (`operator_total`) with the cluster-wide `h.unresolved` /
+  `h.workloads_total`, so a resolvable **system** workload (kube-system) could
+  unlock a green score while every operator workload was still mid-sync (a false
+  all-clear). Now operator-scoped: `scanned = operator_resolved > 0`, counting
+  operator workloads whose pod template actually resolves (`model::
+  workload_template`) — pinned by a regression test (resolvable system + all
+  operator unresolved ⇒ Unscanned). 210 core + 39 GUI tests.
 
 ## The pair (hot/warm)
 

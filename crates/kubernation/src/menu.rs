@@ -172,8 +172,12 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                     MenuAction::Advisor(AdvisorTab::RightSizing),
                 ),
                 Item::act(
-                    "Hardening (realm defense)",
+                    "Hardening (pod security)",
                     MenuAction::Advisor(AdvisorTab::Hardening),
+                ),
+                Item::act(
+                    "Posture (realm defense score)",
+                    MenuAction::Advisor(AdvisorTab::Posture),
                 ),
             ],
         },

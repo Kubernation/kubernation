@@ -61,7 +61,7 @@ security feature (10). Rollback (4) follows history (3) because it depends on it
 - Live-spec drift — declared vs running (M)
 - Postmortem / after-action export — one local file (M)
 - Image provenance — latest-tag / digest / registry (M)
-- Posture score — "realm defense" meter, after the scans land (M)
+- Posture score — "realm defense" meter, after the scans land (M) — ✅ shipped (v0.47.0)
 
 ### Bigger bets — large but high-value
 - Change timeline (L) — folds events + RS revisions into per-subject "what changed"

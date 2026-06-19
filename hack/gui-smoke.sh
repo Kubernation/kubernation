@@ -20,6 +20,7 @@ STATES=(
   "advisor|--advisor health"
   "advisor-rightsizing|--advisor rightsizing"
   "advisor-hardening|--advisor hardening"
+  "advisor-posture|--advisor posture"
   "charter|--charter"
   "annals|--annals"
   "browse-pick|--browse"

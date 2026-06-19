@@ -24,6 +24,7 @@ use kubernation_core::state::attention::{Concern, Severity, severity_counts};
 use kubernation_core::state::blast::{Affected, BlastRadius};
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::model::WorkloadRef;
+use kubernation_core::state::posture::{PostureReport, PostureTier};
 use kubernation_core::state::world::WorldModel;
 
 use crate::draw::{Camera, MinimapLayout, Overlay, SceneWorld, affected_cell, draw_minimap};
@@ -243,6 +244,28 @@ pub fn attention_rows(
     rows
 }
 
+/// PURE: the realm-defense chip (text + tier) for the STATUS column — the glance
+/// (the Posture advisor tab is the diagnosis). Unit-tested.
+pub fn posture_chip(r: &PostureReport) -> (String, PostureTier) {
+    let text = match r.score {
+        Some(s) => format!("DEFENSE  {s}  {}", r.tier.label()),
+        None => "DEFENSE  — not scanned".to_string(),
+    };
+    (text, r.tier)
+}
+
+/// Tier → a stone-palette colour that reads on the tan chrome (trouble pops;
+/// calm stays calm — colour discipline).
+fn posture_tier_stone(tier: PostureTier) -> Color {
+    match tier {
+        PostureTier::Fortified => darker(GOOD, 0.55),
+        PostureTier::Defended => STONE_INK,
+        PostureTier::Exposed => STONE_WARN,
+        PostureTier::Breached => STONE_CRIT,
+        PostureTier::Unscanned => STONE_INK_DIM,
+    }
+}
+
 /// Draw the column. `forwards` are the live port-forwards (a FORWARDS section
 /// appears when non-empty); a click on a forward's stop button returns its
 /// local port for the caller to stop. `interactive` is false while a modal is
@@ -323,6 +346,12 @@ pub fn draw_sidebar(
         text(&token, tx, y, 13.0, color);
         tx += crate::text::text_size(&token, 13.0).width + 14.0;
     }
+    y += 18.0;
+
+    // Realm-defense posture chip — the glance (the Posture advisor tab is the
+    // diagnosis). Reads the memoized score (never re-scans per frame).
+    let (chip, tier) = posture_chip(&snap.hot.posture);
+    text(&chip, x, y, 13.0, posture_tier_stone(tier));
     y += 18.0;
 
     text(
@@ -801,5 +830,27 @@ mod tests {
         let rows = impact_rows(&blast, &HashMap::new(), &empty_world(), IMPACT_CAP);
         assert_eq!(rows.len(), IMPACT_CAP + 1); // cap rows + one overflow
         assert!(rows.last().unwrap().label == "+5 more" && !rows.last().unwrap().clickable);
+    }
+
+    #[test]
+    fn posture_chip_text_and_tier() {
+        use kubernation_core::state::posture::{AxisScore, PostureReport};
+        let mk = |score: Option<i32>, tier: PostureTier| PostureReport {
+            score,
+            tier,
+            scanned: score.is_some(),
+            fortifications: AxisScore::default(),
+            walls: AxisScore::default(),
+            workloads_total: 0,
+            system_critical: 0,
+            system_warning: 0,
+            factors: vec![],
+        };
+        let (t, tier) = posture_chip(&mk(Some(34), PostureTier::Breached));
+        assert!(t.contains("DEFENSE") && t.contains("34") && t.contains("BREACHED"));
+        assert_eq!(tier, PostureTier::Breached);
+        let (t2, tier2) = posture_chip(&mk(None, PostureTier::Unscanned));
+        assert!(t2.contains("not scanned"));
+        assert_eq!(tier2, PostureTier::Unscanned);
     }
 }

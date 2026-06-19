@@ -875,11 +875,13 @@ mod tests {
             let c = models.world.cities().next().expect("a city was sited");
             (c.x, c.y)
         };
+        let posture = kubernation_core::state::posture::posture_report(&world);
         let snap = Snapshot {
             hot: WorldSnap {
                 models,
                 observed: world,
                 slo: Arc::new(std::collections::HashMap::new()),
+                posture,
             },
             warm: None,
             pair: None,

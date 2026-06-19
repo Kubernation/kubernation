@@ -1,10 +1,11 @@
 //! The advisor screens — classic-4X "advisors" (Civ's F1 Berater) over the
-//! pure core reports. Five read-only summary tabs: Health (state of the realm),
-//! Storage (granaries), Network (harbors & gates), Right-sizing (requests vs
-//! metrics-server usage — waste / risk / scheduler-blind), and Hardening
-//! (security misconfigurations — OWASP-K01 / Pod Security Standards / Popeye).
-//! Opened from the Advisors menu; a modal window like the Almanac, sharing its
-//! window/tab/scroll machinery. Cluster-wide (hot).
+//! pure core reports. Six read-only summary tabs: Health (state of the realm),
+//! Storage (granaries), Network (harbors & gates + WALLS segmentation),
+//! Right-sizing (requests vs metrics-server usage), Hardening (pod-security
+//! misconfigurations — OWASP-K01 / PSS / Popeye), and Posture (the 0-100
+//! realm-defense score rolling up Hardening + WALLS). Opened from the Advisors
+//! menu; a modal window like the Almanac, sharing its window/tab/scroll
+//! machinery. Cluster-wide (hot).
 
 use kubernation_core::state::advisor::{
     HealthReport, NetworkReport, RightSizingReport, RsRow, RsVerdict, StorageReport, health_report,
@@ -12,6 +13,7 @@ use kubernation_core::state::advisor::{
 };
 use kubernation_core::state::harden::{self, HardeningReport, WorkloadFindings};
 use kubernation_core::state::netpol::{self, NetpolReport};
+use kubernation_core::state::posture::{Axis, FactorKind, PostureReport, PostureTier, band};
 use kubernation_core::util::human_bytes;
 use macroquad::prelude::*;
 
@@ -27,15 +29,17 @@ pub enum AdvisorTab {
     Network,
     RightSizing,
     Hardening,
+    Posture,
 }
 
 impl AdvisorTab {
-    pub const ALL: [AdvisorTab; 5] = [
+    pub const ALL: [AdvisorTab; 6] = [
         AdvisorTab::Health,
         AdvisorTab::Storage,
         AdvisorTab::Network,
         AdvisorTab::RightSizing,
         AdvisorTab::Hardening,
+        AdvisorTab::Posture,
     ];
     fn idx(self) -> usize {
         match self {
@@ -44,6 +48,7 @@ impl AdvisorTab {
             AdvisorTab::Network => 2,
             AdvisorTab::RightSizing => 3,
             AdvisorTab::Hardening => 4,
+            AdvisorTab::Posture => 5,
         }
     }
 }
@@ -90,6 +95,7 @@ impl Advisor {
             "Network",
             "Right-sizing",
             "Hardening",
+            "Posture",
             "Close",
         ];
         let win = draw_window(
@@ -113,6 +119,9 @@ impl Advisor {
                 }
                 AdvisorTab::RightSizing => page_rightsizing(&mut cx, &rightsizing_report(obs)),
                 AdvisorTab::Hardening => page_hardening(&mut cx, &harden::hardening_report(obs)),
+                // The Posture score is memoized on the snapshot (the STATUS chip
+                // reads it every frame) — render the same value, never re-scan.
+                AdvisorTab::Posture => page_posture(&mut cx, &s.hot.posture),
             }
         } else {
             cx.note("the world is not yet explored", DIM);
@@ -571,6 +580,123 @@ fn page_hardening(cx: &mut Ctx, r: &HardeningReport) {
     }
 }
 
+// --- posture page (the realm-defense rollup) --------------------------------
+
+/// The `RsRole` whose colour matches a posture tier (the shared meaning palette).
+/// Defended is deliberately PARCHMENT/neutral (Headline role), NOT green — it's
+/// "adequate", not an all-clear; STRUCT/cyan is reserved.
+fn tier_role(tier: PostureTier) -> RsRole {
+    match tier {
+        PostureTier::Fortified => RsRole::Good,
+        PostureTier::Defended => RsRole::Headline,
+        PostureTier::Exposed => RsRole::Warn,
+        PostureTier::Breached => RsRole::Crit,
+        PostureTier::Unscanned => RsRole::Dim,
+    }
+}
+
+/// PURE: the Posture tab lines as (text, role). Headline + per-axis sub-scores
+/// (each tinted by its own band) + the ranked "why" factors + the honest footer.
+/// Unit-tested; never a green all-clear when unscanned.
+pub fn posture_lines(r: &PostureReport) -> Vec<(String, RsRole)> {
+    let mut out: Vec<(String, RsRole)> = Vec::new();
+    match r.score {
+        None => {
+            out.push(("DEFENSE — not yet scanned (fog of war)".into(), RsRole::Dim));
+            out.push((
+                "no workloads observed yet — explore the realm first".into(),
+                RsRole::Dim,
+            ));
+            return out;
+        }
+        Some(s) => out.push((
+            format!("DEFENSE  {s} / 100 — {}", r.tier.label()),
+            tier_role(r.tier),
+        )),
+    }
+
+    // Per-axis sub-scores, each coloured by its own band (shows the weak axis).
+    out.push((
+        format!("fortifications  {} / 100", r.fortifications.score),
+        tier_role(band(Some(r.fortifications.score))),
+    ));
+    out.push((
+        format!("walls (segmentation)  {} / 100", r.walls.score),
+        tier_role(band(Some(r.walls.score))),
+    ));
+
+    if r.system_critical + r.system_warning > 0 {
+        out.push((
+            format!(
+                "system namespaces: {} critical, {} warning — distro defaults, not yours to fix, excluded",
+                r.system_critical, r.system_warning
+            ),
+            RsRole::Dim,
+        ));
+    }
+
+    if r.factors.is_empty() {
+        out.push((
+            "nothing dragging the realm down — well held".into(),
+            RsRole::Good,
+        ));
+    } else {
+        out.push(("WHY".into(), RsRole::Heading));
+        for f in &r.factors {
+            let role = match f.kind {
+                FactorKind::Critical | FactorKind::K07 => RsRole::Crit,
+                FactorKind::Warning | FactorKind::WideOpen => RsRole::Warn,
+                FactorKind::Info => RsRole::Dim,
+            };
+            let tab = match f.axis {
+                Axis::Fortifications => "Hardening",
+                Axis::Walls => "Network",
+            };
+            let capped = if f.capped { " (capped)" } else { "" };
+            let _ = tab; // the tab pointer is already in f.detail
+            out.push((
+                format!("-{}  {}{} — {}", f.points, f.label, capped, f.detail),
+                role,
+            ));
+        }
+    }
+
+    out.push((
+        "curated subset (PSS-baseline/restricted + OWASP-K01/K07 + Popeye) — a defense indicator, not CIS/full-PSS compliance. coverage = a policy exists; CNI enforcement not verified.".into(),
+        RsRole::Dim,
+    ));
+    out
+}
+
+fn page_posture(cx: &mut Ctx, r: &PostureReport) {
+    for (i, (line, role)) in posture_lines(r).into_iter().enumerate() {
+        let (color, base_bold) = match role {
+            RsRole::Headline | RsRole::Heading => (PARCHMENT, true),
+            RsRole::Good => (GOOD, false),
+            RsRole::Warn => (WARN, false),
+            RsRole::Crit => (CRIT, false),
+            RsRole::Dim => (DIM, false),
+        };
+        // The headline (line 0) is always bold + tier-coloured, big and clear.
+        let bold = base_bold || i == 0;
+        let color = if i == 0 {
+            match role {
+                RsRole::Good => GOOD,
+                RsRole::Warn => WARN,
+                RsRole::Crit => CRIT,
+                RsRole::Dim => DIM,
+                _ => PARCHMENT,
+            }
+        } else {
+            color
+        };
+        let size = if bold { 15.0 } else { 13.0 };
+        let avail = cx.body.w - if bold { 10.0 } else { 22.0 };
+        let shown = crate::panels::fit_width(&ascii(&line), size, avail);
+        cx.row(&shown, color, bold);
+    }
+}
+
 /// Token color for a count that's bad when non-zero (else dim).
 fn warn_if(n: usize, col: Color) -> Color {
     if n > 0 { col } else { DIM }
@@ -973,5 +1099,87 @@ mod tests {
                 .iter()
                 .any(|(s, r)| s.contains("every workload is fortified") && *r == RsRole::Good)
         );
+    }
+
+    #[test]
+    fn posture_lines_headline_subscores_factors_footer() {
+        use kubernation_core::state::posture::{AxisScore, PostureFactor};
+        let r = PostureReport {
+            score: Some(72),
+            tier: PostureTier::Defended,
+            scanned: true,
+            fortifications: AxisScore {
+                score: 78,
+                critical: 1,
+                warning: 0,
+                info: 7,
+            },
+            walls: AxisScore {
+                score: 58,
+                critical: 1,
+                warning: 1,
+                info: 0,
+            },
+            workloads_total: 20,
+            system_critical: 2,
+            system_warning: 0,
+            factors: vec![
+                PostureFactor {
+                    axis: Axis::Fortifications,
+                    kind: FactorKind::Critical,
+                    points: 22,
+                    label: "1 workload with breakout risk".into(),
+                    detail: "demo/bad  → Hardening".into(),
+                    capped: false,
+                },
+                PostureFactor {
+                    axis: Axis::Fortifications,
+                    kind: FactorKind::Info,
+                    points: 10,
+                    label: "hygiene nits".into(),
+                    detail: "demo/x  → Hardening".into(),
+                    capped: true,
+                },
+            ],
+        };
+        let lines = posture_lines(&r);
+        assert!(lines[0].0.contains("DEFENSE  72 / 100 — DEFENDED"));
+        assert!(lines.iter().any(|(s, _)| s.contains("fortifications  78")));
+        assert!(
+            lines
+                .iter()
+                .any(|(s, _)| s.contains("walls (segmentation)  58"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|(s, r)| s.contains("breakout risk") && *r == RsRole::Crit)
+        );
+        assert!(lines.iter().any(|(s, _)| s.contains("(capped)")));
+        assert!(
+            lines
+                .iter()
+                .any(|(s, _)| s.contains("system namespaces: 2 critical"))
+        );
+        assert!(lines.last().unwrap().0.contains("not CIS/full-PSS"));
+    }
+
+    #[test]
+    fn posture_lines_unscanned_is_not_green() {
+        use kubernation_core::state::posture::AxisScore;
+        let r = PostureReport {
+            score: None,
+            tier: PostureTier::Unscanned,
+            scanned: false,
+            fortifications: AxisScore::default(),
+            walls: AxisScore::default(),
+            workloads_total: 0,
+            system_critical: 0,
+            system_warning: 0,
+            factors: vec![],
+        };
+        let lines = posture_lines(&r);
+        assert!(lines[0].0.contains("not yet scanned"));
+        assert!(!lines.iter().any(|(_, r)| *r == RsRole::Good));
     }
 }

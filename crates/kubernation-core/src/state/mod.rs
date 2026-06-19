@@ -13,6 +13,7 @@ pub mod netpol;
 pub mod observed;
 pub mod pair;
 pub mod planned;
+pub mod posture;
 pub mod rollout;
 pub mod slo;
 pub mod timeline;

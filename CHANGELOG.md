@@ -9,6 +9,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Posture score — "realm defense".** A 0–100 severity-weighted rating + tier
+  (Fortified / Defended / Exposed / Breached) that rolls up the two security
+  scans — pod hardening (#7) and NetworkPolicy walls (#10) — into one glanceable
+  meter, capping the security trio. A 6th **Advisors ▸ Posture** tab shows the
+  headline, two axis sub-scores, and the ranked "why" factors (linking to
+  Hardening / Network), plus a `DEFENSE` chip in the STATUS column. Honest +
+  explainable: system-namespace findings (the distro's CNI/kube-proxy) are scored
+  separately and never drag the operator score, Info hygiene nits are capped so
+  they can't tank a crit-free realm, an empty/unscanned cluster never reads green,
+  and the footer states it's a curated subset — a defense indicator, not CIS/
+  full-PSS compliance.
 - **NetworkPolicy coverage map — "unwalled cities".** OWASP-K07 (Missing Network
   Segmentation) on the 4X map: a workload with no NetworkPolicy isolating its
   ingress is an *unwalled city*, open to lateral movement. A new **Walls**

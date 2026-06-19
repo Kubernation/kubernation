@@ -28,6 +28,7 @@ use kubernation_core::state::netpol;
 use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::planned::Intervention;
+use kubernation_core::state::posture::{self, PostureReport};
 use kubernation_core::state::slo::{self, SloConfig, SloStatus, SloTracker};
 use kubernation_core::state::timeline::{OpVerb, OperatorAction};
 
@@ -198,6 +199,9 @@ pub struct WorldSnap {
     /// Per-workload error-budget readings (the treasury), keyed by workload.
     /// `Arc` so the per-frame city-window lookup is a refcount bump.
     pub slo: Arc<HashMap<WorkloadRef, SloStatus>>,
+    /// The realm-defense Posture score, computed once per tick (the STATUS chip
+    /// is on the 60fps sidebar — it must not re-scan per frame).
+    pub posture: PostureReport,
 }
 
 pub struct Snapshot {
@@ -1540,6 +1544,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 .into_iter()
                                 .collect(),
                         ),
+                        posture: posture::posture_report(&h.world),
                     });
                 let pair = warm
                     .as_ref()
@@ -1683,6 +1688,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         models: hot_models,
                         observed: hot_handle.world.clone(),
                         slo: hot_slo,
+                        posture: posture::posture_report(&hot_handle.world),
                     },
                     warm,
                     pair,

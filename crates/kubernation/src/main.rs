@@ -1062,6 +1062,7 @@ async fn main() {
                 (KeyCode::Key3, AdvisorTab::Network),
                 (KeyCode::Key4, AdvisorTab::RightSizing),
                 (KeyCode::Key5, AdvisorTab::Hardening),
+                (KeyCode::Key6, AdvisorTab::Posture),
             ] {
                 if is_key_pressed(k) {
                     a.go(t);
@@ -1241,6 +1242,7 @@ async fn main() {
                         "network" => AdvisorTab::Network,
                         "rightsizing" => AdvisorTab::RightSizing,
                         "hardening" => AdvisorTab::Hardening,
+                        "posture" => AdvisorTab::Posture,
                         _ => AdvisorTab::Health,
                     }));
                 }
