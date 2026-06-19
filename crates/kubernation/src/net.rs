@@ -138,6 +138,20 @@ pub struct ChaosSession {
     started_tick: u64,
     /// If set, the net thread auto-runs the restore at this tick (opt-in undo).
     auto_restore_tick: Option<u64>,
+    /// Was the watch set at full strength before the drill (steady-state gate)?
+    pub healthy_before: bool,
+    /// The watch set's ready-fraction over time (a recovery curve to sparkline).
+    pub recovery_series: Vec<f32>,
+    /// Net-tick the attention queue first flagged the target (→ MTTD).
+    detect_tick: Option<u64>,
+}
+
+impl ChaosSession {
+    /// Seconds from drill start until the queue first flagged it (MTTD), if ever.
+    pub fn detect_secs(&self) -> Option<f64> {
+        self.detect_tick
+            .map(|t| t.saturating_sub(self.started_tick) as f64 * 0.25)
+    }
 }
 
 /// Does a chaos step touch a protected target (a system namespace, or a
@@ -927,6 +941,12 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             }
                             Subject::Node(_) => None,
                         };
+                        // Steady-state gate: was the watch set healthy before the
+                        // drill? (Captured pre-inject from the live store.)
+                        let healthy_before = chaos::workloads_healthy(
+                            &build_workloads(&hot_handle.world),
+                            &run.watch,
+                        );
                         *net.evict_status.lock().unwrap() = Some(format!(
                             "running chaos: {} on {target_label}",
                             run.experiment
@@ -968,6 +988,9 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             outcome,
                             started_tick: ticks,
                             auto_restore_tick,
+                            healthy_before,
+                            recovery_series: Vec::new(),
+                            detect_tick: None,
                         });
                         evict_set = Some(ticks);
                         dirty.store(true, Ordering::Relaxed);
@@ -1126,6 +1149,30 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 }
                             }
                         }
+                        // Recovery curve: the watch set's ready-fraction now.
+                        let (r, d): (i32, i32) = match &sess.subject {
+                            Subject::Workload(wr) => rows
+                                .iter()
+                                .find(|row| &row.r == wr)
+                                .map(|row| (row.ready, row.desired.max(1)))
+                                .unwrap_or((0, 1)),
+                            Subject::Node(_) => {
+                                let w: Vec<&WorkloadRow> = sess
+                                    .watch
+                                    .iter()
+                                    .filter_map(|wr| rows.iter().find(|row| &row.r == wr))
+                                    .collect();
+                                let ready: i32 = w.iter().map(|row| row.ready).sum();
+                                let desired: i32 =
+                                    w.iter().map(|row| row.desired.max(0)).sum::<i32>().max(1);
+                                (ready, desired)
+                            }
+                        };
+                        let frac = (r as f32 / d as f32).clamp(0.0, 1.0);
+                        if sess.recovery_series.len() >= 120 {
+                            sess.recovery_series.remove(0);
+                        }
+                        sess.recovery_series.push(frac);
                     }
                     if let Some(h) = warm_handle
                         .as_ref()
@@ -1153,6 +1200,25 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 }
                 last_filter = filter.clone();
                 let hot_models = Arc::new(Models::build_filtered(&hot_handle.world, &filter));
+                // MTTD: note the first tick the attention queue flags the drill's
+                // subject (the fresh hot concerns are right here).
+                if let Some(sess) = net.chaos_session.lock().unwrap().as_mut()
+                    && sess.cluster == ClusterId::Hot
+                    && sess.detect_tick.is_none()
+                {
+                    let flagged =
+                        hot_models
+                            .attention
+                            .iter()
+                            .any(|c| match (&sess.subject, &c.target) {
+                                (Subject::Workload(wr), Target::Workload(t)) => t == wr,
+                                (Subject::Node(n), Target::Node(t)) => t == n,
+                                _ => false,
+                            });
+                    if flagged {
+                        sess.detect_tick = Some(ticks);
+                    }
+                }
                 let hot_slo: Arc<HashMap<WorkloadRef, SloStatus>> = Arc::new(
                     slo.statuses_with(|wr| slo_cfg.resolve(wr, slo_ann.get(wr).copied()))
                         .into_iter()

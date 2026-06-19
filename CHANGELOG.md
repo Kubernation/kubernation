@@ -37,6 +37,12 @@ version covers every crate; releases are git tags `vX.Y.Z`.
     per evicting namespace (evicts can't be dry-run) alongside the existing
     dry-run gate, so a cordon+drain whose drain is forbidden can't half-apply
     (cordon then stop) — nothing is written unless every step is permitted.
+  - **Deeper scorecard.** A **steady-state gate** warns when the target was
+    already degraded before the drill (a noisy baseline); **MTTD** reports how
+    long the attention queue took to flag the drill ("flagged in Ns" or "never
+    flagged it — a monitoring gap", Kubernation measuring its own observability);
+    and a **recovery curve** sparkline shows the watch set's ready-fraction over
+    the drill.
 
 ### Changed
 - **The attention queue moved from the bottom strip into a docked ATTENTION

@@ -25,7 +25,7 @@
 use k8s_openapi::api::core::v1::Node;
 
 use crate::state::blast::{Subject, blast_radius};
-use crate::state::model::{OwnerIndex, WorkloadKind, WorkloadRef};
+use crate::state::model::{OwnerIndex, WorkloadKind, WorkloadRef, WorkloadRow};
 use crate::state::observed::ObservedWorld;
 use crate::state::planned::{Intervention, current_replicas};
 use crate::state::slo::BudgetState;
@@ -584,6 +584,12 @@ pub struct ChaosScorecard {
     pub recovered: bool,
     /// Seconds from run to recovery (None if not yet recovered).
     pub recover_secs: Option<f64>,
+    /// Was the watch set in steady state *before* the drill? `false` warns that
+    /// the experiment's baseline was already degraded (noisy results).
+    pub healthy_before: bool,
+    /// Seconds from run until the attention queue first flagged the target —
+    /// MTTD (mean-time-to-detect). `None` = the queue never surfaced it.
+    pub detect_secs: Option<f64>,
 }
 
 /// A colour role for a scorecard line — the GUI maps it to a theme colour.
@@ -593,6 +599,19 @@ pub enum ScoreRole {
     Warn,
     Bad,
     Info,
+}
+
+/// Is the drill's watch set in **steady state** — every watched workload at full
+/// strength (ready ≥ desired, and actually running)? The chaos-engineering loop's
+/// pre-condition: if this is false *before* the drill, the experiment's baseline
+/// is invalid (the patient was already sick). PURE + testable.
+pub fn workloads_healthy(rows: &[WorkloadRow], watch: &[WorkloadRef]) -> bool {
+    !watch.is_empty()
+        && watch.iter().all(|wr| {
+            rows.iter()
+                .find(|r| &r.r == wr)
+                .is_some_and(|r| r.desired >= 1 && r.ready >= r.desired)
+        })
 }
 
 /// A headline verdict on what the drill cost the error budget (the treasury) —
@@ -641,6 +660,26 @@ pub fn scorecard_lines(s: &ChaosScorecard) -> Vec<(String, ScoreRole)> {
             ScoreRole::Info,
         ),
     ];
+    // Steady-state hypothesis: warn if the baseline was already degraded.
+    if !s.healthy_before {
+        out.push((
+            "target was already degraded before — baseline noisy".into(),
+            ScoreRole::Warn,
+        ));
+    }
+    // MTTD — only meaningful once the drill actually caused a dip.
+    if s.dipped {
+        out.push(match s.detect_secs {
+            Some(secs) => (
+                format!("queue flagged it in {secs:.0}s (MTTD)"),
+                ScoreRole::Good,
+            ),
+            None => (
+                "queue never flagged it — a monitoring gap".into(),
+                ScoreRole::Warn,
+            ),
+        });
+    }
     match s.kind {
         ScoreKind::Workload => {
             out.push(recovery_line(s));
@@ -856,6 +895,8 @@ mod tests {
             dipped: true,
             recovered: false,
             recover_secs: None,
+            healthy_before: true,
+            detect_secs: None,
         };
         // Dipped but not back → "not recovered yet".
         assert!(
@@ -1099,6 +1140,8 @@ mod tests {
             dipped: false,
             recovered: false,
             recover_secs: None,
+            healthy_before: true,
+            detect_secs: None,
         };
         let lines = scorecard_lines(&node_card);
         assert!(lines.iter().any(|(t, _)| t.contains("3 pod(s) drained")));
@@ -1113,6 +1156,60 @@ mod tests {
         assert!(lines.iter().any(|(t, _)| t.contains("NetworkPolicy")));
         // An isolation never claims a recovery/dip.
         assert!(!lines.iter().any(|(t, _)| t.contains("self-healed")));
+    }
+
+    #[test]
+    fn workloads_healthy_checks_full_strength() {
+        let (world, mut s) = fx::world();
+        seed_web(&mut s); // web 3/3 ready
+        let rows = crate::state::model::build_workloads(&world);
+        assert!(workloads_healthy(&rows, &[web()]));
+        // A degraded workload (ready < desired) is not steady.
+        let (world2, mut s2) = fx::world();
+        s2.deployment(fx::deployment("demo", "web", 3, 1)); // 1/3 ready
+        let rows2 = crate::state::model::build_workloads(&world2);
+        assert!(!workloads_healthy(&rows2, &[web()]));
+        // An empty watch set is never "healthy" (nothing asserted).
+        assert!(!workloads_healthy(&rows, &[]));
+    }
+
+    #[test]
+    fn scorecard_reports_steady_state_and_mttd() {
+        let base = ChaosScorecard {
+            kind: ScoreKind::Workload,
+            experiment: "outage".into(),
+            target: "demo/web".into(),
+            blast: 1,
+            budget_before: None,
+            budget_after: None,
+            dipped: true,
+            recovered: true,
+            recover_secs: Some(4.0),
+            healthy_before: true,
+            detect_secs: Some(2.0),
+        };
+        let lines = scorecard_lines(&base);
+        assert!(lines.iter().any(|(t, _)| t.contains("flagged it in 2s")));
+        // A dip the queue missed is a flagged monitoring gap.
+        let missed = ChaosScorecard {
+            detect_secs: None,
+            ..base.clone()
+        };
+        assert!(
+            scorecard_lines(&missed)
+                .iter()
+                .any(|(t, r)| t.contains("monitoring gap") && r == &ScoreRole::Warn)
+        );
+        // A degraded baseline warns the results are noisy.
+        let sick = ChaosScorecard {
+            healthy_before: false,
+            ..base
+        };
+        assert!(
+            scorecard_lines(&sick)
+                .iter()
+                .any(|(t, _)| t.contains("already degraded"))
+        );
     }
 
     #[test]

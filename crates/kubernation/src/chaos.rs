@@ -394,11 +394,19 @@ impl Chaos {
                 dipped: sess.dipped,
                 recovered: sess.recovered,
                 recover_secs: sess.recover_secs,
+                healthy_before: sess.healthy_before,
+                detect_secs: sess.detect_secs(),
             };
             let mut cy = sy + 34.0;
             for (line, role) in scorecard_lines(&card) {
                 text(ascii(&line), b.x + 8.0, cy, 13.0, role_color(role));
                 cy += 16.0;
+            }
+            // Recovery curve (the watch set's ready-fraction over the drill).
+            if sess.recovery_series.len() >= 2 {
+                let spark = Rect::new(b.x + b.w - 150.0, sy + 38.0, 142.0, 30.0);
+                text("recovery", spark.x, spark.y - 3.0, 11.0, DIM);
+                crate::panels::draw_sparkline(spark, &sess.recovery_series, 1.0, GOOD);
             }
             // Per-step errors, if any.
             if let Some(out) = &sess.outcome {
