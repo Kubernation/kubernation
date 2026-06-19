@@ -535,6 +535,14 @@ pub fn plan_chaos(world: &ObservedWorld, exp: &Experiment) -> ChaosPlan {
             match current_replicas(world, workload) {
                 Some(n) if n > 0 => {
                     let surged = (n as i64 * factor as i64).min(i32::MAX as i64) as i32;
+                    // Cap the *added* pods like the destructive paths cap deletions
+                    // — a surge that would create a runaway is refused fail-closed.
+                    if (surged as i64 - n as i64) > MAX_KILL_PODS as i64 {
+                        return ChaosPlan::refuse(
+                            blast,
+                            format!("would add {} pods (cap {MAX_KILL_PODS})", surged - n),
+                        );
+                    }
                     ChaosPlan {
                         steps: vec![ChaosStep::Apply(Intervention::Scale {
                             workload: workload.clone(),
@@ -590,6 +598,10 @@ pub struct ChaosScorecard {
     /// Seconds from run until the attention queue first flagged the target —
     /// MTTD (mean-time-to-detect). `None` = the queue never surfaced it.
     pub detect_secs: Option<f64>,
+    /// The operator undid the drill (manual/auto/exit restore). Suppresses the
+    /// dip/recover "self-healed" claim — the cluster came back because *we* fixed
+    /// it, not because it self-healed.
+    pub restored: bool,
 }
 
 /// A colour role for a scorecard line — the GUI maps it to a theme colour.
@@ -638,7 +650,13 @@ pub fn budget_verdict(before: &SloStatus, after: &SloStatus) -> (String, ScoreRo
 
 /// The recovery line for a dip/recover-model scorecard.
 fn recovery_line(s: &ChaosScorecard) -> (String, ScoreRole) {
-    if !s.dipped {
+    if s.restored {
+        // The operator undid it — don't claim the cluster self-healed.
+        (
+            "restored — cluster undone by operator".into(),
+            ScoreRole::Good,
+        )
+    } else if !s.dipped {
         ("stayed up — no outage".into(), ScoreRole::Good)
     } else {
         match (s.recovered, s.recover_secs) {
@@ -897,6 +915,7 @@ mod tests {
             recover_secs: None,
             healthy_before: true,
             detect_secs: None,
+            restored: false,
         };
         // Dipped but not back → "not recovered yet".
         assert!(
@@ -1142,6 +1161,7 @@ mod tests {
             recover_secs: None,
             healthy_before: true,
             detect_secs: None,
+            restored: false,
         };
         let lines = scorecard_lines(&node_card);
         assert!(lines.iter().any(|(t, _)| t.contains("3 pod(s) drained")));
@@ -1187,6 +1207,7 @@ mod tests {
             recover_secs: Some(4.0),
             healthy_before: true,
             detect_secs: Some(2.0),
+            restored: false,
         };
         let lines = scorecard_lines(&base);
         assert!(lines.iter().any(|(t, _)| t.contains("flagged it in 2s")));
@@ -1203,13 +1224,37 @@ mod tests {
         // A degraded baseline warns the results are noisy.
         let sick = ChaosScorecard {
             healthy_before: false,
-            ..base
+            ..base.clone()
         };
         assert!(
             scorecard_lines(&sick)
                 .iter()
                 .any(|(t, _)| t.contains("already degraded"))
         );
+        // A restored drill must NOT claim self-healing (operator undid it).
+        let restored = ChaosScorecard {
+            restored: true,
+            ..base
+        };
+        let lines = scorecard_lines(&restored);
+        assert!(lines.iter().any(|(t, _)| t.contains("restored")));
+        assert!(!lines.iter().any(|(t, _)| t.contains("self-healed")));
+    }
+
+    #[test]
+    fn scale_spike_over_the_cap_is_refused() {
+        let (world, mut s) = fx::world();
+        // 6 replicas × factor 10 = 60 → +54 added > cap 50 → refused.
+        s.deployment(fx::deployment("demo", "web", 6, 6));
+        let plan = plan_chaos(
+            &world,
+            &Experiment::ScaleSpike {
+                workload: web(),
+                factor: 10,
+            },
+        );
+        assert!(plan.is_refused());
+        assert!(plan.refused.unwrap().contains("cap"));
     }
 
     #[test]

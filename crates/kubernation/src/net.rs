@@ -109,6 +109,9 @@ pub struct ChaosRun {
     /// If set, the net thread auto-runs the restore this many seconds after the
     /// drill (opt-in "auto-undo"). Ignored when there's nothing to restore.
     pub auto_restore_secs: Option<f64>,
+    /// This run is itself an undo (manual/quit/switch restore), not a new drill:
+    /// the session is marked `restored` and the previous one isn't chronicled.
+    pub is_restore: bool,
 }
 
 /// The live game-day session — the net thread tracks the cluster's response
@@ -144,6 +147,9 @@ pub struct ChaosSession {
     pub recovery_series: Vec<f32>,
     /// Net-tick the attention queue first flagged the target (→ MTTD).
     detect_tick: Option<u64>,
+    /// The operator undid this drill (manual / auto / exit / switch restore) —
+    /// the scorecard says "restored", not "self-healed".
+    pub restored: bool,
 }
 
 impl ChaosSession {
@@ -633,6 +639,25 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     *net.status.lock().unwrap() = format!("switching → {ctx} …");
                     match client::connect(args.kubeconfig.as_deref(), Some(&ctx)).await {
                         Ok(c) => {
+                            // Don't strand the cluster we're leaving: if a live
+                            // hot drill still has restore steps, undo them with the
+                            // OLD client before we drop it (mirrors restore-on-exit).
+                            let leaving_restore = net
+                                .chaos_session
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .filter(|s| s.cluster == ClusterId::Hot && !s.restore.is_empty())
+                                .map(|s| s.restore.clone());
+                            if let Some(steps) = leaving_restore {
+                                *net.status.lock().unwrap() =
+                                    "restoring drill before switch…".into();
+                                let _ = tokio::time::timeout(
+                                    Duration::from_secs(25),
+                                    actions::run_chaos(hot_client.clone(), &steps),
+                                )
+                                .await;
+                            }
                             let proj =
                                 client::resolve_projections(&c.client, &args.projections).await;
                             ready_hot.store(false, Ordering::Relaxed);
@@ -985,11 +1010,14 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             Subject::Node(_) => None,
                         };
                         // Steady-state gate: was the watch set healthy before the
-                        // drill? (Captured pre-inject from the live store.)
-                        let healthy_before = chaos::workloads_healthy(
-                            &build_workloads(&hot_handle.world),
-                            &run.watch,
-                        );
+                        // drill? (Captured pre-inject from the live store.) An empty
+                        // watch set asserts nothing → treat as healthy (no spurious
+                        // "baseline noisy" warning, e.g. a cordon with no workloads).
+                        let healthy_before = run.watch.is_empty()
+                            || chaos::workloads_healthy(
+                                &build_workloads(&hot_handle.world),
+                                &run.watch,
+                            );
                         *net.evict_status.lock().unwrap() = Some(format!(
                             "running chaos: {} on {target_label}",
                             run.experiment
@@ -1010,8 +1038,12 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             None => "chaos: timed out".into(),
                         });
                         // Archive the previous (now-superseded) drill into the
-                        // in-session chronicle before this one replaces it.
-                        if let Some(prev) = net.chaos_session.lock().unwrap().as_ref() {
+                        // in-session chronicle before this one replaces it — but
+                        // not when THIS run is just an undo (it's the same drill,
+                        // not a new one), which would double-log it.
+                        if !run.is_restore
+                            && let Some(prev) = net.chaos_session.lock().unwrap().as_ref()
+                        {
                             let mut h = net.chaos_history.lock().unwrap();
                             h.insert(0, ChaosRecord::from_session(prev));
                             h.truncate(10);
@@ -1041,6 +1073,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             healthy_before,
                             recovery_series: Vec::new(),
                             detect_tick: None,
+                            restored: run.is_restore,
                         });
                         evict_set = Some(ticks);
                         dirty.store(true, Ordering::Relaxed);
@@ -1068,8 +1101,11 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         s.restore.clear(); // restored — drop the Restore button
                         s.auto_restore_tick = None;
                         // The injection's static notes ("still cordoned" / "policy
-                        // applied") are stale post-undo; show the recovery frame.
+                        // applied") are stale post-undo; show the recovery frame,
+                        // and mark it restored so the scorecard doesn't claim the
+                        // cluster "self-healed" (we undid it).
                         s.score_kind = ScoreKind::Workload;
+                        s.restored = true;
                     }
                     *net.evict_status.lock().unwrap() = Some("chaos: auto-restored".into());
                     evict_set = Some(ticks);

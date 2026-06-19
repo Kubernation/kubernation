@@ -312,10 +312,30 @@ pub async fn delete_partition(client: Client, namespace: &str, name: &str) -> Re
 /// then stop). Only if every gate passes does each step run for real. Reuses
 /// `CommitRow`/`CommitOutcome` so the UI shows it like a commit.
 pub async fn run_chaos(client: Client, steps: &[crate::state::chaos::ChaosStep]) -> CommitOutcome {
-    use crate::state::chaos::ChaosStep;
+    use crate::state::chaos::{ChaosStep, ns_protected};
+    let mut dry_fail = Vec::new();
+    // Gate part 0: fail-closed protected-namespace failsafe, self-contained in
+    // the one write file (like `apply_partition`'s empty-selector guard) — so the
+    // sequencer is safe in isolation even if an upstream guard were bypassed. A
+    // Cordon's node guard stays in the pure planner (core has no cluster here).
+    for step in steps {
+        let ns = match step {
+            ChaosStep::Evict { namespace, .. } | ChaosStep::Unpartition { namespace, .. } => {
+                Some(namespace.as_str())
+            }
+            ChaosStep::Partition(spec) => Some(spec.namespace.as_str()),
+            ChaosStep::Apply(_) => None,
+        };
+        if ns.is_some_and(ns_protected) {
+            dry_fail.push(CommitRow {
+                label: chaos_step_label(step),
+                ok: false,
+                detail: "refused — protected namespace".into(),
+            });
+        }
+    }
     // Gate part 1: dry-run the patchable steps (netpol deletes aren't gated; a
     // forbidden one fails its own row, and a 404 is success anyway).
-    let mut dry_fail = Vec::new();
     for step in steps {
         let dry = match step {
             ChaosStep::Apply(iv) => apply_intervention(client.clone(), iv, true).await,

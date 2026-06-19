@@ -270,6 +270,7 @@ fn build_chaos_run(
         restore: plan.restore.clone(),
         watch,
         auto_restore_secs,
+        is_restore: false,
     }
 }
 
@@ -475,7 +476,9 @@ async fn main() {
         let splash_active =
             !splash_skipped && (args.splash || (shot.is_none() && elapsed < SPLASH_SECS));
         if splash_active {
-            if is_key_pressed(KeyCode::Q) {
+            // Q or the window-close button quit during the splash too (no live
+            // drill can exist this early, so an immediate exit is safe).
+            if is_key_pressed(KeyCode::Q) || is_quit_requested() {
                 break;
             }
             if is_mouse_button_pressed(MouseButton::Left)
@@ -2197,6 +2200,7 @@ async fn main() {
                                 restore: Vec::new(),
                                 watch: sess.watch.clone(),
                                 auto_restore_secs: None,
+                                is_restore: true,
                             },
                             title: "Restore?".into(),
                             line1: format!("Undo the drill on {}.", sess.target_label),
@@ -2464,6 +2468,7 @@ async fn main() {
                         restore: Vec::new(),
                         watch: sess.watch.clone(),
                         auto_restore_secs: None,
+                        is_restore: true,
                     });
                     quitting = Some(get_time());
                 }
@@ -2483,7 +2488,10 @@ async fn main() {
                 .chaos_session()
                 .map(|s| s.restore.is_empty())
                 .unwrap_or(true);
-            if done || get_time() - started > 8.0 {
+            // Backstop must exceed the net thread's 25s run_chaos timeout so we
+            // don't exit mid-restore (the common case still exits instantly once
+            // `done` flips — the restore lands in well under a second).
+            if done || get_time() - started > 27.0 {
                 break;
             }
         }

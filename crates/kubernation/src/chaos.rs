@@ -21,7 +21,7 @@ use crate::theme::*;
 use crate::window::draw_window;
 
 const W: f32 = 780.0;
-const H: f32 = 600.0;
+const H: f32 = 644.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ChaosKind {
@@ -187,8 +187,18 @@ impl Chaos {
         let left_w = b.w * 0.42;
         let right_x = b.x + b.w * 0.47;
 
+        // The scorecard (after a drill, for the open subject) takes the bottom
+        // band — suppress the CHRONICLE then so the two don't overlap.
+        let scorecard_showing = session
+            .filter(|s| self.subject().as_ref() == Some(&s.subject))
+            .is_some();
+
         // Reserve the bottom of the left column for the CHRONICLE when non-empty.
-        let chron_n = history.len().min(4);
+        let chron_n = if scorecard_showing {
+            0
+        } else {
+            history.len().min(4)
+        };
         let chron_h = if chron_n == 0 {
             0.0
         } else {
@@ -423,9 +433,16 @@ impl Chaos {
                 recover_secs: sess.recover_secs,
                 healthy_before: sess.healthy_before,
                 detect_secs: sess.detect_secs(),
+                restored: sess.restored,
             };
+            // Cull at the modal frame — the body is unclipped (window.rs has no
+            // scissor), so a tall card must stop rather than spill past the frame.
+            let cull = b.y + b.h - 4.0;
             let mut cy = sy + 34.0;
             for (line, role) in scorecard_lines(&card) {
+                if cy > cull {
+                    break;
+                }
                 text(ascii(&line), b.x + 8.0, cy, 13.0, role_color(role));
                 cy += 16.0;
             }
@@ -438,6 +455,9 @@ impl Chaos {
             // Per-step errors, if any.
             if let Some(out) = &sess.outcome {
                 for row in out.rows.iter().filter(|r| !r.ok) {
+                    if cy > cull {
+                        break;
+                    }
                     text(
                         ascii(&format!("! {}: {}", row.label, row.detail)),
                         b.x + 8.0,

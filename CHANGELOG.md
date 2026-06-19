@@ -53,6 +53,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
     Game Day window (experiment · target · outcome) — recent history at a glance
     (no cross-restart persistence). *(Difficulty tiers — composed multi-step
     drills — are deferred: they need a compound-plan run model.)*
+  - **Round-3 review hardening** (adversarial review, 3 medium + cheap lows):
+    a context switch with a live restorable drill now **undoes it with the old
+    client before switching** (don't strand the cluster, matching restore-on-exit,
+    whose backstop was raised past the worker timeout); an operator undo (auto /
+    manual / exit / switch) is labeled **"restored"**, not "self-healed", and no
+    longer pollutes the chronicle; `run_chaos` gained a self-contained
+    protected-namespace failsafe (like the partition's empty-selector guard);
+    **ScaleSpike** is capped like the destructive paths; a node drill with no
+    watchable workloads no longer shows a spurious "baseline noisy"; the scorecard
+    culls at the modal frame and yields to the chronicle; quit is honored during
+    the intro splash.
 
 ### Changed
 - **The attention queue moved from the bottom strip into a docked ATTENTION
