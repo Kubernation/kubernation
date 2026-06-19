@@ -23,6 +23,7 @@ STATES=(
   "advisor-posture|--advisor posture"
   "charter|--charter"
   "annals|--annals"
+  "postmortem|--postmortem"
   "browse-pick|--browse"
   "browse-table|--browse configmaps"
   "city|--inspect web"

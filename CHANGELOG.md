@@ -9,6 +9,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Postmortem / after-action export.** One click writes a markdown after-action
+  report of the current session — cluster context, the realm-defense posture, the
+  open concerns (each with its next-action hint), the change timeline (the Annals,
+  with the "trouble begins here" fault line and the change that preceded it), and
+  any Game Day drills run — pasteable straight into a postmortem doc. Export from
+  the Annals modal (the **Export** button) or **Game ▸ Export after-action
+  report**; the file lands in the working directory. A one-shot local export (no
+  cross-run history); honest that it's an in-session snapshot; credential-shaped
+  values in event text are masked best-effort before the file is written.
 - **Posture score — "realm defense".** A 0–100 severity-weighted rating + tier
   (Fortified / Defended / Exposed / Breached) that rolls up the two security
   scans — pod hardening (#7) and NetworkPolicy walls (#10) — into one glanceable

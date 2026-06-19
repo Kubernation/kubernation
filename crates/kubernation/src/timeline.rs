@@ -8,8 +8,8 @@
 use kubernation_core::jiff::Timestamp;
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::timeline::{
-    CLUSTER_CAP, CORRELATION_WINDOW_MIN, ChangeKind, OperatorAction, TIMELINE_WINDOW_MIN, Timeline,
-    TimelineOpts, TimelineScope, build_timeline,
+    CLUSTER_CAP, ChangeKind, OperatorAction, TIMELINE_WINDOW_MIN, Timeline, TimelineOpts,
+    TimelineScope, build_timeline, row_decisions,
 };
 use kubernation_core::util::format_age_opt_at;
 use macroquad::prelude::*;
@@ -126,20 +126,12 @@ fn bucket_for(when: Option<&kubernation_core::Time>, now: Timestamp) -> RecencyB
 /// before the first failure is flagged `suspect` ("preceded by" — never "caused
 /// by"). Unit-tested (incl. the colour-discipline invariant).
 pub fn annals_lines(tl: &Timeline, now: Timestamp, cap: usize) -> Vec<AnnalsLine> {
-    let ft = tl.first_trouble.as_ref();
-    // The fault line: the first shown row strictly older than the first trouble.
-    let mut fault_idx: Option<usize> = None;
-    if let Some(ftt) = ft {
-        for (i, e) in tl.entries.iter().take(cap).enumerate() {
-            if matches!(&e.when, Some(t) if t.0 < ftt.0) {
-                fault_idx = Some(i);
-                break;
-            }
-        }
-    }
+    // The fault-line + suspect decisions live in core (`row_decisions`) so the
+    // on-screen Annals and the exported postmortem can never disagree.
+    let decisions = row_decisions(tl, cap);
 
     let mut out: Vec<AnnalsLine> = Vec::new();
-    for (i, e) in tl.entries.iter().take(cap).enumerate() {
+    for (e, d) in tl.entries.iter().take(cap).zip(decisions.iter()) {
         let mut t = if e.detail.is_empty() {
             e.title.clone()
         } else {
@@ -151,24 +143,14 @@ pub fn annals_lines(tl: &Timeline, now: Timestamp, cap: usize) -> Vec<AnnalsLine
         if e.operator {
             t.push_str("  (you)");
         }
-        // A change just *before* the first failure — honest adjacency only.
-        let suspect = e.kind.is_change()
-            && ft.is_some_and(|ftt| {
-                e.when.as_ref().is_some_and(|w| {
-                    // Strictly BEFORE the first failure (d > 0) — a change at the
-                    // exact failure instant isn't a precursor.
-                    let d = ftt.0.duration_since(w.0).as_secs();
-                    (1..=CORRELATION_WINDOW_MIN * 60).contains(&d)
-                })
-            });
         out.push(AnnalsLine {
             glyph: glyph_for(e.kind, e.operator),
             text: t,
             role: role_for(e.kind, e.severity, e.operator),
             age: format_age_opt_at(now, e.when.as_ref()),
             bucket: bucket_for(e.when.as_ref(), now),
-            fault_line_above: Some(i) == fault_idx,
-            suspect,
+            fault_line_above: d.fault_line_above,
+            suspect: d.suspect,
         });
     }
     if tl.entries.len() > cap {
@@ -201,6 +183,8 @@ pub fn role_color(role: LineRole) -> Color {
 pub enum AnnalsAction {
     None,
     Close,
+    /// Write a markdown after-action report (the postmortem export).
+    Export,
 }
 
 pub struct Annals {
@@ -232,7 +216,7 @@ impl Annals {
         let win = draw_window(
             "The Annals — what changed in the realm",
             vec2(720.0, 540.0),
-            &["Close"],
+            &["Export", "Close"],
             usize::MAX,
         );
         let b = win.body;
@@ -320,8 +304,10 @@ impl Annals {
             if win.close.contains(mouse) {
                 return AnnalsAction::Close;
             }
-            if win.button_at(mouse).is_some() {
-                return AnnalsAction::Close; // the trailing "Close" tab
+            match win.button_at(mouse) {
+                Some(0) => return AnnalsAction::Export, // "Export"
+                Some(_) => return AnnalsAction::Close,  // "Close"
+                None => {}
             }
             if !win.frame.contains(mouse) {
                 return AnnalsAction::Close;

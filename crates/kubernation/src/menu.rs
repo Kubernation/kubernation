@@ -20,6 +20,7 @@ use crate::theme::*;
 pub enum MenuAction {
     SwitchContext,
     Fit,
+    ExportPostmortem,
     Quit,
     SetOverlay(Overlay),
     EndTurn,
@@ -107,6 +108,11 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
             items: vec![
                 Item::act("Switch context\u{2026}", MenuAction::SwitchContext),
                 Item::act("Fit view", MenuAction::Fit),
+                Item::sep(),
+                Item::act(
+                    "Export after-action report\u{2026}",
+                    MenuAction::ExportPostmortem,
+                ),
                 Item::sep(),
                 Item::act("Quit", MenuAction::Quit),
             ],

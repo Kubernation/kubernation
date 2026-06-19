@@ -1668,6 +1668,56 @@ what makes the interesting logic unit-testable without a cluster.
   operator workloads whose pod template actually resolves (`model::
   workload_template`) — pinned by a regression test (resolvable system + all
   operator unresolved ⇒ Unscanned). 210 core + 39 GUI tests.
+- **Postmortem / after-action export** (2026-06-19, the roadmap "Next"-tier item
+  *Postmortem / after-action export — one local file*; design-workflow vetted — 3
+  lenses → 2 judges → synthesis): one click writes a markdown after-action report
+  of the current session. **Pure core** `state/postmortem.rs`
+  (`postmortem_markdown(input, now) -> String`, unit-tested) composes the things
+  already built — the change timeline (#9 Annals), the attention queue, the
+  posture score, and this session's chaos drills — doing **zero derivation, only
+  rendering**: header/census + posture line (top-3 factors) · Open concerns
+  (severity-desc, each with its `next_action` hint, `[H]/[W]` only when paired, cap
+  25) · What changed (the Timeline, fault line + `(you)` + `(before the failure)`,
+  cap CLUSTER_CAP) · Game Day drills (omit if none) · honest footer. Empty sections
+  self-omit; `posture.score==None` → UNSCANNED (never a fake 0/100 or green).
+  **Drift fix (load-bearing):** the fault-line + suspect logic was lifted from the
+  GUI `annals_lines` into pure core `timeline::row_decisions(tl, cap) ->
+  Vec<RowDecision>`; both the on-screen Annals and the doc's "What changed" now
+  consume it, so the screen and the export can't disagree. **Pure boundary:** core
+  takes a `ChaosDrill` (its own mirror of the GUI's `net::ChaosRecord`, mapped at
+  the boundary) — the net type never leaks into core; `now` injected (clockless).
+  **Secrets:** `redact()` masks credential-shaped `key=value` / `key: value`
+  (delimiter-bounded cred keys), the `Bearer`/`Authorization:` header shape, and
+  URL basic-auth (authority only) in detail strings before the file is written (it
+  persists to disk); the footer states other shapes may appear. **Filename:**
+  `postmortem-{sanitize_context}-{YYYYMMDD-HHMMSS}.md` (path-safe for any kube
+  context incl. EKS ARNs). **GUI:** `main.rs::export_postmortem` assembles the
+  inputs (the SAME `build_timeline` call the Annals modal makes) + writes via the
+  existing `export_to_file` (cwd, toast); triggers are the Annals modal **Export**
+  button (`AnnalsAction::Export`) and **Game ▸ Export after-action report**
+  (`MenuAction::ExportPostmortem`), both calling one shared helper. `--postmortem`
+  dev flag + gui-smoke `postmortem`; `postmortem-*.md` gitignored. **READ-ONLY +
+  one-shot** (the sanctioned file-export exception — no cross-run history, no
+  append, no daemon); honest it's an in-session snapshot (recent ~window_min,
+  this-session chaos). 218 core + 39 GUI tests; gui-smoke 32. Verified live on kind
+  (a real report: DEFENDED 74/100, 4 concerns with hints, the timeline + fault
+  line, the honest footer; a `--namespace`-scoped export adds the Scope caveat).
+  The #9-named `timeline_markdown` seed is subsumed by the "What changed" section.
+  **Adversarial-review hardening** (8 confirmed, all low): the URL-basic-auth
+  redactor masks only within the *authority* (a `@` in a path/query no longer
+  triggers it — it was dropping the path + masking a non-secret port); the
+  credential-key match is delimiter-bounded (`_word`/`-word` or exact, so a prose
+  word like `mysecret` isn't masked); the `key: value` colon form + the
+  `Bearer`/`Authorization:` header shape are masked too (the file persists to
+  disk); `oneline` neutralizes backticks (a stray one would mis-style a row) and
+  the timeline title passes through it for parity; and a **Scope** line + caveat
+  is emitted when a namespace filter is active (concerns/workloads/timeline are
+  filtered while the node/pod census stays cluster-wide). Accepted: a same-context
+  same-second re-export clobbers the prior file (documented one-shot,
+  near-identical content, the toast shows the path). **Deferred** (grafts on the same boundary): a
+  per-subject "postmortem for THIS workload" (build_timeline already scopes); a
+  structured JSON/SARIF sibling; stronger content-based secret redaction;
+  inlining logs; warm-cluster report.
 
 ## The pair (hot/warm)
 

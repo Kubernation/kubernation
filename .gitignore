@@ -8,3 +8,6 @@
 # already existing elements were commented out
 
 #/target
+
+# After-action exports (one-shot user artifacts)
+postmortem-*.md

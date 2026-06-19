@@ -205,6 +205,10 @@ struct Args {
     /// change-feed modal)
     #[arg(long)]
     annals: bool,
+    /// Open the Annals and write an after-action postmortem markdown file on sync
+    /// (development verification of the export path)
+    #[arg(long)]
+    postmortem: bool,
     /// With --inspect, also open the object inspector (YAML) on the inspected
     /// city/node (development verification of the inspector)
     #[arg(long)]
@@ -1257,6 +1261,17 @@ async fn main() {
                 if args.annals {
                     annals = Some(timeline::Annals::new());
                 }
+                if args.postmortem {
+                    annals = Some(timeline::Annals::new());
+                    let msg = export_postmortem(
+                        s,
+                        &net.operator_actions(),
+                        &net.chaos_history(),
+                        &net.namespace_filter(),
+                        s.warm.is_some(),
+                    );
+                    toast = Some((msg, get_time() + 6.0));
+                }
                 if let Some(m) = &args.menu {
                     open_menu = match m.as_str() {
                         "game" => Some(0),
@@ -2173,6 +2188,18 @@ async fn main() {
                 picker_just_opened = picker;
             }
             Some(MenuAction::Fit) => pending_fit = true,
+            Some(MenuAction::ExportPostmortem) => {
+                if let Some(s) = net.snapshot() {
+                    let msg = export_postmortem(
+                        &s,
+                        &net.operator_actions(),
+                        &net.chaos_history(),
+                        &ns_filter_now,
+                        s.warm.is_some(),
+                    );
+                    toast = Some((msg, get_time() + 4.0));
+                }
+            }
             Some(MenuAction::Quit) => want_quit = true,
             Some(MenuAction::SetOverlay(o)) => overlay = o,
             Some(MenuAction::EndTurn) => {
@@ -2368,8 +2395,21 @@ async fn main() {
                     click,
                 )
             });
-            if let Some(timeline::AnnalsAction::Close) = action {
-                annals = None;
+            match action {
+                Some(timeline::AnnalsAction::Close) => annals = None,
+                Some(timeline::AnnalsAction::Export) => {
+                    if let Some(s) = snap.as_deref() {
+                        let msg = export_postmortem(
+                            s,
+                            &ops,
+                            &net.chaos_history(),
+                            &ns_filter_now,
+                            s.warm.is_some(),
+                        );
+                        toast = Some((msg, get_time() + 4.0));
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -2878,6 +2918,69 @@ fn clipboard_copy(text: &str, lines: usize) -> String {
 
 /// Write `text` to `filename` in the working directory; returns a toast
 /// message (the path on success, the error otherwise).
+/// Assemble + write the after-action postmortem markdown (the sanctioned
+/// one-shot file export). Pure formatting lives in `state::postmortem`; this only
+/// gathers the in-session inputs (the cluster-wide Annals timeline — the SAME
+/// `build_timeline` call the modal makes — + posture + concerns + this session's
+/// chaos drills) and writes the file. Returns the toast.
+fn export_postmortem(
+    snap: &net::Snapshot,
+    ops: &[kubernation_core::state::timeline::OperatorAction],
+    drills_src: &[net::ChaosRecord],
+    filter: &kubernation_core::state::filter::NamespaceFilter,
+    paired: bool,
+) -> String {
+    use kubernation_core::state::postmortem::{
+        ChaosDrill, PostmortemInput, postmortem_filename, postmortem_markdown,
+    };
+    use kubernation_core::state::timeline::{
+        CLUSTER_CAP, TIMELINE_WINDOW_MIN, TimelineOpts, TimelineScope, build_timeline,
+    };
+    let now = kubernation_core::util::now();
+    let tl = build_timeline(
+        &snap.hot.observed,
+        &TimelineOpts {
+            scope: TimelineScope::Cluster,
+            filter,
+            window_min: TIMELINE_WINDOW_MIN,
+            cap: CLUSTER_CAP,
+        },
+        ops,
+        now,
+    );
+    let drills: Vec<ChaosDrill> = drills_src
+        .iter()
+        .map(|r| ChaosDrill {
+            experiment: r.experiment.clone(),
+            target: r.target.clone(),
+            summary: r.summary.clone(),
+        })
+        .collect();
+    // When a namespace filter is active, the concerns/workloads/timeline are
+    // scoped to it (the node/pod census stays cluster-wide) — say so in the doc.
+    let scope = match filter {
+        kubernation_core::state::filter::NamespaceFilter::Only(_) => Some(filter.label()),
+        _ => None,
+    };
+    let m = &snap.hot.observed.meta;
+    let input = PostmortemInput {
+        context: &m.context,
+        platform: m.platform.label(),
+        version: env!("CARGO_PKG_VERSION"),
+        nodes: snap.hot.models.map.total_nodes,
+        pods: snap.hot.models.map.total_pods,
+        workloads: snap.hot.models.workloads.len(),
+        posture: &snap.hot.posture,
+        concerns: &snap.attention[..],
+        timeline: &tl,
+        drills: &drills,
+        paired,
+        scope,
+    };
+    let md = postmortem_markdown(&input, now);
+    export_to_file(&md, &postmortem_filename(&m.context, now))
+}
+
 fn export_to_file(text: &str, filename: &str) -> String {
     let path = std::env::current_dir()
         .unwrap_or_else(|_| ".".into())

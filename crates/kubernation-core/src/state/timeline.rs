@@ -406,6 +406,54 @@ pub fn build_timeline(
     }
 }
 
+/// Per-entry render decisions for a timeline, shared by the GUI Annals and the
+/// postmortem export so the screen and the exported doc can never disagree about
+/// the fault line or which change is a suspect. One per entry, capped, in order.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RowDecision {
+    /// The "— trouble begins here —" rule lands ABOVE this row (the first row
+    /// strictly older than `first_trouble`).
+    pub fault_line_above: bool,
+    /// A *change* within `CORRELATION_WINDOW_MIN` strictly before the first
+    /// failure — "preceded by", never "caused by".
+    pub suspect: bool,
+}
+
+/// The fault-line + suspect decisions for the first `cap` entries. PURE.
+pub fn row_decisions(tl: &Timeline, cap: usize) -> Vec<RowDecision> {
+    let ft = tl.first_trouble.as_ref();
+    // The fault line: the first shown row strictly older than the first trouble.
+    let mut fault_idx: Option<usize> = None;
+    if let Some(ftt) = ft {
+        for (i, e) in tl.entries.iter().take(cap).enumerate() {
+            if matches!(&e.when, Some(t) if t.0 < ftt.0) {
+                fault_idx = Some(i);
+                break;
+            }
+        }
+    }
+    tl.entries
+        .iter()
+        .take(cap)
+        .enumerate()
+        .map(|(i, e)| {
+            let suspect = e.kind.is_change()
+                && ft.is_some_and(|ftt| {
+                    e.when.as_ref().is_some_and(|w| {
+                        // Strictly BEFORE the first failure (a change at the exact
+                        // failure instant isn't a precursor).
+                        let d = ftt.0.duration_since(w.0).as_secs();
+                        (1..=CORRELATION_WINDOW_MIN * 60).contains(&d)
+                    })
+                });
+            RowDecision {
+                fault_line_above: Some(i) == fault_idx,
+                suspect,
+            }
+        })
+        .collect()
+}
+
 /// Whether an event/action about `(ns, name)` belongs to `scope`. `members` is
 /// the precomputed precise (namespace, name) roster of the scope's objects (the
 /// workload + its ReplicaSets + its pods, or a node's pods) — matched exactly, so
