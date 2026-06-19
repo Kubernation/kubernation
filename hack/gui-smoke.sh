@@ -36,6 +36,9 @@ STATES=(
   "blast-workload|--blast web"
   "chaos|--chaos web"
   "chaos-node|--chaos web --chaos-exp node-failure"
+  "chaos-killpct|--chaos web --chaos-exp kill-percent"
+  "chaos-spike|--chaos web --chaos-exp scale-spike"
+  "chaos-partition|--chaos web --chaos-exp partition"
 )
 
 fail=0

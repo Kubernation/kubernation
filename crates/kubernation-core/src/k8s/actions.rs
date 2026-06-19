@@ -265,8 +265,16 @@ pub async fn apply_partition(
                 match_labels: Some(spec.pod_selector.clone()),
                 ..Default::default()
             }),
-            // No ingress/egress rules + both policy types = deny everything.
-            policy_types: Some(vec!["Ingress".into(), "Egress".into()]),
+            // No ingress/egress rules + the chosen policy types = deny that
+            // direction (Both = full deny-all; Ingress = out of rotation;
+            // Egress = cut off from dependencies).
+            policy_types: Some(
+                spec.direction
+                    .policy_types()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
             ..Default::default()
         }),
     };

@@ -20,6 +20,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   - **Budget-breach verdict** — the scorecard headlines what the drill cost the
     error budget: "drill BREACHED the error budget" / "spent N% of budget" /
     "error budget untouched", tying chaos to the treasury.
+  - **Four new experiments** (reusing the existing write primitives — no new
+    verbs): **kill a percentage** of a workload's pods (a slider between kill-one
+    and kill-all), **scale spike** (surge a workload by Nx to test scheduling
+    headroom, then restore), **cordon freeze** (cordon a node *without* draining —
+    new pods won't land), and **directional partition** (the deny-all gains
+    `deny [both|ingress|egress]` — egress = "lost its backend", ingress = "out of
+    rotation"). The Game Day window grew per-experiment knobs (kill %, surge
+    factor, partition direction).
 
 ### Changed
 - **The attention queue moved from the bottom strip into a docked ATTENTION

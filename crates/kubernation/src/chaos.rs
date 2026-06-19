@@ -8,8 +8,8 @@
 
 use kubernation_core::state::blast::Subject;
 use kubernation_core::state::chaos::{
-    ChaosScorecard, Experiment, ScoreRole, node_protected, ns_protected, plan_chaos, plan_summary,
-    preview_lines, scorecard_lines,
+    ChaosScorecard, Experiment, PartitionDir, ScoreRole, node_protected, ns_protected, plan_chaos,
+    plan_summary, preview_lines, scorecard_lines,
 };
 use kubernation_core::state::model::WorkloadRef;
 use macroquad::prelude::*;
@@ -21,50 +21,62 @@ use crate::theme::*;
 use crate::window::draw_window;
 
 const W: f32 = 780.0;
-const H: f32 = 580.0;
+const H: f32 = 600.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ChaosKind {
     Outage,
     KillOne,
     KillAll,
+    KillPercent,
+    ScaleSpike,
     BrokenImage,
     Partition,
     NodeFailure,
+    CordonFreeze,
 }
 
 impl ChaosKind {
-    const ALL: [ChaosKind; 6] = [
+    const ALL: [ChaosKind; 9] = [
         ChaosKind::Outage,
         ChaosKind::KillOne,
         ChaosKind::KillAll,
+        ChaosKind::KillPercent,
+        ChaosKind::ScaleSpike,
         ChaosKind::BrokenImage,
         ChaosKind::Partition,
         ChaosKind::NodeFailure,
+        ChaosKind::CordonFreeze,
     ];
     fn label(self) -> &'static str {
         match self {
             ChaosKind::Outage => "Outage (scale to 0)",
             ChaosKind::KillOne => "Kill one pod",
             ChaosKind::KillAll => "Kill all pods",
+            ChaosKind::KillPercent => "Kill a percentage",
+            ChaosKind::ScaleSpike => "Scale spike (surge)",
             ChaosKind::BrokenImage => "Broken image roll",
-            ChaosKind::Partition => "Partition (deny-all)",
+            ChaosKind::Partition => "Partition (network)",
             ChaosKind::NodeFailure => "Node failure (drain)",
+            ChaosKind::CordonFreeze => "Cordon (freeze)",
         }
     }
     /// Node-scoped experiments pick a node, not a workload.
     fn is_node(self) -> bool {
-        matches!(self, ChaosKind::NodeFailure)
+        matches!(self, ChaosKind::NodeFailure | ChaosKind::CordonFreeze)
     }
     /// Parse the dev `--chaos-exp` flag value.
     pub fn from_flag(s: &str) -> Option<ChaosKind> {
         Some(match s {
             "kill-one" => ChaosKind::KillOne,
             "kill-all" => ChaosKind::KillAll,
+            "kill-percent" => ChaosKind::KillPercent,
+            "scale-spike" => ChaosKind::ScaleSpike,
             "outage" => ChaosKind::Outage,
             "broken-image" => ChaosKind::BrokenImage,
             "partition" => ChaosKind::Partition,
             "node-failure" => ChaosKind::NodeFailure,
+            "cordon-freeze" => ChaosKind::CordonFreeze,
             _ => return None,
         })
     }
@@ -80,11 +92,15 @@ pub enum ChaosAction {
     Restore,
 }
 
-/// The Game Day modal's state: the chosen target(s) + experiment.
+/// The Game Day modal's state: the chosen target(s) + experiment + the
+/// per-experiment knobs (kill %, surge factor, partition direction).
 pub struct Chaos {
     pub target: Option<WorkloadRef>,
     node_target: Option<String>,
     kind: ChaosKind,
+    kill_pct: u8,
+    spike_factor: u32,
+    partition_dir: PartitionDir,
 }
 
 impl Chaos {
@@ -93,6 +109,9 @@ impl Chaos {
             target,
             node_target: None,
             kind: ChaosKind::Outage,
+            kill_pct: 50,
+            spike_factor: 3,
+            partition_dir: PartitionDir::Both,
         }
     }
 
@@ -103,31 +122,32 @@ impl Chaos {
 
     /// The experiment for the current kind + selection, if a target is chosen.
     fn experiment(&self) -> Option<Experiment> {
+        let wl = || self.target.clone();
         match self.kind {
-            ChaosKind::Outage => self
-                .target
-                .clone()
-                .map(|w| Experiment::Outage { workload: w }),
-            ChaosKind::KillOne => self
-                .target
-                .clone()
-                .map(|w| Experiment::KillOne { workload: w }),
-            ChaosKind::KillAll => self
-                .target
-                .clone()
-                .map(|w| Experiment::KillAll { workload: w }),
-            ChaosKind::BrokenImage => self
-                .target
-                .clone()
-                .map(|w| Experiment::BrokenImage { workload: w }),
-            ChaosKind::Partition => self
-                .target
-                .clone()
-                .map(|w| Experiment::Partition { workload: w }),
+            ChaosKind::Outage => wl().map(|w| Experiment::Outage { workload: w }),
+            ChaosKind::KillOne => wl().map(|w| Experiment::KillOne { workload: w }),
+            ChaosKind::KillAll => wl().map(|w| Experiment::KillAll { workload: w }),
+            ChaosKind::KillPercent => wl().map(|w| Experiment::KillPercent {
+                workload: w,
+                pct: self.kill_pct,
+            }),
+            ChaosKind::ScaleSpike => wl().map(|w| Experiment::ScaleSpike {
+                workload: w,
+                factor: self.spike_factor,
+            }),
+            ChaosKind::BrokenImage => wl().map(|w| Experiment::BrokenImage { workload: w }),
+            ChaosKind::Partition => wl().map(|w| Experiment::Partition {
+                workload: w,
+                dir: self.partition_dir,
+            }),
             ChaosKind::NodeFailure => self
                 .node_target
                 .clone()
                 .map(|n| Experiment::NodeFailure { node: n }),
+            ChaosKind::CordonFreeze => self
+                .node_target
+                .clone()
+                .map(|n| Experiment::CordonFreeze { node: n }),
         }
     }
 
@@ -191,7 +211,11 @@ impl Chaos {
             }
             ry += 22.0;
         }
-        ry += 8.0;
+        ry += 4.0;
+
+        // Per-experiment knobs (kill %, surge factor, partition direction).
+        ry = self.draw_knobs(right_x, ry, b.w, mouse, click);
+        ry += 6.0;
 
         // Preview the drill for the chosen target.
         text_bold("PREVIEW", right_x, ry + 12.0, 14.0, PARCHMENT);
@@ -384,6 +408,97 @@ impl Chaos {
             return ChaosAction::Close;
         }
         ChaosAction::None
+    }
+
+    /// The per-experiment knob row (kill %, surge factor, partition direction),
+    /// shown only for the kinds that take a parameter. Returns the new `y`.
+    fn draw_knobs(&mut self, x: f32, y: f32, bw: f32, mouse: Vec2, click: bool) -> f32 {
+        // A small [-]/[+] stepper; returns -1/0/+1 for the click.
+        let stepper = |label: &str, val: String, sx: f32| -> i32 {
+            text(label, sx, y + 14.0, 13.0, PARCHMENT);
+            let lw = text_size(label, 13.0).width;
+            let minus = Rect::new(sx + lw + 8.0, y, 20.0, 20.0);
+            let val_x = minus.x + 26.0;
+            let plus = Rect::new(
+                val_x + text_size(&val, 13.0).width.max(28.0) + 8.0,
+                y,
+                20.0,
+                20.0,
+            );
+            let mut delta = 0;
+            for (rect, sign, glyph) in [(minus, -1, "-"), (plus, 1, "+")] {
+                let on = rect.contains(mouse);
+                draw_rectangle(
+                    rect.x,
+                    rect.y,
+                    rect.w,
+                    rect.h,
+                    if on {
+                        lighter(PLATE, 1.8)
+                    } else {
+                        darker(PLATE, 1.2)
+                    },
+                );
+                draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, STONE_EDGE);
+                text(glyph, rect.x + 7.0, rect.y + 15.0, 14.0, INK);
+                if on && click {
+                    delta = sign;
+                }
+            }
+            text(&val, val_x, y + 14.0, 13.0, INK);
+            delta
+        };
+        match self.kind {
+            ChaosKind::KillPercent => {
+                let d = stepper("kill", format!("{}%", self.kill_pct), x);
+                if d != 0 {
+                    self.kill_pct = (self.kill_pct as i32 + d * 10).clamp(10, 100) as u8;
+                }
+                y + 24.0
+            }
+            ChaosKind::ScaleSpike => {
+                let d = stepper("factor", format!("{}x", self.spike_factor), x);
+                if d != 0 {
+                    self.spike_factor = (self.spike_factor as i32 + d).clamp(2, 10) as u32;
+                }
+                y + 24.0
+            }
+            ChaosKind::Partition => {
+                text("deny", x, y + 14.0, 13.0, PARCHMENT);
+                let mut bx = x + 42.0;
+                for (dir, lbl) in [
+                    (PartitionDir::Both, "both"),
+                    (PartitionDir::Ingress, "in"),
+                    (PartitionDir::Egress, "out"),
+                ] {
+                    let w = text_size(lbl, 13.0).width + 14.0;
+                    let rect = Rect::new(bx, y, w, 20.0);
+                    let on = self.partition_dir == dir;
+                    draw_rectangle(
+                        rect.x,
+                        rect.y,
+                        rect.w,
+                        rect.h,
+                        if on {
+                            darker(STRUCT, 0.7)
+                        } else if rect.contains(mouse) {
+                            lighter(PLATE, 1.8)
+                        } else {
+                            darker(PLATE, 1.2)
+                        },
+                    );
+                    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, STONE_EDGE);
+                    text(lbl, rect.x + 7.0, rect.y + 15.0, 13.0, INK);
+                    if click && rect.contains(mouse) {
+                        self.partition_dir = dir;
+                    }
+                    bx += w + 6.0;
+                }
+                let _ = bw;
+                y + 24.0
+            }
+            _ => y,
+        }
     }
 
     /// The hot workloads list (protected namespaces filtered out).

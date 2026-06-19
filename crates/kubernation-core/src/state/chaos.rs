@@ -69,25 +69,42 @@ pub enum Experiment {
     KillAll { workload: WorkloadRef },
     /// Scale the workload to 0 (a real outage), restorable to its current count.
     Outage { workload: WorkloadRef },
+    /// Delete a percentage of the workload's pods (1–100, rounded up, ≥1) — the
+    /// "lost a third of the fleet" test. KillOne/KillAll are the endpoints.
+    KillPercent { workload: WorkloadRef, pct: u8 },
     /// Cordon a node and drain (evict) every pod on it; restore = uncordon.
     NodeFailure { node: String },
+    /// Cordon a node WITHOUT draining — freeze scheduling (new pods won't land);
+    /// restore = uncordon. The lowest-risk "first drill you'd run on prod".
+    CordonFreeze { node: String },
     /// Roll the workload onto a broken image (ImagePullBackOff); restore = the
     /// captured original image.
     BrokenImage { workload: WorkloadRef },
-    /// Isolate the workload with a deny-all NetworkPolicy; restore = delete it.
-    Partition { workload: WorkloadRef },
+    /// Scale the workload UP by a factor (a surge / thundering herd); restore =
+    /// the captured original count. Tests scheduling headroom + quota.
+    ScaleSpike { workload: WorkloadRef, factor: u32 },
+    /// Isolate the workload with a NetworkPolicy (deny-all / ingress / egress);
+    /// restore = delete it.
+    Partition {
+        workload: WorkloadRef,
+        dir: PartitionDir,
+    },
 }
 
 impl Experiment {
     /// What the drill targets (for the blast radius + scorecard).
     pub fn subject(&self) -> Subject {
         match self {
-            Experiment::NodeFailure { node } => Subject::Node(node.clone()),
+            Experiment::NodeFailure { node } | Experiment::CordonFreeze { node } => {
+                Subject::Node(node.clone())
+            }
             Experiment::KillOne { workload }
             | Experiment::KillAll { workload }
+            | Experiment::KillPercent { workload, .. }
             | Experiment::Outage { workload }
             | Experiment::BrokenImage { workload }
-            | Experiment::Partition { workload } => Subject::Workload(workload.clone()),
+            | Experiment::ScaleSpike { workload, .. }
+            | Experiment::Partition { workload, .. } => Subject::Workload(workload.clone()),
         }
     }
 
@@ -96,10 +113,12 @@ impl Experiment {
         match self {
             Experiment::KillOne { workload }
             | Experiment::KillAll { workload }
+            | Experiment::KillPercent { workload, .. }
             | Experiment::Outage { workload }
             | Experiment::BrokenImage { workload }
-            | Experiment::Partition { workload } => Some(workload),
-            Experiment::NodeFailure { .. } => None,
+            | Experiment::ScaleSpike { workload, .. }
+            | Experiment::Partition { workload, .. } => Some(workload),
+            Experiment::NodeFailure { .. } | Experiment::CordonFreeze { .. } => None,
         }
     }
 
@@ -108,10 +127,43 @@ impl Experiment {
         match self {
             Experiment::KillOne { .. } => "kill one pod",
             Experiment::KillAll { .. } => "kill all pods",
+            Experiment::KillPercent { .. } => "kill a percentage",
             Experiment::Outage { .. } => "outage (scale to 0)",
             Experiment::NodeFailure { .. } => "node failure (cordon + drain)",
+            Experiment::CordonFreeze { .. } => "cordon (freeze scheduling)",
             Experiment::BrokenImage { .. } => "broken image",
-            Experiment::Partition { .. } => "partition (deny-all)",
+            Experiment::ScaleSpike { .. } => "scale spike (surge)",
+            Experiment::Partition { .. } => "partition",
+        }
+    }
+}
+
+/// Which directions a partition denies. `Both` is a full deny-all; `Ingress`
+/// takes the workload "out of rotation" (nothing can reach it); `Egress` cuts it
+/// off from its dependencies ("lost its backend"). All reuse the one partition
+/// verb — only the policy's `policyTypes` differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PartitionDir {
+    #[default]
+    Both,
+    Ingress,
+    Egress,
+}
+
+impl PartitionDir {
+    /// The k8s `policyTypes` for this direction.
+    pub fn policy_types(self) -> &'static [&'static str] {
+        match self {
+            PartitionDir::Both => &["Ingress", "Egress"],
+            PartitionDir::Ingress => &["Ingress"],
+            PartitionDir::Egress => &["Egress"],
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            PartitionDir::Both => "deny-all",
+            PartitionDir::Ingress => "deny ingress (out of rotation)",
+            PartitionDir::Egress => "deny egress (lost its backend)",
         }
     }
 }
@@ -124,6 +176,8 @@ pub struct NetpolSpec {
     pub name: String,
     /// `matchLabels` for the policy's `podSelector` (the workload's pods).
     pub pod_selector: std::collections::BTreeMap<String, String>,
+    /// Which directions to deny (→ the policy's `policyTypes`).
+    pub direction: PartitionDir,
 }
 
 /// One concrete cluster step. Every variant is an existing primitive *except*
@@ -395,7 +449,7 @@ pub fn plan_chaos(world: &ObservedWorld, exp: &Experiment) -> ChaosPlan {
                 blast,
             }
         }
-        Experiment::Partition { workload } => {
+        Experiment::Partition { workload, dir } => {
             let labels = crate::state::model::workload_template_labels(world, workload);
             if labels.is_empty() {
                 // An empty podSelector denies the WHOLE namespace — never do that.
@@ -410,6 +464,7 @@ pub fn plan_chaos(world: &ObservedWorld, exp: &Experiment) -> ChaosPlan {
                     namespace: workload.namespace.clone(),
                     name: name.clone(),
                     pod_selector: labels,
+                    direction: *dir,
                 })],
                 restore: vec![ChaosStep::Unpartition {
                     namespace: workload.namespace.clone(),
@@ -417,6 +472,84 @@ pub fn plan_chaos(world: &ObservedWorld, exp: &Experiment) -> ChaosPlan {
                 }],
                 refused: None,
                 blast,
+            }
+        }
+        Experiment::KillPercent { workload, pct } => {
+            let pods = workload_pods(world, workload);
+            if pods.is_empty() {
+                return ChaosPlan::refuse(blast, "no pods to kill");
+            }
+            // Round up so any non-zero pct kills ≥1; clamp pct to 1..=100.
+            let pct = (*pct).clamp(1, 100) as usize;
+            let n = pods
+                .len()
+                .min(pods.len().saturating_mul(pct).div_ceil(100).max(1));
+            if n > MAX_KILL_PODS {
+                return ChaosPlan::refuse(
+                    blast,
+                    format!("would delete {n} pods (cap {MAX_KILL_PODS})"),
+                );
+            }
+            ChaosPlan {
+                steps: pods
+                    .into_iter()
+                    .take(n)
+                    .map(|(namespace, pod)| ChaosStep::Evict { namespace, pod })
+                    .collect(),
+                restore: Vec::new(), // the controller recreates them
+                refused: None,
+                blast,
+            }
+        }
+        Experiment::CordonFreeze { node } => {
+            let Some(n) = world
+                .nodes
+                .state()
+                .into_iter()
+                .find(|n| n.metadata.name.as_deref() == Some(node))
+            else {
+                return ChaosPlan::refuse(blast, "node not found");
+            };
+            if node_protected(&n) {
+                return ChaosPlan::refuse(blast, "control-plane node — refused");
+            }
+            // Cordon only — no drain. New pods won't schedule here.
+            ChaosPlan {
+                steps: vec![ChaosStep::Apply(Intervention::Cordon {
+                    node: node.clone(),
+                    on: true,
+                })],
+                restore: vec![ChaosStep::Apply(Intervention::Cordon {
+                    node: node.clone(),
+                    on: false,
+                })],
+                refused: None,
+                blast,
+            }
+        }
+        Experiment::ScaleSpike { workload, factor } => {
+            if workload.kind == WorkloadKind::DaemonSet {
+                return ChaosPlan::refuse(blast, "DaemonSets scale with node count, not replicas");
+            }
+            let factor = (*factor).max(2);
+            match current_replicas(world, workload) {
+                Some(n) if n > 0 => {
+                    let surged = (n as i64 * factor as i64).min(i32::MAX as i64) as i32;
+                    ChaosPlan {
+                        steps: vec![ChaosStep::Apply(Intervention::Scale {
+                            workload: workload.clone(),
+                            replicas: surged,
+                        })],
+                        restore: vec![ChaosStep::Apply(Intervention::Scale {
+                            workload: workload.clone(),
+                            replicas: n,
+                        })],
+                        refused: None,
+                        blast,
+                    }
+                }
+                Some(_) => ChaosPlan::refuse(blast, "nothing to surge (0 replicas)"),
+                None => ChaosPlan::refuse(blast, "replicas unknown"),
             }
         }
     }
@@ -558,9 +691,9 @@ pub fn preview_lines(exp: &Experiment, plan: &ChaosPlan) -> Vec<(String, ScoreRo
                 ScoreRole::Info,
             ),
         ],
-        Experiment::Partition { .. } => vec![
+        Experiment::Partition { dir, .. } => vec![
             (
-                "deny-all NetworkPolicy (a new resource)".into(),
+                format!("{} NetworkPolicy (a new resource)", dir.label()),
                 ScoreRole::Info,
             ),
             (
@@ -574,6 +707,21 @@ pub fn preview_lines(exp: &Experiment, plan: &ChaosPlan) -> Vec<(String, ScoreRo
                 ScoreRole::Info,
             )]
         }
+        Experiment::CordonFreeze { .. } => vec![(
+            "cordon only (no drain); Restore to uncordon".into(),
+            ScoreRole::Info,
+        )],
+        Experiment::ScaleSpike { .. } => vec![(
+            "surge — watch for Pending pods (no headroom / quota)".into(),
+            ScoreRole::Warn,
+        )],
+        Experiment::KillPercent { pct, .. } => vec![(
+            format!(
+                "kills ~{}% of the pods (controller recreates)",
+                (*pct).clamp(1, 100)
+            ),
+            ScoreRole::Info,
+        )],
         _ => Vec::new(),
     }
 }
@@ -813,7 +961,13 @@ mod tests {
     fn partition_uses_pod_labels_and_restores() {
         let (world, mut s) = fx::world();
         seed_web(&mut s); // template labels {app: web}
-        let plan = plan_chaos(&world, &Experiment::Partition { workload: web() });
+        let plan = plan_chaos(
+            &world,
+            &Experiment::Partition {
+                workload: web(),
+                dir: PartitionDir::Egress,
+            },
+        );
         assert!(!plan.is_refused(), "{:?}", plan.refused);
         match &plan.steps[0] {
             ChaosStep::Partition(spec) => {
@@ -823,6 +977,9 @@ mod tests {
                     spec.pod_selector.get("app").map(String::as_str),
                     Some("web")
                 );
+                // The direction flows through to the policy types.
+                assert_eq!(spec.direction, PartitionDir::Egress);
+                assert_eq!(spec.direction.policy_types(), &["Egress"]);
             }
             other => panic!("expected Partition step, got {other:?}"),
         }
@@ -842,7 +999,89 @@ mod tests {
             t.metadata = Some(Default::default());
         }
         s.deployment(d);
-        assert!(plan_chaos(&world, &Experiment::Partition { workload: web() }).is_refused());
+        assert!(
+            plan_chaos(
+                &world,
+                &Experiment::Partition {
+                    workload: web(),
+                    dir: PartitionDir::Both,
+                },
+            )
+            .is_refused()
+        );
+    }
+
+    #[test]
+    fn kill_percent_rounds_up_and_caps() {
+        let (world, mut s) = fx::world();
+        seed_web(&mut s); // 3 pods
+        // 50% of 3 rounds up to 2.
+        let plan = plan_chaos(
+            &world,
+            &Experiment::KillPercent {
+                workload: web(),
+                pct: 50,
+            },
+        );
+        assert_eq!(plan.steps.len(), 2);
+        assert!(plan.restore.is_empty());
+        // Any non-zero pct kills at least one.
+        let one = plan_chaos(
+            &world,
+            &Experiment::KillPercent {
+                workload: web(),
+                pct: 1,
+            },
+        );
+        assert_eq!(one.steps.len(), 1);
+        // 100% kills all three.
+        let all = plan_chaos(
+            &world,
+            &Experiment::KillPercent {
+                workload: web(),
+                pct: 100,
+            },
+        );
+        assert_eq!(all.steps.len(), 3);
+    }
+
+    #[test]
+    fn cordon_freeze_cordons_without_draining() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        seed_web(&mut s); // pods on n1, but freeze must NOT drain them
+        let plan = plan_chaos(&world, &Experiment::CordonFreeze { node: "n1".into() });
+        assert!(!plan.is_refused(), "{:?}", plan.refused);
+        assert_eq!(plan.steps.len(), 1);
+        assert!(matches!(
+            &plan.steps[0],
+            ChaosStep::Apply(Intervention::Cordon { on: true, .. })
+        ));
+        assert!(matches!(
+            &plan.restore[0],
+            ChaosStep::Apply(Intervention::Cordon { on: false, .. })
+        ));
+    }
+
+    #[test]
+    fn scale_spike_surges_and_restores() {
+        let (world, mut s) = fx::world();
+        seed_web(&mut s); // 3 replicas
+        let plan = plan_chaos(
+            &world,
+            &Experiment::ScaleSpike {
+                workload: web(),
+                factor: 3,
+            },
+        );
+        assert!(matches!(
+            &plan.steps[0],
+            ChaosStep::Apply(Intervention::Scale { replicas: 9, .. })
+        ));
+        assert!(matches!(
+            &plan.restore[0],
+            ChaosStep::Apply(Intervention::Scale { replicas: 3, .. })
+        ));
     }
 
     #[test]

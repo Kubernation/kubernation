@@ -2111,16 +2111,29 @@ async fn main() {
                                     "Delete all {evicts} pod(s) of {}/{}.",
                                     workload.namespace, workload.name
                                 ),
+                                Experiment::KillPercent { workload, pct } => format!(
+                                    "Delete {evicts} pod(s) (~{pct}%) of {}/{}.",
+                                    workload.namespace, workload.name
+                                ),
+                                Experiment::ScaleSpike { workload, factor } => format!(
+                                    "Surge {}/{} by {factor}x.",
+                                    workload.namespace, workload.name
+                                ),
                                 Experiment::BrokenImage { workload } => format!(
                                     "Roll {}/{} onto an unresolvable image.",
                                     workload.namespace, workload.name
                                 ),
-                                Experiment::Partition { workload } => format!(
-                                    "Isolate {}/{} with a deny-all NetworkPolicy.",
-                                    workload.namespace, workload.name
+                                Experiment::Partition { workload, dir } => format!(
+                                    "Isolate {}/{} — {} NetworkPolicy.",
+                                    workload.namespace,
+                                    workload.name,
+                                    dir.label()
                                 ),
                                 Experiment::NodeFailure { node } => {
                                     format!("Cordon {node} and drain its {evicts} pod(s).")
+                                }
+                                Experiment::CordonFreeze { node } => {
+                                    format!("Cordon {node} (freeze scheduling, no drain).")
                                 }
                             };
                             pending_chaos = Some(PendingChaos {
@@ -2243,10 +2256,21 @@ async fn main() {
             let w = wr.clone();
             let exp = match args.chaos_exp.as_deref() {
                 Some("kill-all") => Experiment::KillAll { workload: w },
+                Some("kill-percent") => Experiment::KillPercent {
+                    workload: w,
+                    pct: 50,
+                },
+                Some("scale-spike") => Experiment::ScaleSpike {
+                    workload: w,
+                    factor: 3,
+                },
                 Some("outage") => Experiment::Outage { workload: w },
                 Some("broken-image") => Experiment::BrokenImage { workload: w },
-                Some("partition") => Experiment::Partition { workload: w },
-                Some("node-failure") => {
+                Some("partition") => Experiment::Partition {
+                    workload: w,
+                    dir: kubernation_core::state::chaos::PartitionDir::Both,
+                },
+                Some(node_exp @ ("node-failure" | "cordon-freeze")) => {
                     // The first non-control-plane node hosting the target's pods.
                     let node = s
                         .hot
@@ -2263,7 +2287,11 @@ async fn main() {
                         })
                         .find_map(|p| p.spec.as_ref().and_then(|sp| sp.node_name.clone()))
                         .unwrap_or_default();
-                    Experiment::NodeFailure { node }
+                    if node_exp == "cordon-freeze" {
+                        Experiment::CordonFreeze { node }
+                    } else {
+                        Experiment::NodeFailure { node }
+                    }
                 }
                 _ => Experiment::KillOne { workload: w },
             };
