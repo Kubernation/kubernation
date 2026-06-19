@@ -43,6 +43,16 @@ version covers every crate; releases are git tags `vX.Y.Z`.
     flagged it — a monitoring gap", Kubernation measuring its own observability);
     and a **recovery curve** sparkline shows the watch set's ready-fraction over
     the drill.
+  - **"Raid underway" in the queue.** While a drill is fresh (~30s) the attention
+    queue announces it ("Game Day: raid underway — …"), so `n`/`B` route to it —
+    closing the loop with the product's spine.
+  - **Flip-watch.** The blast-radius overlay auto-engages on the live raid's
+    subject so you can watch the cities flip; it disengages when the raid clears,
+    and a manual selection still overrides.
+  - **Chronicle.** Finished drills accumulate into an in-session CHRONICLE in the
+    Game Day window (experiment · target · outcome) — recent history at a glance
+    (no cross-restart persistence). *(Difficulty tiers — composed multi-step
+    drills — are deferred: they need a compound-plan run model.)*
 
 ### Changed
 - **The attention queue moved from the bottom strip into a docked ATTENTION

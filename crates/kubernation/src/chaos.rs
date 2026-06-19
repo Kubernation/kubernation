@@ -14,7 +14,7 @@ use kubernation_core::state::chaos::{
 use kubernation_core::state::model::WorkloadRef;
 use macroquad::prelude::*;
 
-use crate::net::{ChaosSession, Snapshot};
+use crate::net::{ChaosRecord, ChaosSession, Snapshot};
 use crate::panels::truncate_str;
 use crate::text::{text, text_bold, text_size};
 use crate::theme::*;
@@ -167,6 +167,7 @@ impl Chaos {
         &mut self,
         snap: &Snapshot,
         session: Option<&ChaosSession>,
+        history: &[ChaosRecord],
         mouse: Vec2,
         click: bool,
     ) -> ChaosAction {
@@ -186,11 +187,37 @@ impl Chaos {
         let left_w = b.w * 0.42;
         let right_x = b.x + b.w * 0.47;
 
+        // Reserve the bottom of the left column for the CHRONICLE when non-empty.
+        let chron_n = history.len().min(4);
+        let chron_h = if chron_n == 0 {
+            0.0
+        } else {
+            chron_n as f32 * 15.0 + 22.0
+        };
+        let pick_bottom = bottom - chron_h;
+
         // --- LEFT: target picker (workloads, or nodes for a node drill) -------
         if self.kind.is_node() {
-            self.draw_node_picker(snap, left_x, left_w, top, bottom, mouse, click);
+            self.draw_node_picker(snap, left_x, left_w, top, pick_bottom, mouse, click);
         } else {
-            self.draw_workload_picker(snap, left_x, left_w, top, bottom, mouse, click);
+            self.draw_workload_picker(snap, left_x, left_w, top, pick_bottom, mouse, click);
+        }
+        // --- CHRONICLE (finished drills this session) -------------------------
+        if chron_n > 0 {
+            let mut cy = pick_bottom + 14.0;
+            text_bold("CHRONICLE", left_x, cy, 13.0, PARCHMENT);
+            cy += 15.0;
+            for rec in history.iter().take(chron_n) {
+                let line = format!("{} {} - {}", rec.experiment, rec.target, rec.summary);
+                text(
+                    ascii(&truncate_str(&line, 38)),
+                    left_x,
+                    cy,
+                    11.0,
+                    STONE_INK_DIM,
+                );
+                cy += 15.0;
+            }
         }
 
         // --- RIGHT: experiment + preview + run --------------------------------

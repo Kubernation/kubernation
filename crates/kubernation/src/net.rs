@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use kubernation_core::events::{ClusterId, WorldDelta};
 use kubernation_core::k8s::{actions, browse, client, logs, portforward, watch};
-use kubernation_core::state::attention::{Concern, Target};
+use kubernation_core::state::attention::{Concern, Severity, Target};
 use kubernation_core::state::blast::Subject;
 use kubernation_core::state::chaos::{self, ScoreKind};
 use kubernation_core::state::filter::NamespaceFilter;
@@ -253,6 +253,42 @@ pub struct Net {
     chaos_req: Mutex<Option<ChaosRun>>,
     /// The live game-day session (run result + recovery/budget tracking).
     chaos_session: Mutex<Option<ChaosSession>>,
+    /// In-session chronicle of finished drills (newest first, capped). Archived
+    /// when a new drill starts; cleared on context switch. No cross-run history.
+    chaos_history: Mutex<Vec<ChaosRecord>>,
+}
+
+/// One finished game-day drill, for the in-session chronicle.
+#[derive(Clone)]
+pub struct ChaosRecord {
+    pub experiment: String,
+    pub target: String,
+    pub summary: String,
+}
+
+impl ChaosRecord {
+    /// Summarize a finished session into a one-line chronicle outcome.
+    fn from_session(s: &ChaosSession) -> Self {
+        ChaosRecord {
+            experiment: s.experiment.clone(),
+            target: s.target_label.clone(),
+            summary: chaos_outcome_summary(s.recovered, s.dipped, s.recover_secs),
+        }
+    }
+}
+
+/// The one-line chronicle outcome for a finished drill — PURE + testable.
+fn chaos_outcome_summary(recovered: bool, dipped: bool, recover_secs: Option<f64>) -> String {
+    if recovered {
+        match recover_secs {
+            Some(secs) => format!("self-healed in {secs:.0}s"),
+            None => "self-healed".into(),
+        }
+    } else if dipped {
+        "degraded".into()
+    } else {
+        "stayed up".into()
+    }
 }
 
 /// The resource browser's current LIST state (the net thread fills it; a
@@ -292,6 +328,7 @@ impl Net {
             slo_override_req: Mutex::new(Vec::new()),
             chaos_req: Mutex::new(None),
             chaos_session: Mutex::new(None),
+            chaos_history: Mutex::new(Vec::new()),
         })
     }
 
@@ -314,6 +351,11 @@ impl Net {
     /// GUI never clears it — that would race a still-in-flight drill.
     pub fn chaos_session(&self) -> Option<ChaosSession> {
         self.chaos_session.lock().unwrap().clone()
+    }
+
+    /// The in-session chronicle of finished drills (newest first).
+    pub fn chaos_history(&self) -> Vec<ChaosRecord> {
+        self.chaos_history.lock().unwrap().clone()
     }
 
     /// Ask the net thread to discover resource kinds (once).
@@ -618,6 +660,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             // Any chaos drill belonged to the old cluster.
                             *net.chaos_req.lock().unwrap() = None;
                             *net.chaos_session.lock().unwrap() = None;
+                            net.chaos_history.lock().unwrap().clear();
                             // Namespaces differ across clusters — reset.
                             *net.ns_filter.lock().unwrap() = NamespaceFilter::All;
                             // Discovered kinds + any open browse are the old
@@ -966,6 +1009,13 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             ),
                             None => "chaos: timed out".into(),
                         });
+                        // Archive the previous (now-superseded) drill into the
+                        // in-session chronicle before this one replaces it.
+                        if let Some(prev) = net.chaos_session.lock().unwrap().as_ref() {
+                            let mut h = net.chaos_history.lock().unwrap();
+                            h.insert(0, ChaosRecord::from_session(prev));
+                            h.truncate(10);
+                        }
                         // Arm auto-restore only when there's something to undo.
                         let auto_restore_tick = run
                             .auto_restore_secs
@@ -1288,6 +1338,26 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         }
                     }
                 }
+                // Game Day: while a drill is fresh, announce the raid in the queue
+                // (the product's spine) so `n`/`B` route to it; drops after ~30s.
+                if let Some(sess) = net.chaos_session.lock().unwrap().as_ref()
+                    && sess.cluster == ClusterId::Hot
+                    && ticks.saturating_sub(sess.started_tick) < 120
+                {
+                    let target = match &sess.subject {
+                        Subject::Workload(wr) => Target::Workload(wr.clone()),
+                        Subject::Node(n) => Target::Node(n.clone()),
+                    };
+                    merged.push(Concern {
+                        severity: Severity::Warning,
+                        title: "Game Day: raid underway".into(),
+                        detail: format!("{} on {}", sess.experiment, sess.target_label),
+                        target,
+                        probe: None,
+                        key: "chaos-raid".into(),
+                        cluster: ClusterId::Hot,
+                    });
+                }
                 merged.sort_by(|a, b| {
                     b.severity
                         .cmp(&a.severity)
@@ -1309,4 +1379,20 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
             }
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::chaos_outcome_summary;
+
+    #[test]
+    fn chaos_outcome_summary_classifies_the_drill() {
+        assert_eq!(
+            chaos_outcome_summary(true, true, Some(4.0)),
+            "self-healed in 4s"
+        );
+        assert_eq!(chaos_outcome_summary(true, true, None), "self-healed");
+        assert_eq!(chaos_outcome_summary(false, true, None), "degraded");
+        assert_eq!(chaos_outcome_summary(false, false, None), "stayed up");
+    }
 }

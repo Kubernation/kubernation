@@ -1517,10 +1517,25 @@ async fn main() {
                     draw_selection(&cam, sel);
                 }
 
+                // Flip-watch: while a Game Day raid is announced in the queue
+                // (key "chaos-raid", added by the net thread for ~30s), auto-show
+                // its blast so you can watch the cities flip. Manual selection
+                // overrides; it auto-disengages when the raid concern drops.
+                let raid_subject: Option<(ClusterId, Subject)> = s
+                    .attention
+                    .iter()
+                    .find(|c| c.key == "chaos-raid")
+                    .and_then(|c| match &c.target {
+                        Target::Workload(wr) => Some((c.cluster, Subject::Workload(wr.clone()))),
+                        Target::Node(n) => Some((c.cluster, Subject::Node(n.clone()))),
+                        Target::WorkloadList => None,
+                    });
+
                 // Blast-radius overlay: the dependency fan-out of the selected
-                // tile (a city/node), else the focused concern's subject. Drawn
-                // over the world; recomputed each frame (cheap for real sizes).
-                if blast_on {
+                // tile (a city/node), else the live raid, else the focused
+                // concern's subject. Drawn over the world; recomputed each frame
+                // (cheap for real sizes).
+                if blast_on || raid_subject.is_some() {
                     let subject: Option<(ClusterId, Subject)> = selected
                         .and_then(|cell| locate(&worlds, cell))
                         .and_then(|(sw, local)| match sw.world.region_at(local.0, local.1) {
@@ -1530,6 +1545,7 @@ async fn main() {
                             }
                             _ => None,
                         })
+                        .or_else(|| raid_subject.clone())
                         .or_else(|| {
                             (!s.attention.is_empty())
                                 .then(|| &s.attention[concern_idx.min(s.attention.len() - 1)])
@@ -2082,10 +2098,11 @@ async fn main() {
                 && !chaos_just_opened
                 && pending_chaos.is_none();
             let session = net.chaos_session();
+            let history = net.chaos_history();
             let action = snap
                 .as_ref()
                 .zip(chaos.as_mut())
-                .map(|(s, c)| c.draw(s, session.as_ref(), mouse, click));
+                .map(|(s, c)| c.draw(s, session.as_ref(), &history, mouse, click));
             match action {
                 Some(ChaosAction::Close) => {
                     // Leave the session for the net thread to own (cleared on
