@@ -9,6 +9,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **NetworkPolicy coverage map — "unwalled cities".** OWASP-K07 (Missing Network
+  Segmentation) on the 4X map: a workload with no NetworkPolicy isolating its
+  ingress is an *unwalled city*, open to lateral movement. A new **Walls**
+  map overlay (View ▸ Walls) tints provinces by coverage and marks unwalled
+  cities with a breach notch — red when the city is also reachable (Service/
+  Ingress-fronted), the real finding. The **Network advisor** gains a WALLS
+  section (cities walled, unwalled-&-exposed, wide-open namespaces), and an
+  unwalled-&-exposed workload raises one Warning in the attention queue.
+  Read-only — Kubernation watches NetworkPolicies, never writes them; honest
+  about its limits (matchExpressions handled; namespaceSelector / ipBlock /
+  port rules not analyzed; CNI *enforcement* not verified). (Roadmap #10.)
 - **Change timeline — "The Annals".** A recent, classified change-feed answering
   "what changed?" — the third triage axis beside the attention queue (what's
   wrong) and the blast/impact panel (what else is affected). A cluster-wide modal

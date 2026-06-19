@@ -10,10 +10,13 @@
 //! archipelago sits south-east of the hot one. Each world is drawn with the
 //! camera shifted by its offset, so every painter stays world-local.
 
+use std::collections::{HashMap, HashSet};
+
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::Severity;
 use kubernation_core::state::blast::{Affected, BlastRadius, Subject};
 use kubernation_core::state::model::{NodeHealth, WorkloadRef};
+use kubernation_core::state::netpol::Coverage;
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::world::{City, CoastKind, Continent, Island, Province, WorldModel};
 use macroquad::prelude::*;
@@ -48,6 +51,8 @@ pub enum Overlay {
     Pressure,
     Replicas,
     Namespace,
+    /// NetworkPolicy segmentation — "walls" (unwalled cities pop amber).
+    Coverage,
 }
 
 impl Overlay {
@@ -58,7 +63,74 @@ impl Overlay {
             Overlay::Pressure => "pressure",
             Overlay::Replicas => "replicas",
             Overlay::Namespace => "namespace",
+            Overlay::Coverage => "walls",
         }
+    }
+}
+
+/// Per-workload NetworkPolicy coverage + exposure, for the walls overlay + the
+/// city breach-marks. Borrowed from `Models` for one frame.
+pub struct WallData<'a> {
+    pub coverage: &'a HashMap<WorkloadRef, Coverage>,
+    pub exposed: &'a HashSet<WorkloadRef>,
+}
+
+impl WallData<'_> {
+    fn walled(&self, r: &WorkloadRef) -> bool {
+        self.coverage.get(r).map(|c| c.walled()).unwrap_or(false)
+    }
+    fn is_exposed(&self, r: &WorkloadRef) -> bool {
+        self.exposed.contains(r)
+    }
+}
+
+/// What to draw on a city under the walls overlay — its segmentation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WallMark {
+    /// Walled (an ingress policy isolates it) — draw nothing (the wall is intact).
+    Calm,
+    /// Unwalled, not reachable — a quiet breach notch.
+    Breach,
+    /// Unwalled AND exposed (Service/Ingress-fronted) — the K07 finding, red.
+    BreachExposed,
+}
+
+/// PURE: the breach mark for one city. Walled ⇒ Calm (no mark); the *gap* is
+/// what we flag, so a walled city stays visually quiet (and never fights the
+/// existing population keep-wall). Unit-tested.
+pub fn wall_mark(cov: &Coverage, exposed: bool) -> WallMark {
+    if cov.walled() {
+        WallMark::Calm
+    } else if exposed {
+        WallMark::BreachExposed
+    } else {
+        WallMark::Breach
+    }
+}
+
+/// PURE: the walls-overlay land pair for a province's cities — worst-of-them.
+/// Unit-tested. Exposed-unwalled (the finding) → amber; any unwalled → idle;
+/// all walled → calm slate "fortified"; no cities → idle.
+pub fn coverage_pair(cities: &[City], walls: &WallData) -> (Color, Color) {
+    if cities.is_empty() {
+        return idle_land_pair();
+    }
+    let mut any_unwalled = false;
+    let mut any_exposed_unwalled = false;
+    for c in cities {
+        if !walls.walled(&c.r) {
+            any_unwalled = true;
+            if walls.is_exposed(&c.r) {
+                any_exposed_unwalled = true;
+            }
+        }
+    }
+    if any_exposed_unwalled {
+        heat_pair(1)
+    } else if any_unwalled {
+        idle_land_pair()
+    } else {
+        walled_pair()
     }
 }
 
@@ -111,7 +183,9 @@ fn dominant_namespace(cities: &[City]) -> Option<&str> {
 }
 
 /// The two-shade land pair a province's terrain is filled with, per overlay.
-fn overlay_pair(overlay: Overlay, prov: &Province) -> (Color, Color) {
+/// `walls` is consulted only for the Coverage overlay (None elsewhere / on the
+/// minimap, where Coverage falls back to terrain).
+fn overlay_pair(overlay: Overlay, prov: &Province, walls: Option<&WallData>) -> (Color, Color) {
     match overlay {
         Overlay::Terrain => iso_terrain_pair(prov.tile.health),
         Overlay::Pressure => pressure_pair(prov.tile.cpu_ratio.max(prov.tile.mem_ratio)),
@@ -119,15 +193,20 @@ fn overlay_pair(overlay: Overlay, prov: &Province) -> (Color, Color) {
         Overlay::Namespace => {
             dominant_namespace(&prov.cities).map_or_else(idle_land_pair, namespace_pair)
         }
+        Overlay::Coverage => walls
+            .map(|w| coverage_pair(&prov.cities, w))
+            .unwrap_or_else(|| iso_terrain_pair(prov.tile.health)),
     }
 }
 
 /// A single flat color for a province on the minimap, per overlay. Terrain
-/// keeps its original flat tint; the data overlays reuse the land pair.
+/// keeps its original flat tint; the data overlays reuse the land pair. The
+/// walls overlay has no per-workload data on the minimap (an overview) so it
+/// falls back to terrain there.
 fn overlay_flat(overlay: Overlay, prov: &Province) -> Color {
     match overlay {
-        Overlay::Terrain => terrain(prov.tile.health),
-        _ => overlay_pair(overlay, prov).1,
+        Overlay::Terrain | Overlay::Coverage => terrain(prov.tile.health),
+        _ => overlay_pair(overlay, prov, None).1,
     }
 }
 
@@ -559,6 +638,7 @@ pub fn draw_world(
     banner: Option<(&str, ClusterId)>,
     pair: Option<&PairSync>,
     overlay: Overlay,
+    walls: Option<&WallData>,
 ) {
     let mut detail = lod(cam.zoom);
     detail.name_all = world.cities().take(DENSE_CITIES + 1).count() <= DENSE_CITIES;
@@ -606,7 +686,7 @@ pub fn draw_world(
             draw_province_shallows(prov, cam, &coasts[ci]);
         }
         for prov in &cont.provinces {
-            draw_province_terrain(prov, cam, &coasts[ci], overlay);
+            draw_province_terrain(prov, cam, &coasts[ci], overlay, walls);
         }
     }
     for &ii in &isl_order {
@@ -652,6 +732,19 @@ pub fn draw_world(
             cities.sort_by_key(|c| c.x as i32 + c.y as i32);
             for city in cities {
                 draw_city(city, cam, &detail, pair, &mut occupied);
+                // Walls view: mark the *gap* — a breach notch on unwalled cities
+                // (red when also exposed; the K07 finding). Walled cities stay
+                // visually quiet. Regional/Local only (this branch).
+                if overlay == Overlay::Coverage
+                    && let Some(w) = walls
+                {
+                    let cov = w.coverage.get(&city.r).copied().unwrap_or_default();
+                    if let WallMark::Breach | WallMark::BreachExposed =
+                        wall_mark(&cov, w.is_exposed(&city.r))
+                    {
+                        draw_breach(cam, city, w.is_exposed(&city.r));
+                    }
+                }
             }
         }
     }
@@ -846,14 +939,20 @@ fn draw_province_shallows(prov: &Province, cam: &Camera, coast: &Coast) {
 /// show through. Land/sea is the same per-row `Coast` inset the rectangular
 /// map used; the continent's vertical extent (`coast.y0`/`coast.h`) marks the
 /// north/south shore so inter-province band seams stay interior land.
-fn draw_province_terrain(prov: &Province, cam: &Camera, coast: &Coast, overlay: Overlay) {
+fn draw_province_terrain(
+    prov: &Province,
+    cam: &Camera,
+    coast: &Coast,
+    overlay: Overlay,
+    walls: Option<&WallData>,
+) {
     if province_offscreen(prov, cam) {
         return;
     }
     let (hw, hh) = cam.cell_px();
     // The land pair depends on the active overlay (health / pressure / replicas
-    // / namespace); computed once per province, not per cell.
-    let pair = overlay_pair(overlay, prov);
+    // / namespace / walls); computed once per province, not per cell.
+    let pair = overlay_pair(overlay, prov, walls);
     let x0 = prov.x as i32;
     let w = prov.w as f32;
     let y1 = (prov.y + prov.h) as i32;
@@ -1139,6 +1238,25 @@ fn draw_city_wall(c: Vec2, z: f32) {
     draw_triangle(s, lift(e), lift(s), WALL);
     let _ = n;
     stroke_diamond(vec2(c.x, c.y - band), hw, hh, 2.0 * z, TOWER_CAP);
+}
+
+/// A broken-wall **breach** notch on an unwalled city (the walls overlay): two
+/// crenellation merlons with the middle knocked out. Stone-dim when merely
+/// unwalled; attention-red when also exposed (the K07 finding). Sits at the
+/// city's lower-right, away from the pop chip / name. Render-only.
+fn draw_breach(cam: &Camera, city: &City, exposed: bool) {
+    let z = cam.zoom.max(0.5);
+    let c = cam.to_screen(city.x as f32 + 0.5, city.y as f32 + 0.5);
+    let s = (3.5 * z).clamp(2.0, 6.0);
+    // lower-right of the settlement diamond.
+    let bx = c.x + 9.0 * z;
+    let by = c.y + 7.0 * z;
+    let col = if exposed { CRIT } else { STONE_DARK };
+    let base = darker(col, 0.65);
+    // A short rampart base with two standing merlons + a gap (the breach).
+    draw_rectangle(bx, by + s, s * 3.0, s * 0.7, base);
+    draw_rectangle(bx, by, s, s, col); // left merlon
+    draw_rectangle(bx + s * 2.0, by, s, s, col); // right merlon — middle is the breach
 }
 
 /// The procedural settlement: a cluster of iso blocks that grows from a lone
@@ -1739,6 +1857,86 @@ pub fn draw_minimap(worlds: &[SceneWorld], cam: &Camera, ml: &MinimapLayout, ove
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kubernation_core::state::model::WorkloadKind;
+
+    fn mk_city(name: &str, ns: &str) -> City {
+        City {
+            r: WorkloadRef {
+                kind: WorkloadKind::Deployment,
+                namespace: ns.into(),
+                name: name.into(),
+            },
+            ready: 1,
+            desired: 1,
+            severity: None,
+            storage: None,
+            x: 0,
+            y: 0,
+        }
+    }
+    fn walled() -> Coverage {
+        Coverage {
+            ingress: true,
+            egress: false,
+        }
+    }
+    fn unwalled() -> Coverage {
+        Coverage::default()
+    }
+
+    #[test]
+    fn wall_mark_marks_only_the_gap() {
+        assert_eq!(
+            wall_mark(&walled(), true),
+            WallMark::Calm,
+            "walled = no mark"
+        );
+        assert_eq!(wall_mark(&unwalled(), false), WallMark::Breach);
+        assert_eq!(wall_mark(&unwalled(), true), WallMark::BreachExposed);
+    }
+
+    #[test]
+    fn coverage_pair_precedence() {
+        let cities = vec![mk_city("web", "demo"), mk_city("db", "demo")];
+        let mk = |cov: &[(&str, Coverage)], exp: &[&str]| {
+            let coverage: HashMap<WorkloadRef, Coverage> = cov
+                .iter()
+                .map(|(n, c)| (mk_city(n, "demo").r, *c))
+                .collect();
+            let exposed: HashSet<WorkloadRef> = exp.iter().map(|n| mk_city(n, "demo").r).collect();
+            let w = WallData {
+                coverage: &coverage,
+                exposed: &exposed,
+            };
+            coverage_pair(&cities, &w)
+        };
+        // exposed-unwalled (the finding) → amber, beats a plain unwalled.
+        assert_eq!(
+            mk(&[("web", unwalled()), ("db", walled())], &["web"]),
+            heat_pair(1)
+        );
+        // unwalled but none exposed → idle.
+        assert_eq!(
+            mk(&[("web", unwalled()), ("db", walled())], &[]),
+            idle_land_pair()
+        );
+        // all walled → calm "fortified" slate.
+        assert_eq!(
+            mk(&[("web", walled()), ("db", walled())], &["web"]),
+            walled_pair()
+        );
+        // no cities → idle.
+        assert_eq!(
+            coverage_pair(
+                &[],
+                &WallData {
+                    coverage: &HashMap::new(),
+                    exposed: &HashSet::new()
+                }
+            ),
+            idle_land_pair()
+        );
+    }
 
     // The load-bearing iso invariant: a click on a tile must resolve back to
     // that exact tile. With "integer = north vertex / center = +0.5", the

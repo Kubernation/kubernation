@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::core::v1::{Event, Node, PersistentVolumeClaim, Pod, Service};
-use k8s_openapi::api::networking::v1::Ingress;
+use k8s_openapi::api::networking::v1::{Ingress, NetworkPolicy};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::runtime::reflector::Store;
 
@@ -30,6 +30,9 @@ pub struct ObservedWorld {
     /// Ingresses — the cluster's external gates, projected beside the
     /// Service harbors they route to.
     pub ingresses: Store<Ingress>,
+    /// NetworkPolicies — the segmentation "walls" (read-only coverage analysis;
+    /// `state/netpol.rs`). Empty when none observed / RBAC-denied → "unwalled".
+    pub networkpolicies: Store<NetworkPolicy>,
     /// Bounded ring of recent events (all types; Warning drives attention).
     pub events: Arc<Mutex<VecDeque<RecentEvent>>>,
     /// Dynamic custom-resource projections (configured via `projections` /

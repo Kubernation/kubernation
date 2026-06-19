@@ -184,8 +184,9 @@ struct Args {
     #[arg(long, value_name = "PCT")]
     slo_target: Option<String>,
     /// Start with a map overlay active: "terrain" (default), "pressure"
-    /// (cpu/mem heat), "replicas" (workload health) or "namespace" (territory).
-    /// Set from the View menu at runtime; flag is for shots.
+    /// (cpu/mem heat), "replicas" (workload health), "namespace" (territory)
+    /// or "walls" (NetworkPolicy segmentation). Set from the View menu at
+    /// runtime; flag is for shots.
     #[arg(long, value_name = "MODE")]
     overlay: Option<String>,
     /// Open a chrome menu on sync — game / view / orders / advisors / world /
@@ -467,6 +468,7 @@ async fn main() {
         Some("pressure") => Overlay::Pressure,
         Some("replicas") => Overlay::Replicas,
         Some("namespace") => Overlay::Namespace,
+        Some("walls") => Overlay::Coverage,
         _ => Overlay::Terrain,
     };
     // Menu "Fit view" can't reach `bounds` from the chrome draw, so it defers
@@ -1687,7 +1689,26 @@ async fn main() {
                 for sw in &worlds {
                     let wc = cam.shifted(sw.off);
                     let banner = paired.then_some((sw.label.as_str(), sw.id));
-                    draw_world(sw.world, &wc, banner, s.pair.as_deref(), overlay);
+                    // Per-world NetworkPolicy coverage for the walls overlay.
+                    let wmodels = match sw.id {
+                        ClusterId::Hot => &s.hot.models,
+                        ClusterId::Warm => match &s.warm {
+                            Some(w) => &w.models,
+                            None => &s.hot.models,
+                        },
+                    };
+                    let walls = draw::WallData {
+                        coverage: &wmodels.coverage,
+                        exposed: &wmodels.exposed,
+                    };
+                    draw_world(
+                        sw.world,
+                        &wc,
+                        banner,
+                        s.pair.as_deref(),
+                        overlay,
+                        Some(&walls),
+                    );
                 }
                 if let Some(sel) = selected {
                     draw_selection(&cam, sel);

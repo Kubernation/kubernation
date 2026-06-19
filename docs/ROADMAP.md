@@ -29,7 +29,7 @@ identity; interesting logic lives in pure, unit-tested core.
 | 7 | **Security / hardening scan** (OWASP K01 + PodSecurity + sanitizer) | Live deployed-state lint into the queue + an advisor tab. | M | ✅ shipped (v0.43.0) |
 | 8 | **Dependency / impact triage panel** | Promotes the blast-radius flash into a navigable incident list. | M | ✅ shipped (v0.44.0) |
 | 9 | **Change timeline** ("what changed 5 min ago?") | The central triage question; underpins postmortems + correlation. | L | ✅ shipped (v0.45.0) |
-| 10 | **NetworkPolicy coverage map** ("unwalled cities") | OWASP K07; the 4X walls metaphor is the most on-brand security feature. | M | todo |
+| 10 | **NetworkPolicy coverage map** ("unwalled cities") | OWASP K07; the 4X walls metaphor is the most on-brand security feature. | M | ✅ shipped (v0.46.0) |
 
 Ordering rationale: front-load pure, posture-safe, high-frequency incident value
 (1–5), then the first DevSecOps beachhead reusing existing SSAR + watched data

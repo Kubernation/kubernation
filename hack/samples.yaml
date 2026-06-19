@@ -228,3 +228,19 @@ metadata:
   namespace: kubernation-demo
 spec:
   power: 3
+---
+# A deny-by-default ingress NetworkPolicy walling `db` — so the walls overlay /
+# Advisors ▸ Network (WALLS) show one fortified city (db) while `web`, exposed by
+# its Service + Ingress but unwalled, reads as the OWASP-K07 "unwalled & exposed"
+# finding (a red breach + a queue concern). (#10 reads coverage; it never writes.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-deny-default-ingress
+  namespace: kubernation-demo
+spec:
+  podSelector:
+    matchLabels:
+      app: db
+  policyTypes:
+    - Ingress

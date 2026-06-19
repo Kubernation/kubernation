@@ -6,7 +6,7 @@ use futures::StreamExt;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::core::v1::{Event, Node, PersistentVolumeClaim, Pod, Service};
-use k8s_openapi::api::networking::v1::Ingress;
+use k8s_openapi::api::networking::v1::{Ingress, NetworkPolicy};
 use kube::api::Api;
 use kube::runtime::reflector::store::Writer;
 use kube::runtime::{WatchStreamExt, reflector, watcher};
@@ -157,6 +157,17 @@ pub fn spawn(
         WorldDelta::Services,
     ));
 
+    // NetworkPolicies — the segmentation "walls" (read-only coverage analysis).
+    // Its own dirty-bit: a policy edit shouldn't force a connectivity rebuild.
+    let (networkpolicies, w) = reflector::store::<NetworkPolicy>();
+    tasks.push(spawn_reflector(
+        Api::all(c.clone()),
+        w,
+        id,
+        sink.clone(),
+        WorldDelta::NetworkPolicies,
+    ));
+
     let events = Arc::new(Mutex::new(VecDeque::new()));
     tasks.push(spawn_events(
         Api::all(c.clone()),
@@ -204,6 +215,7 @@ pub fn spawn(
         pvcs,
         services,
         ingresses,
+        networkpolicies,
         events,
     };
     WorldHandle { world, tasks }

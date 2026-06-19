@@ -2,7 +2,7 @@
 //! Everything here is a function of `ObservedWorld` snapshots — no I/O, no
 //! mutation — which is what makes the interesting logic unit-testable.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
@@ -1562,6 +1562,13 @@ pub struct Models {
     pub workloads: Vec<WorkloadRow>,
     pub attention: Vec<Concern>,
     pub workload_severity: HashMap<WorkloadRef, Severity>,
+    /// Per-workload NetworkPolicy coverage ("walls"), cluster-wide — the map
+    /// overlay + city breach-mark read this. Built unfiltered (like the advisor)
+    /// so a city always carries its true wall state.
+    pub coverage: HashMap<WorkloadRef, crate::state::netpol::Coverage>,
+    /// Workloads fronted by a Service/Ingress (reachable) — drives the
+    /// "unwalled AND exposed" breach. Reuses `build_exposure`.
+    pub exposed: HashSet<WorkloadRef>,
     /// The explorable world projection of all of the above.
     pub world: WorldModel,
 }
@@ -1618,11 +1625,24 @@ impl Models {
             &storage,
             &batch,
         );
+        // NetworkPolicy "walls" coverage — cluster-wide (the map shows a city's
+        // true wall state regardless of the active namespace filter).
+        let netpol = crate::state::netpol::coverage_report(world);
+        let coverage: HashMap<WorkloadRef, crate::state::netpol::Coverage> =
+            netpol.rows.iter().map(|r| (r.r.clone(), r.cov)).collect();
+        let exposed: HashSet<WorkloadRef> = netpol
+            .rows
+            .iter()
+            .filter(|r| r.exposed)
+            .map(|r| r.r.clone())
+            .collect();
         Models {
             map,
             workloads,
             attention,
             workload_severity,
+            coverage,
+            exposed,
             world: world_model,
         }
     }

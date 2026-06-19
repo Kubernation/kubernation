@@ -24,6 +24,7 @@ use kubernation_core::state::charter::{self, Charter};
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::harden;
 use kubernation_core::state::model::{Models, WorkloadRef, WorkloadRow, build_workloads};
+use kubernation_core::state::netpol;
 use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::planned::Intervention;
@@ -1597,7 +1598,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // advisor-only — their CNI/kube-proxy posture isn't the operator's
                 // to fix and would permanently squat the queue. ("city in trouble,
                 // not 40 alarms", without hiding the real Criticals.)
-                let flagged_crit: HashSet<(ClusterId, WorkloadRef)> = merged
+                let mut flagged_crit: HashSet<(ClusterId, WorkloadRef)> = merged
                     .iter()
                     .filter(|c| c.severity == Severity::Critical)
                     .filter_map(|c| match &c.target {
@@ -1611,6 +1612,9 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         && !flagged_crit.contains(&(ClusterId::Hot, wf.r.clone()))
                         && let Some(hc) = harden::workload_concern(wf)
                     {
+                        // A hardening Critical now covers this workload — record it
+                        // so the netpol Warning below is suppressed for it too.
+                        flagged_crit.insert((ClusterId::Hot, wf.r.clone()));
                         merged.push(Concern {
                             severity: Severity::Critical,
                             title: hc.title,
@@ -1618,6 +1622,29 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             target: Target::Workload(wf.r.clone()),
                             probe: None,
                             key: hc.key,
+                            cluster: ClusterId::Hot,
+                        });
+                    }
+                }
+
+                // NetworkPolicy "walls" (OWASP K07): an unwalled-AND-exposed
+                // workload (no ingress policy + Service/Ingress-fronted) is a
+                // lateral-movement target → one aggregated Warning per workload.
+                // Same gates as hardening: namespace filter, system namespaces
+                // stay advisor-only, and an existing Critical wins.
+                for row in &netpol::coverage_report(&hot_handle.world).unwalled_exposed {
+                    if filter.matches(&row.r.namespace)
+                        && !chaos::ns_protected(&row.r.namespace)
+                        && !flagged_crit.contains(&(ClusterId::Hot, row.r.clone()))
+                        && let Some(nc) = netpol::workload_concern(row)
+                    {
+                        merged.push(Concern {
+                            severity: Severity::Warning,
+                            title: nc.title,
+                            detail: nc.detail,
+                            target: Target::Workload(row.r.clone()),
+                            probe: None,
+                            key: nc.key,
                             cluster: ClusterId::Hot,
                         });
                     }

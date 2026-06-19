@@ -150,6 +150,16 @@ pub fn idle_land_pair() -> (Color, Color) {
     )
 }
 
+/// A calm slate-stone land pair meaning "walled / fortified" — the **Coverage**
+/// (walls) overlay paints fully-isolated provinces with it (terrain-family, not
+/// a trouble colour: the *gap*, not the wall, is what we flag).
+pub fn walled_pair() -> (Color, Color) {
+    (
+        Color::new(0.40, 0.47, 0.45, 1.0),
+        Color::new(0.45, 0.52, 0.50, 1.0),
+    )
+}
+
 /// A stable two-shade land pair for a namespace — the **Namespace** "political"
 /// overlay (each namespace a deterministic hue, muted to terrain saturation).
 pub fn namespace_pair(ns: &str) -> (Color, Color) {

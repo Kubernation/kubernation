@@ -33,6 +33,7 @@ STATES=(
   "menu|--menu view"
   "overlay-pressure|--overlay pressure"
   "overlay-namespace|--overlay namespace"
+  "overlay-walls|--overlay walls"
   "concern-logs|--concern-logs"
   "namespace-scope|--namespace kubernation-demo"
   "forward|--forward web"

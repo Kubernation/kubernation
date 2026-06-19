@@ -11,6 +11,7 @@ use kubernation_core::state::advisor::{
     network_report, rightsizing_report, storage_report,
 };
 use kubernation_core::state::harden::{self, HardeningReport, WorkloadFindings};
+use kubernation_core::state::netpol::{self, NetpolReport};
 use kubernation_core::util::human_bytes;
 use macroquad::prelude::*;
 
@@ -107,7 +108,9 @@ impl Advisor {
             match self.tab {
                 AdvisorTab::Health => page_health(&mut cx, &health_report(obs)),
                 AdvisorTab::Storage => page_storage(&mut cx, &storage_report(obs)),
-                AdvisorTab::Network => page_network(&mut cx, &network_report(obs)),
+                AdvisorTab::Network => {
+                    page_network(&mut cx, &network_report(obs), &netpol::coverage_report(obs))
+                }
                 AdvisorTab::RightSizing => page_rightsizing(&mut cx, &rightsizing_report(obs)),
                 AdvisorTab::Hardening => page_hardening(&mut cx, &harden::hardening_report(obs)),
             }
@@ -647,7 +650,90 @@ fn page_storage(cx: &mut Ctx, r: &StorageReport) {
     }
 }
 
-fn page_network(cx: &mut Ctx, r: &NetworkReport) {
+/// PURE: the WALLS (segmentation) lines for the Network tab as (text, role).
+/// OWASP K07 — an "unwalled & exposed" city is the headline finding. Unit-tested.
+pub fn walls_lines(r: &NetpolReport) -> Vec<(String, RsRole)> {
+    let mut out: Vec<(String, RsRole)> = Vec::new();
+    // Axes kept separate (the #7 lesson — never a single misleading fraction).
+    out.push((
+        format!(
+            "{}/{} cities walled · {} unwalled & exposed · {} policies",
+            r.walled_ingress,
+            r.workloads,
+            r.unwalled_exposed.len(),
+            r.policies
+        ),
+        RsRole::Headline,
+    ));
+
+    out.push((
+        "OPEN TO LATERAL MOVEMENT (unwalled & reachable)".into(),
+        RsRole::Heading,
+    ));
+    if r.unwalled_exposed.is_empty() {
+        // Never a green all-clear on an empty / unevaluated cluster.
+        if r.workloads == 0 {
+            out.push(("no workloads to evaluate".into(), RsRole::Dim));
+        } else {
+            out.push(("no exposed city is unwalled".into(), RsRole::Good));
+        }
+    } else {
+        for row in r.unwalled_exposed.iter().take(RS_CAP) {
+            out.push((
+                format!(
+                    "{} {}/{} — no ingress NetworkPolicy",
+                    row.r.kind, row.r.namespace, row.r.name
+                ),
+                RsRole::Crit,
+            ));
+        }
+        if r.unwalled_exposed.len() > RS_CAP {
+            out.push((
+                format!("+{} more", r.unwalled_exposed.len() - RS_CAP),
+                RsRole::Dim,
+            ));
+        }
+    }
+
+    out.push((
+        format!("UNWALLED, NOT REACHABLE: {}", r.unwalled_unexposed),
+        RsRole::Heading,
+    ));
+    if r.unwalled_unexposed > 0 {
+        out.push((
+            "no inbound wall, but not Service/Ingress-fronted (lower risk)".into(),
+            RsRole::Warn,
+        ));
+    }
+
+    if !r.open_namespaces.is_empty() {
+        out.push((
+            "WIDE-OPEN NAMESPACES (no policies at all)".into(),
+            RsRole::Heading,
+        ));
+        for ns in r.open_namespaces.iter().take(RS_CAP) {
+            out.push((
+                format!(
+                    "{} — {} workload(s), 0 policies",
+                    ns.namespace, ns.workloads
+                ),
+                RsRole::Warn,
+            ));
+        }
+    }
+
+    out.push((
+        format!("egress-isolated cities: {}", r.egress_isolated),
+        RsRole::Dim,
+    ));
+    out.push((
+        "coverage = an isolating policy EXISTS (matched on pod-template labels) — enforcement not verified (CNI); namespaceSelector / ipBlock / port rules not analyzed.".into(),
+        RsRole::Dim,
+    ));
+    out
+}
+
+fn page_network(cx: &mut Ctx, r: &NetworkReport, walls: &NetpolReport) {
     cx.heading("CONNECTIVITY");
     cx.stat("services (harbors)", &r.services.to_string(), INK);
     cx.stat("ingresses (gates)", &r.ingresses.to_string(), INK);
@@ -669,13 +755,100 @@ fn page_network(cx: &mut Ctx, r: &NetworkReport) {
             cx.stat(&format!("{}/{}", s.namespace, s.name), &s.detail, STRUCT);
         }
     }
+
+    // WALLS — NetworkPolicy segmentation coverage (OWASP K07).
+    cx.heading("WALLS (segmentation)");
+    for (line, role) in walls_lines(walls) {
+        let (color, bold) = match role {
+            RsRole::Headline | RsRole::Heading => (PARCHMENT, role == RsRole::Headline),
+            RsRole::Good => (GOOD, false),
+            RsRole::Warn => (WARN, false),
+            RsRole::Crit => (CRIT, false),
+            RsRole::Dim => (DIM, false),
+        };
+        let size = if bold { 15.0 } else { 13.0 };
+        let avail = cx.body.w - if bold { 10.0 } else { 22.0 };
+        let shown = crate::panels::fit_width(&ascii(&line), size, avail);
+        cx.row(&shown, color, bold);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use kubernation_core::state::advisor::{RsQos, RsResource};
-    use kubernation_core::state::model::WorkloadKind;
+    use kubernation_core::state::model::{WorkloadKind, WorkloadRef};
+    use kubernation_core::state::netpol::{Coverage, NsRollup, WallRow};
+
+    #[test]
+    fn walls_lines_headline_axes_and_finding_first() {
+        let wr = |n: &str| WorkloadRef {
+            kind: WorkloadKind::Deployment,
+            namespace: "demo".into(),
+            name: n.into(),
+        };
+        let report = NetpolReport {
+            policies: 1,
+            workloads: 3,
+            walled_ingress: 1,
+            egress_isolated: 0,
+            rows: vec![],
+            unwalled_exposed: vec![WallRow {
+                r: wr("web"),
+                cov: Coverage::default(),
+                exposed: true,
+                policies: vec![],
+            }],
+            unwalled_unexposed: 1,
+            open_namespaces: vec![NsRollup {
+                namespace: "wild".into(),
+                policies: 0,
+                workloads: 2,
+                walled: 0,
+                wide_open: true,
+            }],
+        };
+        let lines = walls_lines(&report);
+        // Headline separates the axes (no single misleading fraction).
+        assert!(lines[0].1 == RsRole::Headline);
+        assert!(
+            lines[0].0.contains("1/3 cities walled") && lines[0].0.contains("1 unwalled & exposed")
+        );
+        // The K07 finding (unwalled & exposed) is listed CRIT.
+        assert!(
+            lines
+                .iter()
+                .any(|(s, r)| s.contains("demo/web") && *r == RsRole::Crit)
+        );
+        // Wide-open namespace surfaced.
+        assert!(
+            lines
+                .iter()
+                .any(|(s, r)| s.contains("wild") && *r == RsRole::Warn)
+        );
+        // Honest enforcement caveat present.
+        assert!(
+            lines
+                .iter()
+                .any(|(s, _)| s.contains("enforcement not verified"))
+        );
+    }
+
+    #[test]
+    fn walls_lines_all_walled_is_good() {
+        let report = NetpolReport {
+            policies: 2,
+            workloads: 2,
+            walled_ingress: 2,
+            ..Default::default()
+        };
+        let lines = walls_lines(&report);
+        assert!(
+            lines
+                .iter()
+                .any(|(s, r)| s.contains("no exposed city is unwalled") && *r == RsRole::Good)
+        );
+    }
 
     fn over_row(name: &str) -> RsRow {
         RsRow {

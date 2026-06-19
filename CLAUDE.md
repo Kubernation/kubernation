@@ -1566,6 +1566,62 @@ what makes the interesting logic unit-testable without a cluster.
   `format_age_opt_at`. (LOW) `CityModel.events` was dead after the city dropped
   CHRONICLE — removed it (and its per-render ring scan). New regression tests pin
   each. 186 core + 32 GUI tests; gui-smoke 29.
+- **NetworkPolicy coverage map — "unwalled cities" (#10)** (2026-06-19, roadmap
+  item #10, the last of the Top-10; design-workflow vetted — 4 lenses → 3 judges →
+  synthesis): OWASP K07 (Missing Network Segmentation) as the 4X "walls" feature.
+  A workload with no NetworkPolicy isolating its **ingress** is an **unwalled
+  city**, open to lateral movement. **READ-ONLY** — NetworkPolicy becomes the
+  **13th watched reflector** (`k8s/watch.rs`, its own `WorldDelta::NetworkPolicies`
+  bit, `ObservedWorld.networkpolicies`), but the feature only *reads* coverage;
+  it adds **no write verb** (the chaos `apply_partition` write is separate +
+  unchanged). **Pure core** `state/netpol.rs` (`coverage_report(world) ->
+  NetpolReport`, unit-tested): a workload is "walled (ingress)" iff ≥1
+  NetworkPolicy in its namespace `selector_matches` its pod-template labels and
+  the policy's `effective_policy_types` include Ingress. **k8s semantics, exact:**
+  empty/None podSelector selects all-in-namespace; `match_labels` exact AND
+  `match_expressions` (In/NotIn/Exists/DoesNotExist, In-on-absent-key=no,
+  NotIn-on-absent-key=yes); an unknown operator **fails CLOSED** (→ unwalled —
+  never a false "walled" that hides a gap); policyTypes verbatim when present,
+  else `[Ingress]` + Egress iff egress rules exist; per-namespace scoped; coverage
+  = isolation **presence**, not allow-rules. The **headline finding** = unwalled
+  **AND exposed** (`build_exposure`-fronted, reachable). `Models` gains `coverage`
+  + `exposed` (cluster-wide/unfiltered, mirroring `workload_severity`); the map
+  overlay, the breach mark, the advisor, and the queue all read coverage from the
+  one `coverage_report`/`Coverage` so they can't disagree. **Walls surface**
+  (`draw.rs`): an `Overlay::Coverage` ("walls") recolours each province
+  (exposed-unwalled → amber `heat_pair(1)`, any unwalled → idle, all walled →
+  calm slate `walled_pair()`), plus a per-city **breach notch** (`wall_mark` /
+  `draw_breach`, drawn only under the Coverage overlay at Regional/Local — walled
+  cities draw **nothing**: the *gap* is the finding, and a wall ring would collide
+  with the existing population keep-wall). The **Network advisor** gains a WALLS
+  section (pure `advisor::walls_lines` — axes separated, finding-first, honesty
+  footer). One **Warning** concern per unwalled-&-exposed workload (net.rs, mirrors
+  the harden #7 loop: namespace-filter-respecting, protected-ns + already-Critical
+  suppressed; `netpol::workload_concern` keeps core attention-enum-free); a
+  `next_action` "netpol" arm. **Honest limits** (stated in the advisor footer):
+  matchExpressions handled, but namespaceSelector / ipBlock / port-level rules are
+  not analyzed, CNI **enforcement** is not verified, and Cilium/Calico CRD
+  policies are not read — the RBAC-denied/empty-store path reads "unwalled"
+  (fail-safe). View-menu "Walls (segmentation)" radio + `--overlay walls` +
+  gui-smoke `overlay-walls`; `hack/samples.yaml` walls `db` for the dev story.
+  Verified live on kind: the Network advisor reads "1/9 cities walled · 3 unwalled
+  & exposed · 1 policies", web/coredns/metrics-server listed as the K07 finding,
+  `db` fortified, kube-system/local-path-storage flagged wide-open; the walls
+  overlay tints web's province amber. 198 core + 36 GUI tests; gui-smoke 30.
+  **Deferred** (shaped as grafts on `Coverage`/`NetpolReport`): CNI-enforcement
+  probe; namespaceSelector/ipBlock/port allow-graph; egress-destination overlay
+  (`Coverage.egress` is already stored); Cilium/Calico CRD policies; a
+  segmentation/posture score; warm-cluster walls. **Adversarial-review fixes** (6
+  confirmed, all LOW → 4 distinct): `selector_matches` now fails **closed** on a
+  malformed empty-`values` `In`/`NotIn` (a `NotIn []` would otherwise match every
+  pod → a false "walled"; apiserver-unreachable but the pure fn now can't be
+  tricked); the netpol Warning is suppressed under a **hardening-sourced** Critical
+  in the same pass (`flagged_crit` is now mutable + updated as the harden loop
+  pushes — it was a pre-harden snapshot); the advisor's "no exposed city is
+  unwalled" green all-clear is gated on `workloads > 0` (no false green on an empty
+  cluster); and the honest-limits doc + advisor footer now state that matching is
+  on **pod-template** labels (a policy keyed on a pod-only label reads unwalled).
+  **This completes the Top-10 incident-value roadmap (#1–#10).**
 
 ## The pair (hot/warm)
 
@@ -1614,6 +1670,7 @@ went with the TUI — CLI flag only now):
 | `⊞`   | PVC granary (inland/west of the city; cyan bound, yellow pending) |
 | `◈`   | Job expedition (namespace island; yellow when failed) |
 | `◷`   | CronJob (namespace island; detail = schedule) |
+| breach notch | unwalled city (no ingress NetworkPolicy); red when also exposed — the Walls overlay only; walled cities draw nothing |
 
 Health precedence on a tile: NotReady > Cordoned > Pressure > Healthy.
 Zone headers carry a `▪N` rollup (colored by the zone's worst node) when

@@ -132,6 +132,11 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                     MenuAction::SetOverlay(Overlay::Namespace),
                 )
                 .check(ctx.overlay == Overlay::Namespace),
+                Item::act(
+                    "Walls (segmentation)",
+                    MenuAction::SetOverlay(Overlay::Coverage),
+                )
+                .check(ctx.overlay == Overlay::Coverage),
                 Item::sep(),
                 Item::act("Annals (what changed) — H", MenuAction::Annals),
             ],

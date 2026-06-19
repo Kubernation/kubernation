@@ -19,10 +19,13 @@ use k8s_openapi::api::core::v1::{
 };
 use k8s_openapi::api::networking::v1::{
     HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressBackend, IngressRule,
-    IngressServiceBackend, IngressSpec, ServiceBackendPort,
+    IngressServiceBackend, IngressSpec, NetworkPolicy, NetworkPolicyEgressRule, NetworkPolicySpec,
+    ServiceBackendPort,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{
+    LabelSelector, LabelSelectorRequirement, ObjectMeta, OwnerReference,
+};
 use kube::runtime::reflector::store::Writer;
 use kube::runtime::{reflector, watcher};
 
@@ -43,6 +46,7 @@ pub struct Seeds {
     pub pvcs: Writer<PersistentVolumeClaim>,
     pub services: Writer<Service>,
     pub ingresses: Writer<Ingress>,
+    pub networkpolicies: Writer<NetworkPolicy>,
 }
 
 macro_rules! seed_fn {
@@ -63,6 +67,7 @@ impl Seeds {
     seed_fn!(pvc, pvcs, PersistentVolumeClaim);
     seed_fn!(service, services, Service);
     seed_fn!(ingress, ingresses, Ingress);
+    seed_fn!(networkpolicy, networkpolicies, NetworkPolicy);
     seed_fn!(job, jobs, Job);
     seed_fn!(cronjob, cronjobs, CronJob);
 }
@@ -79,6 +84,7 @@ pub fn world() -> (ObservedWorld, Seeds) {
     let (pvcs, pvcs_w) = reflector::store();
     let (services, services_w) = reflector::store();
     let (ingresses, ingresses_w) = reflector::store();
+    let (networkpolicies, networkpolicies_w) = reflector::store();
     let world = ObservedWorld {
         meta: ClusterMeta {
             context: "test".into(),
@@ -97,6 +103,7 @@ pub fn world() -> (ObservedWorld, Seeds) {
         pvcs,
         services,
         ingresses,
+        networkpolicies,
         events: Arc::new(Mutex::new(VecDeque::new())),
         customs: Arc::new(Vec::new()),
         metrics: crate::k8s::metrics::store(),
@@ -113,6 +120,7 @@ pub fn world() -> (ObservedWorld, Seeds) {
         pvcs: pvcs_w,
         services: services_w,
         ingresses: ingresses_w,
+        networkpolicies: networkpolicies_w,
     };
     (world, seeds)
 }
@@ -578,5 +586,94 @@ pub fn ingress(ns: &str, name: &str, host: &str, service: &str) -> Ingress {
             ..Default::default()
         }),
         ..Default::default()
+    }
+}
+
+fn np(ns: &str, name: &str, selector: LabelSelector, policy_types: &[&str]) -> NetworkPolicy {
+    NetworkPolicy {
+        metadata: meta(Some(ns), name),
+        spec: Some(NetworkPolicySpec {
+            pod_selector: Some(selector),
+            policy_types: Some(policy_types.iter().map(|s| s.to_string()).collect()),
+            ..Default::default()
+        }),
+    }
+}
+
+/// A NetworkPolicy selecting pods by `match_labels`, with explicit `policy_types`.
+pub fn networkpolicy(
+    ns: &str,
+    name: &str,
+    match_labels: &[(&str, &str)],
+    policy_types: &[&str],
+) -> NetworkPolicy {
+    let labels: BTreeMap<String, String> = match_labels
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    np(
+        ns,
+        name,
+        LabelSelector {
+            match_labels: Some(labels),
+            ..Default::default()
+        },
+        policy_types,
+    )
+}
+
+/// A NetworkPolicy with an EMPTY podSelector (`{}`) — selects every pod in the
+/// namespace (a namespace-wide default wall).
+pub fn networkpolicy_empty(ns: &str, name: &str, policy_types: &[&str]) -> NetworkPolicy {
+    np(ns, name, LabelSelector::default(), policy_types)
+}
+
+/// A NetworkPolicy selecting pods by a single matchExpression (`key op values`).
+pub fn networkpolicy_expr(
+    ns: &str,
+    name: &str,
+    key: &str,
+    op: &str,
+    values: &[&str],
+    policy_types: &[&str],
+) -> NetworkPolicy {
+    let vals: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+    np(
+        ns,
+        name,
+        LabelSelector {
+            match_expressions: Some(vec![LabelSelectorRequirement {
+                key: key.into(),
+                operator: op.into(),
+                values: if vals.is_empty() { None } else { Some(vals) },
+            }]),
+            ..Default::default()
+        },
+        policy_types,
+    )
+}
+
+/// A NetworkPolicy with `policyTypes` OMITTED but a non-empty egress rule list —
+/// the defaulting edge: effective types become `[Ingress, Egress]`.
+pub fn networkpolicy_egress_rules(
+    ns: &str,
+    name: &str,
+    match_labels: &[(&str, &str)],
+) -> NetworkPolicy {
+    let labels: BTreeMap<String, String> = match_labels
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    NetworkPolicy {
+        metadata: meta(Some(ns), name),
+        spec: Some(NetworkPolicySpec {
+            pod_selector: Some(LabelSelector {
+                match_labels: Some(labels),
+                ..Default::default()
+            }),
+            policy_types: None,
+            egress: Some(vec![NetworkPolicyEgressRule::default()]),
+            ..Default::default()
+        }),
     }
 }

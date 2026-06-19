@@ -30,6 +30,8 @@ pub enum WorldDelta {
     /// The connectivity layer: Services and Ingresses (one dirty-bit; both
     /// feed the harbor/gate projection).
     Services,
+    /// NetworkPolicies — the segmentation "walls" coverage map.
+    NetworkPolicies,
     Events,
     /// Projected custom-resource instances changed.
     Custom,

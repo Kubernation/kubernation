@@ -9,6 +9,7 @@ pub mod harden;
 pub mod inspect;
 pub mod logline;
 pub mod model;
+pub mod netpol;
 pub mod observed;
 pub mod pair;
 pub mod planned;
