@@ -69,7 +69,10 @@ security feature (10). Rollback (4) follows history (3) because it depends on it
 - Cost cartography — OpenCost-aware + pure pricing fallback (L)
 - GitOps drift — Argo/Flux read, extends the desired-vs-observed identity (L)
 - Full RBAC matrix + escalation paths — needs broad cluster-read RBAC (L)
-- Local-LLM "Explain" — opt-in, BYO-model, suggest-only (L)
+- Local-LLM "Explain" — opt-in, BYO-model, suggest-only (L) — 📋 planned: the
+  **Oracle of KuberNation** Wonder, full build plan + backlog in
+  [docs/oracle-plan.md](oracle-plan.md) (local-first iteration → remote
+  releasable → suggest-to-gate). Not yet built.
 
 ---
 
