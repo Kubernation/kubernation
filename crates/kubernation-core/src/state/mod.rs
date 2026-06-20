@@ -12,6 +12,7 @@ pub mod model;
 pub mod netpol;
 pub mod observed;
 pub mod oracle;
+pub mod oracle_suggest;
 pub mod pair;
 pub mod planned;
 pub mod postmortem;

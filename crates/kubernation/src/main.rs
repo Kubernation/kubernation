@@ -237,6 +237,10 @@ struct Args {
     /// consent path — remote egress is otherwise off by default).
     #[arg(long)]
     oracle_arm: bool,
+    /// With --oracle, synthesize a deterministic validated suggestion (dev
+    /// verification of the suggest→stage UI — no model required).
+    #[arg(long)]
+    oracle_suggest: bool,
     /// With --inspect, also open the object inspector (YAML) on the inspected
     /// city/node (development verification of the inspector)
     #[arg(long)]
@@ -1352,6 +1356,9 @@ async fn main() {
                     }
                     if args.oracle_go {
                         v.auto_consult();
+                    }
+                    if args.oracle_suggest {
+                        v.demo_suggest();
                     }
                     oracle_view = Some(v);
                     oracle_just_opened = true;
@@ -2496,8 +2503,19 @@ async fn main() {
             let action = oracle_view
                 .as_mut()
                 .map(|o| o.draw(snap.as_deref(), &net, mouse, click));
-            if let Some(OracleAction::Close) = action {
-                oracle_view = None;
+            match action {
+                Some(OracleAction::Close) => oracle_view = None,
+                Some(OracleAction::Stage(iv)) => {
+                    // The model proposed it; it passed validation; the operator
+                    // clicked Stage. It enters the planning turn like any staged
+                    // change — committed only through the existing dry-run/RBAC gate.
+                    planned.stage(iv);
+                    toast = Some((
+                        "Oracle suggestion staged — review + commit in Orders ▸ End of Turn".into(),
+                        get_time() + 5.0,
+                    ));
+                }
+                _ => {}
             }
         }
 

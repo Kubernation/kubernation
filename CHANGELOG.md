@@ -9,6 +9,16 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **The Oracle — suggest-to-gate (the model can PROPOSE a fix).** When you
+  consult the Oracle it may now propose a concrete change — scale, restart,
+  set-image, rollback, or cordon. Each proposal is validated against the live
+  cluster (a hallucinated workload, a protected namespace, a DaemonSet "scale",
+  an out-of-range value, or a missing container/revision is **rejected**, with
+  the reason shown) and the valid ones get a **Stage** button. Staging drops the
+  change into the planning turn — you still review it and **Commit** through the
+  existing confirmed, RBAC-checked, server-side-dry-run gate. The model never
+  touches the cluster: it proposes; you (and the gate) dispose. This completes
+  the Oracle Wonder.
 - **The Oracle — remote endpoints (opt-in, gated).** The Oracle can now consult a
   remote OpenAI-compatible model (OpenRouter, vLLM, an Anthropic shim, …), but
   because that *publishes* data off the laptop it is **off by default behind an

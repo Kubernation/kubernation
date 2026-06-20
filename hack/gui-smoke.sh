@@ -26,6 +26,7 @@ STATES=(
   "postmortem|--postmortem"
   "oracle|--oracle realm"
   "oracle-preview|--oracle realm --oracle-ask"
+  "oracle-suggest|--oracle workload --oracle-suggest"
   "oracle-remote|--oracle realm --llm-url https://api.example.com/v1"
   "oracle-remote-armed|--oracle realm --oracle-ask --oracle-arm --llm-url https://api.example.com/v1"
   "browse-pick|--browse"

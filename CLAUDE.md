@@ -1876,6 +1876,42 @@ what makes the interesting logic unit-testable without a cluster.
   `<<<KN-UNTRUSTED…>>>` cluster data + the question). Next: P3 (suggest-to-gate —
   the model PROPOSES a validated Intervention staged through the dry-run/commit
   gate).
+- **Oracle — P3 (suggest-to-gate, the marquee — COMPLETES the Wonder)** (2026-06-20,
+  v0.52.0): the model may PROPOSE a change; it is validated against the live store
+  and offered as a **Stage** button; staging enters the planning turn and is
+  committed ONLY through the existing dry-run → RBAC → `commit_interventions` gate.
+  **The model never executes — it proposes; the operator + the gate dispose.**
+  **Pure core `state/oracle_suggest.rs`** (kept SEPARATE so the boundary is
+  visible + independently testable): `SuggestionJson` is a flat, stringly mirror
+  of an intervention — **model output NEVER deserializes into `Intervention`**;
+  serde only builds `SuggestionJson`, and the lone `validate(&SuggestionJson,
+  &ObservedWorld) -> Result<Intervention, RejectReason>` produces a real
+  intervention ONLY after re-resolving every target against the live store:
+  parse_kind, non-empty ns/name, reject `chaos::ns_protected` ns, reject if the
+  workload object isn't in the store (`workload_exists` — existence is the OBJECT,
+  not a resolvable template, since scale/restart/cordon/rollback don't need the
+  template), DaemonSet scale → `NotScalable`, replicas 0..=1000, set-image
+  container must exist in `spec.containers`, rollback Deployment-only + the
+  revision must exist (`rollout::revisions`), cordon node must exist + not
+  `chaos::node_protected`. `parse_suggestions` is tolerant (fenced ```json or
+  first-{..last-}; never panics) — the model returns prose + an optional block. A
+  `_verb_drift_guard` exhaustive match fails to compile if a 6th `Intervention`
+  verb is added (forcing a validator/schema update). **Prompt:** `render_prompt`
+  appends `SUGGEST_INSTRUCTION` (the compact schema; the single field-name source);
+  the consent-preview byte-identity holds (same `render_prompt`). **GUI:** a reply
+  is parsed + `validate_envelope`'d against the snapshot once when it lands →
+  `suggestions` (stage-able) + `rejects` (shown with reasons); each accepted one
+  gets a [Stage] button → `OracleAction::Stage(Intervention)` → `main` stages into
+  `PlannedWorld` (+ a toast) → the unchanged End-of-Turn commit gate. Dev flag
+  `--oracle-suggest` synthesizes a deterministic suggestion through the SAME
+  validator; gui-smoke `oracle-suggest`. **Deferred:** the in-diff "oracle —
+  verify" provenance tag (the plan's O-SUGGEST-PROVENANCE — `PlanChange.target` is
+  a built string, brittle to match; provenance is at the staging toast instead).
+  **Adversarial review: 0 confirmed** (never-execute path, validation
+  completeness, parse robustness all clean). 257 core (+6 oracle_suggest) + 46 GUI
+  tests; gui-smoke 38. Verified live: `--oracle-suggest` renders a restart
+  suggestion with a Stage button; a kube-system target is rejected with its
+  reason. **This completes the Oracle of KuberNation (P0–P3).**
 
 ## The pair (hot/warm)
 

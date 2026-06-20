@@ -1,10 +1,12 @@
 //! The Oracle of KuberNation — the BYO-LLM "Wonder" consult modal.
 //!
-//! **Explain-only** (no write path). A window over the pure `state::oracle`
-//! pipeline — pick a SCOPE (realm / a selected workload / node / a focused
-//! concern), see the EXACT redacted + fenced prompt that will be sent (the
-//! mandatory pre-send preview), Consult, and read the advisory reply. The model
-//! NEVER acts; replies are labelled model-generated.
+//! A window over the pure `state::oracle` pipeline — pick a SCOPE (realm / a
+//! selected workload / node / a focused concern), see the EXACT redacted + fenced
+//! prompt that will be sent (the mandatory pre-send preview), Consult, and read
+//! the advisory reply. The model may also PROPOSE an intervention, which is
+//! validated against the live store (`state::oracle_suggest`) and offered as a
+//! **Stage** button — the model NEVER acts; a staged suggestion enters the
+//! planning turn and is committed only through the existing dry-run/RBAC gate.
 //!
 //! Config is local-default (Ollama). A LOCAL endpoint keeps everything on the
 //! laptop. A REMOTE endpoint is publishing, so it is OFF by default behind an
@@ -15,6 +17,8 @@
 
 use kubernation_core::k8s::oracle_client::{Endpoint, LlmConfig};
 use kubernation_core::state::oracle::{self, Caps, Scope};
+use kubernation_core::state::oracle_suggest::{self, ValidatedSuggestion};
+use kubernation_core::state::planned::Intervention;
 use macroquad::prelude::*;
 
 use crate::net::{Net, OracleReply, Snapshot};
@@ -30,6 +34,9 @@ pub const DEFAULT_LLM_MODEL: &str = "llama3.1";
 pub enum OracleAction {
     None,
     Close,
+    /// Stage a model-proposed, validated intervention into the planning turn (the
+    /// operator then reviews + commits it through the existing dry-run/RBAC gate).
+    Stage(Intervention),
 }
 
 /// Theme role for a rendered line (no GL — mapped to a colour at draw time).
@@ -176,6 +183,16 @@ fn wrap(s: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// Truncate to `n` chars with an ellipsis (keeps a suggestion row clear of its
+/// Stage button).
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(n).collect::<String>())
+    }
+}
+
 /// A previewed payload, frozen at Preview time so a Consult sends EXACTLY the
 /// bytes the operator reviewed — the consent must not drift if the live snapshot
 /// refreshes between viewing and clicking (mandatory for a remote/publishing
@@ -199,10 +216,19 @@ pub struct OracleView {
     /// Hash of an in-flight consult (drives the "consulting…" state + button gate).
     pending: Option<u64>,
     reply: Option<String>,
+    /// Validated model-proposed interventions parsed from the reply (stage-able),
+    /// the model suggestions that failed validation (shown as rejected), and the
+    /// indices the operator has staged this session.
+    suggestions: Vec<ValidatedSuggestion>,
+    rejects: Vec<String>,
+    staged: std::collections::HashSet<usize>,
     /// A note shown after a remote consult writes its egress audit record.
     audit_note: Option<String>,
     /// Dev (`--oracle-go`): auto-fire the consult on the next draw.
     auto: bool,
+    /// Dev (`--oracle-suggest`): synthesize a deterministic validated suggestion
+    /// so the suggest→stage UI is screenshot/gui-smoke verifiable without a model.
+    demo_suggest: bool,
     scroll: f32,
     max_scroll: f32,
 }
@@ -220,8 +246,12 @@ impl OracleView {
             frozen: None,
             pending: None,
             reply: None,
+            suggestions: Vec::new(),
+            rejects: Vec::new(),
+            staged: std::collections::HashSet::new(),
             audit_note: None,
             auto: false,
+            demo_suggest: false,
             scroll: 0.0,
             max_scroll: 0.0,
         }
@@ -230,6 +260,12 @@ impl OracleView {
     /// Dev: auto-consult on the next draw (the `--oracle-go` headless round-trip).
     pub fn auto_consult(&mut self) {
         self.auto = true;
+    }
+
+    /// Dev: synthesize a deterministic validated suggestion (the `--oracle-suggest`
+    /// headless capture of the suggest→stage UI, no model required).
+    pub fn demo_suggest(&mut self) {
+        self.demo_suggest = true;
     }
 
     /// Dev: force the preview pane open (the `--oracle-ask` headless capture).
@@ -285,10 +321,28 @@ impl OracleView {
         if let Some(h) = self.pending
             && let Some(r) = net.oracle_reply(h)
         {
-            self.reply = Some(match &*r {
-                OracleReply::Ok(t) => t.clone(),
-                OracleReply::Err(e) => format!("could not consult the Oracle: {e}"),
-            });
+            self.suggestions.clear();
+            self.rejects.clear();
+            self.staged.clear();
+            match &*r {
+                OracleReply::Ok(t) => {
+                    self.reply = Some(t.clone());
+                    // Parse + VALIDATE any proposed suggestion against the LIVE
+                    // store (the model output never becomes an Intervention except
+                    // through this validator — hallucinations/protected targets are
+                    // rejected here, not staged).
+                    if let Some(s) = snap
+                        && let Some(env) = oracle_suggest::parse_suggestions(t)
+                    {
+                        let (ok, rej) = oracle_suggest::validate_envelope(&env, &s.hot.observed);
+                        self.suggestions = ok;
+                        self.rejects = rej;
+                    }
+                }
+                OracleReply::Err(e) => {
+                    self.reply = Some(format!("could not consult the Oracle: {e}"))
+                }
+            }
             self.pending = None;
             self.scroll = 0.0;
         }
@@ -378,7 +432,44 @@ impl OracleView {
             self.frozen = freeze(&built);
         }
 
+        // Dev (`--oracle-suggest`): synthesize a deterministic validated suggestion
+        // (a restart of the first workload) so the suggest→stage UI renders without
+        // a model. Goes through the SAME validator as a real model suggestion.
+        if self.demo_suggest && self.reply.is_none() {
+            self.demo_suggest = false;
+            if let Some(s) = snap
+                && let Some(wr) = s
+                    .hot
+                    .models
+                    .workloads
+                    .iter()
+                    .find(|w| !kubernation_core::state::chaos::ns_protected(&w.r.namespace))
+                    .map(|w| w.r.clone())
+            {
+                let env = oracle_suggest::SuggestionEnvelope {
+                    rationale: String::new(),
+                    suggestions: vec![oracle_suggest::SuggestionJson {
+                        verb: "restart".into(),
+                        kind: wr.kind.to_string(),
+                        namespace: wr.namespace.clone(),
+                        name: wr.name.clone(),
+                        rationale: Some("(demo) the pods look unhealthy".into()),
+                        ..Default::default()
+                    }],
+                };
+                let (ok, rej) = oracle_suggest::validate_envelope(&env, &s.hot.observed);
+                self.reply = Some(
+                    "(demo reply) Based on the observed data, here is a suggested change you can stage and review.".into(),
+                );
+                self.suggestions = ok;
+                self.rejects = rej;
+            }
+        }
+
         // --- body -----------------------------------------------------------
+        // Stage-button rects captured during the reply render (only for visible,
+        // not-yet-staged suggestions), hit-tested in the input section.
+        let mut stage_btns: Vec<(usize, Rect)> = Vec::new();
         let mut cx = Ctx {
             body: Rect::new(b.x, y, b.w, b.h - (y - b.y)),
             y: y - self.scroll,
@@ -457,6 +548,51 @@ impl OracleView {
             if let Some(note) = &self.audit_note {
                 cx.row(&ascii(note), DIM);
             }
+            // Validated suggestions — each stage-able into the planning turn (the
+            // operator reviews + commits through the existing dry-run/RBAC gate).
+            if !self.suggestions.is_empty() {
+                cx.gap();
+                cx.row(
+                    "Suggested changes — Stage to review in Orders ▸ End of Turn:",
+                    PARCHMENT,
+                );
+                for (i, s) in self.suggestions.iter().enumerate() {
+                    cx.y += 20.0;
+                    if cx.visible() {
+                        let staged = self.staged.contains(&i);
+                        let label = truncate(&s.summary, 72);
+                        text(ascii(&label), cx.body.x + 8.0, cx.y, 13.0, INK);
+                        let bw = 70.0;
+                        let br = Rect::new(cx.body.x + cx.body.w - bw - 6.0, cx.y - 13.0, bw, 18.0);
+                        let (lbl, col) = if staged {
+                            ("staged", DIM)
+                        } else {
+                            ("Stage", GOOD)
+                        };
+                        let bg = if !staged && br.contains(mouse) {
+                            lighter(PLATE, 1.7)
+                        } else {
+                            PLATE
+                        };
+                        draw_rectangle(br.x, br.y, br.w, br.h, bg);
+                        draw_rectangle_lines(br.x, br.y, br.w, br.h, 1.0, col);
+                        text(lbl, br.x + 14.0, br.y + 14.0, 13.0, col);
+                        if !staged {
+                            stage_btns.push((i, br));
+                        }
+                    }
+                }
+            }
+            if !self.rejects.is_empty() {
+                cx.gap();
+                cx.row(
+                    "Rejected (the model proposed these; not safe to stage):",
+                    DIM,
+                );
+                for r in &self.rejects {
+                    cx.row(&ascii(&format!("  x {r}")), DIM);
+                }
+            }
         } else {
             cx.row("Pick a scope, then:", PARCHMENT);
             cx.row(
@@ -497,14 +633,24 @@ impl OracleView {
 
         // --- input ----------------------------------------------------------
         if click {
+            // Stage a validated suggestion (its own buttons, below the reply).
+            for (i, br) in &stage_btns {
+                if br.contains(mouse) {
+                    self.staged.insert(*i);
+                    return OracleAction::Stage(self.suggestions[*i].intervention.clone());
+                }
+            }
             if self.scopes.len() > 1 && (prev.contains(mouse) || next.contains(mouse)) {
                 let n = self.scopes.len();
                 let delta = if prev.contains(mouse) { n - 1 } else { 1 };
                 self.scope_idx = (self.scope_idx + delta) % n;
-                // The frozen consent + preview belonged to the old scope.
+                // The frozen consent + preview + suggestions belonged to the old scope.
                 self.show_preview = false;
                 self.frozen = None;
                 self.reply = None;
+                self.suggestions.clear();
+                self.rejects.clear();
+                self.staged.clear();
                 self.audit_note = None;
                 self.scroll = 0.0;
                 return OracleAction::None;

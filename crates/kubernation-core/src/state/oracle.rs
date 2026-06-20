@@ -630,7 +630,14 @@ pub fn render_prompt(bundle: &ContextBundle, question: &str) -> Vec<ChatMessage>
     vec![
         ChatMessage {
             role: "system".to_string(),
-            content: SYSTEM_PROMPT.to_string(),
+            // The suggest-to-gate instruction (the optional fenced JSON block) is
+            // appended so a reply may carry a structured, validatable suggestion —
+            // the operator stages + commits it through the existing gate; the model
+            // still never acts.
+            content: format!(
+                "{SYSTEM_PROMPT}\n\n{}",
+                super::oracle_suggest::SUGGEST_INSTRUCTION
+            ),
         },
         ChatMessage {
             role: "user".to_string(),
