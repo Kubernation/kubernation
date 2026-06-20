@@ -540,6 +540,10 @@ fn page_controls(cx: &mut Ctx) {
     cx.para(
         "The 4th golden signal — how full a province is toward its hard limits: cpu/mem usage, scheduled pods vs the kubelet max-pods, and the kubelet Disk/PID/Mem-pressure conditions. Red = at/over a limit and refusing or evicting work; the province SELECTION names the binding dimension (e.g. 'pods 105/110', 'DiskPressure (pegged)'). Distinct from Pressure, which shows cpu/mem utilization only — Saturation also lights up a node at max-pods or under a kubelet condition while cpu/mem look calm (and needs no metrics-server for those axes).",
     );
+    cx.heading("Oracle (BYO-LLM)");
+    cx.para(
+        "The Oracle menu consults a bring-your-own language model to EXPLAIN a scope — the whole realm, a selected workload or node, or a focused concern. It is advisory only: the model is shown a redacted, fenced summary built from what Kubernation already observed (never raw cluster dumps, never Secret values), and it can NEVER change the cluster. Use Preview to see the exact text that will be sent before you Consult. Configure a local model with --llm-url (default: a local Ollama at localhost:11434) and --llm-model; an API token, if any, comes from the KUBERNATION_LLM_TOKEN env var only (never written to disk). Remote endpoints arrive in a later version; replies are model-generated — verify before acting.",
+    );
 }
 
 fn page_reading(cx: &mut Ctx) {

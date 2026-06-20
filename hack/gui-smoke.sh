@@ -24,6 +24,8 @@ STATES=(
   "charter|--charter"
   "annals|--annals"
   "postmortem|--postmortem"
+  "oracle|--oracle realm"
+  "oracle-preview|--oracle realm --oracle-ask"
   "browse-pick|--browse"
   "browse-table|--browse configmaps"
   "city|--inspect web"

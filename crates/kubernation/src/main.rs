@@ -25,6 +25,7 @@ mod logo;
 mod menu;
 mod net;
 mod node;
+mod oracle;
 mod panels;
 mod plan;
 mod sidebar;
@@ -52,11 +53,13 @@ use kubernation_core::state::blast::{Subject, blast_radius};
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::model::WorkloadRef;
 use kubernation_core::state::observed::ObservedWorld;
+use kubernation_core::state::oracle::Scope as OracleScope;
 use kubernation_core::state::slo;
 use kubernation_core::state::world::Region;
 use macroquad::prelude::*;
 use menu::{MenuAction, MenuCtx};
 use net::{EvictReq, ForwardReq, LogReq};
+use oracle::{OracleAction, OracleView};
 use panels::{
     Panel, draw_chaos_confirm, draw_commit_confirm, draw_evict_confirm, draw_logs, draw_tooltip,
 };
@@ -209,6 +212,27 @@ struct Args {
     /// (development verification of the export path)
     #[arg(long)]
     postmortem: bool,
+    /// The Oracle (BYO-LLM) OpenAI-compatible base URL. Default: a local Ollama
+    /// (`http://localhost:11434/v1`). Remote endpoints are not enabled in this
+    /// build. The API token is read from the `KUBERNATION_LLM_TOKEN` env var only.
+    #[arg(long, value_name = "URL")]
+    llm_url: Option<String>,
+    /// The Oracle model name (e.g. `llama3.1`, `qwen2.5`). Default: `llama3.1`.
+    #[arg(long, value_name = "MODEL")]
+    llm_model: Option<String>,
+    /// Open the Oracle on sync (dev verification). `--oracle` opens the consult
+    /// face (or setup if unconfigured); `--oracle <scope>` picks a scope
+    /// (realm/workload/node/concern).
+    #[arg(long, value_name = "SCOPE", num_args = 0..=1, default_missing_value = "realm")]
+    oracle: Option<String>,
+    /// With --oracle, stop at the pre-send context preview (don't consult) — for
+    /// headless capture of the preview/consent screen.
+    #[arg(long)]
+    oracle_ask: bool,
+    /// With --oracle, auto-consult on open (REALLY calls the configured local
+    /// model) — for a headless end-to-end round-trip check.
+    #[arg(long)]
+    oracle_go: bool,
     /// With --inspect, also open the object inspector (YAML) on the inspected
     /// city/node (development verification of the inspector)
     #[arg(long)]
@@ -297,6 +321,33 @@ fn build_chaos_run(
         auto_restore_secs,
         is_restore: false,
     }
+}
+
+/// The Oracle scopes available right now: the whole realm always, plus the
+/// focused concern and the selected city/province (hot world only — P1 is
+/// hot-only, like the advisors).
+fn oracle_scopes(
+    snap: Option<&net::Snapshot>,
+    selected: Option<(u16, u16)>,
+    concern_idx: usize,
+) -> Vec<OracleScope> {
+    let mut out = vec![OracleScope::Realm];
+    let Some(s) = snap else {
+        return out;
+    };
+    if let Some(c) = s.attention.get(concern_idx)
+        && c.cluster == ClusterId::Hot
+    {
+        out.push(OracleScope::Concern(c.clone()));
+    }
+    if let Some((x, y)) = selected {
+        match s.hot.models.world.region_at(x, y) {
+            Region::City(_, c) => out.push(OracleScope::Workload(c.r.clone())),
+            Region::Province(p) => out.push(OracleScope::Node(p.tile.name.clone())),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Parse the dev `--chaos-tier` flag value.
@@ -413,6 +464,12 @@ async fn main() {
     let inspect = args.inspect.clone();
     let want_warm = args.warm.is_some();
     let net = net::Net::new();
+    // The Oracle (BYO-LLM): resolve the launch config from flags + env. The
+    // token is read from the environment ONLY and never written to disk / logged.
+    net.set_oracle_config(oracle::resolve_config(
+        args.llm_url.as_deref(),
+        args.llm_model.as_deref(),
+    ));
     let slo_default = args
         .slo_target
         .as_deref()
@@ -503,6 +560,8 @@ async fn main() {
     let mut advisor: Option<Advisor> = None;
     // The Charter — self-scoped RBAC ("what can I do here?") — a modal window.
     let mut charter: Option<CharterView> = None;
+    // The Oracle — the BYO-LLM consult Wonder (local, explain-only) — a modal.
+    let mut oracle_view: Option<OracleView> = None;
     // The object inspector (read-only YAML dossier) — a modal window.
     let mut inspector: Option<Inspector> = None;
     // The resource browser (`:` — any kind) — a modal window.
@@ -691,6 +750,7 @@ async fn main() {
         let mut almanac_just_opened = false;
         let mut advisor_just_opened = false;
         let mut charter_just_opened = false;
+        let mut oracle_just_opened = false;
         let mut inspector_just_opened = false;
         let mut browser_just_opened = false;
         let mut annals_just_opened = false;
@@ -703,6 +763,7 @@ async fn main() {
             && !typing
             && advisor.is_none()
             && charter.is_none()
+            && oracle_view.is_none()
             && annals.is_none()
             && chaos.is_none()
             && browser.is_none()
@@ -721,6 +782,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && oracle_view.is_none()
             && annals.is_none()
             && chaos.is_none()
             && browser.is_none()
@@ -739,6 +801,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && oracle_view.is_none()
             && chaos.is_none()
             && browser.is_none()
             && inspector.is_none()
@@ -764,6 +827,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && oracle_view.is_none()
             && annals.is_none()
             && chaos.is_none()
             && !plan_open
@@ -805,6 +869,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && oracle_view.is_none()
             && annals.is_none()
             && chaos.is_none()
             && browser.is_none()
@@ -851,6 +916,8 @@ async fn main() {
                 advisor = None;
             } else if charter.is_some() {
                 charter = None;
+            } else if oracle_view.is_some() {
+                oracle_view = None;
             } else if annals.is_some() {
                 annals = None;
             } else if inspector.is_some() {
@@ -1087,6 +1154,13 @@ async fn main() {
                 c.scroll_by(wheel);
             }
         }
+        // The Oracle swallows the wheel to scroll the preview / reply.
+        if let Some(o) = oracle_view.as_mut() {
+            let (_, wheel) = mouse_wheel();
+            if wheel.abs() > 0.0 {
+                o.scroll_by(wheel);
+            }
+        }
         // The Annals swallows the wheel to scroll the feed.
         if let Some(a) = annals.as_mut() {
             let (_, wheel) = mouse_wheel();
@@ -1128,6 +1202,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && oracle_view.is_none()
             && annals.is_none()
             && chaos.is_none()
             && browser.is_none()
@@ -1262,6 +1337,18 @@ async fn main() {
                 if args.annals {
                     annals = Some(timeline::Annals::new());
                 }
+                if let Some(want) = &args.oracle {
+                    let mut v = OracleView::new(oracle_scopes(Some(s), selected, concern_idx));
+                    v.focus_kind(want);
+                    if args.oracle_ask {
+                        v.force_preview();
+                    }
+                    if args.oracle_go {
+                        v.auto_consult();
+                    }
+                    oracle_view = Some(v);
+                    oracle_just_opened = true;
+                }
                 if args.postmortem {
                     annals = Some(timeline::Annals::new());
                     let msg = export_postmortem(
@@ -1280,8 +1367,9 @@ async fn main() {
                         "orders" => Some(2),
                         "gameday" => Some(3),
                         "advisors" => Some(4),
-                        "world" => Some(5),
-                        "help" => Some(6),
+                        "oracle" => Some(5),
+                        "world" => Some(6),
+                        "help" => Some(7),
                         _ => None,
                     };
                 }
@@ -1350,6 +1438,7 @@ async fn main() {
                 || almanac.is_some()
                 || advisor.is_some()
                 || charter.is_some()
+                || oracle_view.is_some()
                 || chaos.is_some()
                 || pending_chaos.is_some()
                 || browser.is_some()
@@ -1621,6 +1710,7 @@ async fn main() {
                 && almanac.is_none()
                 && advisor.is_none()
                 && charter.is_none()
+                && oracle_view.is_none()
                 && annals.is_none()
                 && chaos.is_none()
                 && browser.is_none()
@@ -1665,6 +1755,7 @@ async fn main() {
                 && almanac.is_none()
                 && advisor.is_none()
                 && charter.is_none()
+                && oracle_view.is_none()
                 && annals.is_none()
                 && chaos.is_none()
                 && browser.is_none()
@@ -1836,6 +1927,7 @@ async fn main() {
                     && almanac.is_none()
                     && advisor.is_none()
                     && charter.is_none()
+                    && oracle_view.is_none()
                     && annals.is_none()
                     && chaos.is_none()
                     && browser.is_none()
@@ -1917,6 +2009,7 @@ async fn main() {
                     && almanac.is_none()
                     && advisor.is_none()
                     && charter.is_none()
+                    && oracle_view.is_none()
                     && annals.is_none()
                     && chaos.is_none()
                     && browser.is_none()
@@ -2160,6 +2253,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && oracle_view.is_none()
             && annals.is_none()
             && chaos.is_none()
             && browser.is_none()
@@ -2244,6 +2338,14 @@ async fn main() {
                     snap.as_deref(),
                 )));
                 charter_just_opened = true;
+            }
+            Some(MenuAction::OracleConsult) => {
+                oracle_view = Some(OracleView::new(oracle_scopes(
+                    snap.as_deref(),
+                    selected,
+                    concern_idx,
+                )));
+                oracle_just_opened = true;
             }
             Some(MenuAction::Almanac) => {
                 almanac = Some(Almanac::new());
@@ -2377,6 +2479,18 @@ async fn main() {
                 .map(|c| c.draw(snap.as_deref(), &net, mouse, click));
             if let Some(CharterAction::Close) = action {
                 charter = None;
+            }
+        }
+
+        // The Oracle (BYO-LLM consult), drawn on top (own clicks, not the opening
+        // one). Builds its bundle from the snapshot; the net thread does the call.
+        if oracle_view.is_some() {
+            let click = is_mouse_button_pressed(MouseButton::Left) && !oracle_just_opened;
+            let action = oracle_view
+                .as_mut()
+                .map(|o| o.draw(snap.as_deref(), &net, mouse, click));
+            if let Some(OracleAction::Close) = action {
+                oracle_view = None;
             }
         }
 
@@ -2793,6 +2907,8 @@ async fn main() {
             // Resolve the default port (a get + maybe a Service LIST) + bind +
             // appear in net.forwards() — a few net ticks (250ms each).
             180
+        } else if args.oracle_go {
+            5000 // a local model can take many seconds to answer a real consult
         } else if args.chaos_go {
             600 // run at frame 30 + watch recovery + the scorecard settle
         } else if args.plan_go || args.blast.is_some() || args.chaos.is_some() {

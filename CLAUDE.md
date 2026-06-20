@@ -1814,6 +1814,39 @@ what makes the interesting logic unit-testable without a cluster.
   oracle) + 41 GUI tests; lock unchanged at 250 crates; clippy clean with AND
   without the feature. **Next:** P1 (local explain-only GUI Wonder), then P2
   (remote releasable w/ egress consent), P3 (suggest-to-gate).
+- **Oracle — P1 (local, explain-only GUI Wonder)** (2026-06-19, v0.50.0 — the
+  first user-facing Oracle phase): the consult modal `gui/oracle.rs` (`OracleView`,
+  on `window.rs`, mirroring the `charter` modal + its net-slot pattern). Pick a
+  SCOPE (realm always; + the selected workload/node; + the focused concern,
+  captured at open — hot-only like the advisors), see the mandatory **Preview**
+  (the byte-identical `consent_preview`), **Consult** (builds the bundle from the
+  snapshot → renders the prompt → hashes → `net.request_oracle`), read the reply
+  with a "model-generated — verify before acting" disclaimer. **net.rs:** the
+  launch config (resolved once from `--llm-url`/`--llm-model` + the
+  `KUBERNATION_LLM_TOKEN` env var — never disk, never logged), a one-shot
+  `oracle_req` drained ONCE and **spawned** (a ~60s consult must not block the
+  world loop), an `oracle_out` cache keyed by `bundle_hash`, an `oracle_gen`
+  bumped on context switch (a late reply lands nowhere). **Local-only in P1:**
+  both the GUI Consult guard AND the net drain refuse a non-localhost endpoint
+  (P2 adds the remote egress-consent gate). The Oracle is added to every
+  charter-style modal site in `main.rs` (suspend/Esc/menu_live/just_opened/wheel/
+  draw); a new **Oracle** menu between Advisors and World (shifts the `--menu`
+  index map). Dev flags `--oracle [scope]` / `--oracle-ask` (stop at preview) /
+  `--oracle-go` (auto-consult). **Shipped without free-text questions** (default
+  per-scope question — sidesteps the keyboard-ownership minefield; custom
+  questions + conversation are deferred to a follow-up / P4). Pure draw-decision
+  fns (`endpoint_kind`, `resolve_config`, `oracle_setup_lines`, `wrap`)
+  unit-tested. **Adversarial review (5 confirmed, all fixed):** the HIGH was
+  `endpoint_kind` classifying a host by a raw `starts_with` prefix — bypassable
+  (`localhost.evil.com`, `127.0.0.1.evil.com`, `localhost@evil.com` read "local"
+  and would leak the bundle + token off-box); now it parses the real host (drops
+  userinfo, cuts at `/?#`, strips the port/`[ipv6]`, exact case-insensitive match,
+  127.0.0.0/8 only as a true dotted-quad), fail-closed, pinned by the bypass
+  cases. 251 core + 45 GUI tests; gui-smoke 35. **Verified live** against a real
+  local Ollama (the OpenAI shape round-trips; the in-app `--oracle realm
+  --oracle-go` fired the consult end-to-end — endpoint localhost, token shown as
+  "none" never a value). Next: P2 (remote releasable w/ egress consent + the
+  byte-frozen consent), P3 (suggest-to-gate).
 
 ## The pair (hot/warm)
 

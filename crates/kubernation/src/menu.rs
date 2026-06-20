@@ -29,6 +29,7 @@ pub enum MenuAction {
     NamespaceFilter,
     Advisor(AdvisorTab),
     Charter,
+    OracleConsult,
     Almanac,
     Annals,
 }
@@ -191,6 +192,13 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                     MenuAction::Advisor(AdvisorTab::Posture),
                 ),
             ],
+        },
+        Menu {
+            title: "Oracle".to_string(),
+            items: vec![Item::act(
+                "Consult the Oracle\u{2026}",
+                MenuAction::OracleConsult,
+            )],
         },
         Menu {
             title: "World".to_string(),

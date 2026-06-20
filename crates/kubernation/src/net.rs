@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kubernation_core::events::{ClusterId, WorldDelta};
+use kubernation_core::k8s::oracle_client::{self, LlmConfig};
 use kubernation_core::k8s::{actions, browse, client, logs, portforward, rbac, watch};
 use kubernation_core::state::attention::{Concern, Severity, Target};
 use kubernation_core::state::blast::Subject;
@@ -26,6 +27,7 @@ use kubernation_core::state::harden;
 use kubernation_core::state::model::{Models, WorkloadRef, WorkloadRow, build_workloads};
 use kubernation_core::state::netpol;
 use kubernation_core::state::observed::ObservedWorld;
+use kubernation_core::state::oracle::ChatMessage;
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::planned::Intervention;
 use kubernation_core::state::posture::{self, PostureReport};
@@ -282,6 +284,29 @@ pub struct Net {
     /// for the Annals change-feed. An `Arc` so the per-frame pull is a refcount
     /// bump; bounded + cleared on context switch (no cross-run persistence).
     operator_actions: Mutex<Arc<Vec<OperatorAction>>>,
+    /// The Oracle (BYO-LLM): the resolved launch config (env/flags, never on
+    /// disk), a one-shot consult request the net thread drains ONCE (and spawns —
+    /// a consult can take ~60s, so it must NOT block the world loop), the replies
+    /// cached by `bundle_hash` so an identical consult never re-calls, and a gen
+    /// bumped on context switch so a slow in-flight consult can't land late.
+    oracle_config: Mutex<Option<LlmConfig>>,
+    oracle_req: Mutex<Option<OracleReq>>,
+    oracle_out: Mutex<HashMap<u64, Arc<OracleReply>>>,
+    oracle_gen: AtomicU64,
+}
+
+/// A queued Oracle consult: the cache key + the fully-rendered (redacted, fenced,
+/// budgeted) chat messages the pure `state::oracle` layer produced.
+pub struct OracleReq {
+    pub hash: u64,
+    pub messages: Vec<ChatMessage>,
+}
+
+/// The outcome of a consult — the model's prose, or a classified failure string.
+#[derive(Clone)]
+pub enum OracleReply {
+    Ok(String),
+    Err(String),
 }
 
 /// Cap on the in-session operator-action log (matches the chaos chronicle's
@@ -437,6 +462,10 @@ impl Net {
             charter_out: Mutex::new(HashMap::new()),
             charter_gen: AtomicU64::new(0),
             operator_actions: Mutex::new(Arc::new(Vec::new())),
+            oracle_config: Mutex::new(None),
+            oracle_req: Mutex::new(None),
+            oracle_out: Mutex::new(HashMap::new()),
+            oracle_gen: AtomicU64::new(0),
         })
     }
 
@@ -494,6 +523,29 @@ impl Net {
     /// The in-session chronicle of finished drills (newest first).
     pub fn chaos_history(&self) -> Vec<ChaosRecord> {
         self.chaos_history.lock().unwrap().clone()
+    }
+
+    /// Install the resolved Oracle launch config (called once by `main` before
+    /// spawn; env/flags only — never persisted).
+    pub fn set_oracle_config(&self, cfg: Option<LlmConfig>) {
+        *self.oracle_config.lock().unwrap() = cfg;
+    }
+
+    /// The Oracle config, for the setup/consult display (the token is never
+    /// exposed — `LlmConfig.api_key` stays in the net layer).
+    pub fn oracle_config(&self) -> Option<LlmConfig> {
+        self.oracle_config.lock().unwrap().clone()
+    }
+
+    /// Queue ONE consult (the net thread drains it once and spawns the call).
+    /// `hash` is the `state::oracle::bundle_hash`; `messages` the rendered prompt.
+    pub fn request_oracle(&self, hash: u64, messages: Vec<ChatMessage>) {
+        *self.oracle_req.lock().unwrap() = Some(OracleReq { hash, messages });
+    }
+
+    /// The cached reply for a consult `hash`, if it has returned.
+    pub fn oracle_reply(&self, hash: u64) -> Option<Arc<OracleReply>> {
+        self.oracle_out.lock().unwrap().get(&hash).cloned()
     }
 
     /// Ask the net thread to discover resource kinds (once).
@@ -836,6 +888,11 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             *net.charter_req.lock().unwrap() = None;
                             net.charter_out.lock().unwrap().clear();
                             net.charter_gen.fetch_add(1, Ordering::Relaxed);
+                            // Oracle replies were about the old cluster — drop them
+                            // and bump the gen so an in-flight consult lands nowhere.
+                            *net.oracle_req.lock().unwrap() = None;
+                            net.oracle_out.lock().unwrap().clear();
+                            net.oracle_gen.fetch_add(1, Ordering::Relaxed);
                             // A same-named pod on the new cluster must re-resolve.
                             log_target = None;
                             log_container = None;
@@ -979,6 +1036,45 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 .insert((cluster, ns), Arc::new(charter));
                         }
                     }
+                }
+
+                // Oracle consult: drain the one-shot request and SPAWN the call
+                // (a consult can take ~60s — awaiting it inline would freeze the
+                // world loop). The GUI built + rendered + hashed the prompt; here
+                // we only POST it and cache the reply by hash. Manual-trigger
+                // only — never on a tick beyond draining a user-set request.
+                let oreq = net.oracle_req.lock().unwrap().take();
+                if let Some(OracleReq { hash, messages }) = oreq
+                    && !net.oracle_out.lock().unwrap().contains_key(&hash)
+                {
+                    let cfg = net.oracle_config();
+                    let net2 = net.clone();
+                    let req_gen = net.oracle_gen.load(Ordering::Relaxed);
+                    tokio::spawn(async move {
+                        let reply = match cfg {
+                            None => OracleReply::Err(
+                                "the Oracle isn't configured (set --llm-url / KUBERNATION_LLM_TOKEN)"
+                                    .into(),
+                            ),
+                            // P1 is local-only; a remote endpoint waits for P2's
+                            // egress-consent gate (defense-in-depth: the GUI also
+                            // refuses to consult a remote endpoint in this build).
+                            Some(c) if c.endpoint == oracle_client::Endpoint::Remote => {
+                                OracleReply::Err(
+                                    "remote endpoints arrive in a later version; point --llm-url at a local model"
+                                        .into(),
+                                )
+                            }
+                            Some(c) => match oracle_client::consult(&c, messages).await {
+                                Ok(text) => OracleReply::Ok(text),
+                                Err(e) => OracleReply::Err(e.to_string()),
+                            },
+                        };
+                        // Drop a late reply if the cluster was switched meanwhile.
+                        if net2.oracle_gen.load(Ordering::Relaxed) == req_gen {
+                            net2.oracle_out.lock().unwrap().insert(hash, Arc::new(reply));
+                        }
+                    });
                 }
 
                 // Confirmed eviction — the only write the app performs. Run it

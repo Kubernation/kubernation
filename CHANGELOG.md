@@ -9,6 +9,18 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **The Oracle of KuberNation (BYO-LLM Wonder) — local, explain-only.** A new
+  **Oracle** menu consults a bring-your-own language model to *explain* a scope —
+  the whole realm, a selected workload or node, or a focused concern. It is
+  advisory only: the model is shown a redacted, fenced summary built from what
+  Kubernation already observed (never raw cluster dumps, never Secret values) and
+  it can **never** change the cluster. A mandatory **Preview** shows the exact
+  text that will be sent before you Consult. Local-first: point `--llm-url` at a
+  local model (default: Ollama at `localhost:11434`), pick `--llm-model`; any API
+  token comes from the `KUBERNATION_LLM_TOKEN` env var only (never written to
+  disk). Remote endpoints arrive in a later version; replies are model-generated
+  — verify before acting. (This is the project's first outbound network egress —
+  opt-in, gated like port-forward.)
 - **Saturation overlay — the 4th golden signal.** A new **View ▸ Saturation
   (strain)** map overlay tints each province by how full it is toward its hard
   limits: the worst of cpu/mem usage, **scheduled pods vs the kubelet max-pods**,
