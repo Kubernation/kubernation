@@ -9,6 +9,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Changed
+- **Oracle default model is now `qwen3.5:35b`** (was `llama3.1`) — a model that
+  must be pulled in your local Ollama; override with `--llm-model`. The consult
+  timeout was raised 60s → 180s to fit a large local model (a realm consult on a
+  35B measured 60–90s incl. the cold model load; the consult runs off the world
+  loop, so a longer ceiling only means a longer "consulting…"). The headless
+  `--oracle-go` verification now holds the screenshot until the reply actually
+  lands instead of firing on a fixed frame count.
 - **Oracle polish.** The consult lives under a new **Wonders** menu (room for
   future marvels). The pre-send Preview is now a legible, structured rendering —
   the model, parameters, and each message's full text with real line breaks (plus

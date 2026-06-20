@@ -29,8 +29,12 @@ use crate::state::oracle::{self, ChatMessage};
 
 /// Wall-clock cap on a whole consult (connect + send + receive), enforced as ONE
 /// timeout around the entire request+body sequence. Mirrors the fetch-not-watch
-/// timeouts in `browse.rs`/`portforward.rs`.
-const TIMEOUT: Duration = Duration::from_secs(60);
+/// timeouts in `browse.rs`/`portforward.rs`. Sized for a LARGE local model: a
+/// realm-scope consult on a 35B model (the default) measured 60–90s+ including
+/// the cold model load, so a 60s cap cut real replies off. The consult runs on a
+/// spawned task (it never blocks the world loop), so a generous ceiling only
+/// means a longer "consulting…" — the operator can Close at any time.
+const TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Hard cap on a buffered response body — a chat completion is kilobytes; this
 /// bounds a hostile/runaway endpoint so it cannot OOM the net loop.

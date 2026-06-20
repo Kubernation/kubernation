@@ -26,10 +26,12 @@ use crate::text::{text, text_bold, text_size};
 use crate::theme::*;
 use crate::window::draw_window;
 
-/// Default endpoint — a local Ollama (OpenAI-compatible at `/v1`).
+/// Default endpoint — a local Ollama (OpenAI-compatible at `/v1`, so the wire
+/// endpoint is `http://localhost:11434/v1/chat/completions`).
 pub const DEFAULT_LLM_URL: &str = "http://localhost:11434/v1";
-/// A broadly-pullable local instruct model as the seed default.
-pub const DEFAULT_LLM_MODEL: &str = "llama3.1";
+/// The seed default model. Must be a tag the local Ollama has pulled (else the
+/// consult 404s with an actionable "model not found"); override with `--llm-model`.
+pub const DEFAULT_LLM_MODEL: &str = "qwen3.5:35b";
 
 pub enum OracleAction {
     None,
@@ -264,6 +266,13 @@ impl OracleView {
     /// Dev: auto-consult on the next draw (the `--oracle-go` headless round-trip).
     pub fn auto_consult(&mut self) {
         self.auto = true;
+    }
+
+    /// True once a consult has produced a reply (success OR error) — drives the
+    /// `--oracle-go` screenshot, which holds until the (slow) model answers
+    /// rather than firing on a fixed frame count.
+    pub fn reply_landed(&self) -> bool {
+        self.reply.is_some()
     }
 
     /// Dev: synthesize a deterministic validated suggestion (the `--oracle-suggest`

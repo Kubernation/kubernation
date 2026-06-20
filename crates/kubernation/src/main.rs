@@ -213,11 +213,13 @@ struct Args {
     #[arg(long)]
     postmortem: bool,
     /// The Oracle (BYO-LLM) OpenAI-compatible base URL. Default: a local Ollama
-    /// (`http://localhost:11434/v1`). Remote endpoints are not enabled in this
-    /// build. The API token is read from the `KUBERNATION_LLM_TOKEN` env var only.
+    /// (`http://localhost:11434/v1`). A remote (non-loopback) endpoint publishes
+    /// off-laptop, so it stays off until armed in the Oracle window. The API token
+    /// is read from the `KUBERNATION_LLM_TOKEN` env var only.
     #[arg(long, value_name = "URL")]
     llm_url: Option<String>,
-    /// The Oracle model name (e.g. `llama3.1`, `qwen2.5`). Default: `llama3.1`.
+    /// The Oracle model name — must be pulled in your Ollama (e.g.
+    /// `qwen3.5:35b`, `llama3.1`). Default: `qwen3.5:35b`.
     #[arg(long, value_name = "MODEL")]
     llm_model: Option<String>,
     /// Open the Oracle on sync (dev verification). `--oracle` opens the consult
@@ -2933,7 +2935,9 @@ async fn main() {
             // appear in net.forwards() — a few net ticks (250ms each).
             180
         } else if args.oracle_go {
-            5000 // a local model can take many seconds to answer a real consult
+            // Backstop only — the real shot trigger below waits for the reply to
+            // land (a 35B local model can take a minute), keyed on wall-clock.
+            u32::MAX
         } else if args.chaos_go {
             600 // run at frame 30 + watch recovery + the scorecard settle
         } else if args.plan_go || args.blast.is_some() || args.chaos.is_some() {
@@ -2949,8 +2953,19 @@ async fn main() {
         } else {
             45
         };
+        // --oracle-go holds the shot until the consult reply actually lands (a
+        // real model is slow), with a generous wall-clock backstop so it can
+        // never hang headless. Otherwise shoot once enough frames have synced.
+        let take_shot = if args.oracle_go {
+            // Backstop must exceed the client's 180s consult timeout so a
+            // slow-but-completing 35B reply is captured, not cut off.
+            frames_synced > 30
+                && (oracle_view.as_ref().is_some_and(|v| v.reply_landed()) || get_time() > 210.0)
+        } else {
+            frames_synced > shot_at
+        };
         if let Some(path) = &shot
-            && frames_synced > shot_at
+            && take_shot
         {
             get_screen_data().export_png(&path.to_string_lossy());
             break;
