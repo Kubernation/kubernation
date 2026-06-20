@@ -296,7 +296,16 @@ pub struct Net {
     /// Whether the operator has explicitly armed REMOTE (off-laptop) egress this
     /// session. A non-local endpoint is publishing, so it's off by default; the
     /// GUI arms it deliberately and the net drain honors it (defense-in-depth).
+    /// RESET to false whenever the active endpoint changes (a fresh remote
+    /// endpoint must be re-armed — A's consent never carries to B).
     oracle_egress_armed: AtomicBool,
+    /// Model-discovery (the in-app picker): a one-shot request the net thread
+    /// drains + SPAWNS (a `/v1/models` GET can be slow / token-bearing egress for
+    /// a remote endpoint), the result cached as an `Arc`, and a gen guard so a
+    /// stale answer is dropped. Mirrors the `browse` discover slots.
+    models_req: Mutex<Option<LlmConfig>>,
+    models_out: Mutex<Option<Result<Arc<Vec<String>>, String>>>,
+    models_gen: AtomicU64,
 }
 
 /// A queued Oracle consult: the cache key + the fully-rendered (redacted, fenced,
@@ -471,6 +480,9 @@ impl Net {
             oracle_out: Mutex::new(HashMap::new()),
             oracle_gen: AtomicU64::new(0),
             oracle_egress_armed: AtomicBool::new(false),
+            models_req: Mutex::new(None),
+            models_out: Mutex::new(None),
+            models_gen: AtomicU64::new(0),
         })
     }
 
@@ -530,10 +542,52 @@ impl Net {
         self.chaos_history.lock().unwrap().clone()
     }
 
-    /// Install the resolved Oracle launch config (called once by `main` before
-    /// spawn; env/flags only — never persisted).
+    /// Install/replace the active Oracle config (at launch and on every in-app
+    /// profile switch). When the ENDPOINT changes (base_url), this re-disarms
+    /// remote egress, drops cached replies (the bundle_hash now folds base_url, so
+    /// they wouldn't collide — but a clean slate is honest), and bumps both gens
+    /// so a slow in-flight consult/discovery against the OLD endpoint can't land
+    /// into the new config. A fresh remote endpoint MUST be re-armed.
     pub fn set_oracle_config(&self, cfg: Option<LlmConfig>) {
+        // Compare the full credential IDENTITY (URL + token-presence + token +
+        // model), not just the URL — switching to a different token (even at the
+        // same URL, e.g. two corp profiles) must re-disarm so A's consent never
+        // carries to B's account, and must drop A's cached replies.
+        let identity = |c: &Option<LlmConfig>| {
+            c.as_ref()
+                .map(|c| (c.base_url.clone(), c.api_key.clone(), c.model.clone()))
+        };
+        let changed = identity(&self.oracle_config.lock().unwrap()) != identity(&cfg);
         *self.oracle_config.lock().unwrap() = cfg;
+        if changed {
+            self.oracle_egress_armed.store(false, Ordering::Relaxed);
+            self.oracle_out.lock().unwrap().clear();
+            self.oracle_gen.fetch_add(1, Ordering::Relaxed);
+            *self.models_out.lock().unwrap() = None;
+            self.models_gen.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Ask the net thread to list the active endpoint's models (replaces any
+    /// in-flight discovery). `cfg` is the endpoint to probe.
+    pub fn request_models(&self, cfg: LlmConfig) {
+        *self.models_req.lock().unwrap() = Some(cfg);
+        *self.models_out.lock().unwrap() = None;
+        self.models_gen.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Blank the discovered model list (e.g. when selecting a different profile to
+    /// edit, so a remote endpoint never shows the previous endpoint's models).
+    pub fn clear_models(&self) {
+        *self.models_req.lock().unwrap() = None;
+        *self.models_out.lock().unwrap() = None;
+        self.models_gen.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The discovered model list (an `Arc` — the per-frame picker pull is a
+    /// refcount bump). `None` ⇒ none requested or still in flight.
+    pub fn models_out(&self) -> Option<Result<Arc<Vec<String>>, String>> {
+        self.models_out.lock().unwrap().clone()
     }
 
     /// The Oracle config, for the setup/consult display (the token is never
@@ -906,9 +960,15 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             net.charter_gen.fetch_add(1, Ordering::Relaxed);
                             // Oracle replies were about the old cluster — drop them
                             // and bump the gen so an in-flight consult lands nowhere.
+                            // (The Oracle CONFIG is cluster-independent — keep it.)
                             *net.oracle_req.lock().unwrap() = None;
                             net.oracle_out.lock().unwrap().clear();
                             net.oracle_gen.fetch_add(1, Ordering::Relaxed);
+                            // Model-discovery is endpoint-scoped, not cluster-scoped,
+                            // but keep the picker honest after a switch.
+                            *net.models_req.lock().unwrap() = None;
+                            *net.models_out.lock().unwrap() = None;
+                            net.models_gen.fetch_add(1, Ordering::Relaxed);
                             // A same-named pod on the new cluster must re-resolve.
                             log_target = None;
                             log_container = None;
@@ -1087,9 +1147,42 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 Err(e) => OracleReply::Err(e.to_string()),
                             },
                         };
-                        // Drop a late reply if the cluster was switched meanwhile.
+                        // Drop a late reply if the cluster/endpoint switched meanwhile.
                         if net2.oracle_gen.load(Ordering::Relaxed) == req_gen {
                             net2.oracle_out.lock().unwrap().insert(hash, Arc::new(reply));
+                        }
+                    });
+                }
+
+                // Oracle model discovery: drain the one-shot request and SPAWN the
+                // GET /v1/models (slow for a cold endpoint; token-bearing egress
+                // for a remote one). Gated like the consult — a remote endpoint
+                // needs the arm before its token leaves the box.
+                let mreq = net.models_req.lock().unwrap().take();
+                if let Some(cfg) = mreq {
+                    let armed = net.oracle_egress_armed.load(Ordering::Relaxed);
+                    // A remote /v1/models GET sends the token off-box, so it is
+                    // allowed ONLY for the ACTIVE, ARMED endpoint — never an
+                    // arbitrary edit-form URL (which could exfiltrate the token to
+                    // an attacker URL while the arm is held for a different one).
+                    let active_url = net.oracle_config().map(|c| c.base_url);
+                    let net2 = net.clone();
+                    let req_gen = net.models_gen.load(Ordering::Relaxed);
+                    tokio::spawn(async move {
+                        let remote = cfg.endpoint == oracle_client::Endpoint::Remote;
+                        let out: Result<Arc<Vec<String>>, String> = if remote
+                            && (!armed || active_url.as_deref() != Some(cfg.base_url.as_str()))
+                        {
+                            Err("arm this endpoint (Use this endpoint, then Arm) to list its models"
+                                .into())
+                        } else {
+                            match oracle_client::list_models(&cfg).await {
+                                Ok(v) => Ok(Arc::new(v)),
+                                Err(e) => Err(e.to_string()),
+                            }
+                        };
+                        if net2.models_gen.load(Ordering::Relaxed) == req_gen {
+                            *net2.models_out.lock().unwrap() = Some(out);
                         }
                     });
                 }

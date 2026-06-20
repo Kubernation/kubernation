@@ -13,7 +13,11 @@ kubernation-core = { path = "../kubernation-core", features = ["oracle"] }
 macroquad = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# JSON (de)serialization of the Oracle endpoint-profile config file. Already in
+# the lock via kubernation-core — zero new crates.
+serde_json = "1"
 # PNG decode + resize for the bundled logo (window icon at 16/32/64).
 image = { version = "0.24", default-features = false, features = ["png"] }
 

@@ -29,6 +29,7 @@ STATES=(
   "oracle-suggest|--oracle workload --oracle-suggest"
   "oracle-remote|--oracle realm --llm-url https://api.example.com/v1"
   "oracle-remote-armed|--oracle realm --oracle-ask --oracle-arm --llm-url https://api.example.com/v1"
+  "oracle-settings|--oracle realm --oracle-settings"
   "browse-pick|--browse"
   "browse-table|--browse configmaps"
   "city|--inspect web"

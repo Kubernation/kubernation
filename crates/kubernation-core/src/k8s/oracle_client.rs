@@ -235,6 +235,53 @@ pub async fn probe(cfg: &LlmConfig) -> Result<(), LlmError> {
     }
 }
 
+/// List the model ids the endpoint serves — a GET to `{base_url}/models`, parsed
+/// by the pure `oracle::parse_models`. Drives the in-app model picker. For a
+/// REMOTE endpoint this sends the `Authorization` token off-box (it is itself
+/// token-bearing egress), so the caller gates it behind the egress arm.
+pub async fn list_models(cfg: &LlmConfig) -> Result<Vec<String>, LlmError> {
+    let url = format!("{}/models", cfg.base_url.trim_end_matches('/'));
+    let client = https_client()?;
+    let mut builder = Request::builder().method("GET").uri(&url);
+    if let Some(key) = &cfg.api_key {
+        builder = builder.header("authorization", format!("Bearer {key}"));
+    }
+    let req = builder
+        .body(Full::new(Bytes::new()))
+        .map_err(|e| LlmError::Config(format!("bad URL: {e}")))?;
+
+    let outcome = tokio::time::timeout(TIMEOUT, async {
+        let resp = client
+            .request(req)
+            .await
+            .map_err(|e| LlmError::Connection(e.to_string()))?;
+        let status = resp.status().as_u16();
+        let collected = Limited::new(resp.into_body(), MAX_RESP_BYTES)
+            .collect()
+            .await
+            .map_err(|_| LlmError::Decode("response too large or truncated".into()))?;
+        Ok((status, collected.to_bytes()))
+    })
+    .await;
+
+    let (status, bytes) = match outcome {
+        Err(_) => return Err(LlmError::Timeout),
+        Ok(Err(e)) => return Err(e),
+        Ok(Ok(v)) => v,
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    if let Some(err) = classify_status(status) {
+        return Err(match err {
+            LlmError::BadStatus { status, .. } => LlmError::BadStatus {
+                status,
+                detail: oracle::extract_error_message(&text),
+            },
+            other => other,
+        });
+    }
+    oracle::parse_models(&text).map_err(|e| LlmError::Decode(e.to_string()))
+}
+
 // These tests need the `oracle` feature (the whole module is gated). They run
 // under `cargo test --workspace` (the `kubernation` bin enables the feature, so
 // unification turns it on for core) and `cargo test -p kubernation-core

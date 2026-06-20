@@ -14,3 +14,9 @@ postmortem-*.md
 
 # Oracle remote-egress audit records (one-shot, metadata-only)
 oracle-egress-*.txt
+
+# Oracle endpoint-profile config (normally under ~/.config; defensive in case
+# XDG_CONFIG_HOME points into the repo — it can hold a plaintext API token)
+oracle.json
+oracle.json.tmp
+oracle.json.corrupt-*

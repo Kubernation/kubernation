@@ -688,13 +688,83 @@ pub fn consent_preview(bundle: &ContextBundle, question: &str, model: &str) -> S
     s
 }
 
-/// A deterministic cache key for a consult — keyed on the WIRE payload (same
-/// request bytes + endpoint kind ⇒ same answer ⇒ no second call), independent of
-/// the display format.
-pub fn bundle_hash(bundle: &ContextBundle, question: &str, model: &str, remote: bool) -> u64 {
+/// A deterministic cache key for a consult — keyed on the WIRE payload + the
+/// ENDPOINT (`base_url`) so the same model id at two different URLs (e.g. two
+/// remote profiles) does NOT collide. A collision would (a) serve endpoint A's
+/// cached reply for B and (b) suppress B's egress audit (`dispatch` records an
+/// audit only when `oracle_reply(hash).is_none()`). Independent of the display
+/// format.
+pub fn bundle_hash(
+    bundle: &ContextBundle,
+    question: &str,
+    model: &str,
+    base_url: &str,
+    remote: bool,
+) -> u64 {
     let mut s = request_json(&chat_request(model, render_prompt(bundle, question)));
+    s.push('|');
+    s.push_str(base_url);
     s.push_str(if remote { "|remote" } else { "|local" });
     fnv1a64(&s)
+}
+
+/// PURE + load-bearing egress gate: is this base URL on the operator's laptop
+/// (loopback ⇒ no egress off-box)? Parses the REAL host and matches it EXACTLY
+/// (case-insensitive), failing closed — a raw `starts_with` prefix check is
+/// bypassable (`localhost.evil.com`, `127.0.0.1.evil.com`, `localhost@evil.com`
+/// would all read "local" and leak the bundle + token off-box). Lives in
+/// always-compiled core (not behind the `oracle` feature) so the bypass suite is
+/// always tested. `endpoint_kind` (feature-gated) maps this to `Endpoint`.
+pub fn host_is_local(base_url: &str) -> bool {
+    let after = base_url
+        .split_once("://")
+        .map(|(_, r)| r)
+        .unwrap_or(base_url);
+    // Authority = up to the first '/', '?', or '#'.
+    let authority = after.split(['/', '?', '#']).next().unwrap_or("");
+    // Drop userinfo (everything up to and including the last '@' — the real host
+    // follows it).
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    // Strip the port, handling [ipv6]:port and host:port.
+    let host = if let Some(rest) = host_port.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        host_port.split(':').next().unwrap_or("")
+    }
+    .to_ascii_lowercase();
+
+    host == "localhost" || host == "0.0.0.0" || host == "::1" || is_loopback_v4(&host)
+}
+
+/// True only for an exact dotted-quad IPv4 in 127.0.0.0/8 (the loopback block) —
+/// so `127.0.0.1.evil.com` (not four octets) is NOT loopback.
+fn is_loopback_v4(host: &str) -> bool {
+    let parts: Vec<&str> = host.split('.').collect();
+    parts.len() == 4 && parts[0] == "127" && parts.iter().all(|p| p.parse::<u8>().is_ok())
+}
+
+/// PURE + TOLERANT: parse the model ids from an OpenAI/Ollama `GET /v1/models`
+/// response (`{"data":[{"id":"…"}, …]}`). Deduped + sorted. `Err` on a missing
+/// `data` array or zero usable ids. Never panics. Mirrors `parse_chat_response`.
+pub fn parse_models(body: &str) -> Result<Vec<String>, &'static str> {
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "model list was not valid JSON")?;
+    let data = v
+        .get("data")
+        .and_then(|d| d.as_array())
+        .ok_or("model list had no `data` array")?;
+    let mut ids: Vec<String> = data
+        .iter()
+        .filter_map(|m| m.get("id").and_then(|i| i.as_str()))
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return Err("the endpoint returned no models");
+    }
+    Ok(ids)
 }
 
 /// PURE + TOLERANT: pull a human error message out of an endpoint's non-2xx
@@ -1152,15 +1222,51 @@ mod tests {
         let world = world_with_web();
         let models = Models::build(&world);
         let (b, _) = build_bundle(&models, &world, &Scope::Realm, &ctx(), &Caps::default());
-        let h1 = bundle_hash(&b, "q", "m", false);
-        let h2 = bundle_hash(&b, "q", "m", false);
+        let url = "http://localhost:11434/v1";
+        let h1 = bundle_hash(&b, "q", "m", url, false);
+        let h2 = bundle_hash(&b, "q", "m", url, false);
         assert_eq!(h1, h2);
         assert_ne!(
             h1,
-            bundle_hash(&b, "q", "m", true),
+            bundle_hash(&b, "q", "m", url, true),
             "local vs remote differ"
         );
-        assert_ne!(h1, bundle_hash(&b, "other", "m", false));
+        assert_ne!(h1, bundle_hash(&b, "other", "m", url, false));
+        // The base_url is folded in: same model id at two endpoints ⇒ distinct
+        // hash (else A's cached reply is served for B + B's egress audit is
+        // suppressed).
+        assert_ne!(
+            bundle_hash(&b, "q", "m", "https://api.a.com/v1", true),
+            bundle_hash(&b, "q", "m", "https://api.b.com/v1", true),
+            "two remote endpoints with the same model must not collide"
+        );
+    }
+
+    #[test]
+    fn host_is_local_parses_the_real_host_and_fails_closed() {
+        // Genuine loopback forms.
+        assert!(host_is_local("http://localhost:11434/v1"));
+        assert!(host_is_local("http://127.0.0.1:8080/v1"));
+        assert!(host_is_local("http://127.5.6.7/v1"));
+        assert!(host_is_local("http://[::1]:11434/v1"));
+        assert!(host_is_local("http://0.0.0.0:1234"));
+        assert!(host_is_local("HTTP://LOCALHOST/v1")); // case-insensitive
+        // Bypass attempts must read REMOTE (fail closed).
+        assert!(!host_is_local("http://localhost.evil.com/v1"));
+        assert!(!host_is_local("http://127.0.0.1.evil.com/v1"));
+        assert!(!host_is_local("http://localhost@evil.com/v1")); // userinfo trick
+        assert!(!host_is_local("http://evil.com/localhost"));
+        assert!(!host_is_local("https://api.openai.com/v1"));
+        assert!(!host_is_local("http://127.0.0.1.5/v1")); // 5 octets, not loopback
+    }
+
+    #[test]
+    fn parse_models_extracts_ids_dedups_sorts_and_rejects_junk() {
+        let body = r#"{"data":[{"id":"qwen3.5:35b"},{"id":"llama3.1"},{"id":"qwen3.5:35b"}]}"#;
+        assert_eq!(parse_models(body).unwrap(), vec!["llama3.1", "qwen3.5:35b"]);
+        assert!(parse_models("not json").is_err());
+        assert!(parse_models(r#"{"object":"list"}"#).is_err()); // no data array
+        assert!(parse_models(r#"{"data":[]}"#).is_err()); // zero models
     }
 
     #[test]

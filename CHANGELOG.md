@@ -8,6 +8,24 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Oracle endpoint profiles + model picker (Wonders ▸ Oracle ▸ Settings).** The
+  Oracle window gained a Settings face to manage named ENDPOINT PROFILES — a local
+  Ollama and one or more remote/corporate endpoints — and switch between them
+  in-app. For a local endpoint it discovers the models you've pulled (`GET
+  /v1/models`) and lets you click to pick one; for a remote endpoint you enter a
+  URL + a masked API token + model. Profiles persist to
+  `~/.config/kubernation/oracle.json` (created `0700`/`0600`, written atomically),
+  **including the token by your explicit per-profile opt-in** (stored as plaintext
+  on disk — the Settings face says so plainly and steers high-sensitivity tokens
+  to the `KUBERNATION_LLM_TOKEN` env var, which is never persisted). This serves
+  the corporate case: a policy-compliant hosted frontier model where you supply
+  the URL, token, and model. Safety is unchanged — a remote endpoint still
+  publishes off-laptop, so it stays behind the per-session **Arm remote egress**
+  gate (switching profiles re-disarms), the Local/Remote class is always recomputed
+  from the URL (never trusted from the file), and redaction + prompt-injection
+  fencing remain unconditional regardless of how "trusted" the endpoint is.
+
 ### Changed
 - **Oracle default model is now `qwen3.5:35b`** (was `llama3.1`) — a model that
   must be pulled in your local Ollama; override with `--llm-model`. The consult

@@ -12,6 +12,10 @@ pub mod model;
 pub mod netpol;
 pub mod observed;
 pub mod oracle;
+// Endpoint profiles + the precedence resolver reference the feature-gated
+// `oracle_client` types (LlmConfig/Endpoint), so this module rides the feature.
+#[cfg(feature = "oracle")]
+pub mod oracle_config;
 pub mod oracle_suggest;
 pub mod pair;
 pub mod planned;

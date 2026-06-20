@@ -8,30 +8,32 @@
 //! **Stage** button — the model NEVER acts; a staged suggestion enters the
 //! planning turn and is committed only through the existing dry-run/RBAC gate.
 //!
-//! Config is local-default (Ollama). A LOCAL endpoint keeps everything on the
-//! laptop. A REMOTE endpoint is publishing, so it is OFF by default behind an
-//! explicit per-session ARM, and a remote Consult sends only the **frozen**
-//! previewed bytes (what you reviewed is what is published) and writes a
-//! one-shot, metadata-only egress audit. The pure draw-decision fns are
-//! unit-tested (testability policy); macroquad rendering is covered by gui-smoke.
+//! A second **Settings** face manages named ENDPOINT PROFILES (a local Ollama, a
+//! corporate frontier model, …): pick a pulled local model, point at a remote
+//! endpoint with a URL + masked token, switch between profiles, and persist them
+//! (the token on disk by explicit opt-in — see `oracle_config_io`). Switching to
+//! a REMOTE endpoint still requires the per-session ARM (egress is publishing),
+//! and a remote Consult sends only the **frozen** previewed bytes + writes a
+//! one-shot egress audit. Pure draw-decision fns are unit-tested (testability
+//! policy); macroquad rendering is covered by gui-smoke.
+
+use std::sync::Arc;
 
 use kubernation_core::k8s::oracle_client::{Endpoint, LlmConfig};
 use kubernation_core::state::oracle::{self, Caps, Scope};
+use kubernation_core::state::oracle_config::{
+    self, DEFAULT_LLM_MODEL, DEFAULT_LLM_URL, OracleConfigFile, Profile, endpoint_kind,
+};
 use kubernation_core::state::oracle_suggest::{self, ValidatedSuggestion};
 use kubernation_core::state::planned::Intervention;
 use macroquad::prelude::*;
 
 use crate::net::{Net, OracleReply, Snapshot};
+use crate::oracle_config_io;
 use crate::text::{text, text_bold, text_size};
+use crate::textfield::{FieldId, TextField};
 use crate::theme::*;
 use crate::window::draw_window;
-
-/// Default endpoint — a local Ollama (OpenAI-compatible at `/v1`, so the wire
-/// endpoint is `http://localhost:11434/v1/chat/completions`).
-pub const DEFAULT_LLM_URL: &str = "http://localhost:11434/v1";
-/// The seed default model. Must be a tag the local Ollama has pulled (else the
-/// consult 404s with an actionable "model not found"); override with `--llm-model`.
-pub const DEFAULT_LLM_MODEL: &str = "qwen3.5:35b";
 
 pub enum OracleAction {
     None,
@@ -59,69 +61,20 @@ fn role_color(r: Role) -> Color {
     }
 }
 
-/// PURE: resolve the Oracle launch config from flags + env. The base URL defaults
-/// to a local Ollama; the API token is read from `KUBERNATION_LLM_TOKEN` ONLY
-/// (never a flag, never written to disk). Always returns a config (local default).
-pub fn resolve_config(llm_url: Option<&str>, llm_model: Option<&str>) -> Option<LlmConfig> {
-    let base_url = llm_url
-        .unwrap_or(DEFAULT_LLM_URL)
-        .trim_end_matches('/')
-        .to_string();
-    let model = llm_model.unwrap_or(DEFAULT_LLM_MODEL).to_string();
-    let api_key = std::env::var("KUBERNATION_LLM_TOKEN")
-        .ok()
-        .filter(|s| !s.is_empty());
-    let endpoint = endpoint_kind(&base_url);
-    Some(LlmConfig {
-        base_url,
-        model,
-        api_key,
-        endpoint,
-    })
+/// Which face of the modal is showing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OracleFace {
+    Consult,
+    Settings,
 }
 
-/// PURE: classify a base URL as on-laptop (Local — no egress off the box) vs
-/// publishing (Remote). This is the load-bearing egress gate, so it parses the
-/// real HOST and matches it EXACTLY (case-insensitive), failing closed — a raw
-/// `starts_with` prefix check is bypassable (`localhost.evil.com`,
-/// `127.0.0.1.evil.com`, `localhost@evil.com` would all read "local" and leak
-/// the bundle + token off-box). Unit-tested against those bypass attempts.
-pub fn endpoint_kind(base_url: &str) -> Endpoint {
-    let after = base_url
-        .split_once("://")
-        .map(|(_, r)| r)
-        .unwrap_or(base_url);
-    // Authority = up to the first '/', '?', or '#'.
-    let authority = after.split(['/', '?', '#']).next().unwrap_or("");
-    // Drop userinfo (everything up to and including the last '@' — the real host
-    // follows it).
-    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    // Strip the port, handling [ipv6]:port and host:port.
-    let host = if let Some(rest) = host_port.strip_prefix('[') {
-        rest.split(']').next().unwrap_or("")
-    } else {
-        host_port.split(':').next().unwrap_or("")
-    }
-    .to_ascii_lowercase();
-
-    let local = host == "localhost" || host == "0.0.0.0" || host == "::1" || is_loopback_v4(&host);
-    if local {
-        Endpoint::Local
-    } else {
-        Endpoint::Remote
-    }
-}
-
-/// True only for an exact dotted-quad IPv4 in 127.0.0.0/8 (the loopback block) —
-/// so `127.0.0.1.evil.com` (not four octets) is NOT loopback.
-fn is_loopback_v4(host: &str) -> bool {
-    let parts: Vec<&str> = host.split('.').collect();
-    parts.len() == 4 && parts[0] == "127" && parts.iter().all(|p| p.parse::<u8>().is_ok())
-}
-
-/// PURE draw-decision fn: the setup-band lines — endpoint / model / location /
-/// token PRESENCE (never the token value). Unit-tested.
-pub fn oracle_setup_lines(cfg: Option<&LlmConfig>) -> Vec<(String, Role)> {
+/// PURE draw-decision fn: the setup-band lines — active profile / endpoint /
+/// model / location / token SOURCE (never the token value). Unit-tested.
+pub fn oracle_setup_lines(
+    cfg: Option<&LlmConfig>,
+    active_name: Option<&str>,
+    token_on_disk: bool,
+) -> Vec<(String, Role)> {
     match cfg {
         None => vec![(
             "the Oracle is not configured (set --llm-url / KUBERNATION_LLM_TOKEN)".into(),
@@ -135,20 +88,72 @@ pub fn oracle_setup_lines(cfg: Option<&LlmConfig>) -> Vec<(String, Role)> {
                     Role::Warn,
                 ),
             };
+            let token = if c.api_key.is_none() {
+                "token: none".to_string()
+            } else if token_on_disk {
+                "token: on disk (this profile)".to_string()
+            } else {
+                "token: from env".to_string()
+            };
             vec![
+                (
+                    format!(
+                        "profile: {}",
+                        active_name.unwrap_or("(command-line / built-in)")
+                    ),
+                    Role::Body,
+                ),
                 (format!("endpoint: {}", c.base_url), Role::Body),
                 (format!("model: {}", c.model), Role::Body),
                 (format!("location: {loc}"), lr),
-                (
-                    if c.api_key.is_some() {
-                        "API token: set (from env)".to_string()
-                    } else {
-                        "API token: none".to_string()
-                    },
-                    Role::Dim,
-                ),
+                (token, Role::Dim),
             ]
         }
+    }
+}
+
+/// PURE draw-decision fn: the profile-list rows (active marked, REMOTE flagged).
+pub fn profile_rows(config: &OracleConfigFile) -> Vec<(String, Role)> {
+    let active = config.active.as_deref();
+    config
+        .profiles
+        .iter()
+        .map(|p| {
+            let is_active = Some(p.name.as_str()) == active;
+            let mark = if is_active { "> " } else { "  " };
+            let loc = if endpoint_kind(&p.base_url) == Endpoint::Remote {
+                " · REMOTE"
+            } else {
+                ""
+            };
+            let role = if is_active { Role::Good } else { Role::Body };
+            (format!("{mark}{}{loc}", p.name), role)
+        })
+        .collect()
+}
+
+/// PURE draw-decision fn: the model-picker rows (current marked; in-flight /
+/// error states shown DIM, never red).
+pub fn model_picker_rows(
+    out: Option<&Result<Arc<Vec<String>>, String>>,
+    current: &str,
+) -> Vec<(String, Role)> {
+    match out {
+        None => vec![(
+            "(click discover to list this endpoint's models)".into(),
+            Role::Dim,
+        )],
+        Some(Err(e)) => vec![(format!("(could not list models: {e})"), Role::Dim)],
+        Some(Ok(list)) if list.is_empty() => vec![("(no models reported)".into(), Role::Dim)],
+        Some(Ok(list)) => list
+            .iter()
+            .map(|m| {
+                let cur = m == current;
+                let mark = if cur { "> " } else { "  " };
+                let role = if cur { Role::Good } else { Role::Body };
+                (format!("{mark}{m}"), role)
+            })
+            .collect(),
     }
 }
 
@@ -169,7 +174,6 @@ fn wrap(s: &str, width: usize) -> Vec<String> {
             if !cur.is_empty() {
                 cur.push(' ');
             }
-            // A single over-long word (no spaces) is hard-split.
             if word.chars().count() > width {
                 for chunk in word.chars().collect::<Vec<_>>().chunks(width) {
                     out.push(chunk.iter().collect());
@@ -185,8 +189,7 @@ fn wrap(s: &str, width: usize) -> Vec<String> {
     out
 }
 
-/// Truncate to `n` chars with an ellipsis (keeps a suggestion row clear of its
-/// Stage button).
+/// Truncate to `n` chars with an ellipsis.
 fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
@@ -202,46 +205,69 @@ fn truncate(s: &str, n: usize) -> String {
 struct Frozen {
     hash: u64,
     messages: Vec<oracle::ChatMessage>,
-    /// The legible consent rendering shown to the operator.
     preview: String,
-    /// The actual wire-payload size (the audit's "request bytes" — distinct from
-    /// the legible `preview` length).
     wire_bytes: usize,
     redacted: usize,
 }
 
-/// The Oracle consult modal. `scopes` is captured at open from the current
-/// selection (realm always available).
+/// The bundle the consult face builds for the active scope:
+/// (bundle, redaction report, model, base_url, is_remote).
+type Built = (
+    oracle::ContextBundle,
+    oracle::RedactionReport,
+    String,
+    String,
+    bool,
+);
+
+/// Sentinel `editing` value for an unsaved NEW profile.
+const NEW_PROFILE: usize = usize::MAX;
+
+/// The Oracle modal. Carries the consult state + the editable endpoint config.
 pub struct OracleView {
+    face: OracleFace,
     scopes: Vec<Scope>,
     scope_idx: usize,
     show_preview: bool,
-    /// The frozen previewed payload (the consent snapshot). Cleared on scope
-    /// change; required before a remote consult.
     frozen: Option<Frozen>,
-    /// Hash of an in-flight consult (drives the "consulting…" state + button gate).
     pending: Option<u64>,
     reply: Option<String>,
-    /// Validated model-proposed interventions parsed from the reply (stage-able),
-    /// the model suggestions that failed validation (shown as rejected), and the
-    /// indices the operator has staged this session.
     suggestions: Vec<ValidatedSuggestion>,
     rejects: Vec<String>,
     staged: std::collections::HashSet<usize>,
-    /// A note shown after a remote consult writes its egress audit record.
     audit_note: Option<String>,
-    /// Dev (`--oracle-go`): auto-fire the consult on the next draw.
     auto: bool,
-    /// Dev (`--oracle-suggest`): synthesize a deterministic validated suggestion
-    /// so the suggest→stage UI is screenshot/gui-smoke verifiable without a model.
     demo_suggest: bool,
     scroll: f32,
     max_scroll: f32,
+    // --- endpoint config (Settings face) -------------------------------------
+    config: OracleConfigFile,
+    env_token: Option<String>,
+    /// Which profile is being edited (`NEW_PROFILE` ⇒ an unsaved new one);
+    /// `None` ⇒ no edit form shown.
+    editing: Option<usize>,
+    f_name: TextField,
+    f_url: TextField,
+    f_model: TextField,
+    f_token: TextField,
+    focus: Option<FieldId>,
+    delete_armed: bool,
+    /// A short result note shown on the Settings face (save/activate outcome).
+    settings_note: Option<String>,
+    /// One-shot guard: auto-discover a LOCAL profile's models once when it's
+    /// selected for editing (a remote profile waits for an explicit discover —
+    /// its `/v1/models` is token-bearing egress). Reset on each `load_edit`.
+    models_attempted: bool,
 }
 
 impl OracleView {
     pub fn new(scopes: Vec<Scope>) -> Self {
+        let config = oracle_config_io::load();
+        let env_token = std::env::var("KUBERNATION_LLM_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty());
         OracleView {
+            face: OracleFace::Consult,
             scopes: if scopes.is_empty() {
                 vec![Scope::Realm]
             } else {
@@ -260,6 +286,17 @@ impl OracleView {
             demo_suggest: false,
             scroll: 0.0,
             max_scroll: 0.0,
+            config,
+            env_token,
+            editing: None,
+            f_name: TextField::default(),
+            f_url: TextField::default(),
+            f_model: TextField::default(),
+            f_token: TextField::new("", true),
+            focus: None,
+            delete_armed: false,
+            settings_note: None,
+            models_attempted: false,
         }
     }
 
@@ -268,11 +305,26 @@ impl OracleView {
         self.auto = true;
     }
 
-    /// True once a consult has produced a reply (success OR error) — drives the
-    /// `--oracle-go` screenshot, which holds until the (slow) model answers
-    /// rather than firing on a fixed frame count.
+    /// Dev: open the Settings face (the `--oracle-settings` headless capture).
+    pub fn open_settings(&mut self) {
+        self.enter_settings();
+    }
+
+    /// True once a consult has produced a reply (success OR error).
     pub fn reply_landed(&self) -> bool {
         self.reply.is_some()
+    }
+
+    /// Whether a Settings text field currently owns the keyboard (the `main`
+    /// `typing` gate ORs this in so typed text never fires a shortcut).
+    pub fn field_focused(&self) -> bool {
+        self.focus.is_some()
+    }
+
+    /// Defocus the active field (the first Esc when editing — main closes on the
+    /// second).
+    pub fn blur(&mut self) {
+        self.focus = None;
     }
 
     /// Dev: synthesize a deterministic validated suggestion (the `--oracle-suggest`
@@ -286,8 +338,7 @@ impl OracleView {
         self.show_preview = true;
     }
 
-    /// Dev: select the first available scope of a kind ("realm"/"workload"/
-    /// "node"/"concern") — drives the `--oracle <scope>` headless flag.
+    /// Dev: select the first available scope of a kind.
     pub fn focus_kind(&mut self, kind: &str) {
         let k = |s: &Scope| match s {
             Scope::Realm => "realm",
@@ -304,6 +355,199 @@ impl OracleView {
         self.scroll = (self.scroll - dy * 36.0).clamp(0.0, self.max_scroll);
     }
 
+    fn field_mut(&mut self, id: FieldId) -> &mut TextField {
+        match id {
+            FieldId::Name => &mut self.f_name,
+            FieldId::Url => &mut self.f_url,
+            FieldId::Model => &mut self.f_model,
+            FieldId::Token => &mut self.f_token,
+        }
+    }
+
+    /// The token source for the active profile (does it carry a saved token?).
+    fn active_token_on_disk(&self) -> bool {
+        self.config
+            .active_profile()
+            .map(|p| p.token.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Enter the Settings face, reloading the file (to pick up external edits) and
+    /// selecting the active profile for editing.
+    fn enter_settings(&mut self) {
+        self.config = oracle_config_io::load();
+        self.face = OracleFace::Settings;
+        self.settings_note = None;
+        self.delete_armed = false;
+        self.focus = None;
+        // Edit the active profile if any, else the first, else nothing.
+        let idx = self
+            .config
+            .active
+            .as_ref()
+            .and_then(|n| self.config.profiles.iter().position(|p| &p.name == n))
+            .or(if self.config.profiles.is_empty() {
+                None
+            } else {
+                Some(0)
+            });
+        match idx {
+            Some(i) => self.load_edit(i),
+            // No saved profiles yet — start a NEW one pre-filled with the built-in
+            // local default so the form (+ local model discovery) is ready.
+            None => self.load_edit(NEW_PROFILE),
+        }
+    }
+
+    /// Load a profile (or the NEW blank) into the edit fields.
+    fn load_edit(&mut self, idx: usize) {
+        self.editing = Some(idx);
+        self.delete_armed = false;
+        self.focus = None;
+        self.models_attempted = false;
+        let p = if idx == NEW_PROFILE {
+            Profile {
+                name: "new endpoint".into(),
+                base_url: DEFAULT_LLM_URL.into(),
+                model: DEFAULT_LLM_MODEL.into(),
+                token: None,
+            }
+        } else {
+            self.config.profiles[idx].clone()
+        };
+        self.f_name = TextField::new(&p.name, false);
+        self.f_url = TextField::new(&p.base_url, false);
+        self.f_model = TextField::new(&p.model, false);
+        self.f_token = TextField::new(p.token.as_deref().unwrap_or(""), true);
+    }
+
+    /// The Profile currently being composed in the edit fields.
+    fn edit_profile(&self) -> Profile {
+        let tok = self.f_token.buf.trim();
+        Profile {
+            name: self.f_name.buf.trim().to_string(),
+            base_url: self.f_url.buf.trim().to_string(),
+            model: self.f_model.buf.trim().to_string(),
+            token: if tok.is_empty() {
+                None
+            } else {
+                Some(tok.to_string())
+            },
+        }
+    }
+
+    /// Persist the config file, recording the outcome in `settings_note`.
+    fn persist(&mut self) {
+        match oracle_config_io::save(&self.config) {
+            Ok(path) => {
+                self.settings_note = Some(format!("saved -> {}", path.display()));
+            }
+            Err(e) => self.settings_note = Some(format!("save failed: {e}")),
+        }
+    }
+
+    /// Push the active profile's resolved config to the net thread (which
+    /// re-disarms remote egress + bumps the cfg-gen when the endpoint changes).
+    fn apply_active(&self, net: &Net) {
+        let (cfg, _) =
+            oracle_config::resolve_active(&self.config, None, None, self.env_token.as_deref());
+        net.set_oracle_config(Some(cfg));
+    }
+
+    /// Reset the consult state (frozen consent / reply / suggestions) — called
+    /// when the active endpoint changes so a payload framed for A never carries
+    /// over to B.
+    fn reset_consult(&mut self) {
+        self.show_preview = false;
+        self.frozen = None;
+        self.reply = None;
+        self.suggestions.clear();
+        self.rejects.clear();
+        self.staged.clear();
+        self.audit_note = None;
+        self.pending = None;
+        self.scroll = 0.0;
+    }
+
+    /// Save the edit fields as a profile. Returns the saved index, or an error
+    /// note. Does NOT change the active selection.
+    fn save_edit(&mut self, net: &Net) -> Result<usize, String> {
+        let p = self.edit_profile();
+        if p.name.is_empty() {
+            return Err("name is required".into());
+        }
+        if p.base_url.is_empty() {
+            return Err("URL is required".into());
+        }
+        let editing = self.editing.unwrap_or(NEW_PROFILE);
+        let dup = self
+            .config
+            .profiles
+            .iter()
+            .enumerate()
+            .any(|(i, q)| q.name == p.name && (editing == NEW_PROFILE || i != editing));
+        if dup {
+            return Err(format!("a profile named \"{}\" already exists", p.name));
+        }
+        let idx = if editing == NEW_PROFILE {
+            self.config.profiles.push(p.clone());
+            self.config.profiles.len() - 1
+        } else {
+            let old_name = self.config.profiles[editing].name.clone();
+            // If the active profile was renamed, follow it.
+            if self.config.active.as_deref() == Some(old_name.as_str()) && old_name != p.name {
+                self.config.active = Some(p.name.clone());
+            }
+            self.config.profiles[editing] = p.clone();
+            editing
+        };
+        self.editing = Some(idx);
+        self.persist();
+        // If we just edited the active profile, push the change to the net config.
+        if self.config.active.as_deref() == Some(p.name.as_str()) {
+            self.apply_active(net);
+        }
+        Ok(idx)
+    }
+
+    /// Make the edited profile active (saving it first), apply it, and return to
+    /// the Consult face.
+    fn activate_edit(&mut self, net: &Net) {
+        match self.save_edit(net) {
+            Ok(idx) => {
+                self.config.active = Some(self.config.profiles[idx].name.clone());
+                self.persist();
+                self.apply_active(net);
+                self.reset_consult();
+                self.face = OracleFace::Consult;
+            }
+            Err(e) => self.settings_note = Some(e),
+        }
+    }
+
+    /// Delete the edited profile (two-click armed). If it was active, fall back to
+    /// the built-in default.
+    fn delete_edit(&mut self, net: &Net) {
+        let Some(idx) = self.editing else { return };
+        if idx == NEW_PROFILE {
+            self.editing = None;
+            return;
+        }
+        let name = self.config.profiles[idx].name.clone();
+        self.config.profiles.remove(idx);
+        if self.config.active.as_deref() == Some(name.as_str()) {
+            self.config.active = None;
+            self.apply_active(net);
+            self.reset_consult();
+        }
+        self.persist();
+        self.editing = None;
+        self.delete_armed = false;
+        self.settings_note = Some(format!("deleted \"{name}\""));
+    }
+}
+
+impl OracleView {
     pub fn draw(
         &mut self,
         snap: Option<&Snapshot>,
@@ -311,24 +555,28 @@ impl OracleView {
         mouse: Vec2,
         click: bool,
     ) -> OracleAction {
+        // Feed the focused Settings field (the single char-queue owner) FIRST so
+        // typed text never reaches a global shortcut.
+        if self.face == OracleFace::Settings
+            && let Some(fid) = self.focus
+        {
+            self.field_mut(fid).update_focused();
+            if is_key_pressed(KeyCode::Tab) {
+                let nxt = match fid {
+                    FieldId::Name => FieldId::Url,
+                    FieldId::Url => FieldId::Model,
+                    FieldId::Model => FieldId::Token,
+                    FieldId::Token => FieldId::Name,
+                };
+                self.focus = Some(nxt);
+                crate::textfield::flush_char_queue();
+            }
+        }
+
         let cfg = net.oracle_config();
         let remote = cfg.as_ref().is_some_and(|c| c.endpoint == Endpoint::Remote);
         let armed = net.oracle_egress_armed();
-        // A remote endpoint that isn't armed yet shows "Arm remote egress" in the
-        // action slot instead of Consult — egress is a deliberate opt-in.
         let arm_mode = remote && !armed;
-        let action_label = if arm_mode {
-            "Arm remote egress\u{2026}"
-        } else {
-            "Consult"
-        };
-        let win = draw_window(
-            "Oracle of KuberNation — HOT",
-            vec2(760.0, 580.0),
-            &["Preview", action_label, "Close"],
-            usize::MAX,
-        );
-        let b = win.body;
 
         // Poll an in-flight consult.
         if let Some(h) = self.pending
@@ -340,10 +588,6 @@ impl OracleView {
             match &*r {
                 OracleReply::Ok(t) => {
                     self.reply = Some(t.clone());
-                    // Parse + VALIDATE any proposed suggestion against the LIVE
-                    // store (the model output never becomes an Intervention except
-                    // through this validator — hallucinations/protected targets are
-                    // rejected here, not staged).
                     if let Some(s) = snap
                         && let Some(env) = oracle_suggest::parse_suggestions(t)
                     {
@@ -360,9 +604,30 @@ impl OracleView {
             self.scroll = 0.0;
         }
 
-        // --- setup band -----------------------------------------------------
+        let action_label = if arm_mode {
+            "Arm remote egress\u{2026}"
+        } else {
+            "Consult"
+        };
+        let buttons: Vec<&str> = match self.face {
+            OracleFace::Consult => vec!["Settings\u{2026}", "Preview", action_label, "Close"],
+            OracleFace::Settings => vec!["+ new", "Back", "Close"],
+        };
+        let win = draw_window(
+            "Oracle of KuberNation — HOT",
+            vec2(760.0, 580.0),
+            &buttons,
+            usize::MAX,
+        );
+        let b = win.body;
+
+        // --- setup band (shared) -------------------------------------------
         let mut y = b.y + 4.0;
-        for (line, role) in oracle_setup_lines(cfg.as_ref()) {
+        for (line, role) in oracle_setup_lines(
+            cfg.as_ref(),
+            self.config.active.as_deref(),
+            self.active_token_on_disk(),
+        ) {
             text(ascii(&line), b.x, y + 12.0, 13.0, role_color(role));
             y += 16.0;
         }
@@ -378,9 +643,353 @@ impl OracleView {
             text(txt, b.x, y + 12.0, 13.0, col);
             y += 16.0;
         }
-        y += 4.0;
+        y += 6.0;
 
-        // --- scope chip (◀ scope ▶) ----------------------------------------
+        match self.face {
+            OracleFace::Settings => self.draw_settings(net, b, y, mouse, click, &win),
+            OracleFace::Consult => {
+                self.draw_consult(snap, net, b, y, mouse, click, &win, &cfg, remote, arm_mode)
+            }
+        }
+    }
+
+    /// The endpoint-configuration face: profile list + edit form + model picker.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_settings(
+        &mut self,
+        net: &Net,
+        b: Rect,
+        y0: f32,
+        mouse: Vec2,
+        click: bool,
+        win: &crate::window::WinLayout,
+    ) -> OracleAction {
+        let mut y = y0;
+        text_bold("ENDPOINT PROFILES", b.x, y + 12.0, 14.0, PARCHMENT);
+        text(
+            "(click to edit; > = active)",
+            b.x + 170.0,
+            y + 12.0,
+            12.0,
+            DIM,
+        );
+        y += 22.0;
+
+        // Profile rows (left side), capped.
+        let mut prof_rects: Vec<(usize, Rect)> = Vec::new();
+        let rows = profile_rows(&self.config);
+        if rows.is_empty() {
+            text(
+                "(no profiles — use \"+ new\")",
+                b.x + 8.0,
+                y + 12.0,
+                13.0,
+                DIM,
+            );
+            y += 18.0;
+        }
+        for (i, (label, role)) in rows.iter().enumerate().take(8) {
+            let r = Rect::new(b.x, y, 250.0, 18.0);
+            let editing_this = self.editing == Some(i);
+            if editing_this {
+                draw_rectangle(r.x, r.y, r.w, r.h, lighter(PLATE, 1.5));
+            } else if r.contains(mouse) {
+                draw_rectangle(r.x, r.y, r.w, r.h, lighter(PLATE, 1.2));
+            }
+            text(ascii(label), r.x + 4.0, y + 13.0, 13.0, role_color(*role));
+            prof_rects.push((i, r));
+            y += 19.0;
+        }
+        y += 8.0;
+
+        // Edit form for the selected profile.
+        let mut field_rects: Vec<(FieldId, Rect)> = Vec::new();
+        let mut model_rects: Vec<(String, Rect)> = Vec::new();
+        let mut discover_btn = Rect::new(0.0, 0.0, 0.0, 0.0);
+        let mut activate_btn = Rect::new(0.0, 0.0, 0.0, 0.0);
+        let mut save_btn = Rect::new(0.0, 0.0, 0.0, 0.0);
+        let mut clear_btn = Rect::new(0.0, 0.0, 0.0, 0.0);
+        let mut delete_btn = Rect::new(0.0, 0.0, 0.0, 0.0);
+
+        if self.editing.is_some() {
+            // Auto-discover a LOCAL profile's models once on select (a remote
+            // profile waits for an explicit discover — its /v1/models GET sends
+            // the token off-box). For a non-local profile, CLEAR the list so a
+            // remote endpoint never shows the previously-discovered endpoint's
+            // models (stale + clickable).
+            if !self.models_attempted {
+                self.models_attempted = true;
+                let p = self.edit_profile();
+                if !p.base_url.is_empty() && endpoint_kind(&p.base_url) == Endpoint::Local {
+                    net.request_models(p.to_llm_config(self.env_token.as_deref()));
+                } else {
+                    net.clear_models();
+                }
+            }
+            let labels = [
+                (FieldId::Name, "name"),
+                (FieldId::Url, "URL"),
+                (FieldId::Model, "model"),
+                (FieldId::Token, "token"),
+            ];
+            for (id, lbl) in labels {
+                text(lbl, b.x, y + 13.0, 13.0, DIM);
+                let fr = Rect::new(b.x + 56.0, y, 360.0, 18.0);
+                let focused = self.focus == Some(id);
+                draw_rectangle(
+                    fr.x,
+                    fr.y,
+                    fr.w,
+                    fr.h,
+                    if focused { lighter(PLATE, 1.6) } else { PLATE },
+                );
+                draw_rectangle_lines(
+                    fr.x,
+                    fr.y,
+                    fr.w,
+                    fr.h,
+                    1.0,
+                    if focused { PARCHMENT } else { DIM },
+                );
+                let disp = match id {
+                    FieldId::Name => self.f_name.display(),
+                    FieldId::Url => self.f_url.display(),
+                    FieldId::Model => self.f_model.display(),
+                    FieldId::Token => self.f_token.display(),
+                };
+                let shown = if disp.is_empty() && !focused {
+                    "(empty)".to_string()
+                } else {
+                    truncate(&disp, 48)
+                };
+                let col = if disp.is_empty() && !focused {
+                    DIM
+                } else {
+                    INK
+                };
+                text(ascii(&shown), fr.x + 4.0, y + 13.0, 13.0, col);
+                if focused {
+                    let cw = text_size(truncate(&disp, 48).as_str(), 13.0).width;
+                    draw_rectangle(fr.x + 5.0 + cw, fr.y + 3.0, 1.5, 12.0, PARCHMENT);
+                }
+                field_rects.push((id, fr));
+                // URL row: live Local|Remote badge.
+                if id == FieldId::Url {
+                    let kind = endpoint_kind(self.f_url.buf.trim());
+                    let (t, c) = match kind {
+                        Endpoint::Local => ("LOCAL", GOOD),
+                        Endpoint::Remote => ("REMOTE — publishing", WARN),
+                    };
+                    text(t, fr.x + fr.w + 8.0, y + 13.0, 12.0, c);
+                }
+                // Model row: a discover button.
+                if id == FieldId::Model {
+                    discover_btn = Rect::new(fr.x + fr.w + 8.0, fr.y, 80.0, 18.0);
+                    draw_btn(discover_btn, "discover", PARCHMENT, mouse);
+                }
+                // Token row: a clear button.
+                if id == FieldId::Token {
+                    clear_btn = Rect::new(fr.x + fr.w + 8.0, fr.y, 60.0, 18.0);
+                    draw_btn(clear_btn, "clear", DIM, mouse);
+                }
+                y += 22.0;
+            }
+
+            // Model picker rows (from the net discovery), click to set the model.
+            let models = net.models_out();
+            if let Some(Ok(list)) = &models {
+                for m in list.iter().take(6) {
+                    let cur = *m == self.f_model.buf;
+                    let r = Rect::new(b.x + 56.0, y, 360.0, 16.0);
+                    if r.contains(mouse) {
+                        draw_rectangle(r.x, r.y, r.w, r.h, lighter(PLATE, 1.2));
+                    }
+                    let mark = if cur { "> " } else { "  " };
+                    let role = if cur { GOOD } else { INK };
+                    text(
+                        ascii(&format!("{mark}{m}")),
+                        r.x + 4.0,
+                        y + 12.0,
+                        12.0,
+                        role,
+                    );
+                    model_rects.push((m.clone(), r));
+                    y += 16.0;
+                }
+            } else {
+                let line = model_picker_rows(models.as_ref(), &self.f_model.buf);
+                if let Some((t, _)) = line.first() {
+                    text(ascii(t), b.x + 56.0, y + 12.0, 12.0, DIM);
+                    y += 16.0;
+                }
+            }
+            y += 6.0;
+
+            // Action buttons.
+            activate_btn = Rect::new(b.x, y, 150.0, 20.0);
+            draw_btn(activate_btn, "Use this endpoint", GOOD, mouse);
+            save_btn = Rect::new(b.x + 160.0, y, 160.0, 20.0);
+            draw_btn(save_btn, "Save (incl. token)", PARCHMENT, mouse);
+            delete_btn = Rect::new(b.x + 330.0, y, 110.0, 20.0);
+            let del_label = if self.delete_armed {
+                "delete?"
+            } else {
+                "Delete"
+            };
+            draw_btn(delete_btn, del_label, WARN, mouse);
+            y += 26.0;
+
+            // Honest plaintext-on-disk disclosure.
+            for (line, col) in [
+                ("Save writes the token as PLAINTEXT to", DIM),
+                (
+                    oracle_config_io::config_path().to_string_lossy().as_ref(),
+                    DIM,
+                ),
+                (
+                    "(file mode 0600). Readable via your home dir, a backup, a disk",
+                    DIM,
+                ),
+                (
+                    "image, or a synced ~/.config. For high-sensitivity tokens prefer",
+                    DIM,
+                ),
+                ("KUBERNATION_LLM_TOKEN (env, never persisted).", DIM),
+            ] {
+                text(line, b.x, y + 12.0, 12.0, col);
+                y += 15.0;
+            }
+        }
+
+        if let Some(note) = &self.settings_note {
+            y += 4.0;
+            text(ascii(note), b.x, y + 12.0, 13.0, GOOD);
+        }
+
+        // --- input ---------------------------------------------------------
+        if click {
+            // Profile rows.
+            for (i, r) in &prof_rects {
+                if r.contains(mouse) {
+                    self.load_edit(*i);
+                    return OracleAction::None;
+                }
+            }
+            // Field focus (flush the stale char queue on acquire).
+            for (id, r) in &field_rects {
+                if r.contains(mouse) {
+                    self.focus = Some(*id);
+                    crate::textfield::flush_char_queue();
+                    return OracleAction::None;
+                }
+            }
+            // Model row → set the model field.
+            for (m, r) in &model_rects {
+                if r.contains(mouse) {
+                    self.f_model = TextField::new(m, false);
+                    return OracleAction::None;
+                }
+            }
+            if self.editing.is_some() {
+                if discover_btn.contains(mouse) {
+                    let p = self.edit_profile();
+                    let cfg = p.to_llm_config(self.env_token.as_deref());
+                    if cfg.endpoint == Endpoint::Local {
+                        // Loopback — listing models sends nothing off-box.
+                        net.request_models(cfg);
+                    } else {
+                        // Remote: token-bearing egress. Only the ACTIVE, ARMED
+                        // endpoint may be probed (never a different edit-form URL
+                        // while the arm is held for another) — probe the active
+                        // config, and record the egress like a consult.
+                        let active = net.oracle_config();
+                        let armed = net.oracle_egress_armed();
+                        let same = active.as_ref().map(|c| c.base_url.as_str())
+                            == Some(cfg.base_url.as_str());
+                        if armed
+                            && same
+                            && let Some(ac) = active
+                        {
+                            self.settings_note = Some(write_discovery_audit(&ac));
+                            net.request_models(ac);
+                        } else {
+                            self.settings_note = Some(
+                                "remote: click \"Use this endpoint\", then Arm it (in the consult \
+                                 view), before listing its models"
+                                    .into(),
+                            );
+                        }
+                    }
+                    return OracleAction::None;
+                }
+                if clear_btn.contains(mouse) {
+                    self.f_token = TextField::new("", true);
+                    self.settings_note = Some("token cleared (Save to persist)".into());
+                    return OracleAction::None;
+                }
+                if activate_btn.contains(mouse) {
+                    self.activate_edit(net);
+                    return OracleAction::None;
+                }
+                if save_btn.contains(mouse) {
+                    match self.save_edit(net) {
+                        Ok(_) => {}
+                        Err(e) => self.settings_note = Some(e),
+                    }
+                    return OracleAction::None;
+                }
+                if delete_btn.contains(mouse) {
+                    if self.delete_armed {
+                        self.delete_edit(net);
+                    } else {
+                        self.delete_armed = true;
+                        self.settings_note = Some("click Delete again to confirm".into());
+                    }
+                    return OracleAction::None;
+                }
+            }
+            // A click elsewhere in the modal clears field focus (keeps it open).
+            if win.frame.contains(mouse) {
+                self.focus = None;
+            }
+            match win.button_at(mouse) {
+                Some(0) => {
+                    // + new
+                    self.load_edit(NEW_PROFILE);
+                }
+                Some(1) => {
+                    // Back to Consult
+                    self.face = OracleFace::Consult;
+                    self.focus = None;
+                }
+                Some(_) => return OracleAction::Close, // Close
+                None => {
+                    if win.close.contains(mouse) || !win.frame.contains(mouse) {
+                        return OracleAction::Close;
+                    }
+                }
+            }
+        }
+        OracleAction::None
+    }
+
+    /// The consult face (scope → preview → consult → reply/suggestions).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_consult(
+        &mut self,
+        snap: Option<&Snapshot>,
+        net: &Net,
+        b: Rect,
+        y0: f32,
+        mouse: Vec2,
+        click: bool,
+        win: &crate::window::WinLayout,
+        cfg: &Option<LlmConfig>,
+        remote: bool,
+        arm_mode: bool,
+    ) -> OracleAction {
+        let mut y = y0;
+        // --- scope chip (◀ scope ▶) ---------------------------------------
         text("scope:", b.x, y + 12.0, 14.0, DIM);
         let sw = text_size("scope:", 14.0).width;
         let prev = Rect::new(b.x + sw + 10.0, y, 18.0, 18.0);
@@ -403,11 +1012,7 @@ impl OracleView {
         }
         y += 26.0;
 
-        // Build the bundle for the active scope (cheap for real sizes). Preview
-        // FREEZES the rendered payload (see `Frozen`), and a Consult sends exactly
-        // the frozen bytes — so what the operator reviewed is what is published,
-        // even if the live snapshot refreshes between viewing and clicking.
-        let built = snap.zip(cfg.as_ref()).map(|(s, c)| {
+        let built: Option<Built> = snap.zip(cfg.as_ref()).map(|(s, c)| {
             let ctx = oracle::BundleCtx {
                 cluster: &s.hot.observed.meta.context,
                 log_body: None,
@@ -424,30 +1029,24 @@ impl OracleView {
                 bundle,
                 report,
                 c.model.clone(),
+                c.base_url.clone(),
                 c.endpoint == Endpoint::Remote,
             )
         });
 
-        // Dev auto-consult (`--oracle-go`): fire once, as if Consult were clicked
-        // (local only — `dispatch` refuses a remote endpoint without a frozen
-        // preview).
+        // Dev auto-consult (`--oracle-go`): fire once.
         if self.auto && self.pending.is_none() {
             self.auto = false;
-            if let Some(h) = self.dispatch(net, &built, &cfg) {
+            if let Some(h) = self.dispatch(net, &built, cfg) {
                 self.pending = Some(h);
                 self.show_preview = false;
             }
         }
-
-        // The preview pane always shows a frozen snapshot — freeze lazily if it
-        // was opened without a click (the `--oracle-ask` dev flag).
         if self.show_preview && self.frozen.is_none() {
             self.frozen = freeze(&built);
         }
 
-        // Dev (`--oracle-suggest`): synthesize a deterministic validated suggestion
-        // (a restart of the first workload) so the suggest→stage UI renders without
-        // a model. Goes through the SAME validator as a real model suggestion.
+        // Dev (`--oracle-suggest`): synthesize a deterministic validated suggestion.
         if self.demo_suggest && self.reply.is_none() {
             self.demo_suggest = false;
             if let Some(s) = snap
@@ -479,9 +1078,7 @@ impl OracleView {
             }
         }
 
-        // --- body -----------------------------------------------------------
-        // Stage-button rects captured during the reply render (only for visible,
-        // not-yet-staged suggestions), hit-tested in the input section.
+        // --- body ----------------------------------------------------------
         let mut stage_btns: Vec<(usize, Rect)> = Vec::new();
         let mut cx = Ctx {
             body: Rect::new(b.x, y, b.w, b.h - (y - b.y)),
@@ -562,8 +1159,6 @@ impl OracleView {
             if let Some(note) = &self.audit_note {
                 cx.row(&ascii(note), DIM);
             }
-            // Validated suggestions — each stage-able into the planning turn (the
-            // operator reviews + commits through the existing dry-run/RBAC gate).
             if !self.suggestions.is_empty() {
                 cx.gap();
                 cx.row(
@@ -617,13 +1212,17 @@ impl OracleView {
                 "  • Consult — ask the model to explain it (it cannot change anything)",
                 DIM,
             );
+            cx.row(
+                "  • Settings — pick a local model or point at a remote endpoint",
+                DIM,
+            );
             if remote {
                 cx.row(
                     "  (remote endpoint — Preview is required before a Consult)",
                     DIM,
                 );
             }
-            if let Some((bundle, _, _, _)) = &built {
+            if let Some((bundle, _, _, _, _)) = &built {
                 cx.gap();
                 cx.row(
                     &format!(
@@ -645,9 +1244,8 @@ impl OracleView {
         self.max_scroll = (content_h - cx.body.h).max(0.0);
         self.scroll = self.scroll.min(self.max_scroll);
 
-        // --- input ----------------------------------------------------------
+        // --- input ---------------------------------------------------------
         if click {
-            // Stage a validated suggestion (its own buttons, below the reply).
             for (i, br) in &stage_btns {
                 if br.contains(mouse) {
                     self.staged.insert(*i);
@@ -658,7 +1256,6 @@ impl OracleView {
                 let n = self.scopes.len();
                 let delta = if prev.contains(mouse) { n - 1 } else { 1 };
                 self.scope_idx = (self.scope_idx + delta) % n;
-                // The frozen consent + preview + suggestions belonged to the old scope.
                 self.show_preview = false;
                 self.frozen = None;
                 self.reply = None;
@@ -671,26 +1268,24 @@ impl OracleView {
             }
             match win.button_at(mouse) {
                 Some(0) => {
-                    // Preview — FREEZE the current payload as the consent snapshot,
-                    // then show it.
+                    // Settings
+                    self.enter_settings();
+                }
+                Some(1) => {
+                    // Preview — freeze the consent snapshot.
                     self.frozen = freeze(&built);
                     self.show_preview = self.frozen.is_some();
                     self.scroll = 0.0;
                 }
-                Some(1) => {
+                Some(2) => {
                     if arm_mode {
-                        // Arm remote egress (the deliberate per-session opt-in).
                         net.arm_oracle_egress();
                     } else if self.pending.is_none() {
-                        // Consult. A remote consult REQUIRES a frozen preview (you
-                        // must see the exact payload first); a local one may use the
-                        // frozen snapshot or build fresh.
                         if remote && self.frozen.is_none() {
-                            // Force a preview first instead of sending blind.
                             self.frozen = freeze(&built);
                             self.show_preview = true;
                             self.scroll = 0.0;
-                        } else if let Some(sent) = self.dispatch(net, &built, &cfg) {
+                        } else if let Some(sent) = self.dispatch(net, &built, cfg) {
                             self.pending = Some(sent);
                             self.reply = None;
                             self.show_preview = false;
@@ -709,20 +1304,15 @@ impl OracleView {
         OracleAction::None
     }
 
-    /// Send a consult, preferring the frozen consent snapshot (what the operator
-    /// reviewed); a REMOTE consult is sent ONLY from a frozen preview and writes a
-    /// one-shot egress audit. Returns the bundle hash to poll, or `None` if it
-    /// couldn't send (no config / a remote endpoint with no frozen preview).
+    /// Send a consult, preferring the frozen consent snapshot. A REMOTE consult is
+    /// sent ONLY from a frozen preview and writes a one-shot egress audit.
     fn dispatch(
         &mut self,
         net: &Net,
-        built: &Option<(oracle::ContextBundle, oracle::RedactionReport, String, bool)>,
+        built: &Option<Built>,
         cfg: &Option<LlmConfig>,
     ) -> Option<u64> {
         if let Some(f) = self.frozen.take() {
-            // Audit a remote egress ONLY when this will be a real send — a cached
-            // reply (e.g. returning to a previously-consulted scope) is served
-            // without any POST, so it must not write a second "egress recorded".
             if let Some(c) = cfg
                 && c.endpoint == Endpoint::Remote
                 && net.oracle_reply(f.hash).is_none()
@@ -736,14 +1326,13 @@ impl OracleView {
             net.request_oracle(f.hash, f.messages);
             return Some(f.hash);
         }
-        // No frozen preview: only a LOCAL endpoint may build-and-send fresh. A
-        // remote consult must go through Preview first (the consent snapshot).
-        if let Some((bundle, _, model, remote)) = built {
+        // No frozen preview: only a LOCAL endpoint may build-and-send fresh.
+        if let Some((bundle, _, model, base_url, remote)) = built {
             if *remote {
                 return None;
             }
             let messages = oracle::render_prompt(bundle, "");
-            let hash = oracle::bundle_hash(bundle, "", model, *remote);
+            let hash = oracle::bundle_hash(bundle, "", model, base_url, *remote);
             net.request_oracle(hash, messages);
             return Some(hash);
         }
@@ -751,29 +1340,38 @@ impl OracleView {
     }
 }
 
-/// Snapshot the current bundle into a `Frozen` consent record (the messages sent,
-/// their legible preview, the wire size, and the cache hash) — what the operator
-/// reviews IS what a Consult sends. `None` when there's nothing to send (no
-/// config / no snapshot).
-fn freeze(
-    built: &Option<(oracle::ContextBundle, oracle::RedactionReport, String, bool)>,
-) -> Option<Frozen> {
-    built.as_ref().map(|(bundle, report, model, remote)| {
-        let messages = oracle::render_prompt(bundle, "");
-        let wire_bytes = oracle::request_json(&oracle::chat_request(model, messages.clone())).len();
-        Frozen {
-            hash: oracle::bundle_hash(bundle, "", model, *remote),
-            messages,
-            preview: oracle::consent_preview(bundle, "", model),
-            wire_bytes,
-            redacted: report.sections_masked,
-        }
-    })
+/// A small filled button with a label, highlighted on hover.
+fn draw_btn(r: Rect, label: &str, col: Color, mouse: Vec2) {
+    let bg = if r.contains(mouse) {
+        lighter(PLATE, 1.7)
+    } else {
+        PLATE
+    };
+    draw_rectangle(r.x, r.y, r.w, r.h, bg);
+    draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, col);
+    let tw = text_size(label, 13.0).width;
+    text(label, r.x + (r.w - tw) / 2.0, r.y + r.h - 5.0, 13.0, col);
 }
 
-/// Write a one-shot, metadata-only egress audit for a remote consult (the
-/// sanctioned local file export — like the postmortem). Records WHEN, WHERE, and
-/// HOW MUCH was published; never the prompt, the reply, or the API token.
+/// Snapshot the current bundle into a `Frozen` consent record.
+fn freeze(built: &Option<Built>) -> Option<Frozen> {
+    built
+        .as_ref()
+        .map(|(bundle, report, model, base_url, _remote)| {
+            let messages = oracle::render_prompt(bundle, "");
+            let wire_bytes =
+                oracle::request_json(&oracle::chat_request(model, messages.clone())).len();
+            Frozen {
+                hash: oracle::bundle_hash(bundle, "", model, base_url, *_remote),
+                messages,
+                preview: oracle::consent_preview(bundle, "", model),
+                wire_bytes,
+                redacted: report.sections_masked,
+            }
+        })
+}
+
+/// Write a one-shot, metadata-only egress audit for a remote consult.
 fn write_egress_audit(cfg: &LlmConfig, scope: &str, f: &Frozen) -> String {
     let now = kubernation_core::util::now();
     let content = egress_audit_content(
@@ -793,9 +1391,29 @@ fn write_egress_audit(cfg: &LlmConfig, scope: &str, f: &Frozen) -> String {
     }
 }
 
+/// Write a one-shot egress audit for a remote model-discovery GET (it sends the
+/// token off-box too — same posture as a consult, smaller payload).
+fn write_discovery_audit(cfg: &LlmConfig) -> String {
+    let now = kubernation_core::util::now();
+    let content = egress_audit_content(
+        cfg,
+        "model discovery (GET /v1/models)",
+        0,
+        0,
+        &now.strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    );
+    let fname = format!("oracle-egress-{}.txt", now.strftime("%Y%m%d-%H%M%S"));
+    let path = std::env::current_dir()
+        .unwrap_or_else(|_| ".".into())
+        .join(&fname);
+    match std::fs::write(&path, content) {
+        Ok(_) => format!("listing models (remote egress recorded -> {fname})"),
+        Err(e) => format!("(discovery audit not written: {e})"),
+    }
+}
+
 /// PURE: the audit record body. Records WHEN/WHERE/HOW MUCH — never the prompt,
-/// the reply, or the API token (only `base_url` + `model` are referenced).
-/// Unit-tested for the no-token invariant.
+/// the reply, or the API token. Unit-tested for the no-token invariant.
 fn egress_audit_content(
     cfg: &LlmConfig,
     scope: &str,
@@ -842,57 +1460,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn endpoint_kind_classifies_local_vs_remote() {
-        for url in [
-            "http://localhost:11434/v1",
-            "http://127.0.0.1:8080/v1",
-            "http://127.5.6.7/v1", // anywhere in 127.0.0.0/8
-            "https://0.0.0.0/v1",
-            "http://[::1]:11434/v1",
-            "HTTP://LocalHost:11434/v1", // case-insensitive
-        ] {
-            assert_eq!(endpoint_kind(url), Endpoint::Local, "{url} should be local");
-        }
-        for url in [
-            "https://api.openai.com/v1",
-            "https://openrouter.ai/api/v1",
-            "http://10.0.0.5:8080/v1",
-            // Bypass attempts the old prefix check mis-read as local:
-            "http://localhost.evil.com/v1",
-            "http://127.0.0.1.evil.com/v1",
-            "http://0.0.0.0.attacker.net/v1",
-            "http://localhost@evil.com/v1",
-            "http://notlocalhost.com/v1",
-        ] {
-            assert_eq!(
-                endpoint_kind(url),
-                Endpoint::Remote,
-                "{url} must be remote (no bypass)"
-            );
-        }
-    }
-
-    #[test]
-    fn resolve_config_defaults_local_and_reads_no_token_flag() {
-        // SAFETY: no env set in the test → token None; defaults to local Ollama.
-        let cfg = resolve_config(None, None).unwrap();
-        assert_eq!(cfg.base_url, DEFAULT_LLM_URL);
-        assert_eq!(cfg.model, DEFAULT_LLM_MODEL);
-        assert_eq!(cfg.endpoint, Endpoint::Local);
-        let remote = resolve_config(Some("https://api.openai.com/v1"), Some("gpt-4o")).unwrap();
-        assert_eq!(remote.endpoint, Endpoint::Remote);
-        assert_eq!(remote.model, "gpt-4o");
-    }
-
-    #[test]
-    fn setup_lines_show_location_and_token_presence_never_value() {
+    fn setup_lines_show_profile_location_and_token_source_never_value() {
         let cfg = LlmConfig {
             base_url: "http://localhost:11434/v1".into(),
-            model: "llama3.1".into(),
+            model: "qwen3.5:35b".into(),
             api_key: Some("sk-DO-NOT-LEAK".into()),
             endpoint: Endpoint::Local,
         };
-        let lines = oracle_setup_lines(Some(&cfg));
+        let lines = oracle_setup_lines(Some(&cfg), Some("local Ollama"), true);
         let joined: String = lines
             .iter()
             .map(|(s, _)| s.as_str())
@@ -902,20 +1477,66 @@ mod tests {
             !joined.contains("DO-NOT-LEAK"),
             "the token value must never render"
         );
-        assert!(joined.contains("token: set"));
+        assert!(joined.contains("profile: local Ollama"));
+        assert!(joined.contains("token: on disk"));
         assert!(joined.contains("local"));
-        // A remote endpoint flags itself as not-enabled.
+        // From-env token source when the active profile carries none.
+        let env_lines = oracle_setup_lines(Some(&cfg), Some("local Ollama"), false);
+        assert!(env_lines.iter().any(|(s, _)| s.contains("token: from env")));
+        // A remote endpoint flags itself.
         let remote = LlmConfig {
             endpoint: Endpoint::Remote,
             ..cfg
         };
-        let rl = oracle_setup_lines(Some(&remote));
+        let rl = oracle_setup_lines(Some(&remote), Some("corp"), true);
         assert!(
             rl.iter()
                 .any(|(s, r)| s.contains("REMOTE") && *r == Role::Warn)
         );
         // No config → a single warn line.
-        assert_eq!(oracle_setup_lines(None).len(), 1);
+        assert_eq!(oracle_setup_lines(None, None, false).len(), 1);
+    }
+
+    #[test]
+    fn profile_rows_marks_active_and_flags_remote() {
+        let config = OracleConfigFile {
+            version: 1,
+            profiles: vec![
+                Profile::local_default(),
+                Profile {
+                    name: "corp".into(),
+                    base_url: "https://api.corp/v1".into(),
+                    model: "gpt-4o".into(),
+                    token: Some("x".into()),
+                },
+            ],
+            active: Some("corp".into()),
+        };
+        let rows = profile_rows(&config);
+        assert_eq!(rows.len(), 2);
+        // The active "corp" row is marked + flagged REMOTE + Good role.
+        let corp = rows.iter().find(|(s, _)| s.contains("corp")).unwrap();
+        assert!(corp.0.starts_with("> "));
+        assert!(corp.0.contains("REMOTE"));
+        assert_eq!(corp.1, Role::Good);
+        // The inactive local row is not marked + not flagged.
+        let local = rows.iter().find(|(s, _)| s.contains("Ollama")).unwrap();
+        assert!(!local.0.contains("REMOTE"));
+        assert_eq!(local.1, Role::Body);
+    }
+
+    #[test]
+    fn model_picker_rows_states() {
+        assert_eq!(model_picker_rows(None, "x").len(), 1); // hint
+        let err: Result<Arc<Vec<String>>, String> = Err("offline".into());
+        assert!(model_picker_rows(Some(&err), "x")[0].0.contains("offline"));
+        let ok: Result<Arc<Vec<String>>, String> = Ok(Arc::new(vec!["a".into(), "b".into()]));
+        let rows = model_picker_rows(Some(&ok), "b");
+        assert!(
+            rows.iter()
+                .any(|(s, r)| s.contains("> b") && *r == Role::Good)
+        );
+        assert!(rows.iter().any(|(s, _)| s.contains("  a")));
     }
 
     #[test]
@@ -942,7 +1563,6 @@ mod tests {
         let w = wrap("alpha beta gamma", 5);
         assert!(w.len() >= 3);
         assert!(wrap("a\nb", 80) == vec!["a".to_string(), "b".to_string()]);
-        // A single over-long word is hard-split, never dropped.
         let hard = wrap("xxxxxxxxxx", 4);
         assert_eq!(hard.join(""), "xxxxxxxxxx");
     }

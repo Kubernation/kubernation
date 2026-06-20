@@ -1912,6 +1912,80 @@ what makes the interesting logic unit-testable without a cluster.
   tests; gui-smoke 38. Verified live: `--oracle-suggest` renders a restart
   suggestion with a Stage button; a kube-system target is rejected with its
   reason. **This completes the Oracle of KuberNation (P0–P3).**
+- **Oracle endpoint profiles + model picker (the FIRST persisted config + first
+  on-disk secret)** (2026-06-20, v0.53.0, user "enrich the Oracle to choose between
+  installed local models as well as configure to use an external model … corporate
+  environment where frontier models are hosted in a company-policy-compliant way";
+  design-workflow vetted — 4 lenses → 3 judges → synthesis): a **Settings** face on
+  the Oracle modal manages named **endpoint profiles** (a local Ollama, remote /
+  corporate endpoints) and switches between them in-app. **User decisions** (asked
+  up front): in-app masked token field **+** env still works; **persist everything
+  incl. the token** to disk; **multiple named profiles**. **Core
+  (`state/oracle_config.rs`, PURE + unit-tested, feature-gated with `oracle`):**
+  `Profile{name,base_url,model,token}` (manual **redacting Debug**;
+  `#[serde(skip_serializing_if)]` so a tokenless profile omits the key) +
+  `OracleConfigFile{version,profiles,active}` + `resolve_active(file, flag_url,
+  flag_model, env_token) -> (LlmConfig, ActiveSource)` — **precedence: flags
+  (transient, never persisted; a flag URL takes env-token only — a saved token is
+  NEVER sent to a CLI-typed URL) > active profile (its saved token wins, env fills
+  a None) > built-in default**. `DEFAULT_LLM_URL`/`DEFAULT_LLM_MODEL` + `endpoint_kind`
+  moved here from the GUI; the **load-bearing egress classifier `host_is_local` +
+  `is_loopback_v4` (+ the bypass suite) moved to always-compiled `state/oracle.rs`**
+  so it's tested even without the feature. `parse_models` (OpenAI/Ollama
+  `{data:[{id}]}`) + `oracle_client::list_models` (`GET /v1/models`) feed the
+  picker. **`bundle_hash` now folds `base_url`** (two remote profiles sharing a
+  model id no longer collide → no wrong-cached-reply / suppressed-egress-audit).
+  **Persistence (`gui/oracle_config_io.rs`, the only disk-touching file):** the
+  FIRST config file — `~/.config/kubernation/oracle.json`, dir `0700` + file
+  `0600` set **AT CREATE** (no world-readable TOCTOU window), atomic temp+fsync+
+  rename, a corrupt file renamed aside (never deleted — a recoverable token may be
+  inside) → degrade to default, never panics. **Token safety (every prior
+  invariant re-verified end-to-end):** the token's only wire path stays the
+  `Authorization: Bearer` header — structurally absent from `ChatRequest` ⇒ absent
+  from the preview / `bundle_hash` / Frozen / egress audit; the input handler makes
+  **zero tracing calls**; the on-disk token is **plaintext-by-explicit-opt-in**,
+  disclosed honestly in the Settings UI (steers high-sensitivity tokens to the
+  env var). **Egress gate unchanged + hardened:** a non-loopback endpoint stays
+  behind the per-session **arm**; `net.set_oracle_config` **re-disarms + drops
+  cached replies + bumps `oracle_gen`/`models_gen` on every endpoint change** (A's
+  consent never carries to B); the Local/Remote class is **recomputed from the URL
+  on every load/switch, never persisted/trusted**; remote model discovery
+  (token-bearing egress) is **gated on the arm** in both the GUI and the net drain.
+  redaction + fencing stay **unconditional** even for a "trusted corporate"
+  endpoint (it relaxes privacy only). **Text entry (`gui/textfield.rs`):** one
+  reusable masked `TextField` (paste via `clipboard_get` else `pbpaste`/`wl-paste`,
+  draining the stray Cmd+V `v`; flush-on-focus; bullets keep length, never reveal);
+  the `main` `typing` gate ORs in field focus so typed keys aren't shortcuts; Esc
+  defocuses before closing. **GUI (`gui/oracle.rs`):** a second `OracleFace`
+  (Consult/Settings) — NOT a new top-level modal — with a profile list (active
+  marked, REMOTE flagged), an edit form (live Local|Remote URL badge, discover
+  button + auto-discover for a local profile on select, in-line two-click delete,
+  explicit Save), the pure draw-decision fns `profile_rows`/`model_picker_rows`/
+  `oracle_setup_lines` unit-tested. Dev flag `--oracle-settings`; gui-smoke
+  `oracle-settings`. Zero new crates (`serde_json`/`tracing` already in the lock).
+  266 core + 47 GUI tests; gui-smoke 39. Verified live on kind + a real local
+  Ollama: the Settings face lists the pulled models (`nomic-embed-text`,
+  `qwen3.5:35b`), click-to-pick switches the model; a seeded remote "corp" profile
+  loads active → "REMOTE — must be armed", token rendered as bullets, "token: on
+  disk", the profile list marks active + flags REMOTE. **Adversarial-review fixes
+  (8 confirmed → all fixed):** (CRITICAL) the Settings text fields were uneditable
+  — the global `get_char_pressed` catch-all drain (main.rs) ran before the field's
+  draw-time read and ate every typed char; gating it on `&& !typing` fixes it (and
+  repairs the identical pre-existing city-image-editor bug). (HIGH ×2) the
+  model-discovery `discover` button built a config from the edit-form URL+token and
+  sent it while the arm was held for a DIFFERENT active endpoint — a token-exfil to
+  an attacker URL; remote discovery is now scoped to the **active, armed** endpoint
+  only (probes `net.oracle_config()`, never the edit-form URL) in BOTH the GUI and
+  the net drain (which refuses a remote cfg whose base_url ≠ the active armed one).
+  (MEDIUM ×4) `set_oracle_config` re-disarms + clears cached replies on a full
+  **credential-identity** change (url+token+model), not just the URL (two corp
+  profiles at the same URL with different tokens now re-arm); the atomic temp write
+  uses **`create_new`/O_EXCL** (+ removes a stale temp) so a planted symlink can't
+  redirect the plaintext token; selecting a non-local profile **clears** the stale
+  model list; a remote discovery **writes an egress audit** like a consult.
+  **Deferred:** OS-keychain token storage (noted, not built — plaintext+0600 is the
+  honest current state); per-profile model-discovery refresh-on-switch for
+  non-active profiles; a config schema migration beyond v1 best-effort load.
 
 ## The pair (hot/warm)
 

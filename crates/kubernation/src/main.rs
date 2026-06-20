@@ -26,10 +26,12 @@ mod menu;
 mod net;
 mod node;
 mod oracle;
+mod oracle_config_io;
 mod panels;
 mod plan;
 mod sidebar;
 mod text;
+mod textfield;
 mod theme;
 mod timeline;
 mod window;
@@ -243,6 +245,10 @@ struct Args {
     /// verification of the suggest→stage UI — no model required).
     #[arg(long)]
     oracle_suggest: bool,
+    /// With --oracle, open the endpoint-config (Settings) face (dev verification
+    /// of the profile picker / model picker / edit form).
+    #[arg(long)]
+    oracle_settings: bool,
     /// With --inspect, also open the object inspector (YAML) on the inspected
     /// city/node (development verification of the inspector)
     #[arg(long)]
@@ -474,12 +480,23 @@ async fn main() {
     let inspect = args.inspect.clone();
     let want_warm = args.warm.is_some();
     let net = net::Net::new();
-    // The Oracle (BYO-LLM): resolve the launch config from flags + env. The
-    // token is read from the environment ONLY and never written to disk / logged.
-    net.set_oracle_config(oracle::resolve_config(
-        args.llm_url.as_deref(),
-        args.llm_model.as_deref(),
-    ));
+    // The Oracle (BYO-LLM): resolve the active endpoint from the persisted
+    // profile config, overlaid by --llm-url/--llm-model flags (transient), with
+    // the API token from KUBERNATION_LLM_TOKEN (env, read here in the bin — core
+    // stays I/O-free). The env token never persists; a saved profile token wins.
+    {
+        let file = oracle_config_io::load();
+        let env_token = std::env::var("KUBERNATION_LLM_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let (cfg, _src) = kubernation_core::state::oracle_config::resolve_active(
+            &file,
+            args.llm_url.as_deref(),
+            args.llm_model.as_deref(),
+            env_token.as_deref(),
+        );
+        net.set_oracle_config(Some(cfg));
+    }
     let slo_default = args
         .slo_target
         .as_deref()
@@ -748,9 +765,11 @@ async fn main() {
         if !is_mouse_button_down(MouseButton::Left) {
             minimap_drag = false;
         }
-        // While typing into the log filter or the city image field, single-key
-        // shortcuts are text, not commands.
-        let typing = (log_open && log_filter_active) || city_image_edit.is_some();
+        // While typing into the log filter, the city image field, or an Oracle
+        // Settings text field, single-key shortcuts are text, not commands.
+        let typing = (log_open && log_filter_active)
+            || city_image_edit.is_some()
+            || oracle_view.as_ref().is_some_and(|v| v.field_focused());
         if (is_key_pressed(KeyCode::Q) && !typing) || is_quit_requested() {
             want_quit = true;
         }
@@ -863,10 +882,13 @@ async fn main() {
                 browser = Some(Browser::new());
                 browser_just_opened = true;
             }
-        } else if !log_open {
+        } else if !log_open && !typing {
             // A non-char modal owns the screen — discard typed chars so a stray
             // ':' can't pop the browser open when the modal later closes. (The
-            // log overlay consumes its own chars, so leave its queue alone.)
+            // log overlay consumes its own chars, so leave its queue alone; and
+            // when a text editor is focused — `typing` — skip the drain so the
+            // editor, which reads the queue later in the frame at draw time, gets
+            // the chars instead of having them eaten here.)
             while get_char_pressed().is_some() {}
         }
         // `y` inspects the open city/node window's object (read-only YAML).
@@ -926,6 +948,12 @@ async fn main() {
                 advisor = None;
             } else if charter.is_some() {
                 charter = None;
+            } else if oracle_view.as_ref().is_some_and(|v| v.field_focused()) {
+                // First Esc defocuses the Settings field (so a typo-dismissal
+                // doesn't nuke the modal + an unsaved token); a second closes.
+                if let Some(v) = oracle_view.as_mut() {
+                    v.blur();
+                }
             } else if oracle_view.is_some() {
                 oracle_view = None;
             } else if annals.is_some() {
@@ -1361,6 +1389,9 @@ async fn main() {
                     }
                     if args.oracle_suggest {
                         v.demo_suggest();
+                    }
+                    if args.oracle_settings {
+                        v.open_settings();
                     }
                     oracle_view = Some(v);
                     oracle_just_opened = true;
@@ -2940,6 +2971,10 @@ async fn main() {
             u32::MAX
         } else if args.chaos_go {
             600 // run at frame 30 + watch recovery + the scorecard settle
+        } else if args.oracle_settings {
+            // Auto-discovery of the local endpoint's models needs a couple net
+            // ticks (250ms each) to land in the picker.
+            180
         } else if args.plan_go || args.blast.is_some() || args.chaos.is_some() {
             120
         } else if args.browse.is_some() {
