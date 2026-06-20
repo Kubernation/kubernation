@@ -1847,6 +1847,35 @@ what makes the interesting logic unit-testable without a cluster.
   --oracle-go` fired the consult end-to-end — endpoint localhost, token shown as
   "none" never a value). Next: P2 (remote releasable w/ egress consent + the
   byte-frozen consent), P3 (suggest-to-gate).
+- **Oracle — P2 (remote releasable, egress consent)** (2026-06-19, v0.51.0): a
+  REMOTE OpenAI-compatible endpoint (OpenRouter/vLLM/Anthropic-shim/…) is now
+  usable, but because it *publishes* data off the laptop it is gated. **Arm gate
+  (net.rs `oracle_egress_armed`):** a non-local endpoint is OFF by default — the
+  GUI action button becomes "Arm remote egress…" behind a red explainer, and only
+  the deliberate per-session arm flips it to "Consult"; the net drain ALSO refuses
+  Remote-while-unarmed (P1's blanket refusal removed; defense-in-depth behind the
+  GUI gate). **Byte-frozen consent (`gui/oracle.rs` `Frozen` + the pure
+  `freeze`):** clicking Preview snapshots the rendered payload (hash + messages +
+  preview text), and a remote Consult sends ONLY that frozen snapshot via
+  `dispatch` — what the operator reviewed IS what is published, even if the live
+  world ticks between viewing and clicking (also fixes the P1 preview-drift
+  deferral); a remote Consult with no frozen preview forces a Preview instead of
+  sending blind. **One-shot egress audit (`write_egress_audit`/pure
+  `egress_audit_content`):** each real remote send writes a metadata-only
+  `oracle-egress-{ts}.txt` (when/endpoint/model/scope/bytes/redacted-count — NEVER
+  the prompt, reply, or token; unit-tested for the no-token invariant; gitignored)
+  — the sanctioned one-shot export. Token stays env-only; local consults
+  unchanged + need no arm. Dev flag `--oracle-arm`; gui-smoke `oracle-remote` +
+  `oracle-remote-armed`. **Adversarial review (5 confirmed → 2 distinct, fixed):**
+  the audit was written in `dispatch` before the net's cache check, so returning
+  to a previously-consulted scope (cache cleared only on context switch, not scope
+  change) over-recorded an "egress" the net actually served from cache with NO
+  POST — now the audit is gated on `net.oracle_reply(hash).is_none()` (a real send
+  only); plus a fmt-clean fix. 251 core + 46 GUI tests; gui-smoke 37. Verified live
+  (the armed preview renders the byte-exact JSON — system prompt + fenced
+  `<<<KN-UNTRUSTED…>>>` cluster data + the question). Next: P3 (suggest-to-gate —
+  the model PROPOSES a validated Intervention staged through the dry-run/commit
+  gate).
 
 ## The pair (hot/warm)
 

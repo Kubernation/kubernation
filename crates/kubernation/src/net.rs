@@ -293,6 +293,10 @@ pub struct Net {
     oracle_req: Mutex<Option<OracleReq>>,
     oracle_out: Mutex<HashMap<u64, Arc<OracleReply>>>,
     oracle_gen: AtomicU64,
+    /// Whether the operator has explicitly armed REMOTE (off-laptop) egress this
+    /// session. A non-local endpoint is publishing, so it's off by default; the
+    /// GUI arms it deliberately and the net drain honors it (defense-in-depth).
+    oracle_egress_armed: AtomicBool,
 }
 
 /// A queued Oracle consult: the cache key + the fully-rendered (redacted, fenced,
@@ -466,6 +470,7 @@ impl Net {
             oracle_req: Mutex::new(None),
             oracle_out: Mutex::new(HashMap::new()),
             oracle_gen: AtomicU64::new(0),
+            oracle_egress_armed: AtomicBool::new(false),
         })
     }
 
@@ -546,6 +551,17 @@ impl Net {
     /// The cached reply for a consult `hash`, if it has returned.
     pub fn oracle_reply(&self, hash: u64) -> Option<Arc<OracleReply>> {
         self.oracle_out.lock().unwrap().get(&hash).cloned()
+    }
+
+    /// Arm remote (off-laptop) Oracle egress for this session — a deliberate,
+    /// explicit opt-in (the endpoint is publishing). Local consults never need it.
+    pub fn arm_oracle_egress(&self) {
+        self.oracle_egress_armed.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether remote egress has been armed this session.
+    pub fn oracle_egress_armed(&self) -> bool {
+        self.oracle_egress_armed.load(Ordering::Relaxed)
     }
 
     /// Ask the net thread to discover resource kinds (once).
@@ -1048,6 +1064,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     && !net.oracle_out.lock().unwrap().contains_key(&hash)
                 {
                     let cfg = net.oracle_config();
+                    let armed = net.oracle_egress_armed.load(Ordering::Relaxed);
                     let net2 = net.clone();
                     let req_gen = net.oracle_gen.load(Ordering::Relaxed);
                     tokio::spawn(async move {
@@ -1056,12 +1073,12 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 "the Oracle isn't configured (set --llm-url / KUBERNATION_LLM_TOKEN)"
                                     .into(),
                             ),
-                            // P1 is local-only; a remote endpoint waits for P2's
-                            // egress-consent gate (defense-in-depth: the GUI also
-                            // refuses to consult a remote endpoint in this build).
-                            Some(c) if c.endpoint == oracle_client::Endpoint::Remote => {
+                            // Remote egress (publishing off the laptop) requires an
+                            // explicit per-session arm — defense-in-depth behind the
+                            // GUI gate, so a stray request can't leak the bundle.
+                            Some(c) if c.endpoint == oracle_client::Endpoint::Remote && !armed => {
                                 OracleReply::Err(
-                                    "remote endpoints arrive in a later version; point --llm-url at a local model"
+                                    "remote egress is not armed — arm it in the Oracle window first"
                                         .into(),
                                 )
                             }

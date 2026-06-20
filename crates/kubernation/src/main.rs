@@ -233,6 +233,10 @@ struct Args {
     /// model) — for a headless end-to-end round-trip check.
     #[arg(long)]
     oracle_go: bool,
+    /// Arm remote Oracle egress at launch (dev verification of the remote
+    /// consent path — remote egress is otherwise off by default).
+    #[arg(long)]
+    oracle_arm: bool,
     /// With --inspect, also open the object inspector (YAML) on the inspected
     /// city/node (development verification of the inspector)
     #[arg(long)]
@@ -1338,6 +1342,9 @@ async fn main() {
                     annals = Some(timeline::Annals::new());
                 }
                 if let Some(want) = &args.oracle {
+                    if args.oracle_arm {
+                        net.arm_oracle_egress();
+                    }
                     let mut v = OracleView::new(oracle_scopes(Some(s), selected, concern_idx));
                     v.focus_kind(want);
                     if args.oracle_ask {

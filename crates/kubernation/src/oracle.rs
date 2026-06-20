@@ -1,13 +1,17 @@
 //! The Oracle of KuberNation — the BYO-LLM "Wonder" consult modal.
 //!
-//! P1: **local, explain-only**. A window over the pure `state::oracle` pipeline —
-//! pick a SCOPE (realm / a selected workload / node / a focused concern), see the
-//! EXACT redacted + fenced prompt that will be sent (the mandatory pre-send
-//! preview — the egress-safety habit from day one), Consult a local model, and
-//! read the advisory reply. The model NEVER acts; replies are labelled
-//! model-generated. Config is local-default (Ollama); remote endpoints arrive in
-//! a later version. The pure draw-decision fns are unit-tested (testability
-//! policy); macroquad rendering is covered by gui-smoke.
+//! **Explain-only** (no write path). A window over the pure `state::oracle`
+//! pipeline — pick a SCOPE (realm / a selected workload / node / a focused
+//! concern), see the EXACT redacted + fenced prompt that will be sent (the
+//! mandatory pre-send preview), Consult, and read the advisory reply. The model
+//! NEVER acts; replies are labelled model-generated.
+//!
+//! Config is local-default (Ollama). A LOCAL endpoint keeps everything on the
+//! laptop. A REMOTE endpoint is publishing, so it is OFF by default behind an
+//! explicit per-session ARM, and a remote Consult sends only the **frozen**
+//! previewed bytes (what you reviewed is what is published) and writes a
+//! one-shot, metadata-only egress audit. The pure draw-decision fns are
+//! unit-tested (testability policy); macroquad rendering is covered by gui-smoke.
 
 use kubernation_core::k8s::oracle_client::{Endpoint, LlmConfig};
 use kubernation_core::state::oracle::{self, Caps, Scope};
@@ -118,7 +122,7 @@ pub fn oracle_setup_lines(cfg: Option<&LlmConfig>) -> Vec<(String, Role)> {
             let (loc, lr) = match c.endpoint {
                 Endpoint::Local => ("local (stays on this laptop)".to_string(), Role::Good),
                 Endpoint::Remote => (
-                    "REMOTE — not enabled in this build (use a local model)".to_string(),
+                    "REMOTE — publishing off-laptop (must be armed)".to_string(),
                     Role::Warn,
                 ),
             };
@@ -172,15 +176,31 @@ fn wrap(s: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// A previewed payload, frozen at Preview time so a Consult sends EXACTLY the
+/// bytes the operator reviewed — the consent must not drift if the live snapshot
+/// refreshes between viewing and clicking (mandatory for a remote/publishing
+/// consult; nice for local).
+struct Frozen {
+    hash: u64,
+    messages: Vec<oracle::ChatMessage>,
+    preview: String,
+    redacted: usize,
+}
+
 /// The Oracle consult modal. `scopes` is captured at open from the current
 /// selection (realm always available).
 pub struct OracleView {
     scopes: Vec<Scope>,
     scope_idx: usize,
     show_preview: bool,
+    /// The frozen previewed payload (the consent snapshot). Cleared on scope
+    /// change; required before a remote consult.
+    frozen: Option<Frozen>,
     /// Hash of an in-flight consult (drives the "consulting…" state + button gate).
     pending: Option<u64>,
     reply: Option<String>,
+    /// A note shown after a remote consult writes its egress audit record.
+    audit_note: Option<String>,
     /// Dev (`--oracle-go`): auto-fire the consult on the next draw.
     auto: bool,
     scroll: f32,
@@ -197,8 +217,10 @@ impl OracleView {
             },
             scope_idx: 0,
             show_preview: false,
+            frozen: None,
             pending: None,
             reply: None,
+            audit_note: None,
             auto: false,
             scroll: 0.0,
             max_scroll: 0.0,
@@ -240,14 +262,24 @@ impl OracleView {
         mouse: Vec2,
         click: bool,
     ) -> OracleAction {
+        let cfg = net.oracle_config();
+        let remote = cfg.as_ref().is_some_and(|c| c.endpoint == Endpoint::Remote);
+        let armed = net.oracle_egress_armed();
+        // A remote endpoint that isn't armed yet shows "Arm remote egress" in the
+        // action slot instead of Consult — egress is a deliberate opt-in.
+        let arm_mode = remote && !armed;
+        let action_label = if arm_mode {
+            "Arm remote egress\u{2026}"
+        } else {
+            "Consult"
+        };
         let win = draw_window(
             "Oracle of KuberNation — HOT",
             vec2(760.0, 580.0),
-            &["Preview", "Consult", "Close"],
+            &["Preview", action_label, "Close"],
             usize::MAX,
         );
         let b = win.body;
-        let cfg = net.oracle_config();
 
         // Poll an in-flight consult.
         if let Some(h) = self.pending
@@ -265,6 +297,18 @@ impl OracleView {
         let mut y = b.y + 4.0;
         for (line, role) in oracle_setup_lines(cfg.as_ref()) {
             text(ascii(&line), b.x, y + 12.0, 13.0, role_color(role));
+            y += 16.0;
+        }
+        if remote {
+            let (txt, col) = if armed {
+                ("remote egress: ARMED (publishing this session)", WARN)
+            } else {
+                (
+                    "remote egress: disarmed (off-laptop sending is blocked)",
+                    DIM,
+                )
+            };
+            text(txt, b.x, y + 12.0, 13.0, col);
             y += 16.0;
         }
         y += 4.0;
@@ -293,10 +337,9 @@ impl OracleView {
         y += 26.0;
 
         // Build the bundle for the active scope (cheap for real sizes). Preview
-        // and Consult render/send from the SAME `built` each frame, so within a
-        // frame the preview IS the sent bytes; across frames a live snapshot
-        // refresh can change it (acceptable for a local explain-only consult —
-        // P2's formal remote-egress consent will freeze the previewed bytes).
+        // FREEZES the rendered payload (see `Frozen`), and a Consult sends exactly
+        // the frozen bytes — so what the operator reviewed is what is published,
+        // even if the live snapshot refreshes between viewing and clicking.
         let built = snap.zip(cfg.as_ref()).map(|(s, c)| {
             let ctx = oracle::BundleCtx {
                 cluster: &s.hot.observed.meta.context,
@@ -318,18 +361,21 @@ impl OracleView {
             )
         });
 
-        // Dev auto-consult (`--oracle-go`): fire once, as if Consult were clicked.
+        // Dev auto-consult (`--oracle-go`): fire once, as if Consult were clicked
+        // (local only — `dispatch` refuses a remote endpoint without a frozen
+        // preview).
         if self.auto && self.pending.is_none() {
             self.auto = false;
-            if let Some((bundle, _, model, remote)) = &built
-                && !*remote
-            {
-                let messages = oracle::render_prompt(bundle, "");
-                let hash = oracle::bundle_hash(bundle, "", model, *remote);
-                net.request_oracle(hash, messages);
-                self.pending = Some(hash);
+            if let Some(h) = self.dispatch(net, &built, &cfg) {
+                self.pending = Some(h);
                 self.show_preview = false;
             }
+        }
+
+        // The preview pane always shows a frozen snapshot — freeze lazily if it
+        // was opened without a click (the `--oracle-ask` dev flag).
+        if self.show_preview && self.frozen.is_none() {
+            self.frozen = freeze(&built);
         }
 
         // --- body -----------------------------------------------------------
@@ -339,32 +385,63 @@ impl OracleView {
         };
         if snap.is_none() {
             cx.row("waiting for the cluster to sync…", DIM);
+        } else if arm_mode {
+            cx.row(
+                "This endpoint is REMOTE — consulting it sends data OFF this",
+                WARN,
+            );
+            cx.row("laptop to a third party (publishing it).", WARN);
+            cx.gap();
+            cx.row(
+                "Kubernation redacts credential-shaped text and shows you the",
+                DIM,
+            );
+            cx.row(
+                "EXACT payload before sending — but review it: anything that",
+                DIM,
+            );
+            cx.row(
+                "survives redaction will be published. The API token is sent as",
+                DIM,
+            );
+            cx.row(
+                "a bearer header and each remote consult is recorded to a local",
+                DIM,
+            );
+            cx.row("audit file (metadata only).", DIM);
+            cx.gap();
+            cx.row(
+                "Click \"Arm remote egress\" to enable remote consults this session.",
+                PARCHMENT,
+            );
         } else if self.show_preview {
-            match &built {
-                Some((bundle, report, model, remote)) => {
+            match &self.frozen {
+                Some(f) => {
                     cx.row(
                         &format!(
                             "this EXACT text will be sent to the {} model — review before consulting:",
-                            if *remote { "REMOTE" } else { "local" }
+                            if remote { "REMOTE" } else { "local" }
                         ),
-                        if *remote { WARN } else { PARCHMENT },
+                        if remote { WARN } else { PARCHMENT },
                     );
-                    if report.sections_masked > 0 {
+                    if f.redacted > 0 {
                         cx.row(
                             &format!(
                                 "({} section(s) had credential-shaped text masked; redaction is best-effort)",
-                                report.sections_masked
+                                f.redacted
                             ),
                             DIM,
                         );
                     }
                     cx.gap();
-                    let preview = oracle::consent_preview(bundle, "", model);
-                    for line in wrap(&preview, 96) {
+                    for line in wrap(&f.preview, 96) {
                         cx.row(&ascii(&line), INK);
                     }
                 }
-                None => cx.row("the Oracle is not configured.", WARN),
+                None => cx.row(
+                    "preview unavailable (waiting for sync / not configured).",
+                    WARN,
+                ),
             }
         } else if self.pending.is_some() {
             cx.row(
@@ -377,6 +454,9 @@ impl OracleView {
             }
             cx.gap();
             cx.row("— model-generated; verify before acting.", DIM);
+            if let Some(note) = &self.audit_note {
+                cx.row(&ascii(note), DIM);
+            }
         } else {
             cx.row("Pick a scope, then:", PARCHMENT);
             cx.row(
@@ -387,6 +467,12 @@ impl OracleView {
                 "  • Consult — ask the model to explain it (it cannot change anything)",
                 DIM,
             );
+            if remote {
+                cx.row(
+                    "  (remote endpoint — Preview is required before a Consult)",
+                    DIM,
+                );
+            }
             if let Some((bundle, _, _, _)) = &built {
                 cx.gap();
                 cx.row(
@@ -415,30 +501,41 @@ impl OracleView {
                 let n = self.scopes.len();
                 let delta = if prev.contains(mouse) { n - 1 } else { 1 };
                 self.scope_idx = (self.scope_idx + delta) % n;
+                // The frozen consent + preview belonged to the old scope.
                 self.show_preview = false;
+                self.frozen = None;
                 self.reply = None;
+                self.audit_note = None;
                 self.scroll = 0.0;
                 return OracleAction::None;
             }
             match win.button_at(mouse) {
                 Some(0) => {
-                    // Preview — toggle.
-                    self.show_preview = !self.show_preview;
+                    // Preview — FREEZE the current payload as the consent snapshot,
+                    // then show it.
+                    self.frozen = freeze(&built);
+                    self.show_preview = self.frozen.is_some();
                     self.scroll = 0.0;
                 }
                 Some(1) => {
-                    // Consult — local only, not while one is in flight.
-                    if self.pending.is_none()
-                        && let Some((bundle, _, model, remote)) = &built
-                        && !*remote
-                    {
-                        let messages = oracle::render_prompt(bundle, "");
-                        let hash = oracle::bundle_hash(bundle, "", model, *remote);
-                        net.request_oracle(hash, messages);
-                        self.pending = Some(hash);
-                        self.reply = None;
-                        self.show_preview = false;
-                        self.scroll = 0.0;
+                    if arm_mode {
+                        // Arm remote egress (the deliberate per-session opt-in).
+                        net.arm_oracle_egress();
+                    } else if self.pending.is_none() {
+                        // Consult. A remote consult REQUIRES a frozen preview (you
+                        // must see the exact payload first); a local one may use the
+                        // frozen snapshot or build fresh.
+                        if remote && self.frozen.is_none() {
+                            // Force a preview first instead of sending blind.
+                            self.frozen = freeze(&built);
+                            self.show_preview = true;
+                            self.scroll = 0.0;
+                        } else if let Some(sent) = self.dispatch(net, &built, &cfg) {
+                            self.pending = Some(sent);
+                            self.reply = None;
+                            self.show_preview = false;
+                            self.scroll = 0.0;
+                        }
                     }
                 }
                 Some(_) => return OracleAction::Close, // Close
@@ -451,6 +548,109 @@ impl OracleView {
         }
         OracleAction::None
     }
+
+    /// Send a consult, preferring the frozen consent snapshot (what the operator
+    /// reviewed); a REMOTE consult is sent ONLY from a frozen preview and writes a
+    /// one-shot egress audit. Returns the bundle hash to poll, or `None` if it
+    /// couldn't send (no config / a remote endpoint with no frozen preview).
+    fn dispatch(
+        &mut self,
+        net: &Net,
+        built: &Option<(oracle::ContextBundle, oracle::RedactionReport, String, bool)>,
+        cfg: &Option<LlmConfig>,
+    ) -> Option<u64> {
+        if let Some(f) = self.frozen.take() {
+            // Audit a remote egress ONLY when this will be a real send — a cached
+            // reply (e.g. returning to a previously-consulted scope) is served
+            // without any POST, so it must not write a second "egress recorded".
+            if let Some(c) = cfg
+                && c.endpoint == Endpoint::Remote
+                && net.oracle_reply(f.hash).is_none()
+            {
+                self.audit_note = Some(write_egress_audit(
+                    c,
+                    &self.scopes[self.scope_idx].label(),
+                    &f,
+                ));
+            }
+            net.request_oracle(f.hash, f.messages);
+            return Some(f.hash);
+        }
+        // No frozen preview: only a LOCAL endpoint may build-and-send fresh. A
+        // remote consult must go through Preview first (the consent snapshot).
+        if let Some((bundle, _, model, remote)) = built {
+            if *remote {
+                return None;
+            }
+            let messages = oracle::render_prompt(bundle, "");
+            let hash = oracle::bundle_hash(bundle, "", model, *remote);
+            net.request_oracle(hash, messages);
+            return Some(hash);
+        }
+        None
+    }
+}
+
+/// Snapshot the current bundle into a `Frozen` consent record (the rendered
+/// prompt + its byte-identical preview + hash) — what the operator reviews IS
+/// what a Consult sends. `None` when there's nothing to send (no config / no
+/// snapshot).
+fn freeze(
+    built: &Option<(oracle::ContextBundle, oracle::RedactionReport, String, bool)>,
+) -> Option<Frozen> {
+    built
+        .as_ref()
+        .map(|(bundle, report, model, remote)| Frozen {
+            hash: oracle::bundle_hash(bundle, "", model, *remote),
+            messages: oracle::render_prompt(bundle, ""),
+            preview: oracle::consent_preview(bundle, "", model),
+            redacted: report.sections_masked,
+        })
+}
+
+/// Write a one-shot, metadata-only egress audit for a remote consult (the
+/// sanctioned local file export — like the postmortem). Records WHEN, WHERE, and
+/// HOW MUCH was published; never the prompt, the reply, or the API token.
+fn write_egress_audit(cfg: &LlmConfig, scope: &str, f: &Frozen) -> String {
+    let now = kubernation_core::util::now();
+    let content = egress_audit_content(
+        cfg,
+        scope,
+        f.preview.len(),
+        f.redacted,
+        &now.strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    );
+    let fname = format!("oracle-egress-{}.txt", now.strftime("%Y%m%d-%H%M%S"));
+    let path = std::env::current_dir()
+        .unwrap_or_else(|_| ".".into())
+        .join(&fname);
+    match std::fs::write(&path, content) {
+        Ok(_) => format!("remote egress recorded -> {fname}"),
+        Err(e) => format!("(egress audit not written: {e})"),
+    }
+}
+
+/// PURE: the audit record body. Records WHEN/WHERE/HOW MUCH — never the prompt,
+/// the reply, or the API token (only `base_url` + `model` are referenced).
+/// Unit-tested for the no-token invariant.
+fn egress_audit_content(
+    cfg: &LlmConfig,
+    scope: &str,
+    bytes: usize,
+    redacted: usize,
+    when: &str,
+) -> String {
+    format!(
+        "kubernation oracle — remote egress audit\n\
+         when: {when}\n\
+         endpoint: {}\n\
+         model: {}\n\
+         scope: {scope}\n\
+         request bytes: {bytes}\n\
+         sections with credential-shaped text masked: {redacted}\n\
+         (metadata only — the prompt, the reply, and the API token are NOT recorded)\n",
+        cfg.base_url, cfg.model,
+    )
 }
 
 // Minimal scroll-aware text cursor (mirrors charter.rs::Ctx).
@@ -553,6 +753,25 @@ mod tests {
         );
         // No config → a single warn line.
         assert_eq!(oracle_setup_lines(None).len(), 1);
+    }
+
+    #[test]
+    fn egress_audit_records_metadata_never_the_token() {
+        let cfg = LlmConfig {
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-4o".into(),
+            api_key: Some("sk-SUPER-SECRET-TOKEN".into()),
+            endpoint: Endpoint::Remote,
+        };
+        let c = egress_audit_content(&cfg, "the whole realm", 1234, 2, "2026-06-19T00:00:00Z");
+        assert!(
+            !c.contains("SUPER-SECRET"),
+            "the API token must never be audited"
+        );
+        assert!(c.contains("api.openai.com"));
+        assert!(c.contains("gpt-4o"));
+        assert!(c.contains("request bytes: 1234"));
+        assert!(c.contains("masked: 2"));
     }
 
     #[test]

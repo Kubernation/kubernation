@@ -9,6 +9,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **The Oracle — remote endpoints (opt-in, gated).** The Oracle can now consult a
+  remote OpenAI-compatible model (OpenRouter, vLLM, an Anthropic shim, …), but
+  because that *publishes* data off the laptop it is **off by default behind an
+  explicit per-session "Arm remote egress"** action. A remote consult sends only
+  the **exact bytes you previewed** (the consent is frozen at Preview time, so it
+  can't drift), and each one writes a one-shot, metadata-only local audit record
+  (when / endpoint / model / size — never the prompt, reply, or token). The API
+  token stays env-only. Local (Ollama) consults are unchanged and need no arming.
 - **The Oracle of KuberNation (BYO-LLM Wonder) — local, explain-only.** A new
   **Oracle** menu consults a bring-your-own language model to *explain* a scope —
   the whole realm, a selected workload or node, or a focused concern. It is
