@@ -7,7 +7,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-kubernation-core = { path = "../kubernation-core" }
+# `oracle` turns on the BYO-LLM HTTP egress for the product binary (it stays off
+# for the headless core smoke gate). Egress is still opt-in at RUNTIME via config.
+kubernation-core = { path = "../kubernation-core", features = ["oracle"] }
 macroquad = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 clap = { version = "4", features = ["derive"] }

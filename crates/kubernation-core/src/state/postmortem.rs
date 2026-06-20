@@ -300,11 +300,32 @@ fn is_cred_key(key: &str) -> bool {
 /// keys, the `Bearer <token>` / `Authorization:` header shape, and URL basic-auth
 /// (`scheme://user:pass@host`, authority only). Fires on explicit patterns — low
 /// false-positive; not a guarantee (the footer says so).
-fn redact(s: &str) -> String {
+///
+/// `pub(crate)` because the Oracle's context bundle reuses the SAME free-text
+/// scrubber before any LLM egress (one redactor, one set of behaviours, one set
+/// of tests — the postmortem export and the Oracle cannot drift).
+pub(crate) fn redact(s: &str) -> String {
+    // Process PER LINE so newlines/structure survive, splitting each line on ANY
+    // whitespace (spaces AND tabs) — a credential must be found regardless of the
+    // column separator. This is correct on raw MULTI-LINE input (the Oracle feeds
+    // whole log bodies through here, not just `oneline()`-flattened text).
+    s.split_inclusive('\n').map(redact_line).collect()
+}
+
+/// Redact one line (which may carry its trailing `\n`/`\r`, preserved verbatim).
+fn redact_line(line: &str) -> String {
+    let (body, nl) = match line.strip_suffix('\n') {
+        Some(b) => (b, "\n"),
+        None => (line, ""),
+    };
+    let (body, cr) = match body.strip_suffix('\r') {
+        Some(b) => (b, "\r"),
+        None => (body, ""),
+    };
     let mut out: Vec<String> = Vec::new();
     let mut mask_next = false; // set after a credential "lead" token
-    for tok in s.split(' ') {
-        if mask_next && !tok.is_empty() {
+    for tok in body.split_whitespace() {
+        if mask_next {
             if is_cred_lead(tok) {
                 // e.g. "Bearer" between "Authorization:" and the value — keep it,
                 // the actual value is still ahead.
@@ -322,7 +343,7 @@ fn redact(s: &str) -> String {
         }
         out.push(redact_token(tok));
     }
-    out.join(" ")
+    format!("{}{cr}{nl}", out.join(" "))
 }
 
 /// A standalone credential "lead" whose VALUE is the next token: the bare auth
@@ -363,6 +384,18 @@ fn redact_token(tok: &str) -> String {
             tok[..i].trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-');
         if is_cred_key(key) {
             return format!("{}=••••", &tok[..i]);
+        }
+    }
+    // key:value WITHIN one token — the JSON (`"password":"x"`) / logfmt
+    // (`password:x`) shape that no whitespace separates. (The whitespace-
+    // separated `key: value` form is handled by `is_cred_lead` in the line loop.)
+    if let Some(i) = tok.find(':')
+        && i + 1 < tok.len()
+    {
+        let key =
+            tok[..i].trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-');
+        if is_cred_key(key) {
+            return format!("{}:••••", &tok[..i]);
         }
     }
     tok.to_string()

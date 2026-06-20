@@ -11,6 +11,7 @@ pub mod logline;
 pub mod model;
 pub mod netpol;
 pub mod observed;
+pub mod oracle;
 pub mod pair;
 pub mod planned;
 pub mod postmortem;

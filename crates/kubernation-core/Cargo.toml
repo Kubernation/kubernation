@@ -9,6 +9,19 @@ repository.workspace = true
 [features]
 # Synthetic-world builders for tests and frontend prototypes.
 fixtures = []
+# The Oracle (BYO-LLM) outbound HTTP egress — the project's FIRST general
+# outbound network call. OFF by default so the headless `make smoke` core
+# example never links it; the `kubernation` bin turns it on. The pure
+# `state/oracle.rs` (bundle/redaction/prompt) is always built — only the
+# networked `k8s/oracle_client.rs` is gated. Reuses the hyper+rustls(ring) stack
+# kube already pulls (zero new crates vs reqwest's ~40, incl. QUIC/ICU/wasm).
+oracle = [
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:hyper-rustls",
+    "dep:http-body-util",
+    "dep:rustls",
+]
 
 [dependencies]
 # `ws` adds the SPDY/WebSocket upgrade `Api::portforward` needs (it is the
@@ -24,3 +37,12 @@ tracing = "0.1"
 serde = { version = "1.0.228", default-features = false }
 serde_json = "1"
 serde_yaml = "0.9"
+# Oracle egress (feature = "oracle"): the OpenAI-compatible HTTP client. All of
+# these are ALREADY in Cargo.lock via kube's client stack, so enabling the
+# feature pulls zero new crates. rustls uses the `ring` provider kube already
+# selects (a process-default mismatch would panic at runtime).
+hyper = { version = "1", default-features = false, features = ["client", "http1"], optional = true }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "http1", "tokio"], optional = true }
+hyper-rustls = { version = "0.27", default-features = false, features = ["native-tokio", "http1", "tls12", "ring"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }

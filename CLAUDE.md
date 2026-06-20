@@ -1776,6 +1776,44 @@ what makes the interesting logic unit-testable without a cluster.
   reader; a pod-count history ring + trend (leading-indicator) coloring; per-pod
   saturation; folding Pressure into Saturation (kept distinct so the new dims are
   visibly additive).
+- **Oracle (BYO-LLM Wonder) — P0 plumbing** (2026-06-19, the roadmap "Local-LLM
+  Explain" reframed as the Civ-style **Oracle of KuberNation**; full plan +
+  backlog in `docs/oracle-plan.md`, design-workflow vetted — 5 lenses → 3 judges →
+  synthesis). P0 ships the **publishing-safe pipeline only — no GUI/user surface
+  yet** (it rolls into P1's version bump). **This is the project's FIRST general
+  outbound network egress** — a deliberate posture expansion, gated like
+  `portforward.rs` (active-but-non-mutating, beside the one write file, NOT in it).
+  **Pure core `state/oracle.rs`** (no UI/kube-client/HTTP, unit-tested) assembles a
+  structured `ContextBundle` from the EXISTING redacted view models (attention/
+  diagnose/blast/rollout/harden/posture/advisor/saturation/slo) for 4 scopes
+  (Concern/Workload/Node/Realm) — **never raw API dumps** — then redacts, fences,
+  budgets, renders, and produces a **byte-identical consent preview** (the same
+  `chat_request`/`request_json` the client POSTs). **Impure `k8s/oracle_client.rs`**
+  (feature `oracle`) is the ONLY networked file: one non-streaming POST to an
+  OpenAI-compatible `/v1/chat/completions` under a single 60s timeout + an 8 MiB
+  body cap; classified `LlmError`; token-redacting `Debug`; installs the `ring`
+  rustls provider once to match kube. **Dependency decision (O-DEP-0):** reuse the
+  hyper + hyper-rustls(ring) stack kube already pulls — **zero new crates** — vs
+  reqwest's measured **+40** (QUIC/ICU/wasm). The `oracle` feature is OFF by
+  default so `make smoke` (core example) never links HTTP; the `kubernation` bin
+  enables it (egress stays opt-in at RUNTIME via config). **Config (no
+  persistence):** endpoint/model via `--llm-url`/`--llm-model`, token via
+  `KUBERNATION_LLM_TOKEN` env ONLY — never written to disk, never logged. **Safety
+  rails (load-bearing):** egress = publishing → redaction runs UNCONDITIONALLY
+  (reuses the now-`pub(crate)` `postmortem::redact`, made **multi-line/tab/JSON
+  robust** so a credential on its own log line / in `key=value`/`key:value`/Bearer/
+  URL-basic-auth is masked) over every bundle string INCLUDING the framing
+  (titles/scope-label/cluster rendered outside the fence); untrusted cluster
+  content is **fenced** with the sentinel stripped to a **fixed point** (a single
+  pass is forgeable via split-token reconstitution); the model NEVER acts (P0 is
+  explain-only; suggest-to-gate is a later phase through the existing
+  dry-run/commit gate). **Adversarial review (10 confirmed, all fixed):** the
+  CRITICAL was exactly the multi-line redaction miss (the scrubber assumed
+  `oneline()`'d input); the HIGH was the forgeable single-pass fence; plus the
+  outside-the-fence framing, an unbounded body read, and LOWs. 251 core (+17
+  oracle) + 41 GUI tests; lock unchanged at 250 crates; clippy clean with AND
+  without the feature. **Next:** P1 (local explain-only GUI Wonder), then P2
+  (remote releasable w/ egress consent), P3 (suggest-to-gate).
 
 ## The pair (hot/warm)
 
