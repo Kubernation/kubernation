@@ -185,6 +185,23 @@ pub fn connection_verdict(
     }
 }
 
+/// PURE draw-decision fn: the level-2 chat-test verdict (a real completion). It
+/// proves the model actually GENERATES — the strongest endpoint check. `None` ⇒
+/// not run. Unit-tested.
+pub fn chat_verdict(out: Option<&Result<String, String>>) -> Option<(String, Role)> {
+    match out {
+        None => None,
+        Some(Err(e)) => Some((format!("chat test: FAILED — {e}"), Role::Warn)),
+        Some(Ok(reply)) => {
+            let snippet: String = reply.trim().chars().take(40).collect();
+            Some((
+                format!("chat test: OK — the model replied: {snippet}"),
+                Role::Good,
+            ))
+        }
+    }
+}
+
 /// Wrap text to ~`width` chars per line (whitespace-greedy), preserving existing
 /// newlines. Keeps long prompt/reply lines inside the modal body.
 fn wrap(s: &str, width: usize) -> Vec<String> {
@@ -278,6 +295,7 @@ pub struct OracleView {
     f_url: TextField,
     f_model: TextField,
     f_token: TextField,
+    f_timeout: TextField,
     focus: Option<FieldId>,
     delete_armed: bool,
     /// A short result note shown on the Settings face (save/activate outcome).
@@ -288,6 +306,8 @@ pub struct OracleView {
     models_attempted: bool,
     /// True between clicking **Test** and the probe landing — shows "testing…".
     testing: bool,
+    /// True between clicking **chat** and the completion landing.
+    chat_testing: bool,
 }
 
 impl OracleView {
@@ -323,11 +343,13 @@ impl OracleView {
             f_url: TextField::default(),
             f_model: TextField::default(),
             f_token: TextField::new("", true),
+            f_timeout: TextField::default(),
             focus: None,
             delete_armed: false,
             settings_note: None,
             models_attempted: false,
             testing: false,
+            chat_testing: false,
         }
     }
 
@@ -392,6 +414,7 @@ impl OracleView {
             FieldId::Url => &mut self.f_url,
             FieldId::Model => &mut self.f_model,
             FieldId::Token => &mut self.f_token,
+            FieldId::Timeout => &mut self.f_timeout,
         }
     }
 
@@ -437,12 +460,14 @@ impl OracleView {
         self.focus = None;
         self.models_attempted = false;
         self.testing = false;
+        self.chat_testing = false;
         let p = if idx == NEW_PROFILE {
             Profile {
                 name: "new endpoint".into(),
                 base_url: DEFAULT_LLM_URL.into(),
                 model: DEFAULT_LLM_MODEL.into(),
                 token: None,
+                timeout_secs: None,
             }
         } else {
             self.config.profiles[idx].clone()
@@ -451,11 +476,25 @@ impl OracleView {
         self.f_url = TextField::new(&p.base_url, false);
         self.f_model = TextField::new(&p.model, false);
         self.f_token = TextField::new(p.token.as_deref().unwrap_or(""), true);
+        self.f_timeout = TextField::new(
+            &p.timeout_secs.map(|t| t.to_string()).unwrap_or_default(),
+            false,
+        );
     }
 
     /// The Profile currently being composed in the edit fields.
     fn edit_profile(&self) -> Profile {
+        use kubernation_core::k8s::oracle_client::{MAX_TIMEOUT_SECS, MIN_TIMEOUT_SECS};
         let tok = self.f_token.buf.trim();
+        // A blank/invalid timeout ⇒ None (uses the default); a valid one is
+        // clamped to the accepted range.
+        let timeout_secs = self
+            .f_timeout
+            .buf
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .map(|t| t.clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS));
         Profile {
             name: self.f_name.buf.trim().to_string(),
             base_url: self.f_url.buf.trim().to_string(),
@@ -465,6 +504,7 @@ impl OracleView {
             } else {
                 Some(tok.to_string())
             },
+            timeout_secs,
         }
     }
 
@@ -484,6 +524,32 @@ impl OracleView {
         let (cfg, _) =
             oracle_config::resolve_active(&self.config, None, None, self.env_token.as_deref());
         net.set_oracle_config(Some(cfg));
+    }
+
+    /// Resolve the endpoint a test (level 1 or 2) should probe, applying the SAME
+    /// egress gate for both: a LOCAL edit endpoint is probed directly (loopback,
+    /// nothing leaves the box); a REMOTE one is allowed ONLY when it is the
+    /// ACTIVE, ARMED endpoint (probing the active config — never an arbitrary
+    /// edit-form URL while the arm is held for a different one). `Err(note)`
+    /// explains why a remote test is blocked.
+    fn resolve_test_target(&self, net: &Net) -> Result<LlmConfig, String> {
+        let cfg = self.edit_profile().to_llm_config(self.env_token.as_deref());
+        if cfg.endpoint == Endpoint::Local {
+            return Ok(cfg);
+        }
+        let active = net.oracle_config();
+        let armed = net.oracle_egress_armed();
+        let same = active.as_ref().map(|c| c.base_url.as_str()) == Some(cfg.base_url.as_str());
+        if armed
+            && same
+            && let Some(ac) = active
+        {
+            return Ok(ac);
+        }
+        Err(
+            "remote: click \"Use this endpoint\", then Arm it (in the consult view), before testing"
+                .into(),
+        )
     }
 
     /// Reset the consult state (frozen consent / reply / suggestions) — called
@@ -598,7 +664,8 @@ impl OracleView {
                     FieldId::Name => FieldId::Url,
                     FieldId::Url => FieldId::Model,
                     FieldId::Model => FieldId::Token,
-                    FieldId::Token => FieldId::Name,
+                    FieldId::Token => FieldId::Timeout,
+                    FieldId::Timeout => FieldId::Name,
                 };
                 self.focus = Some(nxt);
                 crate::textfield::flush_char_queue();
@@ -738,6 +805,7 @@ impl OracleView {
         let mut field_rects: Vec<(FieldId, Rect)> = Vec::new();
         let mut model_rects: Vec<(String, Rect)> = Vec::new();
         let mut discover_btn = Rect::new(0.0, 0.0, 0.0, 0.0);
+        let mut chat_btn = Rect::new(0.0, 0.0, 0.0, 0.0);
         let mut activate_btn = Rect::new(0.0, 0.0, 0.0, 0.0);
         let mut save_btn = Rect::new(0.0, 0.0, 0.0, 0.0);
         let mut clear_btn = Rect::new(0.0, 0.0, 0.0, 0.0);
@@ -751,6 +819,8 @@ impl OracleView {
             // models (stale + clickable).
             if !self.models_attempted {
                 self.models_attempted = true;
+                // A prior profile's chat-test result must not linger on this one.
+                net.clear_chat_test();
                 let p = self.edit_profile();
                 if !p.base_url.is_empty() && endpoint_kind(&p.base_url) == Endpoint::Local {
                     net.request_models(p.to_llm_config(self.env_token.as_deref()));
@@ -763,6 +833,7 @@ impl OracleView {
                 (FieldId::Url, "URL"),
                 (FieldId::Model, "model"),
                 (FieldId::Token, "token"),
+                (FieldId::Timeout, "timeout"),
             ];
             for (id, lbl) in labels {
                 text(lbl, b.x, y + 13.0, 13.0, DIM);
@@ -788,9 +859,16 @@ impl OracleView {
                     FieldId::Url => self.f_url.display(),
                     FieldId::Model => self.f_model.display(),
                     FieldId::Token => self.f_token.display(),
+                    FieldId::Timeout => self.f_timeout.display(),
+                };
+                // The timeout field shows the default as placeholder when blank.
+                let placeholder = if id == FieldId::Timeout {
+                    "(default 180s)"
+                } else {
+                    "(empty)"
                 };
                 let shown = if disp.is_empty() && !focused {
-                    "(empty)".to_string()
+                    placeholder.to_string()
                 } else {
                     truncate(&disp, 48)
                 };
@@ -814,16 +892,23 @@ impl OracleView {
                     };
                     text(t, fr.x + fr.w + 8.0, y + 13.0, 12.0, c);
                 }
-                // Model row: a test/discover button (probe the endpoint + list
-                // its models).
+                // Model row: two tests — "test" (level 1: GET /v1/models, fast)
+                // and "chat" (level 2: a real tiny completion proving the model
+                // generates).
                 if id == FieldId::Model {
-                    discover_btn = Rect::new(fr.x + fr.w + 8.0, fr.y, 80.0, 18.0);
+                    discover_btn = Rect::new(fr.x + fr.w + 8.0, fr.y, 56.0, 18.0);
                     draw_btn(discover_btn, "test", PARCHMENT, mouse);
+                    chat_btn = Rect::new(fr.x + fr.w + 68.0, fr.y, 56.0, 18.0);
+                    draw_btn(chat_btn, "chat", PARCHMENT, mouse);
                 }
                 // Token row: a clear button.
                 if id == FieldId::Token {
                     clear_btn = Rect::new(fr.x + fr.w + 8.0, fr.y, 60.0, 18.0);
                     draw_btn(clear_btn, "clear", DIM, mouse);
+                }
+                // Timeout row: a units hint.
+                if id == FieldId::Timeout {
+                    text("seconds (5–600)", fr.x + fr.w + 8.0, y + 13.0, 12.0, DIM);
                 }
                 y += 22.0;
             }
@@ -869,6 +954,25 @@ impl OracleView {
                 y += 16.0;
             } else if self.testing {
                 text("test: testing\u{2026}", b.x + 56.0, y + 13.0, 12.0, DIM);
+                y += 16.0;
+            }
+
+            // Chat-test verdict (level 2: a real completion landed).
+            let chat_out = net.chat_test_out();
+            if chat_out.is_some() {
+                self.chat_testing = false;
+            }
+            if let Some((vtext, vrole)) = chat_verdict(chat_out.as_ref()) {
+                text(ascii(&vtext), b.x + 56.0, y + 13.0, 12.0, role_color(vrole));
+                y += 16.0;
+            } else if self.chat_testing {
+                text(
+                    "chat test: sending\u{2026}",
+                    b.x + 56.0,
+                    y + 13.0,
+                    12.0,
+                    DIM,
+                );
                 y += 16.0;
             }
             y += 6.0;
@@ -940,35 +1044,38 @@ impl OracleView {
             }
             if self.editing.is_some() {
                 if discover_btn.contains(mouse) {
-                    let p = self.edit_profile();
-                    let cfg = p.to_llm_config(self.env_token.as_deref());
-                    if cfg.endpoint == Endpoint::Local {
-                        // Loopback — listing models sends nothing off-box.
-                        self.testing = true;
-                        net.request_models(cfg);
-                    } else {
-                        // Remote: token-bearing egress. Only the ACTIVE, ARMED
-                        // endpoint may be probed (never a different edit-form URL
-                        // while the arm is held for another) — probe the active
-                        // config, and record the egress like a consult.
-                        let active = net.oracle_config();
-                        let armed = net.oracle_egress_armed();
-                        let same = active.as_ref().map(|c| c.base_url.as_str())
-                            == Some(cfg.base_url.as_str());
-                        if armed
-                            && same
-                            && let Some(ac) = active
-                        {
+                    // Level-1 test: GET /v1/models. Same egress gate for both
+                    // tests (see resolve_test_target).
+                    match self.resolve_test_target(net) {
+                        Ok(cfg) => {
                             self.testing = true;
-                            self.settings_note = Some(write_discovery_audit(&ac));
-                            net.request_models(ac);
-                        } else {
-                            self.settings_note = Some(
-                                "remote: click \"Use this endpoint\", then Arm it (in the consult \
-                                 view), before listing its models"
-                                    .into(),
-                            );
+                            if cfg.endpoint == Endpoint::Remote {
+                                self.settings_note = Some(write_test_audit(
+                                    &cfg,
+                                    "model discovery (GET /v1/models)",
+                                ));
+                            }
+                            net.request_models(cfg);
                         }
+                        Err(note) => self.settings_note = Some(note),
+                    }
+                    return OracleAction::None;
+                }
+                if chat_btn.contains(mouse) {
+                    // Level-2 test: a real tiny chat completion (proves the model
+                    // generates). Same gate; token-bearing for remote.
+                    match self.resolve_test_target(net) {
+                        Ok(cfg) => {
+                            self.chat_testing = true;
+                            if cfg.endpoint == Endpoint::Remote {
+                                self.settings_note = Some(write_test_audit(
+                                    &cfg,
+                                    "chat test (POST /v1/chat/completions)",
+                                ));
+                            }
+                            net.request_chat_test(cfg, oracle::chat_test_messages());
+                        }
+                        Err(note) => self.settings_note = Some(note),
                     }
                     return OracleAction::None;
                 }
@@ -1441,13 +1548,13 @@ fn write_egress_audit(cfg: &LlmConfig, scope: &str, f: &Frozen) -> String {
     }
 }
 
-/// Write a one-shot egress audit for a remote model-discovery GET (it sends the
-/// token off-box too — same posture as a consult, smaller payload).
-fn write_discovery_audit(cfg: &LlmConfig) -> String {
+/// Write a one-shot egress audit for a remote TEST (model-discovery GET or
+/// chat-test POST) — both send the token off-box, same posture as a consult.
+fn write_test_audit(cfg: &LlmConfig, scope: &str) -> String {
     let now = kubernation_core::util::now();
     let content = egress_audit_content(
         cfg,
-        "model discovery (GET /v1/models)",
+        scope,
         0,
         0,
         &now.strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
@@ -1457,8 +1564,8 @@ fn write_discovery_audit(cfg: &LlmConfig) -> String {
         .unwrap_or_else(|_| ".".into())
         .join(&fname);
     match std::fs::write(&path, content) {
-        Ok(_) => format!("listing models (remote egress recorded -> {fname})"),
-        Err(e) => format!("(discovery audit not written: {e})"),
+        Ok(_) => format!("{scope} (remote egress recorded -> {fname})"),
+        Err(e) => format!("(test audit not written: {e})"),
     }
 }
 
@@ -1516,6 +1623,7 @@ mod tests {
             model: "qwen3.5:35b".into(),
             api_key: Some("sk-DO-NOT-LEAK".into()),
             endpoint: Endpoint::Local,
+            timeout_secs: 180,
         };
         let lines = oracle_setup_lines(Some(&cfg), Some("local Ollama"), true);
         let joined: String = lines
@@ -1558,6 +1666,7 @@ mod tests {
                     base_url: "https://api.corp/v1".into(),
                     model: "gpt-4o".into(),
                     token: Some("x".into()),
+                    timeout_secs: None,
                 },
             ],
             active: Some("corp".into()),
@@ -1598,6 +1707,19 @@ mod tests {
     }
 
     #[test]
+    fn chat_verdict_reports_generation_outcome() {
+        assert!(chat_verdict(None).is_none());
+        let err: Result<String, String> = Err("the model did not respond in time".into());
+        let (t, r) = chat_verdict(Some(&err)).unwrap();
+        assert!(t.contains("FAILED") && t.contains("did not respond"));
+        assert_eq!(r, Role::Warn);
+        let ok: Result<String, String> = Ok("OK".into());
+        let (t, r) = chat_verdict(Some(&ok)).unwrap();
+        assert!(t.contains("OK") && t.contains("replied"));
+        assert_eq!(r, Role::Good);
+    }
+
+    #[test]
     fn model_picker_rows_states() {
         assert_eq!(model_picker_rows(None, "x").len(), 1); // hint
         let err: Result<Arc<Vec<String>>, String> = Err("offline".into());
@@ -1618,6 +1740,7 @@ mod tests {
             model: "gpt-4o".into(),
             api_key: Some("sk-SUPER-SECRET-TOKEN".into()),
             endpoint: Endpoint::Remote,
+            timeout_secs: 180,
         };
         let c = egress_audit_content(&cfg, "the whole realm", 1234, 2, "2026-06-19T00:00:00Z");
         assert!(

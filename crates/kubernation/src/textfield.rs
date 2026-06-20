@@ -23,6 +23,7 @@ pub enum FieldId {
     Url,
     Model,
     Token,
+    Timeout,
 }
 
 /// A single-line editable buffer. `masked` renders bullets but keeps the real

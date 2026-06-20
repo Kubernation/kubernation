@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::oracle::host_is_local;
-use crate::k8s::oracle_client::{Endpoint, LlmConfig};
+use crate::k8s::oracle_client::{DEFAULT_TIMEOUT_SECS, Endpoint, LlmConfig};
 
 /// Default endpoint — a local Ollama (OpenAI-compatible at `/v1`, so the wire
 /// endpoint is `http://localhost:11434/v1/chat/completions`).
@@ -46,6 +46,9 @@ pub struct Profile {
     /// the env token (or none). Never logged; redacted by the manual `Debug`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// Per-profile consult/test timeout (seconds). `None` ⇒ `DEFAULT_TIMEOUT_SECS`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
 }
 
 // Manual Debug — NEVER print the token (the file logger would capture it).
@@ -59,6 +62,7 @@ impl std::fmt::Debug for Profile {
                 "token",
                 &self.token.as_ref().map(|_| "<set>").unwrap_or("<unset>"),
             )
+            .field("timeout_secs", &self.timeout_secs)
             .finish()
     }
 }
@@ -94,8 +98,14 @@ pub enum ActiveSource {
 }
 
 /// Build a runtime `LlmConfig`, ALWAYS recomputing the endpoint kind from the URL
-/// (never trusting a stored class). An empty token collapses to `None`.
-fn build_config(base_url: &str, model: &str, token: Option<String>) -> LlmConfig {
+/// (never trusting a stored class). An empty token collapses to `None`. A `None`
+/// timeout uses the default; the client clamps it to a sane range.
+fn build_config(
+    base_url: &str,
+    model: &str,
+    token: Option<String>,
+    timeout_secs: Option<u64>,
+) -> LlmConfig {
     let base_url = base_url.trim_end_matches('/').to_string();
     let api_key = token.filter(|s| !s.is_empty());
     let endpoint = endpoint_kind(&base_url);
@@ -104,6 +114,7 @@ fn build_config(base_url: &str, model: &str, token: Option<String>) -> LlmConfig
         model: model.to_string(),
         api_key,
         endpoint,
+        timeout_secs: timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
     }
 }
 
@@ -115,6 +126,7 @@ impl Profile {
             base_url: DEFAULT_LLM_URL.into(),
             model: DEFAULT_LLM_MODEL.into(),
             token: None,
+            timeout_secs: None,
         }
     }
 
@@ -122,7 +134,7 @@ impl Profile {
     /// `env_token` fills in only when the profile has none.
     pub fn to_llm_config(&self, env_token: Option<&str>) -> LlmConfig {
         let token = self.token.clone().or_else(|| env_token.map(str::to_string));
-        build_config(&self.base_url, &self.model, token)
+        build_config(&self.base_url, &self.model, token, self.timeout_secs)
     }
 }
 
@@ -162,7 +174,10 @@ pub fn resolve_active(
         } else {
             base.token.clone().or_else(|| env_token.map(str::to_string))
         };
-        return (build_config(base_url, model, token), ActiveSource::Flags);
+        return (
+            build_config(base_url, model, token, base.timeout_secs),
+            ActiveSource::Flags,
+        );
     }
     if let Some(p) = file.active_profile() {
         return (p.to_llm_config(env_token), ActiveSource::Profile);
@@ -183,6 +198,7 @@ mod tests {
             base_url: url.into(),
             model: "gpt-4o".into(),
             token: Some("sk-SECRET".into()),
+            timeout_secs: None,
         }
     }
 
@@ -228,6 +244,23 @@ mod tests {
             "token must never appear in Debug"
         );
         assert!(dbg.contains("<set>"));
+    }
+
+    #[test]
+    fn timeout_resolves_per_profile_else_default() {
+        let mut p = Profile::local_default();
+        assert_eq!(p.to_llm_config(None).timeout_secs, DEFAULT_TIMEOUT_SECS);
+        p.timeout_secs = Some(45);
+        assert_eq!(p.to_llm_config(None).timeout_secs, 45);
+        // A missing timeout key tolerated on load (defaults to None ⇒ default).
+        let f: OracleConfigFile = serde_json::from_str(
+            r#"{"profiles":[{"name":"x","base_url":"http://localhost:11434/v1","model":"m"}],"active":"x"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            f.active_profile().unwrap().to_llm_config(None).timeout_secs,
+            DEFAULT_TIMEOUT_SECS
+        );
     }
 
     #[test]
@@ -290,6 +323,7 @@ mod tests {
                 base_url: "https://api.corp/v1".into(),
                 model: "gpt-4o".into(),
                 token: None,
+                timeout_secs: None,
             }],
             active: Some("corp".into()),
         };

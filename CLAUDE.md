@@ -1997,6 +1997,23 @@ what makes the interesting logic unit-testable without a cluster.
   "testing…" until the probe lands. Deferred here: a deeper end-to-end test that
   sends a tiny chat completion (heavier — a real token spend / a slow 35B cold
   load — the `/v1/models` probe catches the common URL/auth/model-pulled failures).
+  **Follow-up — two-level tests + per-profile timeout (v0.53.2):** the deferred
+  level-2 test shipped — a **chat** button beside **test** runs a real tiny
+  completion (`oracle::chat_test_messages` "Reply with exactly: OK") proving the
+  model GENERATES; the pure `chat_verdict` shows the reply snippet (model output,
+  never the token). Both tests share ONE egress gate — the new
+  `resolve_test_target` (local probed directly; remote only when active+armed,
+  probing the active config + writing `write_test_audit`) — so the chat path can't
+  diverge from the just-hardened discover path. Net `chat_test_req/out/gen` slots
+  mirror the models drain (independent remote-active-armed refusal); cleared on
+  load-edit / endpoint change / context switch. A **per-profile timeout**
+  (`Profile.timeout_secs` → `LlmConfig.timeout_secs`, threaded through
+  consult/probe/list_models, **clamped to [5,600] at use** in `LlmConfig::timeout`
+  so even a tampered `oracle.json` value is bounded; blank/invalid field ⇒ default
+  180) replaces the hardcoded const; a `timeout` form field (FieldId::Timeout, in
+  the Tab cycle). Pure `chat_verdict` + the timeout-resolution path unit-tested;
+  verified live (the level-2 prompt returns "OK" in 13s on qwen3.5:35b). Deferred:
+  a global default-timeout flag (per-profile covers the need).
 
 ## The pair (hot/warm)
 

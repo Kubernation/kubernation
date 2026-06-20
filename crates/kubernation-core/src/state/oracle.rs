@@ -664,6 +664,17 @@ pub fn chat_request(model: &str, messages: Vec<ChatMessage>) -> ChatRequest {
     }
 }
 
+/// A tiny chat prompt for the end-to-end "test chat" (level-2 connection test):
+/// it confirms the endpoint + auth + the chosen model actually GENERATE — not
+/// merely that the model is listed (level-1). Kept minimal for economy (a
+/// one-line reply). Carries no cluster data, so it needs no redaction/fencing.
+pub fn chat_test_messages() -> Vec<ChatMessage> {
+    vec![ChatMessage {
+        role: "user".to_string(),
+        content: "Reply with exactly: OK".to_string(),
+    }]
+}
+
 /// The exact bytes (as a String) the client POSTs to the endpoint — the wire
 /// payload. Compact JSON.
 pub fn request_json(req: &ChatRequest) -> String {

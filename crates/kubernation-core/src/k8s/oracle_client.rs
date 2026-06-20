@@ -27,14 +27,19 @@ use hyper_util::rt::TokioExecutor;
 
 use crate::state::oracle::{self, ChatMessage};
 
-/// Wall-clock cap on a whole consult (connect + send + receive), enforced as ONE
-/// timeout around the entire request+body sequence. Mirrors the fetch-not-watch
-/// timeouts in `browse.rs`/`portforward.rs`. Sized for a LARGE local model: a
-/// realm-scope consult on a 35B model (the default) measured 60–90s+ including
-/// the cold model load, so a 60s cap cut real replies off. The consult runs on a
-/// spawned task (it never blocks the world loop), so a generous ceiling only
-/// means a longer "consulting…" — the operator can Close at any time.
-const TIMEOUT: Duration = Duration::from_secs(180);
+/// Default wall-clock cap on a whole consult (connect + send + receive) when a
+/// profile sets no `timeout_secs`. Sized for a LARGE local model: a realm-scope
+/// consult on a 35B model (the default) measured 60–90s+ including the cold model
+/// load, so a 60s cap cut real replies off. The consult runs on a spawned task
+/// (it never blocks the world loop), so a generous ceiling only means a longer
+/// "consulting…" — the operator can Close at any time. The effective timeout is
+/// `LlmConfig.timeout_secs` (per-profile, clamped to a sane range).
+pub const DEFAULT_TIMEOUT_SECS: u64 = 180;
+
+/// The accepted per-profile timeout range (seconds): ≥5 (a 0 would time out
+/// instantly) and ≤600 (the hard ceiling the run loop tolerates).
+pub const MIN_TIMEOUT_SECS: u64 = 5;
+pub const MAX_TIMEOUT_SECS: u64 = 600;
 
 /// Hard cap on a buffered response body — a chat completion is kilobytes; this
 /// bounds a hostile/runaway endpoint so it cannot OOM the net loop.
@@ -58,6 +63,15 @@ pub struct LlmConfig {
     /// From `KUBERNATION_LLM_TOKEN` only; never logged, never persisted.
     pub api_key: Option<String>,
     pub endpoint: Endpoint,
+    /// Wall-clock cap (seconds) on a consult/probe/chat-test against this
+    /// endpoint. Clamped to [`MIN_TIMEOUT_SECS`, `MAX_TIMEOUT_SECS`] at build.
+    pub timeout_secs: u64,
+}
+
+impl LlmConfig {
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(self.timeout_secs.clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS))
+    }
 }
 
 impl fmt::Debug for LlmConfig {
@@ -71,6 +85,7 @@ impl fmt::Debug for LlmConfig {
                 &self.api_key.as_ref().map(|_| "<set>").unwrap_or("<unset>"),
             )
             .field("endpoint", &self.endpoint)
+            .field("timeout_secs", &self.timeout_secs)
             .finish()
     }
 }
@@ -175,7 +190,7 @@ pub async fn consult(cfg: &LlmConfig, messages: Vec<ChatMessage>) -> Result<Stri
 
     // ONE timeout around the whole sequence (request + status + bounded body
     // read), so the true wall-clock cap is TIMEOUT — not 2×.
-    let outcome = tokio::time::timeout(TIMEOUT, async {
+    let outcome = tokio::time::timeout(cfg.timeout(), async {
         let resp = client
             .request(req)
             .await
@@ -224,7 +239,7 @@ pub async fn probe(cfg: &LlmConfig) -> Result<(), LlmError> {
     let req = builder
         .body(Full::new(Bytes::new()))
         .map_err(|e| LlmError::Config(format!("bad URL: {e}")))?;
-    let resp = match tokio::time::timeout(TIMEOUT, client.request(req)).await {
+    let resp = match tokio::time::timeout(cfg.timeout(), client.request(req)).await {
         Err(_) => return Err(LlmError::Timeout),
         Ok(Err(e)) => return Err(LlmError::Connection(e.to_string())),
         Ok(Ok(r)) => r,
@@ -250,7 +265,7 @@ pub async fn list_models(cfg: &LlmConfig) -> Result<Vec<String>, LlmError> {
         .body(Full::new(Bytes::new()))
         .map_err(|e| LlmError::Config(format!("bad URL: {e}")))?;
 
-    let outcome = tokio::time::timeout(TIMEOUT, async {
+    let outcome = tokio::time::timeout(cfg.timeout(), async {
         let resp = client
             .request(req)
             .await
@@ -329,6 +344,7 @@ mod tests {
             model: "llama3".into(),
             api_key: Some("sk-supersecret-DO-NOT-LEAK".into()),
             endpoint: Endpoint::Local,
+            timeout_secs: 180,
         };
         let dbg = format!("{cfg:?}");
         assert!(

@@ -306,6 +306,12 @@ pub struct Net {
     models_req: Mutex<Option<LlmConfig>>,
     models_out: Mutex<Option<Result<Arc<Vec<String>>, String>>>,
     models_gen: AtomicU64,
+    /// Level-2 connection test (a real tiny chat completion): the request (cfg +
+    /// the small test messages), the result, and a gen guard. Same gating as a
+    /// consult (remote ⇒ active-armed only) — it is token-bearing egress.
+    chat_test_req: Mutex<Option<(LlmConfig, Vec<ChatMessage>)>>,
+    chat_test_out: Mutex<Option<Result<String, String>>>,
+    chat_test_gen: AtomicU64,
 }
 
 /// A queued Oracle consult: the cache key + the fully-rendered (redacted, fenced,
@@ -483,6 +489,9 @@ impl Net {
             models_req: Mutex::new(None),
             models_out: Mutex::new(None),
             models_gen: AtomicU64::new(0),
+            chat_test_req: Mutex::new(None),
+            chat_test_out: Mutex::new(None),
+            chat_test_gen: AtomicU64::new(0),
         })
     }
 
@@ -565,6 +574,8 @@ impl Net {
             self.oracle_gen.fetch_add(1, Ordering::Relaxed);
             *self.models_out.lock().unwrap() = None;
             self.models_gen.fetch_add(1, Ordering::Relaxed);
+            *self.chat_test_out.lock().unwrap() = None;
+            self.chat_test_gen.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -582,6 +593,26 @@ impl Net {
         *self.models_req.lock().unwrap() = None;
         *self.models_out.lock().unwrap() = None;
         self.models_gen.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Queue a level-2 chat test (a real tiny completion). `cfg` is the endpoint
+    /// to probe; `messages` the small test prompt.
+    pub fn request_chat_test(&self, cfg: LlmConfig, messages: Vec<ChatMessage>) {
+        *self.chat_test_req.lock().unwrap() = Some((cfg, messages));
+        *self.chat_test_out.lock().unwrap() = None;
+        self.chat_test_gen.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The chat-test result (`Ok(reply)` / `Err`). `None` ⇒ none run or in flight.
+    pub fn chat_test_out(&self) -> Option<Result<String, String>> {
+        self.chat_test_out.lock().unwrap().clone()
+    }
+
+    /// Blank the chat-test result (e.g. on selecting a different profile to edit).
+    pub fn clear_chat_test(&self) {
+        *self.chat_test_req.lock().unwrap() = None;
+        *self.chat_test_out.lock().unwrap() = None;
+        self.chat_test_gen.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The discovered model list (an `Arc` — the per-frame picker pull is a
@@ -964,11 +995,14 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             *net.oracle_req.lock().unwrap() = None;
                             net.oracle_out.lock().unwrap().clear();
                             net.oracle_gen.fetch_add(1, Ordering::Relaxed);
-                            // Model-discovery is endpoint-scoped, not cluster-scoped,
-                            // but keep the picker honest after a switch.
+                            // Model-discovery + chat-test are endpoint-scoped, not
+                            // cluster-scoped, but keep them honest after a switch.
                             *net.models_req.lock().unwrap() = None;
                             *net.models_out.lock().unwrap() = None;
                             net.models_gen.fetch_add(1, Ordering::Relaxed);
+                            *net.chat_test_req.lock().unwrap() = None;
+                            *net.chat_test_out.lock().unwrap() = None;
+                            net.chat_test_gen.fetch_add(1, Ordering::Relaxed);
                             // A same-named pod on the new cluster must re-resolve.
                             log_target = None;
                             log_container = None;
@@ -1183,6 +1217,34 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         };
                         if net2.models_gen.load(Ordering::Relaxed) == req_gen {
                             *net2.models_out.lock().unwrap() = Some(out);
+                        }
+                    });
+                }
+
+                // Oracle chat test (level 2): a real tiny completion. Same gating
+                // as discovery/consult — a remote endpoint is token-bearing egress,
+                // allowed ONLY for the ACTIVE, ARMED endpoint.
+                let creq = net.chat_test_req.lock().unwrap().take();
+                if let Some((cfg, messages)) = creq {
+                    let armed = net.oracle_egress_armed.load(Ordering::Relaxed);
+                    let active_url = net.oracle_config().map(|c| c.base_url);
+                    let net2 = net.clone();
+                    let req_gen = net.chat_test_gen.load(Ordering::Relaxed);
+                    tokio::spawn(async move {
+                        let remote = cfg.endpoint == oracle_client::Endpoint::Remote;
+                        let out: Result<String, String> = if remote
+                            && (!armed || active_url.as_deref() != Some(cfg.base_url.as_str()))
+                        {
+                            Err("arm this endpoint (Use this endpoint, then Arm) to chat-test it"
+                                .into())
+                        } else {
+                            match oracle_client::consult(&cfg, messages).await {
+                                Ok(reply) => Ok(reply),
+                                Err(e) => Err(e.to_string()),
+                            }
+                        };
+                        if net2.chat_test_gen.load(Ordering::Relaxed) == req_gen {
+                            *net2.chat_test_out.lock().unwrap() = Some(out);
                         }
                     });
                 }

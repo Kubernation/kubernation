@@ -9,6 +9,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Oracle: two levels of connection test + a per-profile timeout.** The endpoint
+  Settings face now has **two** test buttons: **test** (level 1 — the quick `GET
+  /v1/models` reachability/auth/model-availability check) and **chat** (level 2 —
+  a real tiny chat completion that proves the model actually generates, the
+  strongest endpoint check). Each profile also has a **timeout** field (seconds,
+  5–600; default 180) that bounds its consults and tests — a fast local model can
+  use 30s, a slow 35B can use the full default. Both tests share one egress gate
+  (a remote one is allowed only for the active, armed endpoint and writes an
+  egress audit); the chat verdict shows the model's reply, never the token.
 - **Oracle "Test connection" on the endpoint Settings face.** A **test** button
   on each profile probes the endpoint (`GET /v1/models`) and shows a one-line
   verdict that validates the whole config at once: reachable, the token accepted
