@@ -194,9 +194,11 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
             ],
         },
         Menu {
-            title: "Oracle".to_string(),
+            // "Wonders" — the realm's marvels. The Oracle is the first; the menu
+            // is named for the category so future Wonders slot in beside it.
+            title: "Wonders".to_string(),
             items: vec![Item::act(
-                "Consult the Oracle\u{2026}",
+                "Oracle (consult a model)\u{2026}",
                 MenuAction::OracleConsult,
             )],
         },

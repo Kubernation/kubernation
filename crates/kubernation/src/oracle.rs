@@ -200,7 +200,11 @@ fn truncate(s: &str, n: usize) -> String {
 struct Frozen {
     hash: u64,
     messages: Vec<oracle::ChatMessage>,
+    /// The legible consent rendering shown to the operator.
     preview: String,
+    /// The actual wire-payload size (the audit's "request bytes" — distinct from
+    /// the legible `preview` length).
+    wire_bytes: usize,
     redacted: usize,
 }
 
@@ -510,8 +514,9 @@ impl OracleView {
                 Some(f) => {
                     cx.row(
                         &format!(
-                            "this EXACT text will be sent to the {} model — review before consulting:",
-                            if remote { "REMOTE" } else { "local" }
+                            "exactly what will be sent to the {} model ({} bytes) — review before consulting:",
+                            if remote { "REMOTE" } else { "local" },
+                            f.wire_bytes
                         ),
                         if remote { WARN } else { PARCHMENT },
                     );
@@ -737,21 +742,24 @@ impl OracleView {
     }
 }
 
-/// Snapshot the current bundle into a `Frozen` consent record (the rendered
-/// prompt + its byte-identical preview + hash) — what the operator reviews IS
-/// what a Consult sends. `None` when there's nothing to send (no config / no
-/// snapshot).
+/// Snapshot the current bundle into a `Frozen` consent record (the messages sent,
+/// their legible preview, the wire size, and the cache hash) — what the operator
+/// reviews IS what a Consult sends. `None` when there's nothing to send (no
+/// config / no snapshot).
 fn freeze(
     built: &Option<(oracle::ContextBundle, oracle::RedactionReport, String, bool)>,
 ) -> Option<Frozen> {
-    built
-        .as_ref()
-        .map(|(bundle, report, model, remote)| Frozen {
+    built.as_ref().map(|(bundle, report, model, remote)| {
+        let messages = oracle::render_prompt(bundle, "");
+        let wire_bytes = oracle::request_json(&oracle::chat_request(model, messages.clone())).len();
+        Frozen {
             hash: oracle::bundle_hash(bundle, "", model, *remote),
-            messages: oracle::render_prompt(bundle, ""),
+            messages,
             preview: oracle::consent_preview(bundle, "", model),
+            wire_bytes,
             redacted: report.sections_masked,
-        })
+        }
+    })
 }
 
 /// Write a one-shot, metadata-only egress audit for a remote consult (the
@@ -762,7 +770,7 @@ fn write_egress_audit(cfg: &LlmConfig, scope: &str, f: &Frozen) -> String {
     let content = egress_audit_content(
         cfg,
         scope,
-        f.preview.len(),
+        f.wire_bytes,
         f.redacted,
         &now.strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
     );

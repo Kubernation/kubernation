@@ -1381,7 +1381,7 @@ async fn main() {
                         "orders" => Some(2),
                         "gameday" => Some(3),
                         "advisors" => Some(4),
-                        "oracle" => Some(5),
+                        "wonders" => Some(5),
                         "world" => Some(6),
                         "help" => Some(7),
                         _ => None,

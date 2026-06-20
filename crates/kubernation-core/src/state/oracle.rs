@@ -664,24 +664,61 @@ pub fn chat_request(model: &str, messages: Vec<ChatMessage>) -> ChatRequest {
     }
 }
 
-/// The exact bytes (as a String) that will be POSTed — what `consent_preview`
-/// shows and what the client sends.
+/// The exact bytes (as a String) the client POSTs to the endpoint — the wire
+/// payload. Compact JSON.
 pub fn request_json(req: &ChatRequest) -> String {
     serde_json::to_string(req).unwrap_or_default()
 }
 
-/// The byte-identical consent preview: the exact serialized request the client
-/// would POST for this bundle + question + model.
+/// A FAITHFUL, legible rendering of the request for the operator to review before
+/// publishing — every field and the FULL text of every message, with real line
+/// breaks (not the `\n`-escaped JSON wall). It hides nothing the wire payload
+/// carries (the `consent_preview_faithfully_shows_everything_sent` test pins that
+/// each message's content appears verbatim), so reviewing it is reviewing exactly
+/// what is sent — just readable. The wire bytes are [`request_json`] over the same
+/// `ChatRequest`.
 pub fn consent_preview(bundle: &ContextBundle, question: &str, model: &str) -> String {
-    request_json(&chat_request(model, render_prompt(bundle, question)))
+    let messages = render_prompt(bundle, question);
+    let mut s = format!(
+        "POST {{endpoint}}/chat/completions\nmodel: {model}    temperature: {TEMPERATURE}    stream: false\n"
+    );
+    for m in &messages {
+        s.push_str(&format!("\n[{}]\n{}\n", m.role, m.content));
+    }
+    s
 }
 
-/// A deterministic cache key for a consult (same bundle + question + model +
-/// endpoint kind ⇒ same answer ⇒ no second call).
+/// A deterministic cache key for a consult — keyed on the WIRE payload (same
+/// request bytes + endpoint kind ⇒ same answer ⇒ no second call), independent of
+/// the display format.
 pub fn bundle_hash(bundle: &ContextBundle, question: &str, model: &str, remote: bool) -> u64 {
-    let mut s = consent_preview(bundle, question, model);
+    let mut s = request_json(&chat_request(model, render_prompt(bundle, question)));
     s.push_str(if remote { "|remote" } else { "|local" });
     fnv1a64(&s)
+}
+
+/// PURE + TOLERANT: pull a human error message out of an endpoint's non-2xx
+/// response body. Handles the OpenAI/Ollama shapes `{"error":{"message":"…"}}`
+/// and `{"error":"…"}`; falls back to a trimmed snippet of the raw body. Never
+/// panics. Lets a 404 say "model 'x' not found" instead of a bare HTTP code.
+pub fn extract_error_message(body: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(m) = v
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+        {
+            return m.to_string();
+        }
+        if let Some(m) = v.get("error").and_then(|e| e.as_str()) {
+            return m.to_string();
+        }
+        if let Some(m) = v.get("message").and_then(|m| m.as_str()) {
+            return m.to_string();
+        }
+    }
+    let snippet: String = body.trim().chars().take(200).collect();
+    snippet
 }
 
 // --- the public entry point ----------------------------------------------
@@ -1053,7 +1090,10 @@ mod tests {
     }
 
     #[test]
-    fn consent_preview_is_byte_identical_to_the_request() {
+    fn consent_preview_faithfully_shows_everything_sent() {
+        // The legible preview must HIDE NOTHING the wire payload carries: every
+        // message's full content + the model + params appear verbatim, so
+        // reviewing the preview is reviewing exactly what is published.
         let world = world_with_web();
         let models = Models::build(&world);
         let (b, _) = build_bundle(
@@ -1063,12 +1103,48 @@ mod tests {
             &ctx(),
             &Caps::default(),
         );
-        let preview = consent_preview(&b, "why?", "llama3");
-        let direct = request_json(&chat_request("llama3", render_prompt(&b, "why?")));
-        assert_eq!(preview, direct, "the preview must be the exact wire bytes");
-        // And it is real JSON carrying the model + a system message.
-        assert!(preview.contains("\"model\":\"llama3\""));
-        assert!(preview.contains("\"stream\":false"));
+        let preview = consent_preview(&b, "why is it down?", "llama3");
+        let messages = render_prompt(&b, "why is it down?");
+        // The model + params are shown.
+        assert!(preview.contains("model: llama3"));
+        assert!(preview.contains("stream: false"));
+        // Every message's role + FULL content appears verbatim (nothing hidden).
+        for m in &messages {
+            assert!(preview.contains(&format!("[{}]", m.role)));
+            assert!(
+                preview.contains(&m.content),
+                "message content must appear verbatim"
+            );
+        }
+        // The operator's question + the fence markers are visible + legible.
+        assert!(preview.contains("why is it down?"));
+        assert!(preview.contains("<<<KN-UNTRUSTED"));
+        // It is readable, not the escaped-\n JSON wall.
+        assert!(!preview.contains("\\n"));
+    }
+
+    #[test]
+    fn extract_error_message_handles_endpoint_shapes() {
+        // Ollama / OpenAI nested shape.
+        assert_eq!(
+            extract_error_message(
+                r#"{"error":{"message":"model 'llama3.1' not found","type":"not_found_error"}}"#
+            ),
+            "model 'llama3.1' not found"
+        );
+        // Plain-string error.
+        assert_eq!(
+            extract_error_message(r#"{"error":"bad request"}"#),
+            "bad request"
+        );
+        // Top-level message.
+        assert_eq!(extract_error_message(r#"{"message":"nope"}"#), "nope");
+        // Non-JSON → a trimmed snippet (never panics).
+        assert_eq!(
+            extract_error_message("  plain text error \n"),
+            "plain text error"
+        );
+        assert_eq!(extract_error_message(""), "");
     }
 
     #[test]

@@ -8,6 +8,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+- **Oracle polish.** The consult lives under a new **Wonders** menu (room for
+  future marvels). The pre-send Preview is now a legible, structured rendering —
+  the model, parameters, and each message's full text with real line breaks (plus
+  the exact wire byte count) instead of an escaped-JSON wall. And a failed consult
+  surfaces the endpoint's own error message — a 404 now reads "model 'x' not
+  found" (so a model you haven't pulled is obvious) instead of a bare HTTP code.
+
 ### Added
 - **The Oracle — suggest-to-gate (the model can PROPOSE a fix).** When you
   consult the Oracle it may now propose a concrete change — scale, restart,

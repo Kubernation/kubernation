@@ -83,8 +83,10 @@ pub enum LlmError {
     Auth,
     /// 429 — rate limited / out of quota.
     RateLimited,
-    /// Any other non-2xx status.
-    BadStatus(u16),
+    /// Any other non-2xx status, with the endpoint's own error message when it
+    /// gave one (e.g. a 404 "model 'llama3.1' not found" — far more actionable
+    /// than a bare status code).
+    BadStatus { status: u16, detail: String },
     /// The response body was not a usable OpenAI completion.
     Decode(String),
     /// Misconfiguration (bad URL, TLS roots unavailable) before any request.
@@ -98,7 +100,10 @@ impl fmt::Display for LlmError {
             LlmError::Connection(e) => write!(f, "could not reach the model endpoint: {e}"),
             LlmError::Auth => write!(f, "the endpoint rejected the API token (401/403)"),
             LlmError::RateLimited => write!(f, "rate limited by the endpoint (429)"),
-            LlmError::BadStatus(s) => write!(f, "the endpoint returned HTTP {s}"),
+            LlmError::BadStatus { status, detail } if !detail.is_empty() => {
+                write!(f, "HTTP {status}: {detail}")
+            }
+            LlmError::BadStatus { status, .. } => write!(f, "the endpoint returned HTTP {status}"),
             LlmError::Decode(e) => write!(f, "could not read the model response: {e}"),
             LlmError::Config(e) => write!(f, "endpoint misconfigured: {e}"),
         }
@@ -111,7 +116,10 @@ pub fn classify_status(status: u16) -> Option<LlmError> {
         200..=299 => None,
         401 | 403 => Some(LlmError::Auth),
         429 => Some(LlmError::RateLimited),
-        s => Some(LlmError::BadStatus(s)),
+        s => Some(LlmError::BadStatus {
+            status: s,
+            detail: String::new(),
+        }),
     }
 }
 
@@ -168,24 +176,34 @@ pub async fn consult(cfg: &LlmConfig, messages: Vec<ChatMessage>) -> Result<Stri
             .request(req)
             .await
             .map_err(|e| LlmError::Connection(e.to_string()))?;
-        if let Some(err) = classify_status(resp.status().as_u16()) {
-            return Err(err);
-        }
-        // Size-bound the body so a hostile/runaway endpoint can't OOM us.
+        let status = resp.status().as_u16();
+        // Always read the (size-bounded) body — on an error we mine it for the
+        // endpoint's own message (a 404 model-not-found, etc.); on success we
+        // parse the completion.
         let collected = Limited::new(resp.into_body(), MAX_RESP_BYTES)
             .collect()
             .await
             .map_err(|_| LlmError::Decode("response too large or truncated".into()))?;
-        Ok(collected.to_bytes())
+        Ok((status, collected.to_bytes()))
     })
     .await;
 
-    let bytes = match outcome {
+    let (status, bytes) = match outcome {
         Err(_) => return Err(LlmError::Timeout),
         Ok(Err(e)) => return Err(e),
-        Ok(Ok(b)) => b,
+        Ok(Ok(v)) => v,
     };
     let text = String::from_utf8_lossy(&bytes);
+    if let Some(err) = classify_status(status) {
+        // Enrich a generic non-2xx with the endpoint's own error message.
+        return Err(match err {
+            LlmError::BadStatus { status, .. } => LlmError::BadStatus {
+                status,
+                detail: oracle::extract_error_message(&text),
+            },
+            other => other,
+        });
+    }
     oracle::parse_chat_response(&text).map_err(|e| LlmError::Decode(e.to_string()))
 }
 
@@ -228,8 +246,29 @@ mod tests {
         assert_eq!(classify_status(401), Some(LlmError::Auth));
         assert_eq!(classify_status(403), Some(LlmError::Auth));
         assert_eq!(classify_status(429), Some(LlmError::RateLimited));
-        assert_eq!(classify_status(500), Some(LlmError::BadStatus(500)));
-        assert_eq!(classify_status(404), Some(LlmError::BadStatus(404)));
+        assert_eq!(
+            classify_status(500),
+            Some(LlmError::BadStatus {
+                status: 500,
+                detail: String::new()
+            })
+        );
+        assert_eq!(
+            classify_status(404),
+            Some(LlmError::BadStatus {
+                status: 404,
+                detail: String::new()
+            })
+        );
+        // The Display surfaces an endpoint message when present.
+        assert_eq!(
+            LlmError::BadStatus {
+                status: 404,
+                detail: "model 'llama3.1' not found".into()
+            }
+            .to_string(),
+            "HTTP 404: model 'llama3.1' not found"
+        );
     }
 
     #[test]
