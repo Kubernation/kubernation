@@ -9,6 +9,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Oracle "Test connection" on the endpoint Settings face.** A **test** button
+  on each profile probes the endpoint (`GET /v1/models`) and shows a one-line
+  verdict that validates the whole config at once: reachable, the token accepted
+  (a 401 reads "FAILED — token rejected"), and the configured model actually
+  available ("OK — model available", or "reachable, but model 'X' is NOT
+  available — pull it or pick one below"). A local endpoint tests on select; a
+  remote one tests behind the same per-session Arm gate as a consult (and records
+  the same egress audit). The discovered models double as the click-to-pick list.
 - **Oracle endpoint profiles + model picker (Wonders ▸ Oracle ▸ Settings).** The
   Oracle window gained a Settings face to manage named ENDPOINT PROFILES — a local
   Ollama and one or more remote/corporate endpoints — and switch between them

@@ -1986,6 +1986,17 @@ what makes the interesting logic unit-testable without a cluster.
   **Deferred:** OS-keychain token storage (noted, not built — plaintext+0600 is the
   honest current state); per-profile model-discovery refresh-on-switch for
   non-active profiles; a config schema migration beyond v1 best-effort load.
+  **Follow-up — "Test connection" (v0.53.1):** the Settings edit form's **test**
+  button (was "discover") probes the endpoint and shows a one-line verdict via the
+  pure `connection_verdict(models_out, model)` (unit-tested) — reachable + token
+  accepted (401 → "FAILED") + the configured model actually available (in the
+  `/v1/models` list) vs "NOT available — pull it or pick one below". It reuses the
+  SAME `request_models` path (no new egress surface): local tests on select,
+  remote tests behind the active-armed gate + the discovery egress audit; the
+  listed models double as the click-to-pick list. A `testing` flag shows
+  "testing…" until the probe lands. Deferred here: a deeper end-to-end test that
+  sends a tiny chat completion (heavier — a real token spend / a slow 35B cold
+  load — the `/v1/models` probe catches the common URL/auth/model-pulled failures).
 
 ## The pair (hot/warm)
 

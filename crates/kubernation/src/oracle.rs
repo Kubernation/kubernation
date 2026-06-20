@@ -140,7 +140,7 @@ pub fn model_picker_rows(
 ) -> Vec<(String, Role)> {
     match out {
         None => vec![(
-            "(click discover to list this endpoint's models)".into(),
+            "(click test to reach this endpoint and list its models)".into(),
             Role::Dim,
         )],
         Some(Err(e)) => vec![(format!("(could not list models: {e})"), Role::Dim)],
@@ -154,6 +154,34 @@ pub fn model_picker_rows(
                 (format!("{mark}{m}"), role)
             })
             .collect(),
+    }
+}
+
+/// PURE draw-decision fn: a one-line pass/fail verdict for the **Test** button,
+/// derived from a `GET /v1/models` probe (`out`) + the configured `model`. It
+/// validates the WHOLE config in one shot: endpoint reachable, token accepted
+/// (a 401 surfaces as the classified error), and the chosen model actually
+/// available. `None` ⇒ no test has run yet. Unit-tested.
+pub fn connection_verdict(
+    out: Option<&Result<Arc<Vec<String>>, String>>,
+    model: &str,
+) -> Option<(String, Role)> {
+    match out {
+        None => None,
+        Some(Err(e)) => Some((format!("test: FAILED — {e}"), Role::Warn)),
+        Some(Ok(list)) if model.is_empty() => {
+            Some(("test: reachable — enter a model name".into(), Role::Good))
+        }
+        Some(Ok(list)) if list.iter().any(|m| m == model) => Some((
+            format!("test: OK — reachable, model '{model}' is available"),
+            Role::Good,
+        )),
+        Some(Ok(_)) => Some((
+            format!(
+                "test: reachable, but model '{model}' is NOT available — pull it or pick one below"
+            ),
+            Role::Warn,
+        )),
     }
 }
 
@@ -258,6 +286,8 @@ pub struct OracleView {
     /// selected for editing (a remote profile waits for an explicit discover —
     /// its `/v1/models` is token-bearing egress). Reset on each `load_edit`.
     models_attempted: bool,
+    /// True between clicking **Test** and the probe landing — shows "testing…".
+    testing: bool,
 }
 
 impl OracleView {
@@ -297,6 +327,7 @@ impl OracleView {
             delete_armed: false,
             settings_note: None,
             models_attempted: false,
+            testing: false,
         }
     }
 
@@ -405,6 +436,7 @@ impl OracleView {
         self.delete_armed = false;
         self.focus = None;
         self.models_attempted = false;
+        self.testing = false;
         let p = if idx == NEW_PROFILE {
             Profile {
                 name: "new endpoint".into(),
@@ -782,10 +814,11 @@ impl OracleView {
                     };
                     text(t, fr.x + fr.w + 8.0, y + 13.0, 12.0, c);
                 }
-                // Model row: a discover button.
+                // Model row: a test/discover button (probe the endpoint + list
+                // its models).
                 if id == FieldId::Model {
                     discover_btn = Rect::new(fr.x + fr.w + 8.0, fr.y, 80.0, 18.0);
-                    draw_btn(discover_btn, "discover", PARCHMENT, mouse);
+                    draw_btn(discover_btn, "test", PARCHMENT, mouse);
                 }
                 // Token row: a clear button.
                 if id == FieldId::Token {
@@ -822,6 +855,21 @@ impl OracleView {
                     text(ascii(t), b.x + 56.0, y + 12.0, 12.0, DIM);
                     y += 16.0;
                 }
+            }
+
+            // Test verdict: reachability + auth + model-availability in one line.
+            // A landed probe (Some) clears the in-flight flag.
+            if models.is_some() {
+                self.testing = false;
+            }
+            if let Some((vtext, vrole)) =
+                connection_verdict(models.as_ref(), self.f_model.buf.trim())
+            {
+                text(ascii(&vtext), b.x + 56.0, y + 13.0, 12.0, role_color(vrole));
+                y += 16.0;
+            } else if self.testing {
+                text("test: testing\u{2026}", b.x + 56.0, y + 13.0, 12.0, DIM);
+                y += 16.0;
             }
             y += 6.0;
 
@@ -896,6 +944,7 @@ impl OracleView {
                     let cfg = p.to_llm_config(self.env_token.as_deref());
                     if cfg.endpoint == Endpoint::Local {
                         // Loopback — listing models sends nothing off-box.
+                        self.testing = true;
                         net.request_models(cfg);
                     } else {
                         // Remote: token-bearing egress. Only the ACTIVE, ARMED
@@ -910,6 +959,7 @@ impl OracleView {
                             && same
                             && let Some(ac) = active
                         {
+                            self.testing = true;
                             self.settings_note = Some(write_discovery_audit(&ac));
                             net.request_models(ac);
                         } else {
@@ -1523,6 +1573,28 @@ mod tests {
         let local = rows.iter().find(|(s, _)| s.contains("Ollama")).unwrap();
         assert!(!local.0.contains("REMOTE"));
         assert_eq!(local.1, Role::Body);
+    }
+
+    #[test]
+    fn connection_verdict_validates_endpoint_auth_and_model() {
+        // Not run yet.
+        assert!(connection_verdict(None, "gpt-4o").is_none());
+        // A classified error (e.g. 401) → FAILED.
+        let err: Result<Arc<Vec<String>>, String> =
+            Err("the endpoint rejected the API token (401/403)".into());
+        let (t, r) = connection_verdict(Some(&err), "gpt-4o").unwrap();
+        assert!(t.contains("FAILED") && t.contains("401"));
+        assert_eq!(r, Role::Warn);
+        // Reachable + the model is in the list → OK (Good).
+        let ok: Result<Arc<Vec<String>>, String> =
+            Ok(Arc::new(vec!["qwen3.5:35b".into(), "gpt-4o".into()]));
+        let (t, r) = connection_verdict(Some(&ok), "gpt-4o").unwrap();
+        assert!(t.contains("OK") && t.contains("available"));
+        assert_eq!(r, Role::Good);
+        // Reachable but the model is NOT available → Warn (actionable).
+        let (t, r) = connection_verdict(Some(&ok), "llama3.1").unwrap();
+        assert!(t.contains("NOT available") && t.contains("llama3.1"));
+        assert_eq!(r, Role::Warn);
     }
 
     #[test]
