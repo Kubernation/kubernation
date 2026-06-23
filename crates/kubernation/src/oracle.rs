@@ -230,6 +230,19 @@ pub fn stream_status_line(elapsed_secs: u64, chars: usize) -> String {
     format!("streaming… {elapsed_secs}s · {chars} chars")
 }
 
+/// PURE draw-decision fn: the reply-carousel pager label. `total = history_len + 1`
+/// (the current/live reply is NOT in history). The latest page is actionable; an
+/// earlier page is read-only. Unit-tested.
+pub fn pager_label(history_len: usize, view_offset: usize) -> String {
+    let total = history_len + 1;
+    let shown = total.saturating_sub(view_offset);
+    if view_offset == 0 {
+        format!("reply {shown}/{total} (latest)")
+    } else {
+        format!("reply {shown}/{total} (past — read-only)")
+    }
+}
+
 /// PURE draw-decision fn: the "model-generated; verify" caveat, sharpened when a
 /// Stage-able suggestion is on screen (a proposed change deserves a stronger
 /// reminder). Pinned as a footer outside the scroll. Unit-tested.
@@ -359,6 +372,19 @@ type Built = (
 /// Sentinel `editing` value for an unsaved NEW profile.
 const NEW_PROFILE: usize = usize::MAX;
 
+/// How many past replies the session carousel keeps (oldest evicted past this).
+const ORACLE_HISTORY_CAP: usize = 10;
+
+/// A finalized PAST consult reply, kept for the session carousel — prose + the
+/// scope it answered, deliberately NOT the parsed actions (a past page is read-only,
+/// so storing stale suggestions/links would be dead weight + a temptation to render
+/// them). The text is already-redacted, display-only model output.
+#[derive(Clone)]
+struct ArchivedReply {
+    scope_label: String,
+    text: String,
+}
+
 /// The Oracle modal. Carries the consult state + the editable endpoint config.
 pub struct OracleView {
     face: OracleFace,
@@ -378,6 +404,15 @@ pub struct OracleView {
     /// kept in `reply` and this note explains the interruption (instead of dropping
     /// the value the operator already saw).
     stream_error_note: Option<String>,
+    /// The session reply carousel — PAST finalized replies, oldest first. The current
+    /// reply lives in `reply` (the carousel's implicit last page).
+    history: Vec<ArchivedReply>,
+    /// Which carousel page is shown: 0 = the current/live page, k = k pages back into
+    /// `history` (so the shown index is `history.len() - view_offset`).
+    view_offset: usize,
+    /// The scope label of the CURRENT `reply`, frozen at `finalize_reply` time — a
+    /// jump moves `scope_idx` before finalize, so the label must travel with the reply.
+    reply_scope: Option<String>,
     suggestions: Vec<ValidatedSuggestion>,
     rejects: Vec<String>,
     staged: std::collections::HashSet<usize>,
@@ -460,6 +495,9 @@ impl OracleView {
             reply: None,
             reply_error: None,
             stream_error_note: None,
+            history: Vec::new(),
+            view_offset: 0,
+            reply_scope: None,
             suggestions: Vec::new(),
             rejects: Vec::new(),
             staged: std::collections::HashSet::new(),
@@ -510,6 +548,7 @@ impl OracleView {
     /// consent or reply never carries to the new payload (the remote re-consent
     /// guard). Does NOT clear the deepen set itself.
     fn apply_deepen_change(&mut self) {
+        self.archive_current(); // keep the prior reply in the carousel before wiping
         self.frozen = None;
         self.show_preview = false;
         self.reply = None;
@@ -590,6 +629,7 @@ impl OracleView {
     /// Clears all consult-result state + any in-flight log fetch so nothing from
     /// the old scope carries to the new one.
     fn reset_for_scope_switch(&mut self, net: &Net) {
+        self.archive_current(); // keep the prior reply in the carousel before wiping
         self.show_preview = false;
         self.frozen = None;
         self.reply = None;
@@ -684,6 +724,57 @@ impl OracleView {
                 .unwrap_or_default();
             self.investigate =
                 self.merge_consult_next(model, &s.hot.models.attention, &s.hot.observed);
+        }
+        // Freeze the scope label WITH the reply: a jump moves scope_idx BEFORE this
+        // finalize runs, so reading the live scope at archive time would mislabel a
+        // jumped page. Covers both terminal edges (stream Done + cache-hit Ok).
+        self.reply_scope = Some(self.scopes[self.scope_idx].label());
+    }
+
+    /// Move the current finalized reply into the session carousel (called when a NEW
+    /// consult starts, before `reply` is wiped). Archives ONLY a terminal, non-empty
+    /// reply — never a live streaming partial (`pending`) or a truncated stream-error
+    /// partial (`stream_error_note`), which have no parsed actions and would be a
+    /// misleading "past reply". Dedups an identical Retry/re-finalize; caps the ring;
+    /// resets the pager to the current page (auto-advance to the new consult).
+    fn archive_current(&mut self) {
+        if let Some(text) = self.reply.clone()
+            && !text.trim().is_empty()
+            && self.pending.is_none()
+            && self.stream_error_note.is_none()
+            && self.history.last().map(|a| a.text.as_str()) != Some(text.as_str())
+        {
+            let scope_label = self
+                .reply_scope
+                .clone()
+                .unwrap_or_else(|| self.scopes[self.scope_idx].label());
+            self.history.push(ArchivedReply { scope_label, text });
+            // Oldest evicted past the cap (session scratch); view_offset is reset
+            // below on every growth, so a held offset never strands on a stale index.
+            if self.history.len() > ORACLE_HISTORY_CAP {
+                self.history.remove(0);
+            }
+        }
+        self.view_offset = 0;
+        self.reply_scope = None;
+    }
+
+    /// The (scope_label, text) of the page the operator is VIEWING — the current
+    /// reply at offset 0, else the archived page. Used by copy/export so c/w act on
+    /// what's on screen.
+    fn viewed_reply(&self) -> Option<(String, String)> {
+        if self.view_offset == 0 {
+            self.reply.clone().map(|t| {
+                let label = self
+                    .reply_scope
+                    .clone()
+                    .unwrap_or_else(|| self.scopes[self.scope_idx].label());
+                (label, t)
+            })
+        } else {
+            self.history
+                .get(self.history.len().saturating_sub(self.view_offset))
+                .map(|a| (a.scope_label.clone(), a.text.clone()))
         }
     }
 
@@ -870,10 +961,13 @@ impl OracleView {
         self.want_consult = false;
         self.deepen_seeded = false;
         // An endpoint change invalidates the prior reply → its CONSULT NEXT links +
-        // any error card.
+        // any error card + the whole carousel (a different model's answers).
         self.investigate.clear();
         self.reply_error = None;
         self.stream_error_note = None;
+        self.history.clear();
+        self.view_offset = 0;
+        self.reply_scope = None;
     }
 
     /// Resolve the endpoint a test (level 1 or 2) should probe, applying the SAME
@@ -1712,9 +1806,12 @@ impl OracleView {
         // Reserve a footer strip for the pinned "model-generated; verify"
         // disclaimer whenever an answer/error is shown (kept outside the scroll so
         // the caveat can't scroll away — a posture reminder).
-        let footer_on = self.reply.is_some() || self.reply_error.is_some();
+        let footer_on = self.reply.is_some() || self.reply_error.is_some() || self.view_offset > 0;
         let footer_h = if footer_on { 22.0 } else { 0.0 };
         let mut stage_btns: Vec<(usize, Rect)> = Vec::new();
+        // Reply-carousel pager hit-rects (set when the pager row is drawn).
+        let mut pager_prev = Rect::new(0.0, 0.0, 0.0, 0.0);
+        let mut pager_next = Rect::new(0.0, 0.0, 0.0, 0.0);
         let mut cx = Ctx {
             body: Rect::new(b.x, y, b.w, b.h - (y - b.y) - footer_h),
             y: y - self.scroll,
@@ -1780,143 +1877,186 @@ impl OracleView {
                     WARN,
                 ),
             }
-        } else if self.pending.is_some() {
-            let elapsed = (get_time() - self.pending_started).max(0.0) as u64;
-            if let Some(reply) = &self.reply {
-                // Streaming: the text grows in place; the heavy reply-land parsers
-                // (Stage buttons, CONSULT NEXT) wait for the Done edge.
+        } else {
+            // --- reply carousel ---------------------------------------------
+            // A pager when there's a past reply to flip back to; the current/live
+            // page (offset 0) shows the streaming/finalized reply + its actions, an
+            // earlier page shows PROSE ONLY (read-only — no stale actions).
+            if !self.history.is_empty() {
+                cx.y += 20.0;
+                if cx.visible() {
+                    let label = pager_label(self.history.len(), self.view_offset);
+                    let bx = cx.body.x + 8.0;
+                    pager_prev = Rect::new(bx, cx.y - 13.0, 18.0, 18.0);
+                    let prev_col = if self.view_offset < self.history.len() {
+                        PARCHMENT
+                    } else {
+                        DIM
+                    };
+                    draw_btn(pager_prev, "<", prev_col, mouse);
+                    text(&label, bx + 26.0, cx.y, 13.0, PARCHMENT);
+                    let lw = text_size(&label, 13.0).width;
+                    pager_next = Rect::new(bx + 26.0 + lw + 8.0, cx.y - 13.0, 18.0, 18.0);
+                    let next_col = if self.view_offset > 0 { PARCHMENT } else { DIM };
+                    draw_btn(pager_next, ">", next_col, mouse);
+                }
+                cx.gap();
+            }
+            if self.view_offset > 0 {
+                // A PAST reply — read-only prose, no actions.
+                let idx = self.history.len().saturating_sub(self.view_offset);
+                if let Some(a) = self.history.get(idx) {
+                    cx.row(
+                        &ascii(&format!(
+                            "past reply — {} (read-only; > for the latest)",
+                            a.scope_label
+                        )),
+                        DIM,
+                    );
+                    cx.gap();
+                    for line in wrap(&strip_machine_blocks(&a.text), 96) {
+                        cx.row(&ascii(&line), INK);
+                    }
+                }
+            } else if self.pending.is_some() {
+                let elapsed = (get_time() - self.pending_started).max(0.0) as u64;
+                if let Some(reply) = &self.reply {
+                    // Streaming: the text grows in place; the heavy reply-land parsers
+                    // (Stage buttons, CONSULT NEXT) wait for the Done edge.
+                    let shown = strip_machine_blocks(reply);
+                    for line in wrap(&shown, 96) {
+                        cx.row(&ascii(&line), INK);
+                    }
+                    cx.gap();
+                    cx.row(&stream_status_line(elapsed, reply.chars().count()), DIM);
+                    cx.row("(Cancel to stop)", DIM);
+                } else {
+                    // No token yet — the spinner with the cold-start countdown.
+                    let timeout = cfg.as_ref().map(|c| c.timeout().as_secs()).unwrap_or(0);
+                    cx.row(&consult_progress_line(elapsed, timeout), DIM);
+                    cx.row("(local models can take a while — Cancel to stop)", DIM);
+                }
+            } else if logs_pending {
+                cx.row("gathering the pod's logs to include in the consult…", DIM);
+            } else if let Some(err) = self.reply_error.clone() {
+                cx.row("The consult could not complete:", WARN);
+                cx.gap();
+                for line in wrap(&err, 92) {
+                    cx.row(&ascii(&line), INK);
+                }
+                if let Some(hint) = error_hint(&err) {
+                    cx.gap();
+                    for line in wrap(hint, 92) {
+                        cx.row(&ascii(&line), DIM);
+                    }
+                }
+                cx.gap();
+                cx.row("Press Retry to try again, or open Settings.", DIM);
+            } else if let Some(reply) = &self.reply {
+                // Show the prose only — the machine-readable blocks (investigate /
+                // suggestions / follow_up) are already rendered as links/buttons/chips
+                // below, so strip them from the displayed answer.
                 let shown = strip_machine_blocks(reply);
-                for line in wrap(&shown, 96) {
-                    cx.row(&ascii(&line), INK);
+                if shown.trim().is_empty() {
+                    cx.row(
+                        "(the answer is in the actions below — no extra prose returned)",
+                        DIM,
+                    );
+                } else {
+                    for line in wrap(&shown, 96) {
+                        cx.row(&ascii(&line), INK);
+                    }
                 }
-                cx.gap();
-                cx.row(&stream_status_line(elapsed, reply.chars().count()), DIM);
-                cx.row("(Cancel to stop)", DIM);
-            } else {
-                // No token yet — the spinner with the cold-start countdown.
-                let timeout = cfg.as_ref().map(|c| c.timeout().as_secs()).unwrap_or(0);
-                cx.row(&consult_progress_line(elapsed, timeout), DIM);
-                cx.row("(local models can take a while — Cancel to stop)", DIM);
-            }
-        } else if logs_pending {
-            cx.row("gathering the pod's logs to include in the consult…", DIM);
-        } else if let Some(err) = self.reply_error.clone() {
-            cx.row("The consult could not complete:", WARN);
-            cx.gap();
-            for line in wrap(&err, 92) {
-                cx.row(&ascii(&line), INK);
-            }
-            if let Some(hint) = error_hint(&err) {
-                cx.gap();
-                for line in wrap(hint, 92) {
-                    cx.row(&ascii(&line), DIM);
+                // A stream that ended in error after some text arrived: keep the partial
+                // (above) + explain the interruption (no Stage buttons — not finalized).
+                if let Some(note) = &self.stream_error_note {
+                    cx.gap();
+                    cx.row(&ascii(note), WARN);
                 }
-            }
-            cx.gap();
-            cx.row("Press Retry to try again, or open Settings.", DIM);
-        } else if let Some(reply) = &self.reply {
-            // Show the prose only — the machine-readable blocks (investigate /
-            // suggestions / follow_up) are already rendered as links/buttons/chips
-            // below, so strip them from the displayed answer.
-            let shown = strip_machine_blocks(reply);
-            if shown.trim().is_empty() {
-                cx.row(
-                    "(the answer is in the actions below — no extra prose returned)",
-                    DIM,
-                );
-            } else {
-                for line in wrap(&shown, 96) {
-                    cx.row(&ascii(&line), INK);
+                if let Some(note) = &self.audit_note {
+                    cx.gap();
+                    cx.row(&ascii(note), DIM);
                 }
-            }
-            // A stream that ended in error after some text arrived: keep the partial
-            // (above) + explain the interruption (no Stage buttons — not finalized).
-            if let Some(note) = &self.stream_error_note {
-                cx.gap();
-                cx.row(&ascii(note), WARN);
-            }
-            if let Some(note) = &self.audit_note {
-                cx.gap();
-                cx.row(&ascii(note), DIM);
-            }
-            if !self.suggestions.is_empty() {
-                cx.gap();
-                cx.row(
-                    "Suggested changes — Stage to review in Orders ▸ End of Turn:",
-                    PARCHMENT,
-                );
-                for (i, s) in self.suggestions.iter().enumerate() {
-                    cx.y += 20.0;
-                    if cx.visible() {
-                        let staged = self.staged.contains(&i);
-                        let label = truncate(&s.summary, 72);
-                        text(ascii(&label), cx.body.x + 8.0, cx.y, 13.0, INK);
-                        let bw = 70.0;
-                        let br = Rect::new(cx.body.x + cx.body.w - bw - 6.0, cx.y - 13.0, bw, 18.0);
-                        let (lbl, col) = if staged {
-                            ("staged", DIM)
-                        } else {
-                            ("Stage", GOOD)
-                        };
-                        let bg = if !staged && br.contains(mouse) {
-                            lighter(PLATE, 1.7)
-                        } else {
-                            PLATE
-                        };
-                        draw_rectangle(br.x, br.y, br.w, br.h, bg);
-                        draw_rectangle_lines(br.x, br.y, br.w, br.h, 1.0, col);
-                        text(lbl, br.x + 14.0, br.y + 14.0, 13.0, col);
-                        if !staged {
-                            stage_btns.push((i, br));
+                if !self.suggestions.is_empty() {
+                    cx.gap();
+                    cx.row(
+                        "Suggested changes — Stage to review in Orders ▸ End of Turn:",
+                        PARCHMENT,
+                    );
+                    for (i, s) in self.suggestions.iter().enumerate() {
+                        cx.y += 20.0;
+                        if cx.visible() {
+                            let staged = self.staged.contains(&i);
+                            let label = truncate(&s.summary, 72);
+                            text(ascii(&label), cx.body.x + 8.0, cx.y, 13.0, INK);
+                            let bw = 70.0;
+                            let br =
+                                Rect::new(cx.body.x + cx.body.w - bw - 6.0, cx.y - 13.0, bw, 18.0);
+                            let (lbl, col) = if staged {
+                                ("staged", DIM)
+                            } else {
+                                ("Stage", GOOD)
+                            };
+                            let bg = if !staged && br.contains(mouse) {
+                                lighter(PLATE, 1.7)
+                            } else {
+                                PLATE
+                            };
+                            draw_rectangle(br.x, br.y, br.w, br.h, bg);
+                            draw_rectangle_lines(br.x, br.y, br.w, br.h, 1.0, col);
+                            text(lbl, br.x + 14.0, br.y + 14.0, 13.0, col);
+                            if !staged {
+                                stage_btns.push((i, br));
+                            }
                         }
                     }
                 }
-            }
-            if !self.rejects.is_empty() {
-                cx.gap();
-                cx.row(
-                    "Rejected (the model proposed these; not safe to stage):",
-                    DIM,
-                );
-                for r in &self.rejects {
-                    cx.row(&ascii(&format!("  x {r}")), DIM);
+                if !self.rejects.is_empty() {
+                    cx.gap();
+                    cx.row(
+                        "Rejected (the model proposed these; not safe to stage):",
+                        DIM,
+                    );
+                    for r in &self.rejects {
+                        cx.row(&ascii(&format!("  x {r}")), DIM);
+                    }
                 }
-            }
-        } else {
-            cx.row("Pick a scope, then:", PARCHMENT);
-            cx.row(
-                "  • Preview — see the exact (redacted, fenced) text that will be sent",
-                DIM,
-            );
-            cx.row(
-                "  • Consult — ask the model to explain it (it cannot change anything)",
-                DIM,
-            );
-            cx.row(
-                "  • Settings — pick a local model or point at a remote endpoint",
-                DIM,
-            );
-            if remote {
+            } else {
+                cx.row("Pick a scope, then:", PARCHMENT);
                 cx.row(
-                    "  (remote endpoint — Preview is required before a Consult)",
+                    "  • Preview — see the exact (redacted, fenced) text that will be sent",
                     DIM,
                 );
-            }
-            if let Some((bundle, _, _, _, _, _, _)) = &built {
-                cx.gap();
                 cx.row(
-                    &format!(
-                        "context: {} section(s), ~{} tokens{}",
-                        bundle.sections.len(),
-                        bundle.est_tokens,
-                        if bundle.truncated {
-                            " (truncated to fit)"
-                        } else {
-                            ""
-                        }
-                    ),
+                    "  • Consult — ask the model to explain it (it cannot change anything)",
                     DIM,
                 );
+                cx.row(
+                    "  • Settings — pick a local model or point at a remote endpoint",
+                    DIM,
+                );
+                if remote {
+                    cx.row(
+                        "  (remote endpoint — Preview is required before a Consult)",
+                        DIM,
+                    );
+                }
+                if let Some((bundle, _, _, _, _, _, _)) = &built {
+                    cx.gap();
+                    cx.row(
+                        &format!(
+                            "context: {} section(s), ~{} tokens{}",
+                            bundle.sections.len(),
+                            bundle.est_tokens,
+                            if bundle.truncated {
+                                " (truncated to fit)"
+                            } else {
+                                ""
+                            }
+                        ),
+                        DIM,
+                    );
+                }
             }
         }
 
@@ -1931,7 +2071,11 @@ impl OracleView {
         // they must be hidden while a (re-)consult streams — else the prior reply's
         // links/chips paint + stay clickable over the half-streamed answer.
         let mut consult_btns: Vec<(Scope, Rect)> = Vec::new();
-        if self.pending.is_none() && self.reply.is_some() && !self.investigate.is_empty() {
+        if self.view_offset == 0
+            && self.pending.is_none()
+            && self.reply.is_some()
+            && !self.investigate.is_empty()
+        {
             cx.gap();
             cx.row("CONSULT NEXT — drill into one of these:", PARCHMENT);
             for t in &self.investigate {
@@ -1953,7 +2097,8 @@ impl OracleView {
         // and re-consult. Chips are derived from the ACTUAL bundle (deepen_chip_
         // states) so a budget-dropped lens reads "dropped", never a false receipt.
         let mut deepen_btns: Vec<(DeepenLens, Rect)> = Vec::new();
-        if self.pending.is_none()
+        if self.view_offset == 0
+            && self.pending.is_none()
             && self.reply.is_some()
             && let Some((bundle, _, _, _, _, offered, _)) = &built
             && !offered.is_empty()
@@ -2024,8 +2169,10 @@ impl OracleView {
                 1.0,
                 PLATE,
             );
-            if self.reply.is_some() {
-                let warn = !self.suggestions.is_empty();
+            if self.reply.is_some() || self.view_offset > 0 {
+                // A past page never stages, so it never gets the sharper "verify
+                // before staging" wording.
+                let warn = self.view_offset == 0 && !self.suggestions.is_empty();
                 let col = if warn { WARN } else { DIM };
                 text(disclaimer_text(warn), b.x + 8.0, fy, 12.0, col);
                 let hint = "c copy · w export";
@@ -2045,10 +2192,11 @@ impl OracleView {
         // --- input ---------------------------------------------------------
         // Copy / export the consult (the RAW reply, so the actions are reproducible).
         // Only with an answer on the Consult face and no Settings field focused.
+        // Copy/export the VIEWED page (current or a past carousel page).
         if self.face == OracleFace::Consult
             && !self.field_focused()
             && !self.show_preview
-            && let Some(reply) = self.reply.clone()
+            && let Some((scope_label, reply)) = self.viewed_reply()
         {
             if is_key_pressed(KeyCode::C) {
                 return OracleAction::Copy(reply);
@@ -2056,7 +2204,7 @@ impl OracleView {
             if is_key_pressed(KeyCode::W) {
                 let header = format!(
                     "# Oracle consult — {}\n# endpoint: {}  ·  model: {}\n# model-generated; verify before acting.\n\n",
-                    self.scopes[self.scope_idx].label(),
+                    scope_label,
                     cfg.as_ref().map(|c| c.base_url.as_str()).unwrap_or("?"),
                     cfg.as_ref().map(|c| c.model.as_str()).unwrap_or("?"),
                 );
@@ -2064,6 +2212,21 @@ impl OracleView {
             }
         }
         if click {
+            // Reply-carousel pager — flip between past replies and the current one.
+            // Inert to the consult (never touches pending/the request); resets scroll
+            // since pages differ in length.
+            if !self.history.is_empty() {
+                if pager_prev.contains(mouse) && self.view_offset < self.history.len() {
+                    self.view_offset += 1;
+                    self.scroll = 0.0;
+                    return OracleAction::None;
+                }
+                if pager_next.contains(mouse) && self.view_offset > 0 {
+                    self.view_offset -= 1;
+                    self.scroll = 0.0;
+                    return OracleAction::None;
+                }
+            }
             for (i, br) in &stage_btns {
                 if br.contains(mouse) {
                     self.staged.insert(*i);
@@ -2124,7 +2287,9 @@ impl OracleView {
                         self.show_preview = true;
                         self.scroll = 0.0;
                     } else if let Some(sent) = self.dispatch(net, &built, cfg) {
-                        // Consult / Retry — same path.
+                        // Consult / Retry — same path. (This arm doesn't route through
+                        // the reset helpers, so archive the prior reply here.)
+                        self.archive_current();
                         self.pending = Some(sent);
                         self.pending_started = get_time();
                         self.reply = None;
@@ -2400,6 +2565,19 @@ mod tests {
         assert!(s.contains("streaming") && s.contains("4s") && s.contains("128"));
         // An idle-bounded stream has no total countdown — don't imply one.
         assert!(!s.contains("timeout"));
+    }
+
+    #[test]
+    fn pager_label_shows_page_of_total_and_latest_vs_past() {
+        // 2 past replies → 3 pages; offset 0 = the latest.
+        assert_eq!(pager_label(2, 0), "reply 3/3 (latest)");
+        // offset 1 → the page just before the latest, read-only.
+        let p = pager_label(2, 1);
+        assert!(p.contains("reply 2/3") && p.contains("past"));
+        // the oldest page.
+        assert!(pager_label(2, 2).contains("reply 1/3"));
+        // no history → a single page (the current).
+        assert_eq!(pager_label(0, 0), "reply 1/1 (latest)");
     }
 
     #[test]

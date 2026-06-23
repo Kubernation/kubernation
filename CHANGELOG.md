@@ -9,6 +9,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Oracle reply carousel.** Drilling into the next consult no longer wipes the
+  prior reply — a `◀ reply N/M ▶` pager keeps the session's replies so you can flip
+  back and re-read reply 1 *while* reply 2 streams (handy when a local model takes a
+  while). The latest page is the current/streaming consult with its actions
+  (Stage / CONSULT NEXT / deepen); earlier pages are read-only prose (acting on a
+  stale suggestion against a since-changed cluster would be unsafe). `c`/`w`
+  copy/export the page you're viewing. The carousel is session-local and clears on
+  an endpoint or cluster change.
+
 - **Oracle replies now stream token-by-token.** Instead of a 60–90s spinner then one
   block, the answer appears as the model generates it. The request goes `stream:true`
   (SSE), the client reads the response incrementally, and the consult window shows the

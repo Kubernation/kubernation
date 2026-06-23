@@ -2289,6 +2289,37 @@ what makes the interesting logic unit-testable without a cluster.
   had no timeout — both wrapped in `cfg.timeout()`. 294 core (+3) + 53 GUI tests; clippy
   clean with + without the feature. **Deferred:** a per-pod multi-container picker; a
   configurable stream idle bound; a manual prompt field (the keyboard-ownership minefield).
+- **Oracle reply carousel (session history)** (2026-06-23, v0.60.0, user: drilling into
+  the next reply wiped the view, but you want to ponder the prior reply while the next
+  slowly streams; design-workflow vetted — 2 lenses → synthesis; carousel chosen over a
+  stacked transcript because the modal is fixed-size with ONE scroll region): a
+  session-local pager of consult replies, all GUI-loop state (`gui/oracle.rs`, no core/
+  net/egress change). **State:** `history: Vec<ArchivedReply{scope_label,text}>` (past
+  replies, oldest first; the current reply stays in `self.reply` — the carousel's implicit
+  last page), `view_offset` (0 = current/live page, k = k back), `reply_scope` (the current
+  reply's scope label, FROZEN in `finalize_reply` because a jump moves `scope_idx` BEFORE
+  finalize). `archive_current()` pushes the prior FINALIZED reply into history before it's
+  wiped — guarded on non-empty + `pending.is_none()` + `stream_error_note.is_none()` (NEVER
+  a live streaming partial or a truncated stream-error partial — they'd be a misleading
+  "past reply") + last-text dedup + `ORACLE_HISTORY_CAP`=10; resets `view_offset=0`
+  (auto-advance so the new streaming consult is visible). Called first in
+  `reset_for_scope_switch` + `apply_deepen_change` + the Consult/Retry dispatch arm.
+  **READ-ONLY past pages (the safety crux):** at `view_offset>0` the body renders the
+  archived page's PROSE ONLY (`strip_machine_blocks`) + a read-only hint, and the CONSULT
+  NEXT / INVESTIGATE FURTHER / Stage action blocks are gated `&& view_offset==0` — so a
+  stale suggestion/link (validated against a since-changed cluster) can NEVER be acted on;
+  only the live page is actionable. The stored text is already-redacted display-only model
+  output, so the carousel adds **no egress, no write, no token surface**; the `◀ ▶` pager
+  is inert to the consult/network. **Render:** the reply-zone if/else chain was wrapped in
+  a `view_offset==0 ? live-chain : past-prose` split with a `◀ reply N/M ▶` pager row (pure
+  `pager_label`, unit-tested) drawn via `cx` so the scroll math holds; `◀ ▶` clamp the
+  offset + reset scroll (pages differ in length). `c`/`w` copy/export the VIEWED page
+  (`viewed_reply`). Cleared on endpoint change (`apply_active`); a hot-context switch
+  rebuilds `OracleView::new()` (history empty per cluster). **Adversarial review: 0
+  confirmed** (read-only-past-page safety, the streaming/archive guards, render brace
+  balance + scroll math, and clearing all verified). 294 core + 54 GUI (+1) tests; clippy
+  clean. **Deferred:** persisting history across modal close; a stacked-transcript toggle;
+  per-page metadata (timestamp/question).
 
 ## The pair (hot/warm)
 
