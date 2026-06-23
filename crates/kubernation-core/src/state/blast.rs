@@ -79,6 +79,24 @@ impl BlastRadius {
     }
 }
 
+/// PURE: the distinct workloads with ≥1 pod stationed on `node` (pod `node_name` →
+/// `OwnerIndex`). Shared by `blast_radius`'s node cascade and the Oracle's
+/// node-scope CONSULT NEXT seeding, so the two can never disagree on "who lives
+/// here" (the `draw::affected_cell` DRY precedent).
+pub(crate) fn workloads_on_node(world: &ObservedWorld, node: &str) -> Vec<WorkloadRef> {
+    let idx = OwnerIndex::build(world);
+    let mut owners: Vec<WorkloadRef> = Vec::new();
+    for p in world.pods.state() {
+        if p.spec.as_ref().and_then(|s| s.node_name.as_deref()) == Some(node)
+            && let Some(wr) = idx.workload_of(&p)
+            && !owners.contains(&wr)
+        {
+            owners.push(wr);
+        }
+    }
+    owners
+}
+
 /// Compute the blast radius of `subject` over the observed topology.
 pub fn blast_radius(world: &ObservedWorld, subject: &Subject) -> BlastRadius {
     let exposure = build_exposure(world);
@@ -91,17 +109,7 @@ pub fn blast_radius(world: &ObservedWorld, subject: &Subject) -> BlastRadius {
         }
         Subject::Node(node) => {
             // Hosted workloads are directly at risk; then their routes cascade.
-            let idx = OwnerIndex::build(world);
-            let mut owners: Vec<WorkloadRef> = Vec::new();
-            for p in world.pods.state() {
-                if p.spec.as_ref().and_then(|s| s.node_name.as_deref()) == Some(node.as_str())
-                    && let Some(wr) = idx.workload_of(&p)
-                    && !owners.contains(&wr)
-                {
-                    owners.push(wr);
-                }
-            }
-            for wr in &owners {
+            for wr in &workloads_on_node(world, node) {
                 add(&mut acc, Affected::Workload(wr.clone()), 1);
                 add_routes(wr, 1, &exposure, &mut acc);
             }
@@ -240,6 +248,33 @@ mod tests {
 
     /// A node cascades to the workloads hosted on it and then their routes:
     /// node → web (hop 1) → web's Service (hop 2) → its Ingress (hop 3).
+    #[test]
+    fn workloads_on_node_lists_only_the_hosted_workloads() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.node(fx::node("n2", Some("z-a")));
+        s.deployment(fx::deployment("demo", "web", 1, 1));
+        s.replicaset(fx::replicaset("demo", "web-rs", "web"));
+        s.pod(fx::pod_owned(
+            fx::pod("demo", "web-rs-1", Some("n1")),
+            "ReplicaSet",
+            "web-rs",
+        ));
+        s.deployment(fx::deployment("demo", "api", 1, 1));
+        s.replicaset(fx::replicaset("demo", "api-rs", "api"));
+        s.pod(fx::pod_owned(
+            fx::pod("demo", "api-rs-1", Some("n2")),
+            "ReplicaSet",
+            "api-rs",
+        ));
+        let on1 = workloads_on_node(&world, "n1");
+        assert_eq!(on1.len(), 1);
+        assert_eq!(on1[0].name, "web");
+        // The api workload lives on n2 → not listed for n1.
+        assert!(!on1.iter().any(|w| w.name == "api"));
+        assert!(workloads_on_node(&world, "nope").is_empty());
+    }
+
     #[test]
     fn node_radius_cascades_to_hosted_workloads_and_their_routes() {
         let (world, mut s) = fx::world();

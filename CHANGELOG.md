@@ -8,6 +8,20 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Oracle answer quality.** Three changes that make a consult sharper: (1) the
+  **default question is now scope-aware** — instead of a generic "explain this", the
+  model is asked the operator's real question ("Why is demo/crashy unhealthy and
+  what should I do?", "What is straining node worker?", realm "What are the top 1-3
+  issues to fix first, worst-first?"); (2) the **root-cause diagnosis** of the worst
+  not-ready pod (the why + the fix Kubernation already computes) is **folded into
+  the workload and concern consults**, so the model reasons over the actual failure
+  instead of re-guessing it; (3) **node consults now seed CONSULT NEXT** from the
+  troubled workloads stationed on that node (mirroring the realm seeding), so a node
+  drill-down always offers its on-node suspects. The scope-aware question is carried
+  on the bundle so the byte-frozen consent stays exact, and every folded string gets
+  the same unconditional redaction + fencing.
+
 ### Changed
 - **Oracle CONSULT NEXT is now seeded from the attention queue.** Previously the
   "drill into one of these" links came only from the model's structured

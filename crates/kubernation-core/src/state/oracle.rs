@@ -29,7 +29,9 @@ use std::collections::HashMap;
 use super::attention::{self, Concern, Severity, Target};
 use super::blast::Affected;
 use super::blast::{self, Subject};
-use super::model::{Models, NodeHealth, WorkloadRef, build_city, build_node_detail, build_storage};
+use super::model::{
+    Models, NodeHealth, PodState, WorkloadRef, build_city, build_node_detail, build_storage,
+};
 use super::observed::ObservedWorld;
 use super::saturation::SatLevel;
 use super::slo::SloStatus;
@@ -96,6 +98,7 @@ pub enum SectionTag {
     Advisor,
     Attention,
     Storage,
+    Diagnosis,
 }
 
 impl SectionTag {
@@ -112,6 +115,7 @@ impl SectionTag {
             SectionTag::Advisor => "ADVISOR",
             SectionTag::Attention => "ATTENTION QUEUE",
             SectionTag::Storage => "PERSISTENT STORAGE",
+            SectionTag::Diagnosis => "ROOT CAUSE (DIAGNOSIS)",
         }
     }
 }
@@ -335,6 +339,12 @@ pub struct BundleSection {
 pub struct ContextBundle {
     pub scope_label: String,
     pub cluster: String,
+    /// The scope-aware default question (used when the operator types none). Carried
+    /// HERE — on the single bundle that `render_prompt`/`consent_preview`/`bundle_hash`
+    /// all consume — so the consent preview equals the wire bytes by construction.
+    /// Set raw in `build_bundle`, scrubbed by `redact_bundle` (it embeds
+    /// cluster-derived names), read ONLY by `default_question`.
+    pub default_question: String,
     pub sections: Vec<BundleSection>,
     /// Estimated tokens of the rendered data block (chars/4 — a safety cap, not
     /// a billing figure).
@@ -440,7 +450,7 @@ fn assemble(
     ctx: &BundleCtx,
 ) -> Vec<BundleSection> {
     let mut out = match scope {
-        Scope::Concern(c) => concern_sections(c),
+        Scope::Concern(c) => concern_sections(world, c),
         Scope::Workload(wr) => workload_sections(models, world, wr, ctx),
         Scope::Node(name) => node_sections(world, name),
         Scope::Realm => realm_sections(models, world),
@@ -583,7 +593,55 @@ fn push_deepen_sections(
     }
 }
 
-fn concern_sections(c: &Concern) -> Vec<BundleSection> {
+/// PURE + panic-safe: the worst not-ready pod's diagnosis (why/fix) for a workload,
+/// resolved from the existing `build_city` view model — so the model reasons over
+/// the ROOT CAUSE instead of re-guessing it. `None` for a healthy / zero-pod /
+/// mid-sync / not-in-store workload (the common case); every step is an
+/// Option/empty-iter so it never panics.
+fn worst_pod_diagnosis(
+    world: &ObservedWorld,
+    wr: &WorkloadRef,
+) -> Option<(String, crate::state::diagnose::Diagnosis)> {
+    let city = build_city(world, wr)?;
+    city.pods
+        .into_iter()
+        .filter(|p| p.diag.is_some())
+        .max_by_key(|p| diag_rank(p.state, p.diag.as_ref().unwrap().kind))
+        .map(|p| (p.name, p.diag.unwrap()))
+}
+
+/// Worst-first ranking for picking the representative not-ready pod: a Failing pod
+/// outranks any other state, then the most-actionable diagnosis kind.
+fn diag_rank(state: PodState, kind: crate::state::diagnose::DiagKind) -> u8 {
+    use crate::state::diagnose::DiagKind as K;
+    let s = if state == PodState::Failing { 100 } else { 0 };
+    let k = match kind {
+        K::Oom => 9,
+        K::Crash => 8,
+        K::Config => 7,
+        K::ImagePull => 6,
+        K::Unschedulable => 5,
+        K::Failed => 4,
+        K::Pending => 3,
+        K::NotReady => 2,
+    };
+    s + k
+}
+
+/// The ROOT CAUSE section (the worst not-ready pod's plain-English why + fix) at
+/// the given priority, or `None` when there's nothing to diagnose. Routes through
+/// `sec()` so it inherits redaction + fence + budget.
+fn diagnosis_section(
+    world: &ObservedWorld,
+    wr: &WorkloadRef,
+    priority: u8,
+) -> Option<BundleSection> {
+    let (pod, d) = worst_pod_diagnosis(world, wr)?;
+    let body = format!("pod {pod} ({}): {}\nfix: {}", d.reason, d.explain, d.hint);
+    Some(sec(SectionTag::Diagnosis, "root cause", body, priority))
+}
+
+fn concern_sections(world: &ObservedWorld, c: &Concern) -> Vec<BundleSection> {
     let mut body = format!("[{:?}] {}", c.severity, c.title);
     if !c.detail.is_empty() {
         body.push_str(&format!("\n{}", c.detail));
@@ -591,7 +649,15 @@ fn concern_sections(c: &Concern) -> Vec<BundleSection> {
     if let Some(hint) = attention::next_action(c) {
         body.push_str(&format!("\nsuggested next action: {hint}"));
     }
-    vec![sec(SectionTag::Concern, "concern", body, 9)]
+    let mut out = vec![sec(SectionTag::Concern, "concern", body, 9)];
+    // Fold the offending workload's root-cause diagnosis (a concern often targets a
+    // workload) so the model gets the why/fix, not just the concern title.
+    if let Target::Workload(wr) = &c.target
+        && let Some(s) = diagnosis_section(world, wr, 8)
+    {
+        out.push(s);
+    }
+    out
 }
 
 fn workload_sections(
@@ -632,6 +698,12 @@ fn workload_sections(
             format!("{}/{} not found in the current view", wr.namespace, wr.name),
             9,
         )),
+    }
+
+    // Root-cause diagnosis of the worst not-ready pod (why/fix), just below the
+    // primary workload section — so the model explains the failure, not re-guesses.
+    if let Some(s) = diagnosis_section(world, wr, 8) {
+        out.push(s);
     }
 
     if let Some(slo) = ctx.slo.and_then(|m| m.get(wr)) {
@@ -845,6 +917,10 @@ pub fn redact_bundle(bundle: &mut ContextBundle) -> RedactionReport {
     bundle.scope_label = strip_sentinels(&bundle.scope_label);
     scrub(&mut bundle.cluster);
     bundle.cluster = strip_sentinels(&bundle.cluster);
+    // The scope-aware default question embeds cluster-derived names (concern title,
+    // ns/name, node) and renders OUTSIDE the fence — scrub + sentinel-strip it too.
+    scrub(&mut bundle.default_question);
+    bundle.default_question = strip_sentinels(&bundle.default_question);
     for s in &mut bundle.sections {
         scrub(&mut s.title);
         s.title = strip_sentinels(&s.title);
@@ -1222,11 +1298,36 @@ pub fn deepen_button_order(
     out
 }
 
+/// The SOLE reader of `ContextBundle.default_question` (the byte-identity
+/// regression guard — see the field doc). Used when the operator types no question.
 fn default_question(bundle: &ContextBundle) -> String {
-    format!(
-        "Explain the state of {} and what I should look at first.",
-        bundle.scope_label
-    )
+    bundle.default_question.clone()
+}
+
+/// PURE: the scope-aware default question — a POINTED prompt naming the actual
+/// trouble, so the model answers the operator's real question instead of a generic
+/// "explain this". Built raw here (cluster-derived names → scrubbed by
+/// `redact_bundle`). The Workload arm reads the SAME `workload_severity` map
+/// `workload_sections` reports, so the question and the section can't disagree.
+pub fn default_question_for(scope: &Scope, models: &Models) -> String {
+    match scope {
+        Scope::Concern(c) => format!("Why is '{}' happening, and how do I fix it?", c.title),
+        Scope::Workload(wr) => {
+            if models.workload_severity.contains_key(wr) {
+                format!(
+                    "Why is {}/{} unhealthy, and what should I do?",
+                    wr.namespace, wr.name
+                )
+            } else {
+                format!(
+                    "Is {}/{} healthy, and is there anything I should improve?",
+                    wr.namespace, wr.name
+                )
+            }
+        }
+        Scope::Node(n) => format!("What is straining node {n}, and what should I check?"),
+        Scope::Realm => "What are the top 1-3 issues to fix first, worst-first?".to_string(),
+    }
 }
 
 /// The OpenAI request the client posts — built here so the preview and the wire
@@ -1404,6 +1505,7 @@ pub fn build_bundle(
     let mut bundle = ContextBundle {
         scope_label: scope.label(),
         cluster: ctx.cluster.to_string(),
+        default_question: default_question_for(scope, models),
         sections: assemble(models, world, scope, ctx),
         est_tokens: 0,
         truncated: false,
@@ -1671,6 +1773,7 @@ mod tests {
         let mut b = ContextBundle {
             scope_label: "concern: password=leakme".into(),
             cluster: "ctx token=leak2".into(),
+            default_question: String::new(),
             sections: vec![sec(
                 SectionTag::Concern,
                 "title password=leak3",
@@ -1720,6 +1823,7 @@ mod tests {
         let mut b = ContextBundle {
             scope_label: "x".into(),
             cluster: "c".into(),
+            default_question: String::new(),
             sections: vec![sec(
                 SectionTag::Logs,
                 "logs",
@@ -1744,6 +1848,7 @@ mod tests {
         let mut b = ContextBundle {
             scope_label: "x".into(),
             cluster: "c".into(),
+            default_question: String::new(),
             sections: vec![
                 sec(SectionTag::Concern, "concern", "the important bit", 9),
                 sec(SectionTag::Logs, "logs", big_log, 1),
@@ -1774,6 +1879,7 @@ mod tests {
         let mut b = ContextBundle {
             scope_label: "x".into(),
             cluster: "c".into(),
+            default_question: String::new(),
             sections: vec![sec(SectionTag::Logs, "logs", many, 1)],
             est_tokens: 0,
             truncated: false,
@@ -1843,6 +1949,221 @@ mod tests {
         assert!(preview.contains("<<<KN-UNTRUSTED"));
         // It is readable, not the escaped-\n JSON wall.
         assert!(!preview.contains("\\n"));
+
+        // The EMPTY-question path (the default-question feature) must ALSO be
+        // byte-identical: the scope-aware default must appear verbatim in BOTH the
+        // preview and the wire messages (proving the empty branch routes through
+        // bundle.default_question, the single source).
+        let (bw, _) = build_bundle(
+            &models,
+            &world,
+            &Scope::Workload(web_ref()),
+            &ctx(),
+            &Caps::default(),
+        );
+        let want = default_question_for(&Scope::Workload(web_ref()), &models);
+        assert!(!want.is_empty());
+        let prev_empty = consent_preview(&bw, "", "llama3", &[], false);
+        let msgs_empty = render_prompt(&bw, "", &[], false);
+        assert!(
+            prev_empty.contains(&want),
+            "preview must carry the default question"
+        );
+        assert!(
+            msgs_empty.iter().any(|m| m.content.contains(&want)),
+            "the wire message must carry the SAME default question (byte-identity)"
+        );
+    }
+
+    #[test]
+    fn default_question_is_scope_aware() {
+        use crate::state::attention::{Concern, Severity, Target};
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.deployment(fx::deployment("demo", "web", 2, 2)); // healthy
+        s.deployment(fx::deployment("demo", "broken", 3, 0)); // degraded → severity
+        let models = Models::build(&world);
+        let wref = |n: &str| WorkloadRef {
+            kind: WorkloadKind::Deployment,
+            namespace: "demo".into(),
+            name: n.into(),
+        };
+        // Healthy vs degraded wording flips on workload_severity.
+        let healthy = default_question_for(&Scope::Workload(wref("web")), &models);
+        assert!(healthy.contains("healthy") && healthy.contains("demo/web"));
+        let degraded = default_question_for(&Scope::Workload(wref("broken")), &models);
+        assert!(
+            degraded.contains("unhealthy") && degraded.contains("demo/broken"),
+            "got: {degraded}"
+        );
+        // Node names the node; Realm asks worst-first.
+        let node = default_question_for(&Scope::Node("n1".into()), &models);
+        assert!(node.contains("straining") && node.contains("n1"));
+        let realm = default_question_for(&Scope::Realm, &models);
+        assert!(realm.to_lowercase().contains("worst-first") || realm.contains("top"));
+        // Concern names its title.
+        let c = Concern {
+            severity: Severity::Critical,
+            title: "crashy is crashing".into(),
+            detail: String::new(),
+            target: Target::WorkloadList,
+            probe: None,
+            key: "w:1".into(),
+            cluster: crate::events::ClusterId::Hot,
+        };
+        assert!(default_question_for(&Scope::Concern(c), &models).contains("crashy is crashing"));
+    }
+
+    #[test]
+    fn redact_bundle_scrubs_the_default_question() {
+        use crate::state::attention::{Concern, Severity, Target};
+        // A credential SHAPE in a (cluster-derived) concern title must be masked in
+        // the default_question after build_bundle — it renders OUTSIDE the fence.
+        let world = world_with_web();
+        let models = Models::build(&world);
+        let c = Concern {
+            severity: Severity::Critical,
+            title: "boom password=leakme".into(),
+            detail: String::new(),
+            target: Target::WorkloadList,
+            probe: None,
+            key: "w:1".into(),
+            cluster: crate::events::ClusterId::Hot,
+        };
+        let (b, _) = build_bundle(
+            &models,
+            &world,
+            &Scope::Concern(c),
+            &ctx(),
+            &Caps::default(),
+        );
+        assert!(b.default_question.contains("boom"));
+        assert!(
+            !b.default_question.contains("leakme"),
+            "credential leaked into the default question: {}",
+            b.default_question
+        );
+    }
+
+    fn world_with_crashy() -> (ObservedWorld, WorkloadRef) {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.deployment(fx::deployment("demo", "crashy", 1, 0));
+        s.replicaset(fx::replicaset("demo", "crashy-rs", "crashy"));
+        let pod = fx::pod_restarting(
+            fx::pod_waiting(
+                fx::pod_owned(
+                    fx::pod("demo", "crashy-rs-1", Some("n1")),
+                    "ReplicaSet",
+                    "crashy-rs",
+                ),
+                "CrashLoopBackOff",
+            ),
+            7,
+        );
+        s.pod(pod);
+        let wr = WorkloadRef {
+            kind: WorkloadKind::Deployment,
+            namespace: "demo".into(),
+            name: "crashy".into(),
+        };
+        (world, wr)
+    }
+
+    #[test]
+    fn worst_pod_diagnosis_finds_the_crash_and_is_panic_safe() {
+        let (world, wr) = world_with_crashy();
+        let (pod, d) = worst_pod_diagnosis(&world, &wr).expect("a crash diagnosis");
+        assert!(pod.starts_with("crashy"));
+        assert_eq!(d.kind, crate::state::diagnose::DiagKind::Crash);
+        // A healthy workload → None (no panic on the common case).
+        let healthy = world_with_web();
+        assert!(worst_pod_diagnosis(&healthy, &web_ref()).is_none());
+        // A workload not in the store → None (no panic).
+        let ghost = WorkloadRef {
+            kind: WorkloadKind::Deployment,
+            namespace: "demo".into(),
+            name: "ghost".into(),
+        };
+        assert!(worst_pod_diagnosis(&healthy, &ghost).is_none());
+    }
+
+    #[test]
+    fn workload_and_concern_bundles_carry_root_cause() {
+        let (world, wr) = world_with_crashy();
+        let models = Models::build(&world);
+        let (b, _) = build_bundle(
+            &models,
+            &world,
+            &Scope::Workload(wr.clone()),
+            &ctx(),
+            &Caps::default(),
+        );
+        assert!(b.sections.iter().any(|s| s.tag == SectionTag::Diagnosis));
+        assert!(
+            b.sections
+                .iter()
+                .any(|s| s.body.to_lowercase().contains("backoff") || s.body.contains("crash"))
+        );
+        // A Concern targeting the workload also folds the diagnosis.
+        let c = Concern {
+            severity: Severity::Critical,
+            title: "crashy down".into(),
+            detail: String::new(),
+            target: Target::Workload(wr.clone()),
+            probe: None,
+            key: "w:1".into(),
+            cluster: crate::events::ClusterId::Hot,
+        };
+        let (bc, _) = build_bundle(
+            &models,
+            &world,
+            &Scope::Concern(c),
+            &ctx(),
+            &Caps::default(),
+        );
+        assert!(bc.sections.iter().any(|s| s.tag == SectionTag::Diagnosis));
+        // A healthy workload bundle has NO diagnosis section.
+        let healthy = world_with_web();
+        let hm = Models::build(&healthy);
+        let (bh, _) = build_bundle(
+            &hm,
+            &healthy,
+            &Scope::Workload(web_ref()),
+            &ctx(),
+            &Caps::default(),
+        );
+        assert!(!bh.sections.iter().any(|s| s.tag == SectionTag::Diagnosis));
+    }
+
+    #[test]
+    fn budget_keeps_primary_drops_diagnosis_first() {
+        // The pri-8 Diagnosis must drop before the pri-9 primary (the question's
+        // subject must always survive the budget).
+        let big = "x".repeat(50_000);
+        let mut b = ContextBundle {
+            scope_label: "x".into(),
+            cluster: "c".into(),
+            default_question: String::new(),
+            sections: vec![
+                sec(SectionTag::Workload, "workload", "the primary", 9),
+                sec(SectionTag::Diagnosis, "root cause", big, 8),
+            ],
+            est_tokens: 0,
+            truncated: false,
+            dropped_requested: Vec::new(),
+        };
+        budget(
+            &mut b,
+            &Caps {
+                max_tokens: 500,
+                max_log_lines: 1000,
+            },
+            &[],
+        );
+        assert!(b.truncated);
+        assert!(b.sections.iter().any(|s| s.tag == SectionTag::Workload));
+        assert!(!b.sections.iter().any(|s| s.tag == SectionTag::Diagnosis));
     }
 
     #[test]
@@ -2090,6 +2411,7 @@ mod tests {
         let bundle = ContextBundle {
             scope_label: "x".into(),
             cluster: "c".into(),
+            default_question: String::new(),
             sections: vec![
                 sec(SectionTag::Concern, "c", "b", 9),
                 sec(SectionTag::Logs, "l", "boom", PRIORITY_DEEPEN),
@@ -2122,6 +2444,7 @@ mod tests {
         let mut b = ContextBundle {
             scope_label: "x".into(),
             cluster: "c".into(),
+            default_question: String::new(),
             sections: vec![
                 sec(SectionTag::Concern, "concern", "the subject", 9),
                 sec(SectionTag::Logs, "logs", "boom boom boom", PRIORITY_DEEPEN),

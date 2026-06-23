@@ -30,6 +30,7 @@ use serde::Deserialize;
 use crate::events::ClusterId;
 
 use super::attention::{Concern, Target};
+use super::blast;
 use super::model::WorkloadRef;
 use super::observed::ObservedWorld;
 use super::oracle::Scope;
@@ -229,6 +230,42 @@ pub fn concern_targets(concerns: &[Concern], cap: usize) -> Vec<InvestigateTarge
     out
 }
 
+/// Like [`concern_targets`] but SCOPED TO A NODE: the drill-downs from a node
+/// consult are the troubled workloads STATIONED ON THAT NODE (via the shared
+/// `blast::workloads_on_node` topology, so node seeding and blast highlighting can
+/// never disagree) plus any concern targeting the node itself. Off-node workloads,
+/// other nodes, and `WorkloadList` are skipped; hot-only; deduped; capped.
+pub fn concern_targets_on_node(
+    concerns: &[Concern],
+    world: &ObservedWorld,
+    node: &str,
+    cap: usize,
+) -> Vec<InvestigateTarget> {
+    let on = blast::workloads_on_node(world, node);
+    let mut out: Vec<InvestigateTarget> = Vec::new();
+    for c in concerns {
+        if c.cluster != ClusterId::Hot {
+            continue;
+        }
+        let scope = match &c.target {
+            Target::Node(n) if n == node => Scope::Node(n.clone()),
+            Target::Workload(wr) if on.contains(wr) => Scope::Workload(wr.clone()),
+            _ => continue,
+        };
+        if out.iter().any(|x| x.scope.label() == scope.label()) {
+            continue;
+        }
+        out.push(InvestigateTarget {
+            scope,
+            why: c.title.clone(),
+        });
+        if out.len() >= cap {
+            break;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +337,68 @@ mod tests {
             .map(|i| mk(Severity::Warning, "x", Target::Node(format!("n{i}"))))
             .collect();
         assert_eq!(concern_targets(&many, 3).len(), 3);
+    }
+
+    #[test]
+    fn concern_targets_on_node_scopes_to_the_node() {
+        use crate::state::attention::Severity;
+        use crate::state::model::WorkloadKind;
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.node(fx::node("n2", Some("z-a")));
+        s.deployment(fx::deployment("demo", "web", 1, 1));
+        s.replicaset(fx::replicaset("demo", "web-rs", "web"));
+        s.pod(fx::pod_owned(
+            fx::pod("demo", "web-rs-1", Some("n1")),
+            "ReplicaSet",
+            "web-rs",
+        ));
+        s.deployment(fx::deployment("demo", "api", 1, 1));
+        s.replicaset(fx::replicaset("demo", "api-rs", "api"));
+        s.pod(fx::pod_owned(
+            fx::pod("demo", "api-rs-1", Some("n2")),
+            "ReplicaSet",
+            "api-rs",
+        ));
+        let wref = |n: &str| WorkloadRef {
+            kind: WorkloadKind::Deployment,
+            namespace: "demo".into(),
+            name: n.into(),
+        };
+        let mk = |title: &str, target| Concern {
+            severity: Severity::Warning,
+            title: title.into(),
+            detail: String::new(),
+            target,
+            probe: None,
+            key: "k".into(),
+            cluster: ClusterId::Hot,
+        };
+        let concerns = vec![
+            mk("web bad", Target::Workload(wref("web"))), // on n1 → included
+            mk("api bad", Target::Workload(wref("api"))), // on n2 → EXCLUDED (load-bearing)
+            mk("node hot", Target::Node("n1".into())),    // this node → included
+            mk("other node", Target::Node("n2".into())),  // a different node → excluded
+            mk("list", Target::WorkloadList),             // no destination → skipped
+        ];
+        let out = concern_targets_on_node(&concerns, &world, "n1", 5);
+        let labels: Vec<String> = out.iter().map(|t| t.scope.label()).collect();
+        assert!(labels.contains(&"workload demo/web".to_string()));
+        // The off-node workload MUST be excluded — else node seeding == realm seeding.
+        assert!(
+            !labels.iter().any(|l| l.contains("api")),
+            "off-node workload leaked: {labels:?}"
+        );
+        assert!(labels.contains(&"node n1".to_string()));
+        assert!(!labels.iter().any(|l| l == "node n2"));
+        assert_eq!(out.len(), 2);
+        // Warm-tagged excluded; cap honored.
+        let warm = vec![Concern {
+            cluster: ClusterId::Warm,
+            ..mk("w", Target::Workload(wref("web")))
+        }];
+        assert!(concern_targets_on_node(&warm, &world, "n1", 5).is_empty());
+        assert_eq!(concern_targets_on_node(&concerns, &world, "n1", 1).len(), 1);
     }
 
     #[test]

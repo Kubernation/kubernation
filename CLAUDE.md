@@ -2193,6 +2193,51 @@ what makes the interesting logic unit-testable without a cluster.
   284 core + 52 GUI tests. **Deferred:** node-scope concern seeding (the node's own
   concerns + stationed workloads — needs topology); a visual model-vs-app provenance
   cue on the links.
+- **Oracle answer quality — per-scope question + diagnosis fold + node seeding**
+  (2026-06-23, v0.58.0, user "address the deferred seeding for node + the sharper
+  answers improvement"; design-workflow vetted — 3 lenses → 2 judges → synthesis):
+  three pieces sharpening a consult, all pure-core-first. **(1) Per-scope default
+  question.** `oracle::default_question` returned ONE generic string; now a pure
+  `default_question_for(scope, models)` produces a POINTED prompt naming the trouble
+  (Concern → "Why is '{title}' happening…"; Workload → "Why is {ns/name} unhealthy…"
+  vs "Is {ns/name} healthy…", branching on the SAME `workload_severity` map the
+  WORKLOAD section reports so they can't disagree; Node → "What is straining node
+  {n}…"; Realm → "top 1-3 worst-first"). **Byte-identity (load-bearing):** the
+  question is carried on a new `ContextBundle.default_question` field — the ONE bundle
+  `render_prompt`/`consent_preview`/`bundle_hash` all consume — set RAW in
+  `build_bundle` and scrubbed INSIDE `redact_bundle` (both `postmortem::redact` for
+  credential shapes AND `strip_sentinels`, since it embeds cluster-derived names +
+  renders OUTSIDE the fence); `default_question(bundle)` is the SOLE reader. The
+  `consent_preview_faithfully` test was extended to the EMPTY-question path (the
+  default must appear verbatim in BOTH preview + wire). **(2) Root-cause diagnosis
+  into the bundle.** A panic-safe `worst_pod_diagnosis(world, wr)` (an Option chain
+  over `build_city` pods → the worst `.diag` by `diag_rank`; `None` on healthy /
+  zero-pod / not-in-store) folds a pri-8 `SectionTag::Diagnosis` (the already-computed
+  why + fix) into `workload_sections` AND `concern_sections` (Target::Workload) via
+  `sec()` — so it rides redaction/fence/budget; pri-8 drops before the pri-9 primary
+  (the question's subject always survives) — pinned by a budget-inversion test. The
+  model now reasons over the CrashLoopBackOff root cause instead of re-guessing it.
+  **(3) Node CONSULT NEXT seeding.** `blast.rs`'s node→workloads loop was extracted
+  to `pub(crate) workloads_on_node` (so blast highlighting + node seeding can't
+  disagree on "who lives here" — the `affected_cell` DRY precedent);
+  `oracle_investigate::concern_targets_on_node` filters the attention queue to the
+  troubled workloads STATIONED on that node (+ node-targeting concerns); the GUI
+  `merge_consult_next` gained a `world` param + a Realm/Node match, updated at BOTH
+  call sites (the reply-poll + the demo). An off-node workload concern is EXCLUDED
+  (pinned — else node seeding == realm seeding); hot-only, deduped, capped; stays
+  POST-REPLY (never enters the bundle path → byte-identity intact). **Realm deepen
+  lens: DEFERRED** (`available_lenses(Realm)` stays empty) — superseded by the realm
+  CONSULT NEXT seeding (which already gives the realm reply actionable drill-down
+  links to the worst concern's full, now-diagnosis-bearing workload bundle); a new
+  `DeepenLens` variant would ripple through ~8 touchpoints for marginal, redundant
+  value. If ever revived, prefer NAVIGATION (the jump) over an inline fold. No new
+  egress/write verb. 291 core (+7) + 52 GUI tests; clippy clean with + without the
+  `oracle` feature. **Adversarial review: 0 confirmed** (3 dimensions —
+  byte-identity/redaction, panic/budget, node-seeding topology — all clean; the
+  default-question-is-redacted, worst-pod-diagnosis-can't-panic, pri-8-drops-first,
+  and off-node-excluded invariants verified). **Deferred:** the realm lens (above);
+  per-container log selection in the diagnosis; a free-text question (the
+  keyboard-ownership minefield).
 
 ## The pair (hot/warm)
 

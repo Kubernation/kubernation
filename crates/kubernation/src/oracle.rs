@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 use kubernation_core::k8s::oracle_client::{Endpoint, LlmConfig};
 use kubernation_core::state::attention::Concern;
+use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::oracle::{
     self, Caps, DeepenLens, LensState, Scope, available_lenses, deepen_button_order,
     deepen_chip_states, default_lenses, parse_follow_up, representative_pod, strip_machine_blocks,
@@ -612,25 +613,29 @@ impl OracleView {
 
     /// Merge the CONSULT NEXT targets: the app's OWN attention queue (the floor —
     /// so a clearly identified concern always yields a drill-down link) plus any
-    /// model-named extras the queue didn't already flag. App concerns seed only at
-    /// REALM scope (where the model is asked to name OTHER objects); at node scope
-    /// the model block stands alone. Deduped by label, capped.
+    /// model-named extras the queue didn't already flag. Realm seeds from the whole
+    /// queue; a node seeds only its stationed-workload concerns (+ node-targeting
+    /// concerns); other scopes get no floor. Deduped by label, capped.
     fn merge_consult_next(
         &self,
         model: Vec<InvestigateTarget>,
         attention: &[Concern],
+        world: &ObservedWorld,
     ) -> Vec<InvestigateTarget> {
-        let mut targets = if matches!(self.scopes[self.scope_idx], Scope::Realm) {
-            oracle_investigate::concern_targets(attention, oracle_investigate::CONSULT_NEXT_CAP)
-        } else {
-            Vec::new()
+        let cap = oracle_investigate::CONSULT_NEXT_CAP;
+        let mut targets = match &self.scopes[self.scope_idx] {
+            Scope::Realm => oracle_investigate::concern_targets(attention, cap),
+            Scope::Node(name) => {
+                oracle_investigate::concern_targets_on_node(attention, world, name, cap)
+            }
+            _ => Vec::new(),
         };
         for mt in model {
             if !targets.iter().any(|x| x.scope.label() == mt.scope.label()) {
                 targets.push(mt);
             }
         }
-        targets.truncate(oracle_investigate::CONSULT_NEXT_CAP);
+        targets.truncate(cap);
         targets
     }
 
@@ -1007,7 +1012,11 @@ impl OracleView {
                         let model = oracle_investigate::parse_investigate(t)
                             .map(|env| oracle_investigate::validate_envelope(&env, &s.hot.observed))
                             .unwrap_or_default();
-                        self.investigate = self.merge_consult_next(model, &s.hot.models.attention);
+                        self.investigate = self.merge_consult_next(
+                            model,
+                            &s.hot.models.attention,
+                            &s.hot.observed,
+                        );
                     }
                 }
                 OracleReply::Err(e) => {
@@ -1646,7 +1655,8 @@ impl OracleView {
                         .into(),
                 );
                 let model = oracle_investigate::validate_envelope(&env, &s.hot.observed);
-                self.investigate = self.merge_consult_next(model, &s.hot.models.attention);
+                self.investigate =
+                    self.merge_consult_next(model, &s.hot.models.attention, &s.hot.observed);
             }
         }
 
