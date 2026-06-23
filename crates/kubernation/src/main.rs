@@ -2563,6 +2563,15 @@ async fn main() {
                         get_time() + 5.0,
                     ));
                 }
+                Some(OracleAction::Copy(text)) => {
+                    let msg = clipboard_copy(&text, text.lines().count());
+                    toast = Some((msg, get_time() + 3.0));
+                }
+                Some(OracleAction::Export(text)) => {
+                    let stamp = kubernation_core::util::now().strftime("%Y%m%d-%H%M%S");
+                    let fname = format!("oracle-consult-{stamp}.txt");
+                    toast = Some((export_to_file(&text, &fname), get_time() + 4.0));
+                }
                 _ => {}
             }
         }

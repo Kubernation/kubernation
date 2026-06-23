@@ -9,6 +9,18 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Oracle reply UX polish.** A bundle of reply-side improvements: (1) the model's
+  fenced machine-readable blocks (`investigate` / `suggestions` / `follow_up`) no
+  longer leak into the displayed answer — they're already rendered as CONSULT NEXT
+  links / Stage buttons / deepen chips, so the raw JSON is stripped from the prose
+  (a pure inverse of the block scanner; the parsers still read the raw reply, so
+  the two can't disagree); (2) the in-flight spinner shows an **elapsed counter +
+  the timeout**, with a **Cancel** button; (3) **`c` copy / `w` export** a consult
+  to the clipboard / a local file; (4) a failed consult renders a **WARN error
+  card with a one-line hint** (auth / timeout / model-not-pulled / unreachable) and
+  a **Retry**, instead of fake answer prose; (5) the "model-generated; verify"
+  caveat is **pinned as a footer** outside the scroll, sharpened when a Stage
+  button is on screen.
 - **Oracle "investigate" → CONSULT NEXT links.** A realm (or node) consult often
   ends with a prioritized "what to investigate first" list. Those entries are now
   **clickable consult links**: the model emits a validated, ordered `investigate`

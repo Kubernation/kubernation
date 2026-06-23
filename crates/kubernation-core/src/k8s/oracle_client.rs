@@ -69,7 +69,9 @@ pub struct LlmConfig {
 }
 
 impl LlmConfig {
-    fn timeout(&self) -> Duration {
+    /// The effective request timeout, clamped to the sane range (also surfaced by
+    /// the consult spinner's countdown).
+    pub fn timeout(&self) -> Duration {
         Duration::from_secs(self.timeout_secs.clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS))
     }
 }

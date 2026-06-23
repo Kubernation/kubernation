@@ -680,6 +680,18 @@ impl Net {
         self.oracle_out.lock().unwrap().get(&hash).cloned()
     }
 
+    /// Cancel an in-flight consult `hash`: bump the gen guard so a not-yet-stored
+    /// result is discarded when it lands, AND drop any already-cached entry for that
+    /// hash so a re-consult doesn't silently serve the cancelled reply. Only the one
+    /// hash is removed (not the whole cache) so other scopes' cached replies — and
+    /// the remote-egress economy that rides on them — are untouched. The request may
+    /// already be on the wire; for a remote endpoint the data was published, so
+    /// Cancel only stops the GUI waiting, it cannot un-send.
+    pub fn cancel_oracle(&self, hash: u64) {
+        self.oracle_gen.fetch_add(1, Ordering::Relaxed);
+        self.oracle_out.lock().unwrap().remove(&hash);
+    }
+
     /// Arm remote (off-laptop) Oracle egress for this session — a deliberate,
     /// explicit opt-in (the endpoint is publishing). Local consults never need it.
     pub fn arm_oracle_egress(&self) {

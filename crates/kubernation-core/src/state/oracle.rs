@@ -1081,6 +1081,126 @@ pub fn parse_follow_up(reply: &str, offered: &[DeepenLens]) -> Vec<DeepenLens> {
     Vec::new()
 }
 
+/// Does this candidate JSON deserialize into one of the Oracle's machine channels
+/// (investigate / suggestions / follow_up)? An unrelated JSON object the model
+/// writes as part of its prose answer (no such key) is NOT one.
+fn is_machine_block(candidate: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Detect {
+        investigate: Option<serde_json::Value>,
+        suggestions: Option<serde_json::Value>,
+        follow_up: Option<serde_json::Value>,
+    }
+    serde_json::from_str::<Detect>(candidate)
+        .map(|d| d.investigate.is_some() || d.suggestions.is_some() || d.follow_up.is_some())
+        .unwrap_or(false)
+}
+
+/// Cap runs of blank lines at one (≤2 consecutive newlines) so removing a block
+/// doesn't leave a gap.
+fn collapse_blank_lines(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut newlines = 0;
+    for ch in s.chars() {
+        if ch == '\n' {
+            newlines += 1;
+            if newlines <= 2 {
+                out.push(ch);
+            }
+        } else {
+            newlines = 0;
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// PURE: strip the machine-readable blocks (the fenced/bare JSON the model emits
+/// for the investigate / suggestions / follow_up channels) from a reply, for
+/// DISPLAY only. Those are already rendered as CONSULT NEXT links / Stage buttons /
+/// deepen chips, so the raw JSON in the prose is redundant clutter (the screenshot
+/// bug). The INVERSE of [`json_blocks`]: a fenced or bare-`{…}` block is dropped iff
+/// its content [`is_machine_block`] — an unrelated JSON/code block the model writes
+/// as part of its answer is PRESERVED. The parsers still read the RAW reply, so the
+/// displayed prose can never disagree with the extracted blocks. Never panics.
+pub fn strip_machine_blocks(reply: &str) -> String {
+    // Pass 1: fenced blocks whose inner content is a machine envelope. The fence
+    // delimiter is a run of ≥3 backticks; the closing run must be ≥ that length.
+    // Handles the run-length (4-backtick) and single-line (```{…}```) shapes the
+    // earlier 3-backtick scan mangled.
+    let mut kept = String::new();
+    let mut rest = reply;
+    let mut unterminated = false;
+    loop {
+        let Some(start) = find_backtick_run(rest, 3) else {
+            kept.push_str(rest);
+            break;
+        };
+        let run = rest[start..].bytes().take_while(|&c| c == b'`').count();
+        let after = &rest[start + run..];
+        let Some(close_rel) = find_backtick_run(after, run) else {
+            // Unterminated fence — keep the remainder verbatim (don't eat prose).
+            kept.push_str(rest);
+            unterminated = true;
+            break;
+        };
+        let close_len = after[close_rel..]
+            .bytes()
+            .take_while(|&c| c == b'`')
+            .count();
+        let block_end = start + run + close_rel + close_len;
+        // The body is everything between the runs; a same-line language tag (text
+        // up to the first newline, if any) is dropped before the JSON check.
+        let inner_raw = &after[..close_rel];
+        let inner = match inner_raw.find('\n') {
+            Some(nl) => &inner_raw[nl + 1..],
+            None => inner_raw,
+        };
+        if is_machine_block(inner.trim()) {
+            kept.push_str(&rest[..start]); // drop the fence, keep text before it
+        } else {
+            kept.push_str(&rest[..block_end]); // keep the whole (legit) fence
+        }
+        rest = &rest[block_end..];
+    }
+    // Pass 2: a single bare `{…}` object (no fence) that is a machine envelope.
+    // Skipped when Pass 1 bailed on an unterminated fence — there we promised to
+    // keep the remainder verbatim, so we must not excise a `{…}` out of it.
+    let mut out = kept;
+    if !unterminated
+        && let (Some(a), Some(b)) = (out.find('{'), out.rfind('}'))
+        && b > a
+        && is_machine_block(out[a..=b].trim())
+    {
+        let mut s = String::with_capacity(out.len());
+        s.push_str(&out[..a]);
+        s.push_str(&out[b + 1..]);
+        out = s;
+    }
+    collapse_blank_lines(&out).trim().to_string()
+}
+
+/// Byte offset of the first run of ≥`len` consecutive backticks in `s`, else None.
+fn find_backtick_run(s: &str, len: usize) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'`' {
+            let mut j = i;
+            while j < b.len() && b[j] == b'`' {
+                j += 1;
+            }
+            if j - i >= len {
+                return Some(i);
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
 /// PURE draw-decision fn: order the available chips by the model's ranking (ranked
 /// first in model order, the #1 flagged for highlight; un-ranked after in default
 /// order). The app always offers the same set regardless of the ranking.
@@ -1896,6 +2016,62 @@ mod tests {
         let evil = "```json\n{\"follow_up\":[\"exec\",\"node\",\"logs\"]}\n```";
         assert_eq!(parse_follow_up(evil, &offered), vec![DeepenLens::Logs]);
         assert!(parse_follow_up("no json here", &offered).is_empty());
+    }
+
+    #[test]
+    fn strip_machine_blocks_removes_known_envelopes_keeps_prose_and_code() {
+        // The screenshot bug: a fenced investigate block leaks into the prose.
+        let reply = "Critical: crashy is in CrashLoopBackOff.\n\n```json\n{\"investigate\":[{\"kind\":\"deployment\",\"namespace\":\"demo\",\"name\":\"crashy\",\"why\":\"PVC\"}]}\n```\n\nthat's my read.";
+        let out = strip_machine_blocks(reply);
+        assert!(out.starts_with("Critical: crashy"));
+        assert!(out.ends_with("that's my read."));
+        assert!(!out.contains("investigate"), "machine block leaked: {out}");
+        assert!(!out.contains("```"), "fence leaked: {out}");
+
+        // All three channels (separate fences) are removed.
+        let three = "Answer.\n```json\n{\"suggestions\":[]}\n```\n```json\n{\"follow_up\":[\"logs\"]}\n```\n```json\n{\"investigate\":[{\"kind\":\"node\",\"name\":\"n1\"}]}\n```";
+        let out3 = strip_machine_blocks(three);
+        assert_eq!(out3, "Answer.");
+
+        // A bare (un-fenced) machine object is removed too.
+        let bare =
+            "See below.\n{\"investigate\":[{\"kind\":\"node\",\"name\":\"n1\",\"why\":\"hot\"}]}";
+        assert_eq!(strip_machine_blocks(bare), "See below.");
+
+        // A legitimate, UNRELATED code/JSON block is PRESERVED.
+        let code = "Run this:\n```json\n{\"replicas\": 3}\n```\ndone.";
+        let kept = strip_machine_blocks(code);
+        assert!(kept.contains("```"), "legit code fence was eaten: {kept}");
+        assert!(kept.contains("\"replicas\""));
+
+        // Pure prose is unchanged (modulo trim).
+        assert_eq!(strip_machine_blocks("just words"), "just words");
+        // A reply that is ONLY a machine block strips to empty (the GUI shows a
+        // placeholder for this case).
+        assert!(
+            strip_machine_blocks(
+                "```json\n{\"investigate\":[{\"kind\":\"node\",\"name\":\"n1\"}]}\n```"
+            )
+            .is_empty()
+        );
+
+        // Regression (review): an UNTERMINATED fence with a machine envelope is kept
+        // VERBATIM — Pass 2 must not excise the JSON and orphan the fence.
+        let unterm = "before ```json\n{\"follow_up\":[\"logs\"]} no close";
+        assert_eq!(strip_machine_blocks(unterm), unterm);
+
+        // Regression (review): a single-line fence is fully removed, no stray ```.
+        let oneline = "x ```{\"follow_up\":[\"logs\"]}``` y";
+        let so = strip_machine_blocks(oneline);
+        assert!(!so.contains('`'), "stray backtick: {so}");
+        assert!(!so.contains("follow_up"));
+
+        // Regression (review): a 4-backtick fence is fully removed, no stray `.
+        let four =
+            "see\n````json\n{\"investigate\":[{\"kind\":\"node\",\"name\":\"n1\"}]}\n````\nend";
+        let sf = strip_machine_blocks(four);
+        assert!(!sf.contains('`'), "stray backtick: {sf}");
+        assert!(sf.starts_with("see") && sf.ends_with("end"));
     }
 
     #[test]

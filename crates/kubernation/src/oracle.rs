@@ -22,7 +22,7 @@ use std::sync::Arc;
 use kubernation_core::k8s::oracle_client::{Endpoint, LlmConfig};
 use kubernation_core::state::oracle::{
     self, Caps, DeepenLens, LensState, Scope, available_lenses, deepen_button_order,
-    deepen_chip_states, default_lenses, parse_follow_up, representative_pod,
+    deepen_chip_states, default_lenses, parse_follow_up, representative_pod, strip_machine_blocks,
 };
 use kubernation_core::state::oracle_config::{
     self, DEFAULT_LLM_MODEL, DEFAULT_LLM_URL, OracleConfigFile, Profile, endpoint_kind,
@@ -45,6 +45,10 @@ pub enum OracleAction {
     /// Stage a model-proposed, validated intervention into the planning turn (the
     /// operator then reviews + commits it through the existing dry-run/RBAC gate).
     Stage(Intervention),
+    /// Copy the raw consult reply to the clipboard (main shows the toast).
+    Copy(String),
+    /// Export the consult (header + raw reply) to a local file (main toasts the path).
+    Export(String),
 }
 
 /// Theme role for a rendered line (no GL — mapped to a colour at draw time).
@@ -206,6 +210,74 @@ pub fn chat_verdict(out: Option<&Result<String, String>>) -> Option<(String, Rol
     }
 }
 
+/// PURE draw-decision fn: the in-flight progress line — "consulting… {n}s
+/// (timeout {t}s)". The model can take 60–90s on a local model; an elapsed counter
+/// beats a static spinner. Unit-tested.
+pub fn consult_progress_line(elapsed_secs: u64, timeout_secs: u64) -> String {
+    if timeout_secs > 0 {
+        format!("consulting the Oracle… {elapsed_secs}s (timeout {timeout_secs}s)")
+    } else {
+        format!("consulting the Oracle… {elapsed_secs}s")
+    }
+}
+
+/// PURE draw-decision fn: the "model-generated; verify" caveat, sharpened when a
+/// Stage-able suggestion is on screen (a proposed change deserves a stronger
+/// reminder). Pinned as a footer outside the scroll. Unit-tested.
+pub fn disclaimer_text(has_suggestions: bool) -> &'static str {
+    if has_suggestions {
+        "model-generated — VERIFY before staging; the model can be wrong."
+    } else {
+        "model-generated — verify before acting."
+    }
+}
+
+/// PURE draw-decision fn: map a consult error message to a one-line operator hint.
+/// The message is the classified `LlmError` Display text from the net layer — so
+/// the arms match the REAL strings: timeout = "did not respond in time", auth =
+/// "rejected the API token (401/403)", connection = "could not reach the model
+/// endpoint", a not-pulled model = an Ollama "HTTP 404: model '…' not found".
+/// `None` ⇒ no specific hint (the raw error still shows). Unit-tested.
+pub fn error_hint(msg: &str) -> Option<&'static str> {
+    let m = msg.to_ascii_lowercase();
+    if m.contains("respond in time") || m.contains("timed out") || m.contains("timeout") {
+        Some(
+            "the model took too long — raise the per-profile timeout in Settings, or pick a smaller/faster model.",
+        )
+    } else if m.contains("rejected the api token")
+        || m.contains("401")
+        || m.contains("403")
+        || m.contains("unauthor")
+        || m.contains("forbidden")
+    {
+        Some(
+            "authentication failed — check the API token (Settings ▸ token, or the KUBERNATION_LLM_TOKEN env var).",
+        )
+    } else if m.contains("not found")
+        || m.contains("404")
+        || m.contains("no such model")
+        || (m.contains("model") && m.contains("pull"))
+    {
+        Some(
+            "the model isn't available at this endpoint — pull it (e.g. ollama pull <model>) or pick another in Settings.",
+        )
+    } else if m.contains("could not reach")
+        || m.contains("connection")
+        || m.contains("refused")
+        || m.contains("dns")
+    {
+        Some(
+            "the endpoint is unreachable — is it running? Check the URL in Settings (default: a local Ollama at localhost:11434).",
+        )
+    } else if m.contains("rate limited") || m.contains("429") {
+        Some("rate limited by the endpoint — wait a moment, or check your plan's quota.")
+    } else if m.contains("misconfigured") {
+        Some("the endpoint looks misconfigured — check the URL in Settings.")
+    } else {
+        None
+    }
+}
+
 /// Wrap text to ~`width` chars per line (whitespace-greedy), preserving existing
 /// newlines. Keeps long prompt/reply lines inside the modal body.
 fn wrap(s: &str, width: usize) -> Vec<String> {
@@ -286,7 +358,13 @@ pub struct OracleView {
     show_preview: bool,
     frozen: Option<Frozen>,
     pending: Option<u64>,
+    /// Wall-clock (get_time) when the in-flight consult was dispatched — drives the
+    /// elapsed counter on the spinner.
+    pending_started: f64,
     reply: Option<String>,
+    /// A failed consult's classified error message (kept separate from `reply` so
+    /// it renders as a WARN card with a hint + Retry, not as fake "answer" prose).
+    reply_error: Option<String>,
     suggestions: Vec<ValidatedSuggestion>,
     rejects: Vec<String>,
     staged: std::collections::HashSet<usize>,
@@ -365,7 +443,9 @@ impl OracleView {
             show_preview: false,
             frozen: None,
             pending: None,
+            pending_started: 0.0,
             reply: None,
+            reply_error: None,
             suggestions: Vec::new(),
             rejects: Vec::new(),
             staged: std::collections::HashSet::new(),
@@ -419,6 +499,7 @@ impl OracleView {
         self.frozen = None;
         self.show_preview = false;
         self.reply = None;
+        self.reply_error = None;
         self.suggestions.clear();
         self.rejects.clear();
         self.staged.clear();
@@ -497,6 +578,7 @@ impl OracleView {
         self.show_preview = false;
         self.frozen = None;
         self.reply = None;
+        self.reply_error = None;
         self.suggestions.clear();
         self.rejects.clear();
         self.staged.clear();
@@ -537,9 +619,10 @@ impl OracleView {
         self.enter_settings();
     }
 
-    /// True once a consult has produced a reply (success OR error).
+    /// True once a consult has produced a terminal outcome (a reply OR an error
+    /// card) — both are "landed" for the `--oracle-go` screenshot gate.
     pub fn reply_landed(&self) -> bool {
-        self.reply.is_some()
+        self.reply.is_some() || self.reply_error.is_some()
     }
 
     /// Whether a Settings text field currently owns the keyboard (the `main`
@@ -708,8 +791,10 @@ impl OracleView {
         self.deepen_log = None;
         self.want_consult = false;
         self.deepen_seeded = false;
-        // An endpoint change invalidates the prior reply → its CONSULT NEXT links.
+        // An endpoint change invalidates the prior reply → its CONSULT NEXT links +
+        // any error card.
         self.investigate.clear();
+        self.reply_error = None;
     }
 
     /// Resolve the endpoint a test (level 1 or 2) should probe, applying the SAME
@@ -875,6 +960,7 @@ impl OracleView {
             match &*r {
                 OracleReply::Ok(t) => {
                     self.reply = Some(t.clone());
+                    self.reply_error = None;
                     if let Some(s) = snap {
                         if let Some(env) = oracle_suggest::parse_suggestions(t) {
                             let (ok, rej) =
@@ -898,15 +984,22 @@ impl OracleView {
                     }
                 }
                 OracleReply::Err(e) => {
-                    self.reply = Some(format!("could not consult the Oracle: {e}"))
+                    // Errors render as a WARN card with a hint + Retry, not as fake
+                    // answer prose.
+                    self.reply = None;
+                    self.reply_error = Some(e.clone());
                 }
             }
             self.pending = None;
             self.scroll = 0.0;
         }
 
-        let action_label = if arm_mode {
+        let action_label = if self.pending.is_some() {
+            "Cancel"
+        } else if arm_mode {
             "Arm remote egress\u{2026}"
+        } else if self.reply_error.is_some() {
+            "Retry"
         } else {
             "Consult"
         };
@@ -1458,6 +1551,8 @@ impl OracleView {
                 self.scroll = 0.0;
             } else if let Some(h) = self.dispatch(net, &built, cfg) {
                 self.pending = Some(h);
+                self.pending_started = get_time();
+                self.reply_error = None;
                 self.show_preview = false;
             }
         }
@@ -1528,9 +1623,14 @@ impl OracleView {
         }
 
         // --- body ----------------------------------------------------------
+        // Reserve a footer strip for the pinned "model-generated; verify"
+        // disclaimer whenever an answer/error is shown (kept outside the scroll so
+        // the caveat can't scroll away — a posture reminder).
+        let footer_on = self.reply.is_some() || self.reply_error.is_some();
+        let footer_h = if footer_on { 22.0 } else { 0.0 };
         let mut stage_btns: Vec<(usize, Rect)> = Vec::new();
         let mut cx = Ctx {
-            body: Rect::new(b.x, y, b.w, b.h - (y - b.y)),
+            body: Rect::new(b.x, y, b.w, b.h - (y - b.y) - footer_h),
             y: y - self.scroll,
         };
         if snap.is_none() {
@@ -1595,19 +1695,43 @@ impl OracleView {
                 ),
             }
         } else if self.pending.is_some() {
-            cx.row(
-                "consulting the Oracle… (this can take a moment on a local model)",
-                DIM,
-            );
+            let elapsed = (get_time() - self.pending_started).max(0.0) as u64;
+            let timeout = cfg.as_ref().map(|c| c.timeout().as_secs()).unwrap_or(0);
+            cx.row(&consult_progress_line(elapsed, timeout), DIM);
+            cx.row("(local models can take a while — Cancel to stop)", DIM);
         } else if logs_pending {
             cx.row("gathering the pod's logs to include in the consult…", DIM);
-        } else if let Some(reply) = &self.reply {
-            for line in wrap(reply, 96) {
+        } else if let Some(err) = self.reply_error.clone() {
+            cx.row("The consult could not complete:", WARN);
+            cx.gap();
+            for line in wrap(&err, 92) {
                 cx.row(&ascii(&line), INK);
             }
+            if let Some(hint) = error_hint(&err) {
+                cx.gap();
+                for line in wrap(hint, 92) {
+                    cx.row(&ascii(&line), DIM);
+                }
+            }
             cx.gap();
-            cx.row("— model-generated; verify before acting.", DIM);
+            cx.row("Press Retry to try again, or open Settings.", DIM);
+        } else if let Some(reply) = &self.reply {
+            // Show the prose only — the machine-readable blocks (investigate /
+            // suggestions / follow_up) are already rendered as links/buttons/chips
+            // below, so strip them from the displayed answer.
+            let shown = strip_machine_blocks(reply);
+            if shown.trim().is_empty() {
+                cx.row(
+                    "(the answer is in the actions below — no extra prose returned)",
+                    DIM,
+                );
+            } else {
+                for line in wrap(&shown, 96) {
+                    cx.row(&ascii(&line), INK);
+                }
+            }
             if let Some(note) = &self.audit_note {
+                cx.gap();
                 cx.row(&ascii(note), DIM);
             }
             if !self.suggestions.is_empty() {
@@ -1779,7 +1903,57 @@ impl OracleView {
         self.max_scroll = (content_h - cx.body.h).max(0.0);
         self.scroll = self.scroll.min(self.max_scroll);
 
+        // Pinned footer (outside the scroll). The "model-generated; verify" caveat
+        // belongs ONLY to model output — the error card has no model prose to verify.
+        if footer_on {
+            let fy = b.y + b.h - 6.0;
+            draw_line(
+                b.x,
+                b.y + b.h - footer_h + 2.0,
+                b.x + b.w,
+                b.y + b.h - footer_h + 2.0,
+                1.0,
+                PLATE,
+            );
+            if self.reply.is_some() {
+                let warn = !self.suggestions.is_empty();
+                let col = if warn { WARN } else { DIM };
+                text(disclaimer_text(warn), b.x + 8.0, fy, 12.0, col);
+                let hint = "c copy · w export";
+                let hw = text_size(hint, 12.0).width;
+                text(hint, b.x + b.w - hw - 8.0, fy, 12.0, DIM);
+            } else {
+                text(
+                    "the consult failed — Retry, or open Settings.",
+                    b.x + 8.0,
+                    fy,
+                    12.0,
+                    DIM,
+                );
+            }
+        }
+
         // --- input ---------------------------------------------------------
+        // Copy / export the consult (the RAW reply, so the actions are reproducible).
+        // Only with an answer on the Consult face and no Settings field focused.
+        if self.face == OracleFace::Consult
+            && !self.field_focused()
+            && !self.show_preview
+            && let Some(reply) = self.reply.clone()
+        {
+            if is_key_pressed(KeyCode::C) {
+                return OracleAction::Copy(reply);
+            }
+            if is_key_pressed(KeyCode::W) {
+                let header = format!(
+                    "# Oracle consult — {}\n# endpoint: {}  ·  model: {}\n# model-generated; verify before acting.\n\n",
+                    self.scopes[self.scope_idx].label(),
+                    cfg.as_ref().map(|c| c.base_url.as_str()).unwrap_or("?"),
+                    cfg.as_ref().map(|c| c.model.as_str()).unwrap_or("?"),
+                );
+                return OracleAction::Export(format!("{header}{reply}"));
+            }
+        }
         if click {
             for (i, br) in &stage_btns {
                 if br.contains(mouse) {
@@ -1825,19 +1999,27 @@ impl OracleView {
                     self.scroll = 0.0;
                 }
                 Some(2) => {
-                    if arm_mode {
+                    if let Some(h) = self.pending {
+                        // Cancel — stop waiting; bump the gen guard so a late reply
+                        // lands nowhere + drop this hash's cache so a re-consult
+                        // doesn't serve the cancelled reply. (A remote consult was
+                        // already published — Cancel can't un-send.)
+                        net.cancel_oracle(h);
+                        self.pending = None;
+                    } else if arm_mode {
                         net.arm_oracle_egress();
-                    } else if self.pending.is_none() {
-                        if remote && self.frozen.is_none() {
-                            self.frozen = freeze(&built);
-                            self.show_preview = true;
-                            self.scroll = 0.0;
-                        } else if let Some(sent) = self.dispatch(net, &built, cfg) {
-                            self.pending = Some(sent);
-                            self.reply = None;
-                            self.show_preview = false;
-                            self.scroll = 0.0;
-                        }
+                    } else if remote && self.frozen.is_none() {
+                        self.frozen = freeze(&built);
+                        self.show_preview = true;
+                        self.scroll = 0.0;
+                    } else if let Some(sent) = self.dispatch(net, &built, cfg) {
+                        // Consult / Retry — same path.
+                        self.pending = Some(sent);
+                        self.pending_started = get_time();
+                        self.reply = None;
+                        self.reply_error = None;
+                        self.show_preview = false;
+                        self.scroll = 0.0;
                     }
                 }
                 Some(_) => return OracleAction::Close, // Close
@@ -2088,6 +2270,57 @@ mod tests {
         let local = rows.iter().find(|(s, _)| s.contains("Ollama")).unwrap();
         assert!(!local.0.contains("REMOTE"));
         assert_eq!(local.1, Role::Body);
+    }
+
+    #[test]
+    fn consult_progress_line_shows_elapsed_and_timeout() {
+        assert_eq!(
+            consult_progress_line(7, 180),
+            "consulting the Oracle… 7s (timeout 180s)"
+        );
+        // No timeout known → just the elapsed.
+        assert!(!consult_progress_line(3, 0).contains("timeout"));
+    }
+
+    #[test]
+    fn disclaimer_text_sharpens_with_a_suggestion() {
+        assert!(disclaimer_text(false).contains("verify"));
+        let with = disclaimer_text(true);
+        assert!(with.contains("VERIFY") && with.contains("stag"));
+        assert_ne!(disclaimer_text(false), disclaimer_text(true));
+    }
+
+    #[test]
+    fn error_hint_maps_the_common_failures() {
+        // Assert against the REAL LlmError Display strings (k8s/oracle_client.rs).
+        assert!(
+            error_hint("the model did not respond in time")
+                .unwrap()
+                .contains("timeout")
+        );
+        assert!(
+            error_hint("the endpoint rejected the API token (401/403)")
+                .unwrap()
+                .contains("token")
+        );
+        // A not-pulled model surfaces as an Ollama 404 via BadStatus.
+        assert!(
+            error_hint("HTTP 404: model 'qwen3:30b' not found")
+                .unwrap()
+                .contains("pull")
+        );
+        assert!(
+            error_hint("could not reach the model endpoint: connection refused")
+                .unwrap()
+                .contains("unreachable")
+        );
+        assert!(
+            error_hint("rate limited by the endpoint (429)")
+                .unwrap()
+                .contains("rate limited")
+        );
+        // An unclassifiable error → no specific hint (the raw error still shows).
+        assert!(error_hint("could not read the model response: bad json").is_none());
     }
 
     #[test]

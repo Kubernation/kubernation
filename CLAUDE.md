@@ -2122,6 +2122,52 @@ what makes the interesting logic unit-testable without a cluster.
   49 GUI tests; gui-smoke 41. **Deferred:** a keyboard cycle of the links;
   pvc/service targets (not consult scopes); a stateful multi-turn conversation
   across jumps.
+- **Oracle reply UX polish** (2026-06-23, v0.56.0, user feedback on a live consult
+  screenshot + an ideation workflow — 5 lenses → 2 judges → ranked backlog; the
+  user picked the "Reply UX polish" quick-wins bundle): five reply-side fixes, the
+  first being a confirmed visible bug. **(1) Machine-block strip** — the GUI
+  rendered the reply with `wrap(reply)`, so the model's fenced `investigate` /
+  `suggestions` / `follow_up` JSON leaked into the displayed prose even though it's
+  already rendered as CONSULT NEXT links / Stage buttons / deepen chips. Pure core
+  `oracle::strip_machine_blocks(reply)` is the **inverse of `json_blocks`**: it
+  drops a fenced/bare `{…}` block iff its content deserializes into a known
+  envelope (`is_machine_block` — investigate/suggestions/follow_up present), keeping
+  legit prose + unrelated code/JSON; `self.reply` stays RAW so the parsers can't
+  disagree with the display. An all-block reply strips to empty → a placeholder
+  ("the answer is in the actions below"). Unit-tested (strip/keep/bare/empty).
+  **(2) Elapsed + Cancel** — the static spinner became `consult_progress_line(elapsed,
+  timeout)` (pure, the timeout from the now-`pub LlmConfig::timeout()`), with a
+  **Cancel** action button (`net.cancel_oracle()` bumps `oracle_gen` so a late
+  reply is discarded — honest that a remote send was already published). **(3)
+  Copy/export** — `c`/`w` on the Consult face return `OracleAction::Copy/Export`
+  (the RAW reply, so the rendered actions are reproducible; export prepends a
+  scope/endpoint/model header), reusing the logs/inspector clipboard + file
+  helpers + a timestamped filename; gated on `!field_focused() && !show_preview`,
+  and the global `C`/`W` are already suspended while the modal is open. **(4) Error
+  card** — a failed consult now sets a separate `reply_error` (not `self.reply`),
+  rendered as a WARN card with a one-line hint from the pure `error_hint(msg)`
+  (auth/timeout/model-not-pulled/unreachable) + a **Retry** (re-dispatch). **(5)
+  Sticky disclaimer** — "model-generated; verify" pinned as a footer OUTSIDE the
+  scroll (reserve 22px from the `Ctx` body), via pure `disclaimer_text(has_suggestions)`
+  (sharpened + WARN-tinted when a Stage button is shown). The three new GUI pure
+  fns + `strip_machine_blocks` are unit-tested (the testability policy).
+  **Adversarial review (6 confirmed, all low/medium, all fixed):** the fence
+  scanner was rebuilt around a `find_backtick_run` (≥3 backticks, run-length-matched
+  close) so single-line ```` ```{…}``` ```` and 4-backtick fences strip cleanly
+  instead of leaving stray markers, and Pass 2 (bare-`{…}`) is **skipped on an
+  unterminated fence** so a truncated reply is kept verbatim (not mangled);
+  `error_hint` now matches the REAL `LlmError` Display strings ("did not respond in
+  time" / "rejected the API token" / "could not reach" / a 404 "model … not found"
+  / "(429)") — the old "timed out" arm never fired — with the test asserting the
+  real strings; `reply_landed()` counts an error as landed (the `--oracle-go` shot
+  no longer waits out the 210s backstop on a failed consult); `cancel_oracle(hash)`
+  drops only that hash's cache entry (not the whole cache — protecting the
+  remote-egress economy of other scopes' cached replies); and the pinned footer
+  shows the "model-generated; verify" caveat ONLY on a real reply (an error card
+  gets a "the consult failed — Retry" note instead). 283 core (+1) + 52 GUI (+3)
+  tests. Origin: the ideation backlog also surfaced higher-effort bets (per-scope
+  default question, wire the diagnose explainer into the bundle, a Realm deepen
+  lens, free-text question, streaming) — deferred to the user's next pick.
 
 ## The pair (hot/warm)
 
