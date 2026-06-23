@@ -722,7 +722,13 @@ what makes the interesting logic unit-testable without a cluster.
   draws or takes input. It's off under `--screenshot` (so docs shots are
   unaffected); `--splash` forces+captures it. The logos are first-party art, so
   CREDITS notes them but no third-party license applies (the new serif/`image`
-  aside).
+  aside). **Caption fix** (2026-06-23, v0.60.1, user: the caption alignment in the
+  real app differed from the preview): `logo::draw_full` now RETURNS the drawn
+  `Rect`, and the splash caption (title + "press any key") is centered on that rect's
+  center + placed just below its bottom edge — replacing the fixed `cy + 232`/`+256`
+  offsets that drifted/overlapped on a differently-sized window — drawn via
+  `text_outline` (a dark stroke so it pops on the bright scene), and `SPLASH_SECS`
+  raised 2.4 → 5.0 (still skippable).
 - **Attention: failed-Job + connectivity detectors** (2026-06-17, roadmap
   "deepen the attention queue"): three new pure detectors in
   `state/attention.rs`, each unit-tested against `fixtures.rs`. **Failed Job:**

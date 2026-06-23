@@ -8,6 +8,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **Intro splash caption.** The title/"press any key" caption is now anchored to the
+  logo's actual drawn bounds (centered on it, just below it) instead of a fixed
+  offset that drifted on different window sizes, given a dark stroke so it pops on
+  the bright scene art, and the splash holds a few seconds longer (still skippable
+  with any key).
+
 ### Added
 - **Oracle reply carousel.** Drilling into the next consult no longer wipes the
   prior reply — a `◀ reply N/M ▶` pager keeps the session's replies so you can flip

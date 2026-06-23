@@ -65,7 +65,7 @@ use oracle::{OracleAction, OracleView};
 use panels::{
     Panel, draw_chaos_confirm, draw_commit_confirm, draw_evict_confirm, draw_logs, draw_tooltip,
 };
-use text::{text, text_size};
+use text::{text, text_outline, text_size};
 use theme::*;
 
 #[derive(Debug, Parser)]
@@ -624,7 +624,7 @@ async fn main() {
     let mut splash_start: Option<f64> = None;
     let mut splash_skipped = false;
     let mut splash_frames: u32 = 0;
-    const SPLASH_SECS: f64 = 2.4;
+    const SPLASH_SECS: f64 = 5.0;
 
     // Restore-on-exit: never strand the cluster. When the operator quits with a
     // live, restorable chaos drill, undo it (uncordon / scale back / unpartition)
@@ -679,7 +679,7 @@ async fn main() {
             let zoom = 1.0 + (elapsed.min(6.0) as f32) * 0.022;
             let cx = screen_width() / 2.0;
             let cy = screen_height() / 2.0;
-            logo::draw_full(
+            let logo_rect = logo::draw_full(
                 vec2(cx, cy - 16.0),
                 (screen_height() * 0.6).min(500.0) * zoom,
             );
@@ -692,12 +692,41 @@ async fn main() {
                 Color::new(0.05, 0.06, 0.09, 1.0 - reveal),
             );
             if reveal > 0.4 {
+                // Anchor the caption to the logo's ACTUAL drawn bounds (centered on
+                // its center, just below its bottom edge) so it tracks any window
+                // size — not a magic fixed offset. A dark stroke makes it pop on the
+                // light scene art.
+                let logo_cx = if logo_rect.w > 0.0 {
+                    logo_rect.x + logo_rect.w / 2.0
+                } else {
+                    cx
+                };
+                let below = if logo_rect.h > 0.0 {
+                    logo_rect.y + logo_rect.h
+                } else {
+                    cy + 200.0
+                };
+                let halo = Color::new(0.0, 0.0, 0.0, 0.75);
                 let st = ascii(&status);
                 let sm = text_size(&st, 20.0);
-                text(&st, cx - sm.width / 2.0, cy + 232.0, 20.0, PARCHMENT);
+                text_outline(
+                    &st,
+                    logo_cx - sm.width / 2.0,
+                    below + 30.0,
+                    20.0,
+                    PARCHMENT,
+                    halo,
+                );
                 let hint = "press any key";
                 let hm = text_size(hint, 14.0);
-                text(hint, cx - hm.width / 2.0, cy + 256.0, 14.0, DIM);
+                text_outline(
+                    hint,
+                    logo_cx - hm.width / 2.0,
+                    below + 54.0,
+                    14.0,
+                    DIM,
+                    halo,
+                );
             }
             splash_frames += 1;
             if let Some(path) = &shot

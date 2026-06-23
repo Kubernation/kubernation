@@ -44,24 +44,31 @@ pub fn draw_mark(c: Vec2, size: f32) {
     });
 }
 
-/// Draw the full scene centered at `c`, fit within a `max`-px square.
-pub fn draw_full(c: Vec2, max: f32) {
+/// Draw the full scene centered at `c`, fit within a `max`-px square. Returns the
+/// drawn rect (zero-sized if the texture isn't loaded) so the caller can anchor
+/// captions to the actual image bounds instead of a magic offset.
+pub fn draw_full(c: Vec2, max: f32) -> Rect {
     LOGOS.with(|cell| {
         if let Some((_, full)) = cell.borrow().as_ref() {
             let scale = max / full.width().max(full.height());
             let s = vec2(full.width() * scale, full.height() * scale);
+            let x = c.x - s.x / 2.0;
+            let y = c.y - s.y / 2.0;
             draw_texture_ex(
                 full,
-                c.x - s.x / 2.0,
-                c.y - s.y / 2.0,
+                x,
+                y,
                 WHITE,
                 DrawTextureParams {
                     dest_size: Some(s),
                     ..Default::default()
                 },
             );
+            Rect::new(x, y, s.x, s.y)
+        } else {
+            Rect::new(c.x, c.y, 0.0, 0.0)
         }
-    });
+    })
 }
 
 /// Build the OS window icon (16/32/64 RGBA) from the bundled mark. Decodes +
