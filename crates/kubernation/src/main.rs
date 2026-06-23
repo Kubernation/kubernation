@@ -221,7 +221,7 @@ struct Args {
     #[arg(long, value_name = "URL")]
     llm_url: Option<String>,
     /// The Oracle model name — must be pulled in your Ollama (e.g.
-    /// `qwen3.5:35b`, `llama3.1`). Default: `qwen3.5:35b`.
+    /// `qwen3:30b`, `llama3.1`). Default: `qwen3:30b` (a fast MoE).
     #[arg(long, value_name = "MODEL")]
     llm_model: Option<String>,
     /// Open the Oracle on sync (dev verification). `--oracle` opens the consult

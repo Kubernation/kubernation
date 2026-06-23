@@ -8,6 +8,12 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+- **Oracle default model is now `qwen3:30b`** (was `qwen3.5:35b`) — a fast
+  Mixture-of-Experts (30B total, ~3B active) that answers a realm consult in
+  ~10–15s instead of 60–90s, so it won't time out on a typical laptop. Pull it
+  with `ollama pull qwen3:30b`; override with `--llm-model` or a saved profile.
+
 ### Added
 - **Oracle: two levels of connection test + a per-profile timeout.** The endpoint
   Settings face now has **two** test buttons: **test** (level 1 — the quick `GET

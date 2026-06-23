@@ -21,9 +21,12 @@ use crate::k8s::oracle_client::{DEFAULT_TIMEOUT_SECS, Endpoint, LlmConfig};
 /// Default endpoint — a local Ollama (OpenAI-compatible at `/v1`, so the wire
 /// endpoint is `http://localhost:11434/v1/chat/completions`).
 pub const DEFAULT_LLM_URL: &str = "http://localhost:11434/v1";
-/// The seed default model. Must be a tag the local Ollama has pulled (else the
-/// consult 404s with an actionable "model not found"); override with `--llm-model`.
-pub const DEFAULT_LLM_MODEL: &str = "qwen3.5:35b";
+/// The seed default model: a fast Mixture-of-Experts (30B total, ~3B active) — it
+/// answers a realm consult in ~10–15s vs ~60–90s for a 35B dense model, so it
+/// won't time out on typical laptops. Must be a tag the local Ollama has pulled
+/// (`ollama pull qwen3:30b`, else the consult 404s with "model not found");
+/// override with `--llm-model` or a saved profile.
+pub const DEFAULT_LLM_MODEL: &str = "qwen3:30b";
 
 /// Map a base URL to the egress classification. Always recomputed from the URL —
 /// the result is never persisted (fail-closed: an unknown/garbled host is Remote).
