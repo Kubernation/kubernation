@@ -20,6 +20,7 @@
 use std::sync::Arc;
 
 use kubernation_core::k8s::oracle_client::{Endpoint, LlmConfig};
+use kubernation_core::state::attention::Concern;
 use kubernation_core::state::oracle::{
     self, Caps, DeepenLens, LensState, Scope, available_lenses, deepen_button_order,
     deepen_chip_states, default_lenses, parse_follow_up, representative_pod, strip_machine_blocks,
@@ -609,6 +610,30 @@ impl OracleView {
         self.want_consult = true;
     }
 
+    /// Merge the CONSULT NEXT targets: the app's OWN attention queue (the floor —
+    /// so a clearly identified concern always yields a drill-down link) plus any
+    /// model-named extras the queue didn't already flag. App concerns seed only at
+    /// REALM scope (where the model is asked to name OTHER objects); at node scope
+    /// the model block stands alone. Deduped by label, capped.
+    fn merge_consult_next(
+        &self,
+        model: Vec<InvestigateTarget>,
+        attention: &[Concern],
+    ) -> Vec<InvestigateTarget> {
+        let mut targets = if matches!(self.scopes[self.scope_idx], Scope::Realm) {
+            oracle_investigate::concern_targets(attention, oracle_investigate::CONSULT_NEXT_CAP)
+        } else {
+            Vec::new()
+        };
+        for mt in model {
+            if !targets.iter().any(|x| x.scope.label() == mt.scope.label()) {
+                targets.push(mt);
+            }
+        }
+        targets.truncate(oracle_investigate::CONSULT_NEXT_CAP);
+        targets
+    }
+
     /// Dev: auto-consult on the next draw (the `--oracle-go` headless round-trip).
     pub fn auto_consult(&mut self) {
         self.auto = true;
@@ -974,13 +999,15 @@ impl OracleView {
                         let offered =
                             available_lenses(&s.hot.observed, &self.scopes[self.scope_idx]);
                         self.follow_up = parse_follow_up(t, &offered);
-                        // Parse the model's "investigate" list → CONSULT NEXT links,
-                        // each VALIDATED against the live store (hallucinated /
-                        // garbage targets dropped — the security boundary).
-                        if let Some(env) = oracle_investigate::parse_investigate(t) {
-                            self.investigate =
-                                oracle_investigate::validate_envelope(&env, &s.hot.observed);
-                        }
+                        // CONSULT NEXT links = the app's attention queue (the floor,
+                        // so a clear concern always yields a link) + the model's
+                        // VALIDATED "investigate" extras (hallucinated/garbage
+                        // dropped — the security boundary). The app curates; the
+                        // model only adds.
+                        let model = oracle_investigate::parse_investigate(t)
+                            .map(|env| oracle_investigate::validate_envelope(&env, &s.hot.observed))
+                            .unwrap_or_default();
+                        self.investigate = self.merge_consult_next(model, &s.hot.models.attention);
                     }
                 }
                 OracleReply::Err(e) => {
@@ -1618,7 +1645,8 @@ impl OracleView {
                     "(demo reply) Here is what I would investigate first — click a link to consult that object."
                         .into(),
                 );
-                self.investigate = oracle_investigate::validate_envelope(&env, &s.hot.observed);
+                let model = oracle_investigate::validate_envelope(&env, &s.hot.observed);
+                self.investigate = self.merge_consult_next(model, &s.hot.models.attention);
             }
         }
 

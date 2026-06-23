@@ -8,6 +8,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+- **Oracle CONSULT NEXT is now seeded from the attention queue.** Previously the
+  "drill into one of these" links came only from the model's structured
+  `investigate` block — so when a small local model described the problem in prose
+  but didn't emit the block, a realm consult with a clear critical issue showed *no*
+  links. Now a realm consult seeds CONSULT NEXT from Kubernation's OWN attention
+  queue (the concerns it already computed, severity-ordered), and the model's
+  validated block only *adds* targets the queue didn't flag. The app curates; the
+  model advises — so a clearly identified concern always yields a one-click
+  drill-down.
+
 ### Added
 - **Oracle reply UX polish.** A bundle of reply-side improvements: (1) the model's
   fenced machine-readable blocks (`investigate` / `suggestions` / `follow_up`) no

@@ -27,10 +27,17 @@
 
 use serde::Deserialize;
 
+use crate::events::ClusterId;
+
+use super::attention::{Concern, Target};
 use super::model::WorkloadRef;
 use super::observed::ObservedWorld;
 use super::oracle::Scope;
 use super::oracle_suggest;
+
+/// How many CONSULT NEXT links to offer (the app's attention queue + any
+/// model-named extras, merged).
+pub const CONSULT_NEXT_CAP: usize = 5;
 
 /// Flat, stringly mirror of one investigate target the model emits. NEVER becomes
 /// a `Scope` except through `validate_investigate`.
@@ -188,6 +195,40 @@ pub fn investigate_label(t: &InvestigateTarget, max_why: usize) -> String {
     format!("{label} — {why}")
 }
 
+/// Build CONSULT NEXT targets from the app's OWN attention queue (already
+/// severity-ordered) — so a clearly identified concern ALWAYS yields a drill-down
+/// link, even when the model omits the structured `investigate` block (small local
+/// models are unreliable at structured output; the app already knows what's wrong).
+/// App-authored (the concern title is the `why` — trusted, never model output);
+/// hot-cluster concerns only; `WorkloadList` (no specific destination) skipped;
+/// deduped by scope label (one link per workload/node); capped. The model's
+/// validated block is merged ON TOP of this by the caller — it can only ADD
+/// targets the queue didn't flag, never bury the critical one.
+pub fn concern_targets(concerns: &[Concern], cap: usize) -> Vec<InvestigateTarget> {
+    let mut out: Vec<InvestigateTarget> = Vec::new();
+    for c in concerns {
+        if c.cluster != ClusterId::Hot {
+            continue;
+        }
+        let scope = match &c.target {
+            Target::Workload(wr) => Scope::Workload(wr.clone()),
+            Target::Node(n) => Scope::Node(n.clone()),
+            Target::WorkloadList => continue,
+        };
+        if out.iter().any(|x| x.scope.label() == scope.label()) {
+            continue;
+        }
+        out.push(InvestigateTarget {
+            scope,
+            why: c.title.clone(),
+        });
+        if out.len() >= cap {
+            break;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +250,56 @@ mod tests {
             name: name.into(),
             why: "because".into(),
         }
+    }
+
+    #[test]
+    fn concern_targets_maps_dedups_skips_and_caps() {
+        use crate::state::attention::{Severity, Target};
+        use crate::state::model::WorkloadKind;
+        let wr = WorkloadRef {
+            kind: WorkloadKind::Deployment,
+            namespace: "demo".into(),
+            name: "crashy".into(),
+        };
+        let mk = |sev, title: &str, target| Concern {
+            severity: sev,
+            title: title.into(),
+            detail: String::new(),
+            target,
+            probe: None,
+            key: "k".into(),
+            cluster: ClusterId::Hot,
+        };
+        let concerns = vec![
+            mk(
+                Severity::Critical,
+                "crashy crashing",
+                Target::Workload(wr.clone()),
+            ),
+            mk(
+                Severity::Warning,
+                "crashy again",
+                Target::Workload(wr.clone()),
+            ), // dup → dropped
+            mk(Severity::Warning, "node hot", Target::Node("worker".into())),
+            mk(Severity::Info, "elsewhere", Target::WorkloadList), // no destination → skipped
+        ];
+        let out = concern_targets(&concerns, 5);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].scope.label(), "workload demo/crashy");
+        assert_eq!(out[0].why, "crashy crashing"); // the FIRST (critical) title wins
+        assert_eq!(out[1].scope.label(), "node worker");
+        // A warm-tagged concern is excluded (the Oracle is hot-only).
+        let warm = vec![Concern {
+            cluster: ClusterId::Warm,
+            ..mk(Severity::Critical, "warm", Target::Node("w".into()))
+        }];
+        assert!(concern_targets(&warm, 5).is_empty());
+        // Cap.
+        let many: Vec<Concern> = (0..10)
+            .map(|i| mk(Severity::Warning, "x", Target::Node(format!("n{i}"))))
+            .collect();
+        assert_eq!(concern_targets(&many, 3).len(), 3);
     }
 
     #[test]

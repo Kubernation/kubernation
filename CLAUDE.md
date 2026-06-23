@@ -2168,6 +2168,31 @@ what makes the interesting logic unit-testable without a cluster.
   tests. Origin: the ideation backlog also surfaced higher-effort bets (per-scope
   default question, wire the diagnose explainer into the bundle, a Realm deepen
   lens, free-text question, streaming) — deferred to the user's next pick.
+- **Oracle CONSULT NEXT seeded from the attention queue** (2026-06-23, v0.57.0, user:
+  a realm consult clearly named a critical issue in prose but showed no CONSULT NEXT
+  link): the "prose-richer-than-links" gap the investigate-links decision flagged as
+  an accepted risk became a real miss — a small local model (qwen3:30b) often
+  describes the trouble in prose without emitting the structured `investigate` block,
+  so a realm consult with a critical concern produced zero drill-down links. **Fix:
+  the app seeds CONSULT NEXT from its OWN attention queue, the model only adds.**
+  Pure core `oracle_investigate::concern_targets(&[Concern], cap)` maps the
+  (already-severity-ordered) attention concerns → `InvestigateTarget`s
+  (Workload/Node `Target`s → `Scope`; `WorkloadList` skipped; hot-only; deduped by
+  label; capped at `CONSULT_NEXT_CAP`=5; the `why` is the concern *title* — trusted
+  app text, never model output). GUI `OracleView::merge_consult_next` makes the
+  concern targets the **floor at Realm scope** (so a clear concern always yields a
+  link), then appends the model's validated block targets the queue didn't already
+  flag (deduped, capped) — at node scope the model block still stands alone. So the
+  realm CONSULT NEXT can never be empty when the attention queue isn't; the model's
+  block can only ADD targets or reorder its own extras, never bury the critical one.
+  No prompt change (the `investigate` instruction stays — the model can still name
+  off-queue suspects); the demo (`--oracle-investigate`) path merges the same way.
+  Honest tradeoff: the seeded concerns reflect the active namespace filter (the
+  attention queue is filtered), matching the rest of the app. Core test
+  (`concern_targets_maps_dedups_skips_and_caps`: map/dedup/skip-list/hot-only/cap).
+  284 core + 52 GUI tests. **Deferred:** node-scope concern seeding (the node's own
+  concerns + stationed workloads — needs topology); a visual model-vs-app provenance
+  cue on the links.
 
 ## The pair (hot/warm)
 
