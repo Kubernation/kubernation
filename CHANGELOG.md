@@ -9,6 +9,18 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Oracle "investigate" → CONSULT NEXT links.** A realm (or node) consult often
+  ends with a prioritized "what to investigate first" list. Those entries are now
+  **clickable consult links**: the model emits a validated, ordered `investigate`
+  block (workload/node targets, each re-resolved against the live store so a
+  hallucinated/garbage name is dropped) rendered as a **CONSULT NEXT** row under
+  the reply. Clicking **jumps the Oracle's scope** to that object and runs a fresh
+  consult — drilling realm → specific without leaving the modal (a crash target's
+  logs then auto-include; its own deepen chips appear). Distinct from INVESTIGATE
+  FURTHER (which adds context to the *same* scope). No prose-parsing (the model
+  proposes a validated scope, the app acts on a click); the jump rebuilds the
+  bundle fresh, gets the same redaction + fencing, and re-Previews for re-consent
+  on a remote endpoint. One consult per click (no auto-cascade).
 - **Oracle "deepen" follow-up drill-down.** Instead of the model telling you to
   "go review the logs / the PVC" (data Kubernation already holds but withheld), it
   now folds that context in. For a crash/error concern the offending pod's **logs

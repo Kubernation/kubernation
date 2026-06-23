@@ -254,6 +254,10 @@ struct Args {
     /// "investigate further" chips.
     #[arg(long, value_name = "LENS")]
     oracle_deepen: Option<String>,
+    /// With --oracle, synthesize a deterministic validated "investigate" target
+    /// (a CONSULT NEXT link) for a headless capture of the drill-down links.
+    #[arg(long)]
+    oracle_investigate: bool,
     /// With --inspect, also open the object inspector (YAML) on the inspected
     /// city/node (development verification of the inspector)
     #[arg(long)]
@@ -1400,6 +1404,9 @@ async fn main() {
                     }
                     if let Some(lens) = &args.oracle_deepen {
                         v.dev_deepen(lens);
+                    }
+                    if args.oracle_investigate {
+                        v.dev_investigate();
                     }
                     oracle_view = Some(v);
                     oracle_just_opened = true;

@@ -27,6 +27,7 @@ use kubernation_core::state::oracle::{
 use kubernation_core::state::oracle_config::{
     self, DEFAULT_LLM_MODEL, DEFAULT_LLM_URL, OracleConfigFile, Profile, endpoint_kind,
 };
+use kubernation_core::state::oracle_investigate::{self, InvestigateTarget};
 use kubernation_core::state::oracle_suggest::{self, ValidatedSuggestion};
 use kubernation_core::state::planned::Intervention;
 use macroquad::prelude::*;
@@ -259,9 +260,11 @@ struct Frozen {
 }
 
 /// The bundle the consult face builds for the active scope:
-/// (bundle, redaction report, model, base_url, is_remote, offered-deepen-lenses).
-/// `offered` is threaded into render_prompt/consent_preview/bundle_hash so the
-/// follow-up-ranking instruction is part of the byte-identical payload.
+/// (bundle, redaction report, model, base_url, is_remote, offered-deepen-lenses,
+/// offer_investigate). `offered` + `offer_investigate` are threaded into
+/// render_prompt/consent_preview/bundle_hash so BOTH the follow-up-ranking and the
+/// "investigate" instructions are part of the byte-identical payload (a divergent
+/// arg at any caller would break the P2 byte-frozen-consent guarantee).
 type Built = (
     oracle::ContextBundle,
     oracle::RedactionReport,
@@ -269,6 +272,7 @@ type Built = (
     String,
     bool,
     Vec<DeepenLens>,
+    bool,
 );
 
 /// Sentinel `editing` value for an unsaved NEW profile.
@@ -336,6 +340,12 @@ pub struct OracleView {
     /// Dev (`--oracle-deepen <lens>`): pre-activate a lens on seed for a headless
     /// capture of the deepen chips.
     dev_deepen: Option<DeepenLens>,
+    /// Validated "investigate" targets from the latest reply (the CONSULT NEXT
+    /// links). Re-derived per reply; cleared on scope/payload change.
+    investigate: Vec<InvestigateTarget>,
+    /// Dev (`--oracle-investigate`): synthesize a deterministic investigate target
+    /// through the real validator for a headless capture of the CONSULT NEXT row.
+    dev_investigate: bool,
 }
 
 impl OracleView {
@@ -386,7 +396,14 @@ impl OracleView {
             follow_up: Vec::new(),
             deepen_seeded: false,
             dev_deepen: None,
+            investigate: Vec::new(),
+            dev_investigate: false,
         }
+    }
+
+    /// Dev: enable the synthetic investigate target (the `--oracle-investigate` flag).
+    pub fn dev_investigate(&mut self) {
+        self.dev_investigate = true;
     }
 
     /// Dev: pre-activate a deepen lens by key (the `--oracle-deepen <lens>` flag).
@@ -406,6 +423,7 @@ impl OracleView {
         self.rejects.clear();
         self.staged.clear();
         self.follow_up.clear();
+        self.investigate.clear();
         self.scroll = 0.0;
     }
 
@@ -469,6 +487,43 @@ impl OracleView {
         }
         // The drain (in draw_consult) sends (local) or re-Previews (remote) once
         // any in-flight logs fetch lands.
+        self.want_consult = true;
+    }
+
+    /// The shared reset for a scope switch — the ◀▶ chip AND a CONSULT NEXT jump.
+    /// Clears all consult-result state + any in-flight log fetch so nothing from
+    /// the old scope carries to the new one.
+    fn reset_for_scope_switch(&mut self, net: &Net) {
+        self.show_preview = false;
+        self.frozen = None;
+        self.reply = None;
+        self.suggestions.clear();
+        self.rejects.clear();
+        self.staged.clear();
+        self.follow_up.clear();
+        self.investigate.clear();
+        self.audit_note = None;
+        self.scroll = 0.0;
+        self.want_consult = false;
+        net.clear_oracle_log();
+    }
+
+    /// Jump the active scope to a validated CONSULT NEXT target and run ONE
+    /// consult. Dedup by `Scope::label()` (Scope has no Eq — it embeds a
+    /// Clone-only Concern); Realm + the originals stay in `scopes` so the ◀▶ chip
+    /// can return. Re-seeds deepen for the new scope, then sets `want_consult` so
+    /// the existing drain fires exactly one consult (local → send; remote →
+    /// re-Preview the new payload for re-consent). Builds the bundle fresh from the
+    /// world — the model's untrusted `why` is never folded in.
+    fn jump_to_scope(&mut self, scope: Scope, snap: Option<&Snapshot>, net: &Net) {
+        if let Some(i) = self.scopes.iter().position(|s| s.label() == scope.label()) {
+            self.scope_idx = i;
+        } else {
+            self.scopes.push(scope);
+            self.scope_idx = self.scopes.len() - 1;
+        }
+        self.reset_for_scope_switch(net);
+        self.seed_deepen(snap, net);
         self.want_consult = true;
     }
 
@@ -653,6 +708,8 @@ impl OracleView {
         self.deepen_log = None;
         self.want_consult = false;
         self.deepen_seeded = false;
+        // An endpoint change invalidates the prior reply → its CONSULT NEXT links.
+        self.investigate.clear();
     }
 
     /// Resolve the endpoint a test (level 1 or 2) should probe, applying the SAME
@@ -814,6 +871,7 @@ impl OracleView {
             self.rejects.clear();
             self.staged.clear();
             self.follow_up.clear();
+            self.investigate.clear();
             match &*r {
                 OracleReply::Ok(t) => {
                     self.reply = Some(t.clone());
@@ -830,6 +888,13 @@ impl OracleView {
                         let offered =
                             available_lenses(&s.hot.observed, &self.scopes[self.scope_idx]);
                         self.follow_up = parse_follow_up(t, &offered);
+                        // Parse the model's "investigate" list → CONSULT NEXT links,
+                        // each VALIDATED against the live store (hallucinated /
+                        // garbage targets dropped — the security boundary).
+                        if let Some(env) = oracle_investigate::parse_investigate(t) {
+                            self.investigate =
+                                oracle_investigate::validate_envelope(&env, &s.hot.observed);
+                        }
                     }
                 }
                 OracleReply::Err(e) => {
@@ -1358,6 +1423,11 @@ impl OracleView {
             };
             let (bundle, report) =
                 oracle::build_bundle(&s.hot.models, &s.hot.observed, scope, &ctx, &caps);
+            // Offer the "investigate" block (→ CONSULT NEXT links) only where the
+            // model names OTHER drillable targets: realm (the prose list lives here)
+            // and node (it may name stationed workloads). Off for workload/concern
+            // (already narrowest — naming siblings is noise + injection surface).
+            let offer_investigate = matches!(scope, Scope::Realm | Scope::Node(_));
             (
                 bundle,
                 report,
@@ -1365,6 +1435,7 @@ impl OracleView {
                 c.base_url.clone(),
                 c.endpoint == Endpoint::Remote,
                 offered,
+                offer_investigate,
             )
         });
 
@@ -1423,6 +1494,36 @@ impl OracleView {
                 );
                 self.suggestions = ok;
                 self.rejects = rej;
+            }
+        }
+
+        // Dev (`--oracle-investigate`): synthesize a deterministic CONSULT NEXT
+        // target through the REAL validator (so the demo can't bypass the store
+        // check), then stop at the rendered links (no auto-click — economy).
+        if self.dev_investigate && self.reply.is_none() {
+            self.dev_investigate = false;
+            if let Some(s) = snap
+                && let Some(wr) = s
+                    .hot
+                    .models
+                    .workloads
+                    .iter()
+                    .find(|w| !kubernation_core::state::chaos::ns_protected(&w.r.namespace))
+                    .map(|w| w.r.clone())
+            {
+                let env = oracle_investigate::InvestigateEnvelope {
+                    investigate: vec![oracle_investigate::InvestigateJson {
+                        kind: wr.kind.to_string(),
+                        namespace: wr.namespace.clone(),
+                        name: wr.name.clone(),
+                        why: "(demo) worth a focused look".into(),
+                    }],
+                };
+                self.reply = Some(
+                    "(demo reply) Here is what I would investigate first — click a link to consult that object."
+                        .into(),
+                );
+                self.investigate = oracle_investigate::validate_envelope(&env, &s.hot.observed);
             }
         }
 
@@ -1572,7 +1673,7 @@ impl OracleView {
                     DIM,
                 );
             }
-            if let Some((bundle, _, _, _, _, _)) = &built {
+            if let Some((bundle, _, _, _, _, _, _)) = &built {
                 cx.gap();
                 cx.row(
                     &format!(
@@ -1590,13 +1691,38 @@ impl OracleView {
             }
         }
 
+        // --- CONSULT NEXT (investigate links) ------------------------------
+        // The model's "what to investigate first" list, validated against the live
+        // store (hallucinated names dropped). Clicking JUMPS the scope to that
+        // workload/node and re-consults — distinct from INVESTIGATE FURTHER, which
+        // adds context to the SAME scope. The `why` is untrusted model output:
+        // display-only (ascii()+truncate), never republished (the jump rebuilds
+        // the bundle fresh from the world).
+        let mut consult_btns: Vec<(Scope, Rect)> = Vec::new();
+        if self.reply.is_some() && !self.investigate.is_empty() {
+            cx.gap();
+            cx.row("CONSULT NEXT — drill into one of these:", PARCHMENT);
+            for t in &self.investigate {
+                cx.y += 20.0;
+                if !cx.visible() {
+                    continue;
+                }
+                let txt = ascii(&truncate(&oracle_investigate::investigate_label(t, 64), 84));
+                let x = cx.body.x + 8.0;
+                let w = text_size(&txt, 13.0).width + 20.0;
+                let r = Rect::new(x, cx.y - 13.0, w, 18.0);
+                draw_btn(r, &txt, PARCHMENT, mouse);
+                consult_btns.push((t.scope.clone(), r));
+            }
+        }
+
         // --- INVESTIGATE FURTHER (deepen chips) ----------------------------
         // After a reply, offer the app-curated lenses that fold more context in
         // and re-consult. Chips are derived from the ACTUAL bundle (deepen_chip_
         // states) so a budget-dropped lens reads "dropped", never a false receipt.
         let mut deepen_btns: Vec<(DeepenLens, Rect)> = Vec::new();
         if self.reply.is_some()
-            && let Some((bundle, _, _, _, _, offered)) = &built
+            && let Some((bundle, _, _, _, _, offered, _)) = &built
             && !offered.is_empty()
         {
             cx.gap();
@@ -1668,22 +1794,22 @@ impl OracleView {
                     return OracleAction::None;
                 }
             }
+            // A CONSULT NEXT link → jump the scope to that validated target +
+            // consult. (Purely Oracle-internal — the map `selected` is untouched.)
+            for (scope, r) in &consult_btns {
+                if r.contains(mouse) {
+                    self.jump_to_scope(scope.clone(), snap, net);
+                    return OracleAction::None;
+                }
+            }
             if self.scopes.len() > 1 && (prev.contains(mouse) || next.contains(mouse)) {
                 let n = self.scopes.len();
                 let delta = if prev.contains(mouse) { n - 1 } else { 1 };
                 self.scope_idx = (self.scope_idx + delta) % n;
-                self.show_preview = false;
-                self.frozen = None;
-                self.reply = None;
-                self.suggestions.clear();
-                self.rejects.clear();
-                self.staged.clear();
-                self.audit_note = None;
-                self.scroll = 0.0;
                 // New scope → re-seed deepen lenses (+ fire its logs fetch) and
-                // drop any in-flight fetch for the old scope's pod.
-                self.want_consult = false;
-                net.clear_oracle_log();
+                // drop any in-flight fetch for the old scope's pod. (No auto-consult
+                // on a chip switch — the operator clicks Consult.)
+                self.reset_for_scope_switch(net);
                 self.seed_deepen(snap, net);
                 return OracleAction::None;
             }
@@ -1748,12 +1874,20 @@ impl OracleView {
             return Some(f.hash);
         }
         // No frozen preview: only a LOCAL endpoint may build-and-send fresh.
-        if let Some((bundle, _, model, base_url, remote, offered)) = built {
+        if let Some((bundle, _, model, base_url, remote, offered, offer_investigate)) = built {
             if *remote {
                 return None;
             }
-            let messages = oracle::render_prompt(bundle, "", offered);
-            let hash = oracle::bundle_hash(bundle, "", model, base_url, *remote, offered);
+            let messages = oracle::render_prompt(bundle, "", offered, *offer_investigate);
+            let hash = oracle::bundle_hash(
+                bundle,
+                "",
+                model,
+                base_url,
+                *remote,
+                offered,
+                *offer_investigate,
+            );
             net.request_oracle(hash, messages);
             return Some(hash);
         }
@@ -1776,20 +1910,28 @@ fn draw_btn(r: Rect, label: &str, col: Color, mouse: Vec2) {
 
 /// Snapshot the current bundle into a `Frozen` consent record.
 fn freeze(built: &Option<Built>) -> Option<Frozen> {
-    built
-        .as_ref()
-        .map(|(bundle, report, model, base_url, remote, offered)| {
-            let messages = oracle::render_prompt(bundle, "", offered);
+    built.as_ref().map(
+        |(bundle, report, model, base_url, remote, offered, offer_investigate)| {
+            let messages = oracle::render_prompt(bundle, "", offered, *offer_investigate);
             let wire_bytes =
                 oracle::request_json(&oracle::chat_request(model, messages.clone())).len();
             Frozen {
-                hash: oracle::bundle_hash(bundle, "", model, base_url, *remote, offered),
+                hash: oracle::bundle_hash(
+                    bundle,
+                    "",
+                    model,
+                    base_url,
+                    *remote,
+                    offered,
+                    *offer_investigate,
+                ),
                 messages,
-                preview: oracle::consent_preview(bundle, "", model, offered),
+                preview: oracle::consent_preview(bundle, "", model, offered, *offer_investigate),
                 wire_bytes,
                 redacted: report.sections_masked,
             }
-        })
+        },
+    )
 }
 
 /// Write a one-shot, metadata-only egress audit for a remote consult.

@@ -306,7 +306,9 @@ fn resolve_workload(
     Ok(wr)
 }
 
-fn workload_exists(world: &ObservedWorld, wr: &WorkloadRef) -> bool {
+/// Is the workload OBJECT in the store? Shared with `oracle_investigate` (reuse,
+/// don't copy — a divergent existence check would drift the two validators).
+pub(crate) fn workload_exists(world: &ObservedWorld, wr: &WorkloadRef) -> bool {
     let m = |meta: &ObjectMeta| {
         meta.namespace.as_deref() == Some(wr.namespace.as_str())
             && meta.name.as_deref() == Some(wr.name.as_str())
@@ -318,7 +320,9 @@ fn workload_exists(world: &ObservedWorld, wr: &WorkloadRef) -> bool {
     }
 }
 
-fn parse_kind(s: &str) -> Result<WorkloadKind, RejectReason> {
+/// Parse a workload kind (with aliases). Shared with `oracle_investigate` (its
+/// `BadKind` maps from this `Err`); reuse, don't copy, so a new alias lands once.
+pub(crate) fn parse_kind(s: &str) -> Result<WorkloadKind, RejectReason> {
     match s.trim().to_ascii_lowercase().as_str() {
         "deployment" | "deploy" => Ok(WorkloadKind::Deployment),
         "statefulset" | "sts" => Ok(WorkloadKind::StatefulSet),

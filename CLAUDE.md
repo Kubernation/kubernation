@@ -2066,6 +2066,62 @@ what makes the interesting logic unit-testable without a cluster.
   conversation (each deepen is an independent enriched re-consult); per-pod
   multi-container log selection; a recursive self-review pass (the user + design
   judged it lower-ROI than adding the right DATA).
+- **Oracle "investigate" → CONSULT NEXT links** (2026-06-23, v0.55.0, user: a realm
+  reply's "what to investigate first" list should be clickable consult links;
+  design-workflow vetted — 3 lenses → 2 judges → synthesis): the realm/node reply
+  often ends with a prioritized list of OTHER objects worth a look; those become
+  **clickable links that JUMP the consult to that object** — drilling realm →
+  specific without leaving the modal. Distinct from the deepen "INVESTIGATE FURTHER"
+  chips (which add context to the SAME scope); this jumps to a NARROWER scope.
+  **Pure core `state/oracle_investigate.rs`** (mirrors `oracle_suggest`, the
+  separate-boundary pattern): `InvestigateJson` is a flat stringly mirror of model
+  output (kind/namespace/name/why) that **never becomes a `Scope` except through
+  `validate_investigate`**, the lone path that re-resolves each target against the
+  LIVE store — Workload (Deploy/STS/DS) or Node only; a bad kind / empty field /
+  hallucinated name is dropped (the security boundary, exactly like
+  `oracle_suggest::validate`). `validate_envelope` dedups survivors by
+  `Scope::label()` (Scope has no Eq — it embeds a Clone-only Concern).
+  `parse_investigate` reuses the now-`pub(crate)` `oracle::json_blocks` (the shared
+  multi-fence scanner), so the three reply blocks — `suggestions` + `follow_up` +
+  `investigate` — **coexist** (each parser extracts only its own top-level key).
+  `INVESTIGATE_INSTRUCTION` + `investigate_instruction(offer)` splice into
+  `render_prompt` AFTER the suggest + deepen blocks; **byte-identity** is preserved
+  by threading a single `offer_investigate: bool` through `render_prompt` +
+  `consent_preview` + `bundle_hash` + the GUI `freeze`/`dispatch` + the `Built`
+  7-tuple (a divergent arg at any caller would break the P2 byte-frozen-consent
+  guarantee — pinned by extending `consent_preview_faithfully_shows_everything_sent`
+  to realm scope + a `render_prompt_gates_the_investigate_block` test;
+  `bundle_hash` folds it so a same-scope on/off can't collide). The instruction is
+  **scope-gated** to Realm | Node (the prose list lives at realm; a node reply may
+  name stationed workloads) — OFF for Workload/Concern (already narrowest; naming
+  siblings is noise + injection surface). **No `chaos::ns_protected` filter** —
+  DELIBERATE and the opposite of `oracle_suggest`: an investigate target is a
+  READ-ONLY consult `Scope` (consumed only by `build_bundle`, never `actions.rs`),
+  so a "check coredns" drill into kube-system is allowed (the same read/write
+  asymmetry the Charter #6 + advisors already embody; pinned by
+  `protected_ns_is_not_filtered`). **GUI (`gui/oracle.rs`):** a reply's targets are
+  parsed + validated once at reply-land against the snapshot; the pure
+  `investigate_label` draw-decision fn (unit-tested) renders a **CONSULT NEXT** row
+  (placed after the reply/suggestions/rejects, before INVESTIGATE FURTHER) only when
+  ≥1 survived; the model's untrusted `why` is display-only (`ascii()`+truncate),
+  never republished, never folded into the next bundle (the jump rebuilds fresh from
+  the world). Clicking calls `jump_to_scope`: dedup/locate the `Scope` by label
+  (Realm + originals stay in `scopes` so the ◀▶ chip returns), run the shared
+  `reset_for_scope_switch` (clears all consult-result state + in-flight log fetch),
+  re-seed deepen for the new scope, then set `want_consult` — so the EXISTING drain
+  fires exactly ONE consult (local send / remote re-Preview for re-consent + a fresh
+  egress audit on a real send; one consult per click, no auto-cascade). `self.map`
+  `selected` is untouched. `self.investigate` is cleared at every payload-change
+  site (reply-poll top, `apply_deepen_change`, scope switch, `apply_active`
+  endpoint change); a late reply lands nowhere (`oracle_gen`). Dev flag
+  `--oracle-investigate` (synthesizes a deterministic target through the REAL
+  validator) + gui-smoke `oracle-investigate`. **Adversarial review: 0 confirmed**
+  (4 dimensions — validation/security, byte-identity/egress, scope-jump/state,
+  correctness/UX — all clean; the never-execute path, byte-identity threading
+  across all callers, and remote re-consent invariants verified). 282 core (+8) +
+  49 GUI tests; gui-smoke 41. **Deferred:** a keyboard cycle of the links;
+  pvc/service targets (not consult scopes); a stateful multi-turn conversation
+  across jumps.
 
 ## The pair (hot/warm)
 

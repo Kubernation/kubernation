@@ -16,6 +16,7 @@ pub mod oracle;
 // `oracle_client` types (LlmConfig/Endpoint), so this module rides the feature.
 #[cfg(feature = "oracle")]
 pub mod oracle_config;
+pub mod oracle_investigate;
 pub mod oracle_suggest;
 pub mod pair;
 pub mod planned;
