@@ -8,6 +8,20 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Oracle "deepen" follow-up drill-down.** Instead of the model telling you to
+  "go review the logs / the PVC" (data Kubernation already holds but withheld), it
+  now folds that context in. For a crash/error concern the offending pod's **logs
+  are included by default** — the model reasons over the actual log lines instead
+  of recommending you fetch them. After any reply, an **INVESTIGATE FURTHER** row
+  of one-click lenses — *include logs · storage detail · blast radius · rollout
+  history · widen to node* — re-consults with that context added; the model may
+  rank which to try next (it only reorders the app-curated menu, never fetches).
+  Button-only (no freeform). Each lens routes through the same redaction + fencing
+  + token budget; an explicitly-requested lens is promoted so it isn't silently
+  dropped (and a chip honestly reads "dropped to fit" if it is). A remote endpoint
+  re-Previews the enriched payload for re-consent and writes a fresh egress audit.
+
 ### Changed
 - **Oracle default model is now `qwen3:30b`** (was `qwen3.5:35b`) — a fast
   Mixture-of-Experts (30B total, ~3B active) that answers a realm consult in

@@ -20,7 +20,10 @@
 use std::sync::Arc;
 
 use kubernation_core::k8s::oracle_client::{Endpoint, LlmConfig};
-use kubernation_core::state::oracle::{self, Caps, Scope};
+use kubernation_core::state::oracle::{
+    self, Caps, DeepenLens, LensState, Scope, available_lenses, deepen_button_order,
+    deepen_chip_states, default_lenses, parse_follow_up, representative_pod,
+};
 use kubernation_core::state::oracle_config::{
     self, DEFAULT_LLM_MODEL, DEFAULT_LLM_URL, OracleConfigFile, Profile, endpoint_kind,
 };
@@ -28,7 +31,7 @@ use kubernation_core::state::oracle_suggest::{self, ValidatedSuggestion};
 use kubernation_core::state::planned::Intervention;
 use macroquad::prelude::*;
 
-use crate::net::{Net, OracleReply, Snapshot};
+use crate::net::{Net, OracleLogReq, OracleReply, Snapshot};
 use crate::oracle_config_io;
 use crate::text::{text, text_bold, text_size};
 use crate::textfield::{FieldId, TextField};
@@ -256,13 +259,16 @@ struct Frozen {
 }
 
 /// The bundle the consult face builds for the active scope:
-/// (bundle, redaction report, model, base_url, is_remote).
+/// (bundle, redaction report, model, base_url, is_remote, offered-deepen-lenses).
+/// `offered` is threaded into render_prompt/consent_preview/bundle_hash so the
+/// follow-up-ranking instruction is part of the byte-identical payload.
 type Built = (
     oracle::ContextBundle,
     oracle::RedactionReport,
     String,
     String,
     bool,
+    Vec<DeepenLens>,
 );
 
 /// Sentinel `editing` value for an unsaved NEW profile.
@@ -308,6 +314,28 @@ pub struct OracleView {
     testing: bool,
     /// True between clicking **chat** and the completion landing.
     chat_testing: bool,
+    // --- deepen (Consult face) ----------------------------------------------
+    /// Active deepen lenses (sections folded into the consult). Seeded from
+    /// `default_lenses` on open / scope change; grown by chip clicks.
+    deepen: Vec<DeepenLens>,
+    /// The subset the operator EXPLICITLY clicked (vs default-on) — promoted in
+    /// the budget so a requested lens isn't silently dropped.
+    explicit: Vec<DeepenLens>,
+    /// The fetched probe-pod log tail for the Logs lens (None until it lands).
+    deepen_log: Option<String>,
+    /// The in-flight log fetch (the Logs lens is "Fetching" while this is Some).
+    pending_log: Option<OracleLogReq>,
+    /// A consult deferred until the in-flight log fetch lands (so the FIRST
+    /// consult on a crash concern carries the logs).
+    want_consult: bool,
+    /// The model's parsed follow-up ranking (reorders/highlights the chips).
+    follow_up: Vec<DeepenLens>,
+    /// One-shot guard: seed `default_lenses` for the active scope once a snapshot
+    /// is available (re-armed on scope change).
+    deepen_seeded: bool,
+    /// Dev (`--oracle-deepen <lens>`): pre-activate a lens on seed for a headless
+    /// capture of the deepen chips.
+    dev_deepen: Option<DeepenLens>,
 }
 
 impl OracleView {
@@ -350,7 +378,98 @@ impl OracleView {
             models_attempted: false,
             testing: false,
             chat_testing: false,
+            deepen: Vec::new(),
+            explicit: Vec::new(),
+            deepen_log: None,
+            pending_log: None,
+            want_consult: false,
+            follow_up: Vec::new(),
+            deepen_seeded: false,
+            dev_deepen: None,
         }
+    }
+
+    /// Dev: pre-activate a deepen lens by key (the `--oracle-deepen <lens>` flag).
+    pub fn dev_deepen(&mut self, key: &str) {
+        self.dev_deepen = DeepenLens::from_key(key);
+    }
+
+    /// Clear the consult-result state when the active payload changes (a deepen
+    /// lens added / logs landed / a profile or scope switch) — so a stale frozen
+    /// consent or reply never carries to the new payload (the remote re-consent
+    /// guard). Does NOT clear the deepen set itself.
+    fn apply_deepen_change(&mut self) {
+        self.frozen = None;
+        self.show_preview = false;
+        self.reply = None;
+        self.suggestions.clear();
+        self.rejects.clear();
+        self.staged.clear();
+        self.follow_up.clear();
+        self.scroll = 0.0;
+    }
+
+    /// Seed the default lenses for the current scope and fire the logs fetch if
+    /// Logs is default-on (a crash/error concern). Idempotent per scope.
+    fn seed_deepen(&mut self, snap: Option<&Snapshot>, net: &Net) {
+        let Some(s) = snap else { return };
+        self.deepen_seeded = true;
+        let scope = &self.scopes[self.scope_idx];
+        self.deepen = default_lenses(&s.hot.observed, scope);
+        self.explicit.clear();
+        self.deepen_log = None;
+        self.pending_log = None;
+        // Dev: pre-activate a lens (only if it's actually offered for this scope).
+        if let Some(l) = self.dev_deepen
+            && available_lenses(&s.hot.observed, scope).contains(&l)
+            && !self.deepen.contains(&l)
+        {
+            self.deepen.push(l);
+            self.explicit.push(l);
+        }
+        if self.deepen.contains(&DeepenLens::Logs) {
+            self.fire_log_fetch(snap, net);
+        }
+    }
+
+    /// Request the representative pod's log tail for the Logs lens (hot-only).
+    fn fire_log_fetch(&mut self, snap: Option<&Snapshot>, net: &Net) {
+        let Some(s) = snap else { return };
+        let scope = &self.scopes[self.scope_idx];
+        if let Some(p) = representative_pod(&s.hot.observed, scope) {
+            let req = OracleLogReq {
+                namespace: p.namespace,
+                pod: p.pod,
+                previous: p.previous,
+            };
+            self.pending_log = Some(req.clone());
+            self.deepen_log = None;
+            net.request_oracle_log(req);
+        }
+    }
+
+    /// The lens (if any) whose log fetch is in flight — drives the "Fetching" chip.
+    fn fetching_lens(&self) -> Option<DeepenLens> {
+        self.pending_log.as_ref().map(|_| DeepenLens::Logs)
+    }
+
+    /// Apply a deepen chip click: activate the lens (explicitly), fetch its data
+    /// if async (logs), and queue a re-consult (local → send once ready; remote →
+    /// re-Preview the enriched payload for re-consent).
+    fn add_lens(&mut self, lens: DeepenLens, snap: Option<&Snapshot>, net: &Net) {
+        if !self.deepen.contains(&lens) {
+            self.deepen.push(lens);
+        }
+        if !self.explicit.contains(&lens) {
+            self.explicit.push(lens);
+        }
+        self.apply_deepen_change();
+        if lens == DeepenLens::Logs {
+            self.fire_log_fetch(snap, net);
+        }
+        // The drain (in draw_consult) sends (local) or re-Previews (remote) once
+        // any in-flight logs fetch lands.
+        self.want_consult = true;
     }
 
     /// Dev: auto-consult on the next draw (the `--oracle-go` headless round-trip).
@@ -520,10 +639,20 @@ impl OracleView {
 
     /// Push the active profile's resolved config to the net thread (which
     /// re-disarms remote egress + bumps the cfg-gen when the endpoint changes).
-    fn apply_active(&self, net: &Net) {
+    /// Also tears down the deepen async state: an endpoint change bumps the net
+    /// `oracle_log_gen`, orphaning any in-flight deepen-log fetch — without this
+    /// the Consult face would hang on a permanent "gathering logs" spinner. The
+    /// deepen set re-seeds (+ re-fires the default-on logs fetch) on the next
+    /// draw.
+    fn apply_active(&mut self, net: &Net) {
         let (cfg, _) =
             oracle_config::resolve_active(&self.config, None, None, self.env_token.as_deref());
         net.set_oracle_config(Some(cfg));
+        net.clear_oracle_log();
+        self.pending_log = None;
+        self.deepen_log = None;
+        self.want_consult = false;
+        self.deepen_seeded = false;
     }
 
     /// Resolve the endpoint a test (level 1 or 2) should probe, applying the SAME
@@ -684,15 +813,23 @@ impl OracleView {
             self.suggestions.clear();
             self.rejects.clear();
             self.staged.clear();
+            self.follow_up.clear();
             match &*r {
                 OracleReply::Ok(t) => {
                     self.reply = Some(t.clone());
-                    if let Some(s) = snap
-                        && let Some(env) = oracle_suggest::parse_suggestions(t)
-                    {
-                        let (ok, rej) = oracle_suggest::validate_envelope(&env, &s.hot.observed);
-                        self.suggestions = ok;
-                        self.rejects = rej;
+                    if let Some(s) = snap {
+                        if let Some(env) = oracle_suggest::parse_suggestions(t) {
+                            let (ok, rej) =
+                                oracle_suggest::validate_envelope(&env, &s.hot.observed);
+                            self.suggestions = ok;
+                            self.rejects = rej;
+                        }
+                        // Parse the model's follow-up ranking, intersected with the
+                        // lenses actually OFFERED for this scope (the security
+                        // boundary — an unknown/injected key is a no-op).
+                        let offered =
+                            available_lenses(&s.hot.observed, &self.scopes[self.scope_idx]);
+                        self.follow_up = parse_follow_up(t, &offered);
                     }
                 }
                 OracleReply::Err(e) => {
@@ -1145,6 +1282,34 @@ impl OracleView {
         remote: bool,
         arm_mode: bool,
     ) -> OracleAction {
+        // Seed default lenses (+ fire the crash-concern logs fetch) once a
+        // snapshot is available.
+        if !self.deepen_seeded {
+            self.seed_deepen(snap, net);
+        }
+        // Poll the in-flight deepen-log fetch; fold it in when it lands (matching
+        // the request so a stale fetch is ignored).
+        if let Some(req) = self.pending_log.clone()
+            && let Some((got, res)) = net.oracle_log_out()
+            && got == req
+        {
+            self.pending_log = None;
+            match res {
+                Ok(tail) => self.deepen_log = Some(tail),
+                Err(_) => {
+                    // A fetch failure is NOT a budget drop — drop the Logs lens so
+                    // the chip reverts to a clickable "include logs" (retry) rather
+                    // than a misleading "dropped to fit — narrow scope".
+                    self.deepen_log = None;
+                    self.deepen.retain(|l| *l != DeepenLens::Logs);
+                    self.explicit.retain(|l| *l != DeepenLens::Logs);
+                    self.audit_note = Some("(log fetch failed — consulting without logs)".into());
+                }
+            }
+            net.clear_oracle_log();
+            self.apply_deepen_change();
+        }
+
         let mut y = y0;
         // --- scope chip (◀ scope ▶) ---------------------------------------
         text("scope:", b.x, y + 12.0, 14.0, DIM);
@@ -1170,31 +1335,57 @@ impl OracleView {
         y += 26.0;
 
         let built: Option<Built> = snap.zip(cfg.as_ref()).map(|(s, c)| {
+            let scope = &self.scopes[self.scope_idx];
+            let offered = available_lenses(&s.hot.observed, scope);
+            // Logs are folded in only when the Logs lens is active AND its tail
+            // has been fetched (the GUI requested it; deepen_log holds the result).
+            let log_body = if self.deepen.contains(&DeepenLens::Logs) {
+                self.deepen_log.as_deref()
+            } else {
+                None
+            };
             let ctx = oracle::BundleCtx {
                 cluster: &s.hot.observed.meta.context,
-                log_body: None,
+                log_body,
                 slo: Some(&s.hot.slo),
+                lenses: &self.deepen,
+                explicit_lenses: &self.explicit,
             };
-            let (bundle, report) = oracle::build_bundle(
-                &s.hot.models,
-                &s.hot.observed,
-                &self.scopes[self.scope_idx],
-                &ctx,
-                &Caps::default(),
-            );
+            let caps = if self.explicit.is_empty() {
+                Caps::default()
+            } else {
+                Caps::deepened()
+            };
+            let (bundle, report) =
+                oracle::build_bundle(&s.hot.models, &s.hot.observed, scope, &ctx, &caps);
             (
                 bundle,
                 report,
                 c.model.clone(),
                 c.base_url.clone(),
                 c.endpoint == Endpoint::Remote,
+                offered,
             )
         });
 
-        // Dev auto-consult (`--oracle-go`): fire once.
+        // A consult is deferred while a Logs fetch is in flight, so the FIRST
+        // consult on a crash concern carries the logs once they land.
+        let logs_pending = self.deepen.contains(&DeepenLens::Logs) && self.pending_log.is_some();
+
+        // Dev auto-consult (`--oracle-go`): fire once (deferred past a logs fetch).
         if self.auto && self.pending.is_none() {
             self.auto = false;
-            if let Some(h) = self.dispatch(net, &built, cfg) {
+            self.want_consult = true;
+        }
+        // Drain a deferred consult once logs are ready: LOCAL sends; REMOTE
+        // re-Previews the enriched (now log-bearing) payload for re-consent.
+        if self.want_consult && self.pending.is_none() && !logs_pending {
+            self.want_consult = false;
+            if remote {
+                self.frozen = freeze(&built);
+                self.show_preview = self.frozen.is_some();
+                self.scroll = 0.0;
+            } else if let Some(h) = self.dispatch(net, &built, cfg) {
                 self.pending = Some(h);
                 self.show_preview = false;
             }
@@ -1307,6 +1498,8 @@ impl OracleView {
                 "consulting the Oracle… (this can take a moment on a local model)",
                 DIM,
             );
+        } else if logs_pending {
+            cx.row("gathering the pod's logs to include in the consult…", DIM);
         } else if let Some(reply) = &self.reply {
             for line in wrap(reply, 96) {
                 cx.row(&ascii(&line), INK);
@@ -1379,7 +1572,7 @@ impl OracleView {
                     DIM,
                 );
             }
-            if let Some((bundle, _, _, _, _)) = &built {
+            if let Some((bundle, _, _, _, _, _)) = &built {
                 cx.gap();
                 cx.row(
                     &format!(
@@ -1397,6 +1590,65 @@ impl OracleView {
             }
         }
 
+        // --- INVESTIGATE FURTHER (deepen chips) ----------------------------
+        // After a reply, offer the app-curated lenses that fold more context in
+        // and re-consult. Chips are derived from the ACTUAL bundle (deepen_chip_
+        // states) so a budget-dropped lens reads "dropped", never a false receipt.
+        let mut deepen_btns: Vec<(DeepenLens, Rect)> = Vec::new();
+        if self.reply.is_some()
+            && let Some((bundle, _, _, _, _, offered)) = &built
+            && !offered.is_empty()
+        {
+            cx.gap();
+            cx.row("INVESTIGATE FURTHER", PARCHMENT);
+            let states = deepen_chip_states(bundle, offered, &self.deepen, self.fetching_lens());
+            let state_of = |l: DeepenLens| states.iter().find(|(x, _)| *x == l).map(|(_, s)| *s);
+            for (lens, highlight) in deepen_button_order(offered, &self.follow_up) {
+                let st = state_of(lens).unwrap_or(LensState::Available);
+                cx.y += 20.0;
+                if !cx.visible() {
+                    continue;
+                }
+                let x = cx.body.x + 8.0;
+                match st {
+                    LensState::Included => {
+                        text(
+                            ascii(&format!("v {}: included", lens.label())),
+                            x,
+                            cx.y,
+                            13.0,
+                            GOOD,
+                        );
+                    }
+                    LensState::Fetching => {
+                        text(
+                            ascii(&format!("{}: gathering…", lens.label())),
+                            x,
+                            cx.y,
+                            13.0,
+                            DIM,
+                        );
+                    }
+                    LensState::Available | LensState::Dropped => {
+                        let (txt, col) = match st {
+                            LensState::Dropped => (
+                                format!("{} (dropped to fit — narrow scope)", lens.label()),
+                                WARN,
+                            ),
+                            _ => {
+                                let mark = if highlight { "> " } else { "" };
+                                (format!("{mark}{}", lens.label()), PARCHMENT)
+                            }
+                        };
+                        let w = text_size(&txt, 13.0).width + 20.0;
+                        let r = Rect::new(x, cx.y - 13.0, w, 18.0);
+                        draw_btn(r, &ascii(&txt), col, mouse);
+                        deepen_btns.push((lens, r));
+                    }
+                }
+            }
+        }
+
         let content_h = cx.y - (y - self.scroll);
         self.max_scroll = (content_h - cx.body.h).max(0.0);
         self.scroll = self.scroll.min(self.max_scroll);
@@ -1407,6 +1659,13 @@ impl OracleView {
                 if br.contains(mouse) {
                     self.staged.insert(*i);
                     return OracleAction::Stage(self.suggestions[*i].intervention.clone());
+                }
+            }
+            // A deepen chip → fold in that lens + re-consult.
+            for (lens, r) in &deepen_btns {
+                if r.contains(mouse) {
+                    self.add_lens(*lens, snap, net);
+                    return OracleAction::None;
                 }
             }
             if self.scopes.len() > 1 && (prev.contains(mouse) || next.contains(mouse)) {
@@ -1421,6 +1680,11 @@ impl OracleView {
                 self.staged.clear();
                 self.audit_note = None;
                 self.scroll = 0.0;
+                // New scope → re-seed deepen lenses (+ fire its logs fetch) and
+                // drop any in-flight fetch for the old scope's pod.
+                self.want_consult = false;
+                net.clear_oracle_log();
+                self.seed_deepen(snap, net);
                 return OracleAction::None;
             }
             match win.button_at(mouse) {
@@ -1484,12 +1748,12 @@ impl OracleView {
             return Some(f.hash);
         }
         // No frozen preview: only a LOCAL endpoint may build-and-send fresh.
-        if let Some((bundle, _, model, base_url, remote)) = built {
+        if let Some((bundle, _, model, base_url, remote, offered)) = built {
             if *remote {
                 return None;
             }
-            let messages = oracle::render_prompt(bundle, "");
-            let hash = oracle::bundle_hash(bundle, "", model, base_url, *remote);
+            let messages = oracle::render_prompt(bundle, "", offered);
+            let hash = oracle::bundle_hash(bundle, "", model, base_url, *remote, offered);
             net.request_oracle(hash, messages);
             return Some(hash);
         }
@@ -1514,14 +1778,14 @@ fn draw_btn(r: Rect, label: &str, col: Color, mouse: Vec2) {
 fn freeze(built: &Option<Built>) -> Option<Frozen> {
     built
         .as_ref()
-        .map(|(bundle, report, model, base_url, _remote)| {
-            let messages = oracle::render_prompt(bundle, "");
+        .map(|(bundle, report, model, base_url, remote, offered)| {
+            let messages = oracle::render_prompt(bundle, "", offered);
             let wire_bytes =
                 oracle::request_json(&oracle::chat_request(model, messages.clone())).len();
             Frozen {
-                hash: oracle::bundle_hash(bundle, "", model, base_url, *_remote),
+                hash: oracle::bundle_hash(bundle, "", model, base_url, *remote, offered),
                 messages,
-                preview: oracle::consent_preview(bundle, "", model),
+                preview: oracle::consent_preview(bundle, "", model, offered),
                 wire_bytes,
                 redacted: report.sections_masked,
             }

@@ -2014,6 +2014,58 @@ what makes the interesting logic unit-testable without a cluster.
   the Tab cycle). Pure `chat_verdict` + the timeout-resolution path unit-tested;
   verified live (the level-2 prompt returns "OK" in 13s on qwen3.5:35b). Deferred:
   a global default-timeout flag (per-profile covers the need).
+- **Oracle "deepen" follow-up drill-down** (2026-06-22, v0.54.0, user: the model
+  kept saying "review the logs / the PVC" — data the app holds but withheld;
+  chose the FULL menu over freeform entry; design-workflow vetted — 4 lenses → 3
+  judges → synthesis): the consult folds that already-held, app-curated context in
+  instead. **Root-cause fix:** the consult passed `log_body: None` even though the
+  pipeline supports a fenced RECENT LOGS section and the `Concern` carries a
+  `LogProbe` — so for a crash/error concern the offending pod's **logs are now
+  included by default** (the model reasons over the lines, doesn't ask for them).
+  **DeepenLens** {Logs, Storage, Blast, Rollout, WidenNode} with ONE pure source
+  of truth `available_lenses(world, scope)` (data-gated) feeding BOTH the prompt's
+  offered keys AND the GUI chips (no drift) + `default_lenses` (Logs only for a
+  Concern with `probe.is_some()` — the default-on-hang guard). **The model curates
+  NOTHING** — it may only *rank* the offered keys (`deepen_instruction` +
+  tolerant `parse_follow_up`, INTERSECTED with offered so an injected key is a
+  no-op); the app decides what each lens fetches. **Pure/async split** (the
+  spine): blast/rollout/storage/widen-node are synchronous reads over the
+  snapshot; only LOGS cross the net boundary via a dedicated one-shot
+  `oracle_log_req/out/gen` slot (mirrors `models`; gen-guarded + request-matched +
+  torn down on context-switch/endpoint-change so a slow fetch can't fold the OLD
+  cluster's logs into a published bundle — the highest-severity risk). **Every
+  lens routes through `push_deepen_sections` → `sec()` → BundleSection**, so
+  redaction + fencing + the token budget apply uniformly (no text appended after
+  `render_prompt`). **Budget honesty:** an explicitly-clicked lens is promoted to
+  `PRIORITY_DEEPEN`=7 (below the primary 9 — no inversion) + a roomier
+  `Caps::deepened`; a dropped requested lens is recorded (`dropped_requested`) and
+  the pure `deepen_chip_states` derives each chip's state (Included/Available/
+  Fetching/Dropped) from the ACTUAL bundle, so a chip can never falsely claim
+  "included". **Remote re-consent:** any payload-changing deepen clears the frozen
+  consent (`apply_deepen_change`) and a remote deepen re-Previews the enriched
+  payload + writes a fresh egress audit (the P2 byte-frozen-consent invariant
+  holds for the bigger payload). **GUI:** the INVESTIGATE FURTHER chip row after
+  the reply; a logs deepen shows "gathering logs…" then re-consults (local) /
+  re-Previews (remote) once the fetch lands; button-only (no freeform). Pure parts
+  unit-tested (lens gating, default-on-probe, sections, budget-survival,
+  chip-states, parse_follow_up-intersect, button-order); dev `--oracle-deepen
+  <lens>` + gui-smoke `oracle-deepen`. 274 core + 49 GUI tests; gui-smoke 40.
+  **Verified live on kind + qwen3:30b:** the crashy concern consult reads "The
+  only log entry is 'boom'" (it HAS the logs) with chips "v include logs:
+  included" · rollout history · widen to node, and the model returned a
+  `follow_up:["logs"]` ranking block. **Adversarial review (2 confirmed, both
+  fixed; cross-cluster-log-leak invariant confirmed HOLDS):** (MEDIUM) switching
+  the active endpoint in the Settings face — reachable without closing the modal —
+  bumped the net `oracle_log_gen`, orphaning an in-flight deepen-log fetch into a
+  permanent "gathering logs" spinner that blocked the deferred consult;
+  `apply_active` now tears down the deepen async state (`clear_oracle_log` +
+  reset pending/log/want_consult + re-seed). (LOW) a *failed* log fetch left Logs
+  active-but-absent, so the chip mislabeled as "dropped to fit — narrow scope" (a
+  budget message); a fetch error now drops the Logs lens so the chip reverts to a
+  clickable "include logs" (retry). **Deferred:** a stateful multi-turn
+  conversation (each deepen is an independent enriched re-consult); per-pod
+  multi-container log selection; a recursive self-review pass (the user + design
+  judged it lower-ROI than adding the right DATA).
 
 ## The pair (hot/warm)
 

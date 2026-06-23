@@ -249,6 +249,11 @@ struct Args {
     /// of the profile picker / model picker / edit form).
     #[arg(long)]
     oracle_settings: bool,
+    /// With --oracle (+ a reply, e.g. --oracle-suggest), pre-activate a deepen
+    /// lens (logs/storage/blast/rollout/node) for a headless capture of the
+    /// "investigate further" chips.
+    #[arg(long, value_name = "LENS")]
+    oracle_deepen: Option<String>,
     /// With --inspect, also open the object inspector (YAML) on the inspected
     /// city/node (development verification of the inspector)
     #[arg(long)]
@@ -1392,6 +1397,9 @@ async fn main() {
                     }
                     if args.oracle_settings {
                         v.open_settings();
+                    }
+                    if let Some(lens) = &args.oracle_deepen {
+                        v.dev_deepen(lens);
                     }
                     oracle_view = Some(v);
                     oracle_just_opened = true;

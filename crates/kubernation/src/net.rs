@@ -312,6 +312,12 @@ pub struct Net {
     chat_test_req: Mutex<Option<(LlmConfig, Vec<ChatMessage>)>>,
     chat_test_out: Mutex<Option<Result<String, String>>>,
     chat_test_gen: AtomicU64,
+    /// One-shot "include logs" deepen fetch (a specific probe pod's tail), keyed
+    /// and gen-guarded so a slow fetch landing after a context switch can't fold
+    /// the OLD cluster's pod logs into a published bundle.
+    oracle_log_req: Mutex<Option<OracleLogReq>>,
+    oracle_log_out: Mutex<Option<(OracleLogReq, Result<String, String>)>>,
+    oracle_log_gen: AtomicU64,
 }
 
 /// A queued Oracle consult: the cache key + the fully-rendered (redacted, fenced,
@@ -326,6 +332,16 @@ pub struct OracleReq {
 pub enum OracleReply {
     Ok(String),
     Err(String),
+}
+
+/// A one-shot request to fetch a SPECIFIC pod's log tail for the Oracle "include
+/// logs" deepen lens — distinct from the log-overlay's live poll so the two never
+/// clobber each other. The Oracle is hot-only.
+#[derive(Clone, PartialEq, Eq)]
+pub struct OracleLogReq {
+    pub namespace: String,
+    pub pod: String,
+    pub previous: bool,
 }
 
 /// Cap on the in-session operator-action log (matches the chaos chronicle's
@@ -492,6 +508,9 @@ impl Net {
             chat_test_req: Mutex::new(None),
             chat_test_out: Mutex::new(None),
             chat_test_gen: AtomicU64::new(0),
+            oracle_log_req: Mutex::new(None),
+            oracle_log_out: Mutex::new(None),
+            oracle_log_gen: AtomicU64::new(0),
         })
     }
 
@@ -576,6 +595,8 @@ impl Net {
             self.models_gen.fetch_add(1, Ordering::Relaxed);
             *self.chat_test_out.lock().unwrap() = None;
             self.chat_test_gen.fetch_add(1, Ordering::Relaxed);
+            *self.oracle_log_out.lock().unwrap() = None;
+            self.oracle_log_gen.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -613,6 +634,27 @@ impl Net {
         *self.chat_test_req.lock().unwrap() = None;
         *self.chat_test_out.lock().unwrap() = None;
         self.chat_test_gen.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Queue a one-shot fetch of a probe pod's log tail for the deepen "include
+    /// logs" lens.
+    pub fn request_oracle_log(&self, req: OracleLogReq) {
+        *self.oracle_log_req.lock().unwrap() = Some(req);
+        *self.oracle_log_out.lock().unwrap() = None;
+        self.oracle_log_gen.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The fetched deepen logs `(request, Ok(tail)|Err)`, if it has landed. The
+    /// GUI matches the request before folding it in (so a stale fetch is ignored).
+    pub fn oracle_log_out(&self) -> Option<(OracleLogReq, Result<String, String>)> {
+        self.oracle_log_out.lock().unwrap().clone()
+    }
+
+    /// Blank the deepen log fetch (on scope change / profile reset).
+    pub fn clear_oracle_log(&self) {
+        *self.oracle_log_req.lock().unwrap() = None;
+        *self.oracle_log_out.lock().unwrap() = None;
+        self.oracle_log_gen.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The discovered model list (an `Arc` — the per-frame picker pull is a
@@ -1003,6 +1045,11 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             *net.chat_test_req.lock().unwrap() = None;
                             *net.chat_test_out.lock().unwrap() = None;
                             net.chat_test_gen.fetch_add(1, Ordering::Relaxed);
+                            // Deepen logs are pod-scoped on the OLD cluster — drop
+                            // + bump the gen so a slow fetch can't fold them in.
+                            *net.oracle_log_req.lock().unwrap() = None;
+                            *net.oracle_log_out.lock().unwrap() = None;
+                            net.oracle_log_gen.fetch_add(1, Ordering::Relaxed);
                             // A same-named pod on the new cluster must re-resolve.
                             log_target = None;
                             log_container = None;
@@ -1245,6 +1292,31 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         };
                         if net2.chat_test_gen.load(Ordering::Relaxed) == req_gen {
                             *net2.chat_test_out.lock().unwrap() = Some(out);
+                        }
+                    });
+                }
+
+                // Oracle deepen "include logs": one-shot fetch of a probe pod's
+                // tail (hot cluster). Spawned + gen-guarded so a slow fetch landing
+                // after a context switch can't fold the OLD cluster's logs in.
+                let olreq = net.oracle_log_req.lock().unwrap().take();
+                if let Some(req) = olreq {
+                    let client = hot_client.clone();
+                    let net2 = net.clone();
+                    let req_gen = net.oracle_log_gen.load(Ordering::Relaxed);
+                    tokio::spawn(async move {
+                        let container =
+                            logs::first_container(client.clone(), &req.namespace, &req.pod).await;
+                        let opts = logs::LogOpts {
+                            previous: req.previous,
+                            timestamps: false,
+                            window: logs::LogWindow::Tail,
+                        };
+                        let res = logs::tail(client, &req.namespace, &req.pod, container, &opts)
+                            .await
+                            .map_err(|e| e.to_string());
+                        if net2.oracle_log_gen.load(Ordering::Relaxed) == req_gen {
+                            *net2.oracle_log_out.lock().unwrap() = Some((req, res));
                         }
                     });
                 }

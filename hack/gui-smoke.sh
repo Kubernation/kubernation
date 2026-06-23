@@ -30,6 +30,7 @@ STATES=(
   "oracle-remote|--oracle realm --llm-url https://api.example.com/v1"
   "oracle-remote-armed|--oracle realm --oracle-ask --oracle-arm --llm-url https://api.example.com/v1"
   "oracle-settings|--oracle realm --oracle-settings"
+  "oracle-deepen|--oracle concern --oracle-suggest --oracle-deepen blast"
   "browse-pick|--browse"
   "browse-table|--browse configmaps"
   "city|--inspect web"
