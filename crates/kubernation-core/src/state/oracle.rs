@@ -1331,13 +1331,16 @@ pub fn default_question_for(scope: &Scope, models: &Models) -> String {
 }
 
 /// The OpenAI request the client posts — built here so the preview and the wire
-/// bytes are produced by the SAME code (byte-identity by construction).
-pub fn chat_request(model: &str, messages: Vec<ChatMessage>) -> ChatRequest {
+/// bytes are produced by the SAME code (byte-identity by construction). `stream` is
+/// `true` for a real consult (the reply is streamed token-by-token) and `false` for
+/// the tiny non-streamed chat-test — so the consent preview + hash reflect exactly
+/// what is sent.
+pub fn chat_request(model: &str, messages: Vec<ChatMessage>, stream: bool) -> ChatRequest {
     ChatRequest {
         model: model.to_string(),
         messages,
         temperature: TEMPERATURE,
-        stream: false,
+        stream,
     }
 }
 
@@ -1374,7 +1377,7 @@ pub fn consent_preview(
 ) -> String {
     let messages = render_prompt(bundle, question, offered, offer_investigate);
     let mut s = format!(
-        "POST {{endpoint}}/chat/completions\nmodel: {model}    temperature: {TEMPERATURE}    stream: false\n"
+        "POST {{endpoint}}/chat/completions\nmodel: {model}    temperature: {TEMPERATURE}    stream: true\n"
     );
     for m in &messages {
         s.push_str(&format!("\n[{}]\n{}\n", m.role, m.content));
@@ -1400,6 +1403,7 @@ pub fn bundle_hash(
     let mut s = request_json(&chat_request(
         model,
         render_prompt(bundle, question, offered, offer_investigate),
+        true, // consults stream
     ));
     s.push('|');
     s.push_str(base_url);
@@ -1584,6 +1588,105 @@ pub fn parse_chat_response(body: &str) -> Result<String, &'static str> {
         return Err("empty model response");
     }
     Ok(content)
+}
+
+// --- streaming (SSE) decode ----------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct StreamDelta {
+    content: Option<String>,
+}
+#[derive(serde::Deserialize)]
+struct StreamChoice {
+    delta: Option<StreamDelta>,
+}
+#[derive(serde::Deserialize)]
+struct StreamChunk {
+    choices: Option<Vec<StreamChoice>>,
+}
+
+/// PURE: the token delta from one SSE `data:` chunk (`choices[0].delta.content`),
+/// or `None` on malformed/partial JSON or an absent delta — so a stray vendor line
+/// is non-fatal. Never panics.
+fn chunk_delta(json: &str) -> Option<String> {
+    serde_json::from_str::<StreamChunk>(json)
+        .ok()?
+        .choices?
+        .into_iter()
+        .next()?
+        .delta?
+        .content
+}
+
+/// PURE: drain the longest valid-UTF-8 PREFIX from `buf` and return it; the trailing
+/// bytes of a char split across network frames stay buffered for the next frame. Used
+/// by the streaming client so a multi-byte char (em-dash, smart quote, CJK, emoji)
+/// split on a frame boundary is NEVER lossily corrupted into U+FFFD. Never panics.
+pub fn take_utf8_prefix(buf: &mut Vec<u8>) -> String {
+    let valid = match std::str::from_utf8(buf) {
+        Ok(_) => buf.len(),
+        Err(e) => e.valid_up_to(),
+    };
+    let prefix: Vec<u8> = buf.drain(..valid).collect();
+    String::from_utf8(prefix).unwrap_or_default() // valid by construction
+}
+
+/// The token deltas a [`SseDecoder::push`] surfaced + whether the stream is done.
+pub struct SseEvents {
+    pub deltas: Vec<String>,
+    pub done: bool,
+}
+
+/// PURE incremental decoder for an OpenAI-compatible SSE stream. `buf` holds the
+/// trailing partial line across hyper frames — the one subtle correctness point:
+/// a `data:` line can be split across two network frames, so only COMPLETE lines
+/// (terminated by `\n`) are processed; the remainder waits for the next frame.
+/// The impure `consult_stream` owns one of these, so ALL SSE interpretation is pure
+/// + unit-tested.
+#[derive(Default)]
+pub struct SseDecoder {
+    buf: String,
+    done: bool,
+}
+
+impl SseDecoder {
+    /// Append a frame's (utf8-lossy) bytes and emit any COMPLETE events' deltas.
+    pub fn push(&mut self, chunk: &str) -> SseEvents {
+        if self.done {
+            return SseEvents {
+                deltas: Vec::new(),
+                done: true,
+            };
+        }
+        self.buf.push_str(chunk);
+        let mut deltas = Vec::new();
+        while let Some(nl) = self.buf.find('\n') {
+            let line: String = self.buf[..nl].to_string();
+            self.buf.drain(..=nl);
+            let line = line.trim_end_matches('\r');
+            // Empty line = event boundary; a leading ':' is a keep-alive comment.
+            if line.is_empty() || line.starts_with(':') {
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("data:") {
+                let rest = rest.strip_prefix(' ').unwrap_or(rest);
+                if rest == "[DONE]" {
+                    self.done = true;
+                    break;
+                }
+                if let Some(d) = chunk_delta(rest)
+                    && !d.is_empty()
+                {
+                    deltas.push(d);
+                }
+            }
+            // Other SSE fields (event:/id:/retry:) are ignored.
+        }
+        SseEvents {
+            deltas,
+            done: self.done,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1932,7 +2035,8 @@ mod tests {
         let messages = render_prompt(&b, "why is it down?", &[], true);
         // The model + params are shown.
         assert!(preview.contains("model: llama3"));
-        assert!(preview.contains("stream: false"));
+        // A consult streams — the preview MUST reflect stream:true (the wire bytes do).
+        assert!(preview.contains("stream: true"));
         // Every message's role + FULL content appears verbatim (nothing hidden) —
         // this is what pins the investigate block into the reviewed payload.
         for m in &messages {
@@ -1973,6 +2077,89 @@ mod tests {
             msgs_empty.iter().any(|m| m.content.contains(&want)),
             "the wire message must carry the SAME default question (byte-identity)"
         );
+    }
+
+    #[test]
+    fn sse_decoder_handles_the_real_stream_shapes() {
+        let chunk =
+            |c: &str| format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"{c}\"}}}}]}}\n\n");
+        // (a) one complete data line → one delta.
+        let mut d = SseDecoder::default();
+        let ev = d.push(&chunk("hi"));
+        assert_eq!(ev.deltas, vec!["hi".to_string()]);
+        assert!(!ev.done);
+
+        // (b) a JSON split across THREE frames → the delta only after the final push.
+        let mut d = SseDecoder::default();
+        assert!(
+            d.push("data: {\"choices\":[{\"delta\":{\"content\":\"hel")
+                .deltas
+                .is_empty()
+        );
+        assert!(d.push("lo wo").deltas.is_empty());
+        let ev = d.push("rld\"}}]}\n\n");
+        assert_eq!(ev.deltas, vec!["hello world".to_string()]);
+
+        // (c) [DONE] sets done; a later delta is ignored.
+        let mut d = SseDecoder::default();
+        assert!(d.push(&chunk("a")).deltas == vec!["a".to_string()]);
+        let ev = d.push("data: [DONE]\n\n");
+        assert!(ev.done);
+        assert!(d.push(&chunk("late")).deltas.is_empty());
+
+        // (d) keep-alive comment + empty line yield nothing.
+        let mut d = SseDecoder::default();
+        let ev = d.push(": keep-alive\n\n");
+        assert!(ev.deltas.is_empty() && !ev.done);
+
+        // (e) two events in one push → both deltas, in order.
+        let mut d = SseDecoder::default();
+        let ev = d.push(&format!("{}{}", chunk("one"), chunk("two")));
+        assert_eq!(ev.deltas, vec!["one".to_string(), "two".to_string()]);
+
+        // (f) an empty-content delta is skipped.
+        let mut d = SseDecoder::default();
+        assert!(d.push(&chunk("")).deltas.is_empty());
+
+        // (g) a chunk with no choices yields nothing.
+        let mut d = SseDecoder::default();
+        assert!(d.push("data: {\"choices\":[]}\n\n").deltas.is_empty());
+
+        // (h) malformed JSON is non-fatal (no panic, no delta).
+        let mut d = SseDecoder::default();
+        assert!(d.push("data: {garbage not json\n\n").deltas.is_empty());
+    }
+
+    #[test]
+    fn take_utf8_prefix_buffers_a_split_multibyte_char() {
+        // An em-dash "—" is 3 bytes (E2 80 94); split across two network frames it
+        // must NOT corrupt to U+FFFD — the trailing bytes wait for the next frame.
+        let em = "—".as_bytes(); // [0xE2, 0x80, 0x94]
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&em[..2]); // first frame: only 2 of 3 bytes
+        assert_eq!(take_utf8_prefix(&mut buf), ""); // nothing complete yet
+        assert_eq!(buf.len(), 2); // the partial char stays buffered
+        buf.extend_from_slice(&em[2..]); // second frame: the final byte
+        assert_eq!(take_utf8_prefix(&mut buf), "—"); // now it round-trips intact
+        assert!(buf.is_empty());
+        // A whole valid string drains fully; an empty buffer is a no-op.
+        let mut b2 = "hello".as_bytes().to_vec();
+        assert_eq!(take_utf8_prefix(&mut b2), "hello");
+        assert_eq!(take_utf8_prefix(&mut Vec::new()), "");
+    }
+
+    #[test]
+    fn chat_request_stream_flag_is_on_the_wire() {
+        let msg = vec![ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        }];
+        // A consult streams; the chat-test does not — and the serialized bytes (what
+        // the preview + hash are built from) must match the flag exactly.
+        let streamed = request_json(&chat_request("m", msg.clone(), true));
+        assert!(streamed.contains("\"stream\":true"));
+        let test = request_json(&chat_request("m", msg, false));
+        assert!(test.contains("\"stream\":false"));
     }
 
     #[test]

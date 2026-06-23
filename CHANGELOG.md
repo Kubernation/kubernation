@@ -9,6 +9,16 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Oracle replies now stream token-by-token.** Instead of a 60–90s spinner then one
+  block, the answer appears as the model generates it. The request goes `stream:true`
+  (SSE), the client reads the response incrementally, and the consult window shows the
+  text growing in place with a `streaming… {n}s · {chars} chars` status and a Cancel.
+  The byte-frozen consent reflects `stream:true` (the operator still reviews exactly
+  what is sent). A cold model still gets the full timeout to its first token; once
+  tokens flow, only a stall is cut. If a stream ends in error after some text arrived,
+  the partial is kept with a note (not discarded). An endpoint that ignores streaming
+  degrades to the previous whole-reply behavior automatically.
+
 - **Oracle answer quality.** Three changes that make a consult sharper: (1) the
   **default question is now scope-aware** — instead of a generic "explain this", the
   model is asked the operator's real question ("Why is demo/crashy unhealthy and

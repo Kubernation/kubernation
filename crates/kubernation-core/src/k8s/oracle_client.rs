@@ -45,6 +45,11 @@ pub const MAX_TIMEOUT_SECS: u64 = 600;
 /// bounds a hostile/runaway endpoint so it cannot OOM the net loop.
 const MAX_RESP_BYTES: usize = 8 * 1024 * 1024;
 
+/// Max silence (seconds) BETWEEN stream frames once tokens have started — a stalled
+/// stream is cut, a long-but-steady generation is not (the first token still gets
+/// the full per-profile timeout to cover a cold model's startup latency).
+pub const STREAM_IDLE_SECS: u64 = 30;
+
 /// Whether the endpoint is on the operator's laptop (no egress off-box) or a
 /// remote service (publishing). The GUI gates the consent preview on this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,7 +181,7 @@ fn https_client() -> Result<
 /// builder). Non-streaming, under `TIMEOUT`. Writes nothing to the cluster.
 pub async fn consult(cfg: &LlmConfig, messages: Vec<ChatMessage>) -> Result<String, LlmError> {
     let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
-    let body = oracle::request_json(&oracle::chat_request(&cfg.model, messages));
+    let body = oracle::request_json(&oracle::chat_request(&cfg.model, messages, false));
 
     let client = https_client()?;
     let mut builder = Request::builder()
@@ -226,6 +231,164 @@ pub async fn consult(cfg: &LlmConfig, messages: Vec<ChatMessage>) -> Result<Stri
         });
     }
     oracle::parse_chat_response(&text).map_err(|e| LlmError::Decode(e.to_string()))
+}
+
+/// STREAM a chat completion (stream:true / SSE), feeding each token delta to
+/// `on_token` as it arrives and returning the FULL accumulated text. `is_cancelled`
+/// is polled between frames (the net thread maps it to the `oracle_gen` guard, so
+/// Cancel / a context switch aborts the read). Falls back to a single non-streaming
+/// parse if the endpoint ignores `stream:true`. Same request body the consent
+/// preview showed (byte-identity); writes nothing to the cluster.
+pub async fn consult_stream(
+    cfg: &LlmConfig,
+    messages: Vec<ChatMessage>,
+    mut on_token: impl FnMut(&str),
+    is_cancelled: impl Fn() -> bool,
+) -> Result<String, LlmError> {
+    let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
+    let body = oracle::request_json(&oracle::chat_request(&cfg.model, messages, true));
+
+    let client = https_client()?;
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(&url)
+        .header("content-type", "application/json");
+    if let Some(key) = &cfg.api_key {
+        builder = builder.header("authorization", format!("Bearer {key}"));
+    }
+    let req = builder
+        .body(Full::new(Bytes::from(body)))
+        .map_err(|e| LlmError::Config(format!("bad request URL: {e}")))?;
+
+    if is_cancelled() {
+        return Ok(String::new());
+    }
+
+    // Connect + headers under the full per-profile timeout (covers a cold model).
+    let resp = match tokio::time::timeout(cfg.timeout(), client.request(req)).await {
+        Err(_) => return Err(LlmError::Timeout),
+        Ok(Err(e)) => return Err(LlmError::Connection(e.to_string())),
+        Ok(Ok(r)) => r,
+    };
+    let status = resp.status().as_u16();
+    if let Some(err) = classify_status(status) {
+        // An error body is JSON, never SSE — read (under the timeout, like consult)
+        // + enrich it.
+        let collected = match tokio::time::timeout(
+            cfg.timeout(),
+            Limited::new(resp.into_body(), MAX_RESP_BYTES).collect(),
+        )
+        .await
+        {
+            Err(_) => return Err(LlmError::Timeout),
+            Ok(Ok(c)) => c,
+            Ok(Err(_)) => {
+                return Err(LlmError::Decode("response too large or truncated".into()));
+            }
+        };
+        let text = String::from_utf8_lossy(&collected.to_bytes()).to_string();
+        return Err(match err {
+            LlmError::BadStatus { status, .. } => LlmError::BadStatus {
+                status,
+                detail: oracle::extract_error_message(&text),
+            },
+            other => other,
+        });
+    }
+
+    // Some endpoints ignore `stream:true` and return ONE application/json completion
+    // — detect via Content-Type and parse it as a single reply (the GUI's Done path
+    // is identical, so there is no second code path / no hang).
+    let is_sse = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|c| c.contains("text/event-stream"))
+        .unwrap_or(false);
+    if !is_sse {
+        let collected = match tokio::time::timeout(
+            cfg.timeout(),
+            Limited::new(resp.into_body(), MAX_RESP_BYTES).collect(),
+        )
+        .await
+        {
+            Err(_) => return Err(LlmError::Timeout),
+            Ok(Ok(c)) => c,
+            Ok(Err(_)) => {
+                return Err(LlmError::Decode("response too large or truncated".into()));
+            }
+        };
+        let bytes = collected.to_bytes();
+        let text = String::from_utf8_lossy(&bytes);
+        return oracle::parse_chat_response(&text).map_err(|e| LlmError::Decode(e.to_string()));
+    }
+
+    // SSE: read frames incrementally. There is NO outer total timeout — the
+    // idle-between-frames bound (first token gets the full per-profile timeout for a
+    // cold model, then STREAM_IDLE_SECS) is the only time bound, so a long-but-steady
+    // generation is never cut; MAX_RESP_BYTES + Cancel are the runaway backstops.
+    // Buffer raw BYTES across frames: a multi-byte char (or a `data:` line) can split
+    // on a frame boundary, so we decode only the valid UTF-8 PREFIX and keep the
+    // trailing partial bytes for the next frame (a per-frame lossy decode would
+    // permanently corrupt a split char into U+FFFD).
+    let mut body = resp.into_body();
+    let mut dec = oracle::SseDecoder::default();
+    let mut full = String::new();
+    let mut pending: Vec<u8> = Vec::new();
+    let mut total = 0usize;
+    loop {
+        // Cancel (gen bumped) aborts: dropping `body` tears the connection down; the
+        // partial is the answer the operator already saw.
+        if is_cancelled() {
+            return Ok(full);
+        }
+        let idle = if full.is_empty() {
+            cfg.timeout()
+        } else {
+            Duration::from_secs(STREAM_IDLE_SECS)
+        };
+        let frame = match tokio::time::timeout(idle, body.frame()).await {
+            Err(_) => return Err(LlmError::Timeout),
+            Ok(None) => {
+                // Stream ended without an explicit [DONE]; flush any residual bytes.
+                if !pending.is_empty() {
+                    let ev = dec.push(&String::from_utf8_lossy(&pending));
+                    for d in ev.deltas {
+                        full.push_str(&d);
+                        on_token(&d);
+                    }
+                }
+                return if full.trim().is_empty() {
+                    Err(LlmError::Decode("empty model response".into()))
+                } else {
+                    Ok(full)
+                };
+            }
+            Ok(Some(Err(e))) => return Err(LlmError::Connection(e.to_string())),
+            Ok(Some(Ok(f))) => f,
+        };
+        // Skip non-data (trailer) frames.
+        let Ok(bytes) = frame.into_data() else {
+            continue;
+        };
+        total += bytes.len();
+        if total > MAX_RESP_BYTES {
+            return Err(LlmError::Decode("response too large or truncated".into()));
+        }
+        pending.extend_from_slice(&bytes);
+        // Decode only up to the last complete UTF-8 char; keep the rest buffered.
+        let s = oracle::take_utf8_prefix(&mut pending);
+        if !s.is_empty() {
+            let ev = dec.push(&s);
+            for d in ev.deltas {
+                full.push_str(&d);
+                on_token(&d);
+            }
+            if ev.done {
+                return Ok(full);
+            }
+        }
+    }
 }
 
 /// A lightweight reachability/auth check for the setup screen — a GET to

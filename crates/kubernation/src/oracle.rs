@@ -34,7 +34,7 @@ use kubernation_core::state::oracle_suggest::{self, ValidatedSuggestion};
 use kubernation_core::state::planned::Intervention;
 use macroquad::prelude::*;
 
-use crate::net::{Net, OracleLogReq, OracleReply, Snapshot};
+use crate::net::{Net, OracleLogReq, OracleReply, Snapshot, StreamStatus};
 use crate::oracle_config_io;
 use crate::text::{text, text_bold, text_size};
 use crate::textfield::{FieldId, TextField};
@@ -223,6 +223,13 @@ pub fn consult_progress_line(elapsed_secs: u64, timeout_secs: u64) -> String {
     }
 }
 
+/// PURE draw-decision fn: the status line while a reply STREAMS in — elapsed +
+/// char count, NO timeout clause (the streaming bound is idle-per-token, so a
+/// countdown would mislead). Used once tokens start arriving. Unit-tested.
+pub fn stream_status_line(elapsed_secs: u64, chars: usize) -> String {
+    format!("streaming… {elapsed_secs}s · {chars} chars")
+}
+
 /// PURE draw-decision fn: the "model-generated; verify" caveat, sharpened when a
 /// Stage-able suggestion is on screen (a proposed change deserves a stronger
 /// reminder). Pinned as a footer outside the scroll. Unit-tested.
@@ -367,6 +374,10 @@ pub struct OracleView {
     /// A failed consult's classified error message (kept separate from `reply` so
     /// it renders as a WARN card with a hint + Retry, not as fake "answer" prose).
     reply_error: Option<String>,
+    /// When a STREAM ends in error but partial text already arrived, the partial is
+    /// kept in `reply` and this note explains the interruption (instead of dropping
+    /// the value the operator already saw).
+    stream_error_note: Option<String>,
     suggestions: Vec<ValidatedSuggestion>,
     rejects: Vec<String>,
     staged: std::collections::HashSet<usize>,
@@ -448,6 +459,7 @@ impl OracleView {
             pending_started: 0.0,
             reply: None,
             reply_error: None,
+            stream_error_note: None,
             suggestions: Vec::new(),
             rejects: Vec::new(),
             staged: std::collections::HashSet::new(),
@@ -502,6 +514,7 @@ impl OracleView {
         self.show_preview = false;
         self.reply = None;
         self.reply_error = None;
+        self.stream_error_note = None;
         self.suggestions.clear();
         self.rejects.clear();
         self.staged.clear();
@@ -581,6 +594,7 @@ impl OracleView {
         self.frozen = None;
         self.reply = None;
         self.reply_error = None;
+        self.stream_error_note = None;
         self.suggestions.clear();
         self.rejects.clear();
         self.staged.clear();
@@ -637,6 +651,40 @@ impl OracleView {
         }
         targets.truncate(cap);
         targets
+    }
+
+    /// Run the reply-land pipeline ONCE on the FINAL consult text: set the prose,
+    /// parse the model's suggestions / follow-up ranking / investigate block (each
+    /// VALIDATED against the live store), and merge CONSULT NEXT. Called only on the
+    /// terminal Done edge (or a cache-hit) — NEVER per streaming frame (the parsers
+    /// walk the observed world; the GUI is 60fps immediate-mode).
+    fn finalize_reply(&mut self, text: &str, snap: Option<&Snapshot>) {
+        self.suggestions.clear();
+        self.rejects.clear();
+        self.staged.clear();
+        self.follow_up.clear();
+        self.investigate.clear();
+        self.stream_error_note = None;
+        self.reply = Some(text.to_string());
+        self.reply_error = None;
+        if let Some(s) = snap {
+            if let Some(env) = oracle_suggest::parse_suggestions(text) {
+                let (ok, rej) = oracle_suggest::validate_envelope(&env, &s.hot.observed);
+                self.suggestions = ok;
+                self.rejects = rej;
+            }
+            // The model's follow-up ranking, intersected with the OFFERED lenses (an
+            // unknown/injected key is a no-op — the security boundary).
+            let offered = available_lenses(&s.hot.observed, &self.scopes[self.scope_idx]);
+            self.follow_up = parse_follow_up(text, &offered);
+            // CONSULT NEXT = the app's attention queue (the floor) + the model's
+            // VALIDATED investigate extras. The app curates; the model only adds.
+            let model = oracle_investigate::parse_investigate(text)
+                .map(|env| oracle_investigate::validate_envelope(&env, &s.hot.observed))
+                .unwrap_or_default();
+            self.investigate =
+                self.merge_consult_next(model, &s.hot.models.attention, &s.hot.observed);
+        }
     }
 
     /// Dev: auto-consult on the next draw (the `--oracle-go` headless round-trip).
@@ -825,6 +873,7 @@ impl OracleView {
         // any error card.
         self.investigate.clear();
         self.reply_error = None;
+        self.stream_error_note = None;
     }
 
     /// Resolve the endpoint a test (level 1 or 2) should probe, applying the SAME
@@ -978,56 +1027,55 @@ impl OracleView {
         let armed = net.oracle_egress_armed();
         let arm_mode = remote && !armed;
 
-        // Poll an in-flight consult.
-        if let Some(h) = self.pending
-            && let Some(r) = net.oracle_reply(h)
-        {
-            self.suggestions.clear();
-            self.rejects.clear();
-            self.staged.clear();
-            self.follow_up.clear();
-            self.investigate.clear();
-            match &*r {
-                OracleReply::Ok(t) => {
-                    self.reply = Some(t.clone());
-                    self.reply_error = None;
-                    if let Some(s) = snap {
-                        if let Some(env) = oracle_suggest::parse_suggestions(t) {
-                            let (ok, rej) =
-                                oracle_suggest::validate_envelope(&env, &s.hot.observed);
-                            self.suggestions = ok;
-                            self.rejects = rej;
+        // Poll an in-flight consult — read the LIVE stream each frame; run the heavy
+        // reply-land pipeline ONCE on the terminal (Done/Err) edge.
+        if let Some(h) = self.pending {
+            if let Some(buf) = net.oracle_stream(h) {
+                let (text, status) = {
+                    let b = buf.lock().unwrap();
+                    (b.text.clone(), b.status.clone())
+                };
+                match status {
+                    StreamStatus::Streaming => {
+                        // Show the growing text; the parsers wait for Done.
+                        self.reply = Some(text);
+                        self.reply_error = None;
+                    }
+                    StreamStatus::Done => {
+                        self.finalize_reply(&text, snap);
+                        self.pending = None;
+                        self.scroll = 0.0;
+                    }
+                    StreamStatus::Err(e) => {
+                        if text.trim().is_empty() {
+                            // Nothing streamed → the WARN error card + Retry.
+                            self.reply = None;
+                            self.reply_error = Some(e);
+                        } else {
+                            // A partial arrived before the failure — keep it + a note
+                            // (the operator already saw value); no Stage buttons (we
+                            // don't finalize a truncated reply).
+                            self.reply = Some(text);
+                            self.reply_error = None;
+                            self.stream_error_note = Some(format!("(stream interrupted: {e})"));
                         }
-                        // Parse the model's follow-up ranking, intersected with the
-                        // lenses actually OFFERED for this scope (the security
-                        // boundary — an unknown/injected key is a no-op).
-                        let offered =
-                            available_lenses(&s.hot.observed, &self.scopes[self.scope_idx]);
-                        self.follow_up = parse_follow_up(t, &offered);
-                        // CONSULT NEXT links = the app's attention queue (the floor,
-                        // so a clear concern always yields a link) + the model's
-                        // VALIDATED "investigate" extras (hallucinated/garbage
-                        // dropped — the security boundary). The app curates; the
-                        // model only adds.
-                        let model = oracle_investigate::parse_investigate(t)
-                            .map(|env| oracle_investigate::validate_envelope(&env, &s.hot.observed))
-                            .unwrap_or_default();
-                        self.investigate = self.merge_consult_next(
-                            model,
-                            &s.hot.models.attention,
-                            &s.hot.observed,
-                        );
+                        self.pending = None;
+                        self.scroll = 0.0;
                     }
                 }
-                OracleReply::Err(e) => {
-                    // Errors render as a WARN card with a hint + Retry, not as fake
-                    // answer prose.
-                    self.reply = None;
-                    self.reply_error = Some(e.clone());
+            } else if let Some(r) = net.oracle_reply(h) {
+                // Cache-hit fast path: an immediate error, a re-open of a prior
+                // consult, or a non-stream reply already cached.
+                match &*r {
+                    OracleReply::Ok(t) => self.finalize_reply(t, snap),
+                    OracleReply::Err(e) => {
+                        self.reply = None;
+                        self.reply_error = Some(e.clone());
+                    }
                 }
+                self.pending = None;
+                self.scroll = 0.0;
             }
-            self.pending = None;
-            self.scroll = 0.0;
         }
 
         let action_label = if self.pending.is_some() {
@@ -1734,9 +1782,22 @@ impl OracleView {
             }
         } else if self.pending.is_some() {
             let elapsed = (get_time() - self.pending_started).max(0.0) as u64;
-            let timeout = cfg.as_ref().map(|c| c.timeout().as_secs()).unwrap_or(0);
-            cx.row(&consult_progress_line(elapsed, timeout), DIM);
-            cx.row("(local models can take a while — Cancel to stop)", DIM);
+            if let Some(reply) = &self.reply {
+                // Streaming: the text grows in place; the heavy reply-land parsers
+                // (Stage buttons, CONSULT NEXT) wait for the Done edge.
+                let shown = strip_machine_blocks(reply);
+                for line in wrap(&shown, 96) {
+                    cx.row(&ascii(&line), INK);
+                }
+                cx.gap();
+                cx.row(&stream_status_line(elapsed, reply.chars().count()), DIM);
+                cx.row("(Cancel to stop)", DIM);
+            } else {
+                // No token yet — the spinner with the cold-start countdown.
+                let timeout = cfg.as_ref().map(|c| c.timeout().as_secs()).unwrap_or(0);
+                cx.row(&consult_progress_line(elapsed, timeout), DIM);
+                cx.row("(local models can take a while — Cancel to stop)", DIM);
+            }
         } else if logs_pending {
             cx.row("gathering the pod's logs to include in the consult…", DIM);
         } else if let Some(err) = self.reply_error.clone() {
@@ -1767,6 +1828,12 @@ impl OracleView {
                 for line in wrap(&shown, 96) {
                     cx.row(&ascii(&line), INK);
                 }
+            }
+            // A stream that ended in error after some text arrived: keep the partial
+            // (above) + explain the interruption (no Stage buttons — not finalized).
+            if let Some(note) = &self.stream_error_note {
+                cx.gap();
+                cx.row(&ascii(note), WARN);
             }
             if let Some(note) = &self.audit_note {
                 cx.gap();
@@ -1860,8 +1927,11 @@ impl OracleView {
         // adds context to the SAME scope. The `why` is untrusted model output:
         // display-only (ascii()+truncate), never republished (the jump rebuilds
         // the bundle fresh from the world).
+        // `pending.is_none()`: these validated actions belong to the FINAL reply, so
+        // they must be hidden while a (re-)consult streams — else the prior reply's
+        // links/chips paint + stay clickable over the half-streamed answer.
         let mut consult_btns: Vec<(Scope, Rect)> = Vec::new();
-        if self.reply.is_some() && !self.investigate.is_empty() {
+        if self.pending.is_none() && self.reply.is_some() && !self.investigate.is_empty() {
             cx.gap();
             cx.row("CONSULT NEXT — drill into one of these:", PARCHMENT);
             for t in &self.investigate {
@@ -1883,7 +1953,8 @@ impl OracleView {
         // and re-consult. Chips are derived from the ACTUAL bundle (deepen_chip_
         // states) so a budget-dropped lens reads "dropped", never a false receipt.
         let mut deepen_btns: Vec<(DeepenLens, Rect)> = Vec::new();
-        if self.reply.is_some()
+        if self.pending.is_none()
+            && self.reply.is_some()
             && let Some((bundle, _, _, _, _, offered, _)) = &built
             && !offered.is_empty()
         {
@@ -2044,6 +2115,8 @@ impl OracleView {
                         // already published — Cancel can't un-send.)
                         net.cancel_oracle(h);
                         self.pending = None;
+                        self.reply = None;
+                        self.stream_error_note = None;
                     } else if arm_mode {
                         net.arm_oracle_egress();
                     } else if remote && self.frozen.is_none() {
@@ -2056,6 +2129,7 @@ impl OracleView {
                         self.pending_started = get_time();
                         self.reply = None;
                         self.reply_error = None;
+                        self.stream_error_note = None;
                         self.show_preview = false;
                         self.scroll = 0.0;
                     }
@@ -2134,7 +2208,7 @@ fn freeze(built: &Option<Built>) -> Option<Frozen> {
         |(bundle, report, model, base_url, remote, offered, offer_investigate)| {
             let messages = oracle::render_prompt(bundle, "", offered, *offer_investigate);
             let wire_bytes =
-                oracle::request_json(&oracle::chat_request(model, messages.clone())).len();
+                oracle::request_json(&oracle::chat_request(model, messages.clone(), true)).len();
             Frozen {
                 hash: oracle::bundle_hash(
                     bundle,
@@ -2318,6 +2392,14 @@ mod tests {
         );
         // No timeout known → just the elapsed.
         assert!(!consult_progress_line(3, 0).contains("timeout"));
+    }
+
+    #[test]
+    fn stream_status_line_shows_elapsed_and_chars_no_timeout() {
+        let s = stream_status_line(4, 128);
+        assert!(s.contains("streaming") && s.contains("4s") && s.contains("128"));
+        // An idle-bounded stream has no total countdown — don't imply one.
+        assert!(!s.contains("timeout"));
     }
 
     #[test]

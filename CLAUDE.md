@@ -2238,6 +2238,57 @@ what makes the interesting logic unit-testable without a cluster.
   and off-node-excluded invariants verified). **Deferred:** the realm lens (above);
   per-container log selection in the diagnosis; a free-text question (the
   keyboard-ownership minefield).
+- **Oracle streaming (token-by-token replies)** (2026-06-23, v0.59.0, user "let's get
+  streaming replies" — the last "bigger bet" from the ideation backlog; design-workflow
+  vetted — 3 lenses → 2 judges → synthesis): a consult now POSTs `stream:true` (SSE) and
+  the GUI renders the reply as it generates instead of a 60–90s block-then-dump. **Pure
+  core SSE decode** (`state/oracle.rs`, always-compiled, the one piece with real parsing
+  logic): `SseDecoder` (a `buf` holds the trailing partial line across hyper frames — the
+  subtle correctness point) `.push(chunk) -> SseEvents { deltas, done }` extracting
+  `choices[0].delta.content`, `[DONE]`-terminated, ignoring keep-alive `:` comments;
+  `chunk_delta` never panics on malformed/partial JSON. 8 unit tests (incl. a JSON split
+  across THREE frames + malformed non-fatal). **Impure client** (`k8s/oracle_client.rs`,
+  feature `oracle`): `consult_stream(cfg, messages, on_token, is_cancelled)` reads
+  `BodyExt::frame()` incrementally, feeds the decoder, calls `on_token` per delta, returns
+  the full text; a **non-SSE Content-Type fallback** parses a single completion (an
+  endpoint that ignores `stream:true` degrades to the old behavior, no second GUI path);
+  **idle timeout** — the FIRST token gets the full per-profile timeout (cold-model
+  startup), then `STREAM_IDLE_SECS`=30 between frames (a long-but-steady generation isn't
+  cut); manual `MAX_RESP_BYTES` cap across frames; every failure maps to an existing
+  `LlmError`. `consult()` stays (chat-test + the fallback) with `stream:false`. **Net slot**
+  (`net.rs`): a `StreamBuf{text,status: Streaming|Done|Err}` per hash in `oracle_stream`
+  (parallel to the durable `oracle_out` final cache); the drain pre-inserts Streaming,
+  spawns `consult_stream` with `on_token` appending to the buf + `is_cancelled = gen !=
+  req_gen`, and on the gen-gated terminal edge writes the status + the final reply (KEEPING
+  the partial on Err); `oracle_stream` is cleared at all **3** `oracle_gen`-bump teardown
+  sites (endpoint change / cancel / context switch) so an old-world partial can't paint
+  into the new world. **GUI** (`gui/oracle.rs`): the pending-poll reads the live buf each
+  frame (Streaming → show the growing `strip_machine_blocks(partial)` + the pure
+  `stream_status_line`; Done → `finalize_reply` ONCE — the heavy parse/validate/merge
+  pipeline runs only on the terminal edge, never per 60fps frame, so a half-streamed JSON
+  block never becomes a premature Stage button; Err-with-partial → keep the text + a
+  `stream_error_note`, Cancel → drop it). **Byte-identity (load-bearing):** `chat_request`
+  gained a `stream: bool`; `consent_preview`'s literal, `bundle_hash`, and `freeze.wire_bytes`
+  all reflect `stream:true` for a consult while the chat-test stays false — the operator
+  reviews exactly what is sent (the request body, not how the response streams). The frozen
+  consent + one-shot remote egress audit fire ONCE at stream start over the `stream:true`
+  payload; redaction stays unconditional + inbound-untouched (a chunk is `delta.content`
+  model output, no token — the token's only path is the Authorization header). Regression
+  tests: `consent_preview_faithfully` asserts `stream: true`; `chat_request_stream_flag`
+  pins the serialized flag. **Adversarial review (4 confirmed, all fixed):** (HIGH) a
+  per-frame `from_utf8_lossy` corrupted a multi-byte char (em-dash / CJK / emoji) split
+  on a frame boundary into U+FFFD — now the loop buffers raw BYTES and decodes only the
+  valid UTF-8 prefix via the pure, unit-tested `oracle::take_utf8_prefix` (the trailing
+  partial char waits for the next frame; pinned by an em-dash-split test); (MED) the
+  CONSULT NEXT links + INVESTIGATE FURTHER chips (top-level blocks outside the render
+  chain) painted + stayed clickable over a half-streamed re-consult — now gated on
+  `pending.is_none()` so the prior reply's actions vanish the instant a (re-)consult
+  starts and return only after `finalize_reply`; (MED) the outer total `timeout` was cut
+  — removed so a long-but-steady stream isn't killed (the idle-between-frames bound is
+  the only time bound, matching the doc); (MED) the non-SSE fallback + error-body reads
+  had no timeout — both wrapped in `cfg.timeout()`. 294 core (+3) + 53 GUI tests; clippy
+  clean with + without the feature. **Deferred:** a per-pod multi-container picker; a
+  configurable stream idle bound; a manual prompt field (the keyboard-ownership minefield).
 
 ## The pair (hot/warm)
 

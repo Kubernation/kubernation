@@ -292,6 +292,10 @@ pub struct Net {
     oracle_config: Mutex<Option<LlmConfig>>,
     oracle_req: Mutex<Option<OracleReq>>,
     oracle_out: Mutex<HashMap<u64, Arc<OracleReply>>>,
+    /// Live streaming buffers per consult hash (parallel to `oracle_out`, which holds
+    /// the FINAL reply for an instant re-open). The spawned task appends deltas; the
+    /// GUI reads per frame. Cleared at every `oracle_gen`-bump teardown site.
+    oracle_stream: Mutex<HashMap<u64, Arc<Mutex<StreamBuf>>>>,
     oracle_gen: AtomicU64,
     /// Whether the operator has explicitly armed REMOTE (off-laptop) egress this
     /// session. A non-local endpoint is publishing, so it's off by default; the
@@ -331,6 +335,20 @@ pub struct OracleReq {
 #[derive(Clone)]
 pub enum OracleReply {
     Ok(String),
+    Err(String),
+}
+
+/// The live, growing state of a STREAMING consult — the net thread appends each
+/// token delta to `text` and sets the terminal `status`; the GUI reads it per frame.
+pub struct StreamBuf {
+    pub text: String,
+    pub status: StreamStatus,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum StreamStatus {
+    Streaming,
+    Done,
     Err(String),
 }
 
@@ -500,6 +518,7 @@ impl Net {
             oracle_config: Mutex::new(None),
             oracle_req: Mutex::new(None),
             oracle_out: Mutex::new(HashMap::new()),
+            oracle_stream: Mutex::new(HashMap::new()),
             oracle_gen: AtomicU64::new(0),
             oracle_egress_armed: AtomicBool::new(false),
             models_req: Mutex::new(None),
@@ -590,6 +609,7 @@ impl Net {
         if changed {
             self.oracle_egress_armed.store(false, Ordering::Relaxed);
             self.oracle_out.lock().unwrap().clear();
+            self.oracle_stream.lock().unwrap().clear();
             self.oracle_gen.fetch_add(1, Ordering::Relaxed);
             *self.models_out.lock().unwrap() = None;
             self.models_gen.fetch_add(1, Ordering::Relaxed);
@@ -680,6 +700,12 @@ impl Net {
         self.oracle_out.lock().unwrap().get(&hash).cloned()
     }
 
+    /// The live streaming buffer for a consult `hash` (a refcount-bump clone the GUI
+    /// locks + reads each frame). `None` once the stream is torn down / never started.
+    pub fn oracle_stream(&self, hash: u64) -> Option<Arc<Mutex<StreamBuf>>> {
+        self.oracle_stream.lock().unwrap().get(&hash).cloned()
+    }
+
     /// Cancel an in-flight consult `hash`: bump the gen guard so a not-yet-stored
     /// result is discarded when it lands, AND drop any already-cached entry for that
     /// hash so a re-consult doesn't silently serve the cancelled reply. Only the one
@@ -690,6 +716,8 @@ impl Net {
     pub fn cancel_oracle(&self, hash: u64) {
         self.oracle_gen.fetch_add(1, Ordering::Relaxed);
         self.oracle_out.lock().unwrap().remove(&hash);
+        // Drop the live stream too so a cancelled partial stops painting.
+        self.oracle_stream.lock().unwrap().clear();
     }
 
     /// Arm remote (off-laptop) Oracle egress for this session — a deliberate,
@@ -1048,6 +1076,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             // (The Oracle CONFIG is cluster-independent — keep it.)
                             *net.oracle_req.lock().unwrap() = None;
                             net.oracle_out.lock().unwrap().clear();
+                            net.oracle_stream.lock().unwrap().clear();
                             net.oracle_gen.fetch_add(1, Ordering::Relaxed);
                             // Model-discovery + chat-test are endpoint-scoped, not
                             // cluster-scoped, but keep them honest after a switch.
@@ -1215,36 +1244,86 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 let oreq = net.oracle_req.lock().unwrap().take();
                 if let Some(OracleReq { hash, messages }) = oreq
                     && !net.oracle_out.lock().unwrap().contains_key(&hash)
+                    && !net.oracle_stream.lock().unwrap().contains_key(&hash)
                 {
                     let cfg = net.oracle_config();
                     let armed = net.oracle_egress_armed.load(Ordering::Relaxed);
                     let net2 = net.clone();
                     let req_gen = net.oracle_gen.load(Ordering::Relaxed);
-                    tokio::spawn(async move {
-                        let reply = match cfg {
-                            None => OracleReply::Err(
-                                "the Oracle isn't configured (set --llm-url / KUBERNATION_LLM_TOKEN)"
-                                    .into(),
-                            ),
-                            // Remote egress (publishing off the laptop) requires an
-                            // explicit per-session arm — defense-in-depth behind the
-                            // GUI gate, so a stray request can't leak the bundle.
-                            Some(c) if c.endpoint == oracle_client::Endpoint::Remote && !armed => {
-                                OracleReply::Err(
-                                    "remote egress is not armed — arm it in the Oracle window first"
-                                        .into(),
-                                )
+                    // Immediate-error cases never touch the network → cache directly,
+                    // no stream (the GUI's oracle_reply fallback shows them).
+                    let immediate_err = match &cfg {
+                        None => Some(
+                            "the Oracle isn't configured (set --llm-url / KUBERNATION_LLM_TOKEN)"
+                                .to_string(),
+                        ),
+                        // Remote egress (publishing off the laptop) requires an explicit
+                        // per-session arm — defense-in-depth behind the GUI gate.
+                        Some(c) if c.endpoint == oracle_client::Endpoint::Remote && !armed => Some(
+                            "remote egress is not armed — arm it in the Oracle window first"
+                                .to_string(),
+                        ),
+                        Some(_) => None,
+                    };
+                    if let Some(msg) = immediate_err {
+                        net.oracle_out
+                            .lock()
+                            .unwrap()
+                            .insert(hash, Arc::new(OracleReply::Err(msg)));
+                    } else if let Some(c) = cfg {
+                        // Pre-insert the live buffer so the GUI sees "Streaming" with no
+                        // one-frame gap; the spawned task appends each token delta.
+                        let buf = Arc::new(Mutex::new(StreamBuf {
+                            text: String::new(),
+                            status: StreamStatus::Streaming,
+                        }));
+                        net.oracle_stream.lock().unwrap().insert(hash, buf.clone());
+                        let net_cancel = net2.clone();
+                        tokio::spawn(async move {
+                            let on_token = {
+                                let b = buf.clone();
+                                move |d: &str| {
+                                    b.lock().unwrap().text.push_str(d);
+                                }
+                            };
+                            // Cancel / context-switch / endpoint-change all bump
+                            // oracle_gen → the stream read aborts.
+                            let is_cancelled =
+                                move || net_cancel.oracle_gen.load(Ordering::Relaxed) != req_gen;
+                            let res =
+                                oracle_client::consult_stream(&c, messages, on_token, is_cancelled)
+                                    .await;
+                            // Terminal write, gen-gated: set the stream status AND cache
+                            // the final reply (so a re-open is instant). On Err, KEEP the
+                            // partial text already in buf.
+                            if net2.oracle_gen.load(Ordering::Relaxed) == req_gen {
+                                match res {
+                                    Ok(text) => {
+                                        {
+                                            let mut b = buf.lock().unwrap();
+                                            b.text = text.clone();
+                                            b.status = StreamStatus::Done;
+                                        }
+                                        net2.oracle_out
+                                            .lock()
+                                            .unwrap()
+                                            .insert(hash, Arc::new(OracleReply::Ok(text)));
+                                    }
+                                    Err(e) => {
+                                        let msg = e.to_string();
+                                        buf.lock().unwrap().status = StreamStatus::Err(msg.clone());
+                                        net2.oracle_out
+                                            .lock()
+                                            .unwrap()
+                                            .insert(hash, Arc::new(OracleReply::Err(msg)));
+                                    }
+                                }
+                            } else {
+                                // The late stream lands nowhere — drop the orphan buffer.
+                                net2.oracle_stream.lock().unwrap().remove(&hash);
                             }
-                            Some(c) => match oracle_client::consult(&c, messages).await {
-                                Ok(text) => OracleReply::Ok(text),
-                                Err(e) => OracleReply::Err(e.to_string()),
-                            },
-                        };
-                        // Drop a late reply if the cluster/endpoint switched meanwhile.
-                        if net2.oracle_gen.load(Ordering::Relaxed) == req_gen {
-                            net2.oracle_out.lock().unwrap().insert(hash, Arc::new(reply));
-                        }
-                    });
+                        });
+                    }
                 }
 
                 // Oracle model discovery: drain the one-shot request and SPAWN the
@@ -1294,8 +1373,10 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         let out: Result<String, String> = if remote
                             && (!armed || active_url.as_deref() != Some(cfg.base_url.as_str()))
                         {
-                            Err("arm this endpoint (Use this endpoint, then Arm) to chat-test it"
-                                .into())
+                            Err(
+                                "arm this endpoint (Use this endpoint, then Arm) to chat-test it"
+                                    .into(),
+                            )
                         } else {
                             match oracle_client::consult(&cfg, messages).await {
                                 Ok(reply) => Ok(reply),
