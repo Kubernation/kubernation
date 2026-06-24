@@ -59,3 +59,23 @@ jobs:
       # gate); this just proves the headless core example links + builds.
       - name: Build smoke example (headless core)
         run: cargo build -p kubernation-core --example smoke
+
+  # The committed THIRD-PARTY-NOTICES.md must stay in sync with Cargo.lock — a
+  # 1.0 legal posture can't silently drift (a new transitive crate with a new
+  # license). Regenerate + diff; fail on any change.
+  license-notices:
+    name: third-party license notices
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-about
+        run: cargo install --locked cargo-about
+      - name: Regenerate + diff THIRD-PARTY-NOTICES.md
+        run: |
+          cargo about generate about.hbs -o /tmp/notices.md
+          if ! diff -u crates/kubernation/THIRD-PARTY-NOTICES.md /tmp/notices.md; then
+            echo "::error::THIRD-PARTY-NOTICES.md is stale — run: cargo about generate about.hbs -o crates/kubernation/THIRD-PARTY-NOTICES.md"
+            exit 1
+          fi

@@ -55,21 +55,45 @@ built around three ideas:
 
 ---
 
-## Quick start
+## Install
 
-**Requirements:** Rust (stable), Docker, [`kind`](https://kind.sigs.k8s.io/), and
-`kubectl`.
-
-Spin up a local 4-node cluster with sample workloads and launch the app:
+**Pre-built binaries** are attached to each [GitHub release](../../releases) — a
+macOS universal binary (Apple Silicon + Intel) and a Linux x86_64 binary. Download,
+verify against `SHA256SUMS`, and run it against your current kube-context:
 
 ```sh
-make dev
+tar xzf kubernation-vX.Y.Z-macos-universal.tar.gz
+cd kubernation-vX.Y.Z-macos-universal
+./kubernation                 # uses your current kubeconfig context
 ```
 
-Or point it at any cluster your kubeconfig can already reach:
+> **macOS:** the binary is not yet code-signed/notarized, so Gatekeeper blocks it on
+> first launch — clear the quarantine flag once: `xattr -d com.apple.quarantine
+> ./kubernation` (or right-click ▸ Open).
+
+**From source** (Rust stable; on Linux you also need the X11/GL/ALSA dev libraries
+`libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev`):
 
 ```sh
 cargo run --release -- --context <kubeconfig-context>
+```
+
+It needs a display — it's a windowed desktop app (not a TUI), so it runs on your
+laptop, not over SSH.
+
+## Quick start
+
+Point it at any cluster your kubeconfig can already reach:
+
+```sh
+kubernation --context <kubeconfig-context>   # omit --context to use the current one
+```
+
+Or spin up a local 4-node `kind` cluster with sample workloads (needs Docker +
+[`kind`](https://kind.sigs.k8s.io/) + `kubectl`) and launch against it:
+
+```sh
+make dev
 ```
 
 Other useful targets: `make smoke` (a headless connect-and-summarize check, no
@@ -428,6 +452,39 @@ kubernation --context prod \
 Each `--project` resolves the CRD at connect and watches its instances live; they
 appear as `✦` structures on their namespace's island. A CRD that's absent on a
 cluster is skipped quietly (so a hot/warm pair may project asymmetrically).
+
+### RBAC requirements
+
+KuberNation is **read-by-default**. To explore a cluster it needs `get` / `list` /
+`watch` on the watched kinds — Nodes, Pods, Deployments, ReplicaSets, StatefulSets,
+DaemonSets, Jobs, CronJobs, PersistentVolumeClaims, Services, Ingresses, Events, and
+NetworkPolicies — plus `create` on **SelfSubjectAccessReview** (the read-only
+`kubectl auth can-i` probe behind the Charter and the write-gating). A standard
+read-only `ClusterRole` (or the built-in `view`) covers it. Optional: `get` on
+`metrics.k8s.io` (live gauges; otherwise it derives scheduling pressure from
+requests) and `get services/proxy` (only if you use `--opencost`).
+
+The deliberate, gated **write** actions each need their own verb — if you lack it,
+the control shows as *locked* (checked via `SelfSubjectAccessReview` before any
+write): `delete pods` (evict, Game Day), `patch deployments/statefulsets/daemonsets`
+and `patch nodes` (the planning turn — scale / restart / image / rollback / cordon),
+`create pods/portforward` (port-forward), and `create networkpolicies` (a Game Day
+network partition). See **Help ▸ Charter** in-app for exactly what *you* can do on
+the current cluster.
+
+### Troubleshooting
+
+- **It won't connect / the world is fog.** It uses your kubeconfig exactly as
+  `kubectl` does — confirm `kubectl --context <ctx> get nodes` works. A banner under
+  the menu bar reports "connecting…" or "reconnecting to *ctx* — *reason*" when the
+  API isn't answering.
+- **Diagnostics / a crash.** Everything is logged to
+  `~/.local/state/kubernation/kubernation.log` (set `RUST_LOG=debug` for more). If the
+  background world loop ever crashes, a red banner says so (and the cause is in that
+  log) — restart the app.
+- **No cpu/mem gauges.** Install
+  [metrics-server](https://github.com/kubernetes-sigs/metrics-server); without it the
+  gauges show *scheduling pressure* (pod requests ÷ allocatable) instead of live usage.
 
 ---
 
