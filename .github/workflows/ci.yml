@@ -79,9 +79,13 @@ jobs:
           RUSTFLAGS: ""
         run: cargo install --locked cargo-about --features cli
       - name: Regenerate + diff THIRD-PARTY-NOTICES.md
+        # -B ignores blank-line-only differences: cargo-about renders one license's
+        # body with a cosmetically different blank line across host OSes (same
+        # version, same crate set). Any real change — a new/removed crate or
+        # altered license wording — is a non-blank diff and still fails the guard.
         run: |
           cargo about generate about.hbs -o /tmp/notices.md
-          if ! diff -u crates/kubernation/THIRD-PARTY-NOTICES.md /tmp/notices.md; then
+          if ! diff -uB crates/kubernation/THIRD-PARTY-NOTICES.md /tmp/notices.md; then
             echo "::error::THIRD-PARTY-NOTICES.md is stale — run: cargo about generate about.hbs -o crates/kubernation/THIRD-PARTY-NOTICES.md"
             exit 1
           fi
