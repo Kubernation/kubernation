@@ -13,7 +13,7 @@ use kubernation_core::state::world::{CoastKind, Region};
 use macroquad::prelude::*;
 
 use crate::draw::{Overlay, SceneWorld};
-use crate::net::{LogTail, Snapshot};
+use crate::net::{ConnState, LogTail, Snapshot};
 use crate::text::{
     mono_text, mono_text_size, name_text, name_text_size, text, text_bold, text_size,
 };
@@ -372,12 +372,17 @@ pub fn draw_logs(
     previous: bool,
     timestamps: bool,
     window: kubernation_core::k8s::logs::LogWindow,
+    // The pod's containers (for the in-overlay picker; a tab row shows only when
+    // there's more than one) and the active container name. Returns the clicked
+    // container, if any, so the caller can re-issue the tail.
+    containers: &[String],
+    active: Option<&str>,
     // Scrollback: when `follow`, pin to the tail; else `scroll` is the top
     // visible line. Clamped here against the fetched/filtered length and
     // written back so the caller's state stays in range.
     scroll: &mut usize,
     follow: &mut bool,
-) {
+) -> Option<String> {
     let w = (screen_width() * 0.72).min(940.0);
     let h = (screen_height() - CHROME_H - 40.0).max(200.0);
     let x = (screen_width() - w) / 2.0;
@@ -413,7 +418,44 @@ pub fn draw_logs(
     );
     draw_line(x, y + 48.0, x + w, y + 48.0, 1.0, darker(PARCHMENT, 0.5));
 
-    let body_top = y + 64.0;
+    // Container picker: a tab row, shown only for a multi-container pod. Drawn
+    // before the early returns so a tab click is honoured even while waiting/erroring.
+    let mut clicked: Option<String> = None;
+    let mut picker_h = 0.0;
+    if containers.len() > 1 {
+        picker_h = 24.0;
+        let ty = y + 52.0;
+        let (mx, my) = mouse_position();
+        let pressed = is_mouse_button_pressed(MouseButton::Left);
+        let mut tx = x + 14.0;
+        for name in containers {
+            let label = ascii(name);
+            let tw = text_size(&label, 12.0).width + 16.0;
+            let r = Rect::new(tx, ty, tw, 18.0);
+            let hover = r.contains(vec2(mx, my));
+            let is_active = active == Some(name.as_str());
+            let bg = if is_active {
+                PARCHMENT
+            } else if hover {
+                Color::new(0.18, 0.20, 0.24, 1.0)
+            } else {
+                Color::new(0.10, 0.12, 0.14, 1.0)
+            };
+            draw_rectangle(r.x, r.y, r.w, r.h, bg);
+            let fg = if is_active {
+                Color::new(0.06, 0.07, 0.09, 1.0)
+            } else {
+                PARCHMENT
+            };
+            text(&label, tx + 8.0, ty + 13.0, 12.0, fg);
+            if pressed && hover {
+                clicked = Some(name.clone());
+            }
+            tx += tw + 6.0;
+        }
+    }
+
+    let body_top = y + 64.0 + picker_h;
     let line_h = 15.0;
     // Inner width available to a body line (left + right margin off the panel).
     let body_w = w - 28.0;
@@ -425,11 +467,11 @@ pub fn draw_logs(
             14.0,
             CRIT,
         );
-        return;
+        return clicked;
     }
     if tail.text.is_empty() {
         text("(waiting for log lines…)", x + 14.0, body_top, 14.0, DIM);
-        return;
+        return clicked;
     }
 
     // Apply the filter expression (space-separated AND; `!term` excludes).
@@ -473,7 +515,7 @@ pub fn draw_logs(
             14.0,
             DIM,
         );
-        return;
+        return clicked;
     }
 
     // Window: `follow` pins to the tail (newest), else `scroll` is the top
@@ -514,6 +556,7 @@ pub fn draw_logs(
     if !pos.is_empty() {
         text(ascii(&pos), x + w - 170.0, y + 22.0, 12.0, DIM);
     }
+    clicked
 }
 
 pub(crate) fn truncate_str(s: &str, max: usize) -> String {
@@ -886,6 +929,38 @@ pub fn draw_blast_banner(affected: Option<usize>, _map_w: f32) {
     text(&msg, bx + 10.0, by + 15.0, fs, col);
 }
 
+/// PURE draw-decision: the connection banner text + whether it's an error (red),
+/// or `None` when the API is live (no banner). Unit-tested.
+pub fn conn_banner(conn: &ConnState, context: &str) -> Option<(String, bool)> {
+    match conn {
+        ConnState::Live => None,
+        ConnState::Connecting => Some((format!("connecting to {context}…"), false)),
+        ConnState::Lost(why) => Some((format!("reconnecting to {context} — {why}"), true)),
+    }
+}
+
+/// Draw the connection banner (a strip just under the chrome) when not live.
+pub fn draw_conn_banner(conn: &ConnState, context: &str) {
+    let Some((msg, is_err)) = conn_banner(conn, context) else {
+        return;
+    };
+    let msg = ascii(&msg);
+    let fs = 13.0;
+    let h = 22.0;
+    let y = CHROME_H + 2.0;
+    let w = map_width();
+    // A semi-opaque dark strip so it reads over the map; meaning colour on top.
+    let bg = if is_err {
+        Color::new(0.22, 0.05, 0.05, 0.92)
+    } else {
+        Color::new(0.10, 0.09, 0.05, 0.90)
+    };
+    draw_rectangle(0.0, y, w, h, bg);
+    draw_line(0.0, y + h, w, y + h, 1.0, darker(bg, 0.5));
+    let col = if is_err { CRIT } else { WARN };
+    text(&msg, 12.0, y + 15.0, fs, col);
+}
+
 /// Map a value series to polyline points inside `rect` — x runs oldest→newest
 /// left to right, y is bottom (0) to top (`max`), each value clamped to
 /// `[0, max]`. Empty series or a non-positive `max` yields no points. Pure +
@@ -961,6 +1036,22 @@ mod tests {
     use kubernation_core::state::fixtures as fx;
     use kubernation_core::state::model::Models;
     use std::sync::Arc;
+
+    #[test]
+    fn conn_banner_states() {
+        assert_eq!(conn_banner(&ConnState::Live, "kind"), None);
+        let (t, err) = conn_banner(&ConnState::Connecting, "kind").unwrap();
+        assert!(
+            t.contains("connecting") && t.contains("kind") && !err,
+            "{t}"
+        );
+        let (t, err) = conn_banner(
+            &ConnState::Lost("can't reach the API server".into()),
+            "prod",
+        )
+        .unwrap();
+        assert!(t.contains("reconnecting") && t.contains("prod") && t.contains("reach") && err);
+    }
 
     /// The tooltip / SELECTION text is pure draw-decision logic — testable
     /// without a GL context (it formats strings + picks colors, no macroquad

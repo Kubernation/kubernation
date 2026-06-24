@@ -8,6 +8,28 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Pre-1.0 readiness — four build items.**
+  - **Release pipeline + CI.** GitHub Actions: `ci.yml` runs fmt + clippy + test on
+    macOS and Linux on every push/PR; `release.yml` builds pre-built binaries on a
+    `v*` tag — a macOS universal binary (Apple Silicon + Intel, `lipo`'d) and a Linux
+    x86_64 binary — packages them with the licenses + third-party notices, generates
+    `SHA256SUMS`, and publishes a GitHub Release. (The macOS binary is not yet
+    code-signed/notarized — the release notes carry the Gatekeeper workaround; signing
+    is a follow-up that needs an Apple Developer cert.)
+  - **Workload table** (`O`, or **View ▸ Workloads**). A realm-wide, sortable +
+    filterable list of every workload — kind · namespace/name · ready · status · age,
+    with a health glyph — the k9s-style triage view ("show me everything
+    CrashLoopBackOff") the map's drill-downs didn't cover. Sort by health / name /
+    ready / age; type to filter; click a row to open its city window. Read-only.
+  - **Connection banner.** A lightweight periodic API probe surfaces the hot cluster's
+    liveness; when the API stops answering (VPN/link drop), a banner under the menu bar
+    says "reconnecting to <context> — <reason>" instead of leaving you with silent fog.
+    Self-clears the moment the connection is back.
+  - **Multi-container log picker.** The log overlay shows a container tab row for
+    multi-container pods (sidecars, init containers); click a tab to tail that
+    container instead of silently getting the first one.
+
 ### Changed
 - **Brand name is "KuberNation" (camelCase) on every user-facing surface** — the OS
   window titlebar, the menu bar, the About window, the in-app help/almanac text, the

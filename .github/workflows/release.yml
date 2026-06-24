@@ -1,0 +1,116 @@
+name: Release
+
+# Build pre-built binaries and publish a GitHub Release on a version tag.
+#   git tag v0.65.0 && git push origin v0.65.0
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # create the release + upload assets
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN: kubernation
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macos-universal # aarch64 + x86_64 lipo'd together
+          - os: ubuntu-latest
+            name: linux-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux GUI build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (Linux x86_64)
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --release --locked
+          mkdir -p out && cp "target/release/${BIN}" "out/${BIN}"
+
+      - name: Build (macOS universal)
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          mkdir -p out
+          lipo -create -output "out/${BIN}" \
+            "target/aarch64-apple-darwin/release/${BIN}" \
+            "target/x86_64-apple-darwin/release/${BIN}"
+          lipo -info "out/${BIN}"
+
+      # Stage the binary alongside the licenses + third-party notices so the
+      # tarball is self-contained and legally complete.
+      - name: Package
+        run: |
+          STAGE="${BIN}-${{ github.ref_name }}-${{ matrix.name }}"
+          mkdir -p "$STAGE"
+          cp "out/${BIN}" "$STAGE/"
+          cp LICENSE-MIT LICENSE-APACHE README.md "$STAGE/"
+          cp crates/kubernation/THIRD-PARTY-NOTICES.md "$STAGE/" || true
+          chmod +x "$STAGE/${BIN}"
+          tar -czf "${STAGE}.tar.gz" "$STAGE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ env.BIN }}-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd artifacts
+          sha256sum ./*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.tar.gz
+            artifacts/SHA256SUMS
+          # Full control of the body (don't append the API's auto "What's Changed").
+          # The macOS binary is NOT yet code-signed/notarized (that needs an Apple
+          # Developer cert as a repo secret — see docs). Note the Gatekeeper step.
+          body: |
+            ## KuberNation ${{ github.ref_name }}
+
+            Pre-built binaries (verify with `SHA256SUMS`):
+            - `kubernation-${{ github.ref_name }}-macos-universal.tar.gz` — Apple Silicon + Intel
+            - `kubernation-${{ github.ref_name }}-linux-x86_64.tar.gz`
+
+            **macOS:** the binary is unsigned for now, so on first launch Gatekeeper
+            will block it — remove the quarantine flag once:
+            `xattr -d com.apple.quarantine ./kubernation` (or right-click ▸ Open).
+
+            Run against your current kube-context: `./kubernation`. See the README
+            for flags and RBAC requirements.

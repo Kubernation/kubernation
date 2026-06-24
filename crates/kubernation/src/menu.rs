@@ -33,6 +33,7 @@ pub enum MenuAction {
     Almanac,
     About,
     Annals,
+    Workloads,
 }
 
 /// Live state the bar reflects: the active overlay (radio mark), the staged
@@ -154,6 +155,7 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                     .check(ctx.overlay == Overlay::Cost),
                 Item::sep(),
                 Item::act("Annals (what changed) — H", MenuAction::Annals),
+                Item::act("Workloads (table) — O", MenuAction::Workloads),
             ],
         },
         Menu {

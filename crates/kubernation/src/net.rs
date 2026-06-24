@@ -44,6 +44,11 @@ pub struct LogReq {
     pub cluster: ClusterId,
     pub namespace: String,
     pub pod: String,
+    /// Which container to tail. `None` lets the net thread resolve the first
+    /// container (the default); set explicitly by the in-overlay container picker
+    /// on a multi-container pod. Part of the `PartialEq` re-fetch key, so switching
+    /// containers re-fetches.
+    pub container: Option<String>,
     /// Tail the previously-terminated container (`kubectl logs --previous`).
     pub previous: bool,
     /// Prefix each line with the server timestamp.
@@ -224,9 +229,29 @@ pub struct Snapshot {
     pub attention: Arc<Vec<Concern>>,
 }
 
+/// Liveness of the hot cluster's API connection, driven by a lightweight periodic
+/// `/version` probe — distinct from reflector readiness (the store can be stale-but-
+/// served while the API is unreachable). Surfaced as a banner so a VPN/link drop
+/// isn't silent fog.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ConnState {
+    /// Not yet reached the API (initial connect, or a context switch in progress).
+    #[default]
+    Connecting,
+    /// The API answered the last probe.
+    Live,
+    /// The last probe failed — carries a short reason.
+    Lost(String),
+}
+
 pub struct Net {
     pub snapshot: Mutex<Option<Arc<Snapshot>>>,
     pub status: Mutex<String>,
+    /// Hot-cluster API liveness (the connection banner).
+    conn: Mutex<ConnState>,
+    /// Bumped on context switch so a slow probe from the OLD cluster can't write its
+    /// liveness into the NEW cluster's banner (the established gen-guard pattern).
+    conn_gen: AtomicU64,
     /// A pending hot-context switch requested by the UI.
     switch: Mutex<Option<String>>,
     /// The pod whose logs to tail (None = log panel closed).
@@ -496,6 +521,8 @@ impl Net {
         Arc::new(Self {
             snapshot: Mutex::new(None),
             status: Mutex::new("starting…".into()),
+            conn: Mutex::new(ConnState::Connecting),
+            conn_gen: AtomicU64::new(0),
             switch: Mutex::new(None),
             log_req: Mutex::new(None),
             log_tail: Mutex::new(LogTail::default()),
@@ -864,6 +891,14 @@ impl Net {
     }
 
     /// Tail this pod's logs (re-fetched on a poll until cleared).
+    /// Current hot-cluster API liveness (for the connection banner).
+    pub fn conn(&self) -> ConnState {
+        self.conn.lock().unwrap().clone()
+    }
+    fn set_conn(&self, s: ConnState) {
+        *self.conn.lock().unwrap() = s;
+    }
+
     pub fn request_logs(&self, req: LogReq) {
         *self.log_req.lock().unwrap() = Some(req);
         *self.log_tail.lock().unwrap() = LogTail::default();
@@ -939,6 +974,62 @@ fn effective_cost_rates(base: &CostRates, world: &ObservedWorld) -> CostRates {
     rates
 }
 
+/// A lightweight periodic `/version` probe of the hot API server, driving
+/// [`Net::conn`] (the connection banner). Probes immediately, then every 5s; a 4s
+/// timeout bounds a dead link. Two guards: (a) it captures `conn_gen` at spawn and
+/// only writes the banner while it still matches — so a slow probe from a
+/// switched-away cluster can't clobber the new one's state (its `set_conn` runs
+/// *after* the await, past where `abort()` can interrupt); (b) it requires two
+/// consecutive failures before declaring `Lost`, so a single network stutter
+/// doesn't flap the red banner. Abort the returned handle (on switch) to stop it.
+fn spawn_liveness(client: kubernation_core::Client, net: Arc<Net>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let my_gen = net.conn_gen.load(Ordering::Relaxed);
+        let mut fails: u32 = 0;
+        loop {
+            let next = match tokio::time::timeout(
+                Duration::from_secs(4),
+                client.apiserver_version(),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {
+                    fails = 0;
+                    Some(ConnState::Live)
+                }
+                Ok(Err(e)) => {
+                    fails += 1;
+                    (fails >= 2).then(|| ConnState::Lost(conn_reason(&e.to_string())))
+                }
+                Err(_) => {
+                    fails += 1;
+                    (fails >= 2).then(|| ConnState::Lost("timed out".into()))
+                }
+            };
+            // Only write if we're still the current cluster's probe.
+            if let Some(state) = next
+                && net.conn_gen.load(Ordering::Relaxed) == my_gen
+            {
+                net.set_conn(state);
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    })
+}
+
+/// Collapse a kube/transport error to a short, banner-legible reason.
+fn conn_reason(e: &str) -> String {
+    let first = e.split('\n').next().unwrap_or(e).trim();
+    let lo = first.to_lowercase();
+    if lo.contains("connect") || lo.contains("dns") || lo.contains("tcp") {
+        "can't reach the API server".into()
+    } else if lo.contains("401") || lo.contains("unauthorized") || lo.contains("certificate") {
+        "credentials rejected".into()
+    } else {
+        first.chars().take(72).collect()
+    }
+}
+
 pub fn spawn(args: NetArgs, net: Arc<Net>) {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -999,6 +1090,10 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
             // it for the cost report when fresh, else the request-based estimate.
             let opencost_store: OpenCostArc = Arc::new(Mutex::new(OpenCostStore::default()));
             let mut opencost_task: Option<tokio::task::JoinHandle<()>> = None;
+            // The hot-cluster liveness probe (the connection banner).
+            net.set_conn(ConnState::Connecting);
+            let mut liveness_task: Option<tokio::task::JoinHandle<()>> =
+                Some(spawn_liveness(hot_cluster.client.clone(), net.clone()));
 
             let hot_proj =
                 client::resolve_projections(&hot_cluster.client, &args.projections).await;
@@ -1082,6 +1177,15 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             ready_hot.store(false, Ordering::Relaxed);
                             hot_client = c.client.clone();
                             hot_handle = watch::spawn(&c, ClusterId::Hot, sink.clone(), &proj);
+                            // Restart the liveness probe against the new cluster.
+                            // Bump the gen FIRST so the old probe (which may be past
+                            // its await) can't write the old cluster's state.
+                            if let Some(t) = liveness_task.take() {
+                                t.abort();
+                            }
+                            net.conn_gen.fetch_add(1, Ordering::Relaxed);
+                            net.set_conn(ConnState::Connecting);
+                            liveness_task = Some(spawn_liveness(c.client.clone(), net.clone()));
                             // Restart the OpenCost poller against the new cluster.
                             if let Some(t) = opencost_task.take() {
                                 t.abort();
@@ -1187,20 +1291,28 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     // ContainerCreating, and a multi-container pod NEEDS a name
                     // (else the tail errors); a single-container pod resolves to
                     // Some immediately so this doesn't spin.
-                    let target = (r.cluster, r.namespace.clone(), r.pod.clone());
-                    if log_target.as_ref() != Some(&target) || log_container.is_none() {
-                        log_container =
-                            logs::first_container(client.clone(), &r.namespace, &r.pod).await;
-                        log_target = Some(target);
-                    }
+                    // An explicit container (the in-overlay picker on a
+                    // multi-container pod) is used directly — no resolution needed.
+                    // Otherwise resolve the first container once per pod target.
+                    let resolved = match &r.container {
+                        Some(c) => Some(c.clone()),
+                        None => {
+                            let target = (r.cluster, r.namespace.clone(), r.pod.clone());
+                            if log_target.as_ref() != Some(&target) || log_container.is_none() {
+                                log_container =
+                                    logs::first_container(client.clone(), &r.namespace, &r.pod)
+                                        .await;
+                                log_target = Some(target);
+                            }
+                            log_container.clone()
+                        }
+                    };
                     let opts = logs::LogOpts {
                         previous: r.previous,
                         timestamps: r.timestamps,
                         window: r.window,
                     };
-                    let res =
-                        logs::tail(client, &r.namespace, &r.pod, log_container.clone(), &opts)
-                            .await;
+                    let res = logs::tail(client, &r.namespace, &r.pod, resolved, &opts).await;
                     // Only store if still the requested target.
                     if net.log_req.lock().unwrap().as_ref() == Some(&r) {
                         let mut g = net.log_tail.lock().unwrap();

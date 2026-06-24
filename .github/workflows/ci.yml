@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt · clippy · test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # macroquad links X11 / GL / ALSA on Linux; needed even to build the test
+      # binary (the tests themselves are pure and open no window). macOS uses
+      # system frameworks — no install.
+      - name: Install Linux GUI build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # Mirrors `make lint`: the whole workspace (the bin pulls core with the
+      # `oracle` feature, so this covers the egress path)…
+      - name: Clippy (workspace)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # …plus the headless core on its own (no `oracle` feature — the smoke gate's
+      # build), so the no-egress path stays clippy-clean too.
+      - name: Clippy (core, no features)
+        run: cargo clippy -p kubernation-core --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      # The UI-free CI gate (the GUI's smoke needs a display, so it is a local-only
+      # gate); this just proves the headless core example links + builds.
+      - name: Build smoke example (headless core)
+        run: cargo build -p kubernation-core --example smoke

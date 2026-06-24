@@ -36,6 +36,7 @@ mod textfield;
 mod theme;
 mod timeline;
 mod window;
+mod workloads;
 
 use std::path::PathBuf;
 
@@ -239,6 +240,9 @@ struct Args {
     /// change-feed modal)
     #[arg(long)]
     annals: bool,
+    /// Open the workload table on sync (development verification of the modal)
+    #[arg(long)]
+    workloads: bool,
     /// Open the Annals and write an after-action postmortem markdown file on sync
     /// (development verification of the export path)
     #[arg(long)]
@@ -661,6 +665,8 @@ async fn main() {
     let mut browser: Option<Browser> = None;
     // The Annals (change timeline — "what changed in the realm") — a modal window.
     let mut annals: Option<timeline::Annals> = None;
+    // The realm-wide workload table (sortable/filterable triage list) — a modal.
+    let mut workloads: Option<workloads::Workloads> = None;
     // Dev: one-shot arm for the --browse verification flag.
     let mut browse_armed = false;
     // A transient toast (copy / export feedback): (message, expiry time).
@@ -864,7 +870,9 @@ async fn main() {
         // Settings text field, single-key shortcuts are text, not commands.
         let typing = (log_open && log_filter_active)
             || city_image_edit.is_some()
-            || oracle_view.as_ref().is_some_and(|v| v.field_focused());
+            || oracle_view.as_ref().is_some_and(|v| v.field_focused())
+            // The workload table's filter owns the keyboard while it's open.
+            || workloads.is_some();
         if (is_key_pressed(KeyCode::Q) && !typing) || is_quit_requested() {
             want_quit = true;
         }
@@ -879,6 +887,7 @@ async fn main() {
         let mut inspector_just_opened = false;
         let mut browser_just_opened = false;
         let mut annals_just_opened = false;
+        let mut workloads_just_opened = false;
         // Frame-local: true only on the frame the chaos window / its confirm
         // opened, so the opening click can't reach a button.
         let mut chaos_just_opened = false;
@@ -891,6 +900,7 @@ async fn main() {
             && about.is_none()
             && oracle_view.is_none()
             && annals.is_none()
+            && workloads.is_none()
             && chaos.is_none()
             && browser.is_none()
         {
@@ -911,6 +921,7 @@ async fn main() {
             && about.is_none()
             && oracle_view.is_none()
             && annals.is_none()
+            && workloads.is_none()
             && chaos.is_none()
             && browser.is_none()
             && !picker
@@ -933,6 +944,7 @@ async fn main() {
             && chaos.is_none()
             && browser.is_none()
             && inspector.is_none()
+            && workloads.is_none()
             && !plan_open
             && !picker
             && !ns_picker
@@ -943,6 +955,30 @@ async fn main() {
                 annals = Some(timeline::Annals::new());
                 annals_just_opened = true;
             }
+        }
+        // `O` opens the realm-wide workload table (sortable/filterable triage list).
+        if is_key_pressed(KeyCode::O)
+            && snap.is_some()
+            && !typing
+            && !log_open
+            && panel.is_none()
+            && almanac.is_none()
+            && advisor.is_none()
+            && charter.is_none()
+            && about.is_none()
+            && oracle_view.is_none()
+            && chaos.is_none()
+            && browser.is_none()
+            && inspector.is_none()
+            && annals.is_none()
+            && !plan_open
+            && !picker
+            && !ns_picker
+        {
+            workloads = Some(workloads::Workloads::new());
+            workloads_just_opened = true;
+            // Eat the queued 'o' so it doesn't seed the filter.
+            textfield::flush_char_queue();
         }
         // `:` opens the resource browser — discover kinds if needed. Detect the
         // produced ':' CHARACTER rather than a physical Shift+Semicolon chord, so
@@ -958,6 +994,7 @@ async fn main() {
             && about.is_none()
             && oracle_view.is_none()
             && annals.is_none()
+            && workloads.is_none()
             && chaos.is_none()
             && !plan_open
             && !picker
@@ -1004,6 +1041,7 @@ async fn main() {
             && about.is_none()
             && oracle_view.is_none()
             && annals.is_none()
+            && workloads.is_none()
             && chaos.is_none()
             && browser.is_none()
             && !plan_open
@@ -1061,6 +1099,8 @@ async fn main() {
                 oracle_view = None;
             } else if annals.is_some() {
                 annals = None;
+            } else if workloads.is_some() {
+                workloads = None;
             } else if inspector.is_some() {
                 // The inspector sits on top of its panel / the browser — close
                 // it first.
@@ -1309,6 +1349,15 @@ async fn main() {
                 o.scroll_by(wheel);
             }
         }
+        // The workload table swallows the wheel to scroll the list + reads the
+        // filter input (it owns the keyboard while open — `typing` is true).
+        if let Some(w) = workloads.as_mut() {
+            w.input();
+            let (_, wheel) = mouse_wheel();
+            if wheel.abs() > 0.0 {
+                w.scroll_by(wheel);
+            }
+        }
         // The Annals swallows the wheel to scroll the feed.
         if let Some(a) = annals.as_mut() {
             let (_, wheel) = mouse_wheel();
@@ -1353,6 +1402,7 @@ async fn main() {
             && about.is_none()
             && oracle_view.is_none()
             && annals.is_none()
+            && workloads.is_none()
             && chaos.is_none()
             && browser.is_none()
             && !panel_modal
@@ -1490,6 +1540,9 @@ async fn main() {
                 if args.annals {
                     annals = Some(timeline::Annals::new());
                 }
+                if args.workloads {
+                    workloads = Some(workloads::Workloads::new());
+                }
                 if let Some(want) = &args.oracle {
                     if args.oracle_arm {
                         net.arm_oracle_egress();
@@ -1592,6 +1645,7 @@ async fn main() {
                         cluster,
                         namespace: probe.namespace,
                         pod: probe.pod,
+                        container: None,
                         previous: log_previous,
                         timestamps: log_timestamps,
                         window: log_window,
@@ -1612,6 +1666,7 @@ async fn main() {
                 || pending_chaos.is_some()
                 || browser.is_some()
                 || annals.is_some()
+                || workloads.is_some()
                 || panel_modal
                 || plan_open
                 || open_menu.is_some()
@@ -1882,6 +1937,7 @@ async fn main() {
                 && about.is_none()
                 && oracle_view.is_none()
                 && annals.is_none()
+                && workloads.is_none()
                 && chaos.is_none()
                 && browser.is_none()
                 && inspector.is_none()
@@ -1902,6 +1958,7 @@ async fn main() {
                         cluster: c.cluster,
                         namespace: p.namespace.clone(),
                         pod: p.pod.clone(),
+                        container: None,
                         previous: log_previous,
                         timestamps: log_timestamps,
                         window: log_window,
@@ -1928,6 +1985,7 @@ async fn main() {
                 && about.is_none()
                 && oracle_view.is_none()
                 && annals.is_none()
+                && workloads.is_none()
                 && chaos.is_none()
                 && browser.is_none()
                 && inspector.is_none()
@@ -2110,6 +2168,7 @@ async fn main() {
                     && about.is_none()
                     && oracle_view.is_none()
                     && annals.is_none()
+                    && workloads.is_none()
                     && chaos.is_none()
                     && browser.is_none()
                     && !panel_modal
@@ -2193,6 +2252,7 @@ async fn main() {
                     && about.is_none()
                     && oracle_view.is_none()
                     && annals.is_none()
+                    && workloads.is_none()
                     && chaos.is_none()
                     && browser.is_none()
                     && !panel_modal
@@ -2289,6 +2349,7 @@ async fn main() {
                                     cluster: *cid,
                                     namespace: ns,
                                     pod,
+                                    container: None,
                                     previous: log_previous,
                                     timestamps: log_timestamps,
                                     window: log_window,
@@ -2350,6 +2411,7 @@ async fn main() {
                                     cluster: *nid,
                                     namespace: ns,
                                     pod,
+                                    container: None,
                                     previous: log_previous,
                                     timestamps: log_timestamps,
                                     window: log_window,
@@ -2400,16 +2462,49 @@ async fn main() {
                     net.clear_logs();
                 }
                 if log_open {
-                    draw_logs(
-                        &net.log_tail(),
+                    let tail = net.log_tail();
+                    // The pod's containers (from the watched store, no fetch) drive
+                    // the in-overlay picker; the active one is the explicit pick or
+                    // the first (the resolved default).
+                    let (containers, active) = match (&snap, &tail.target) {
+                        (Some(s), Some(t)) => {
+                            let obs = match t.cluster {
+                                ClusterId::Warm => s
+                                    .warm
+                                    .as_ref()
+                                    .map(|w| &w.observed)
+                                    .unwrap_or(&s.hot.observed),
+                                ClusterId::Hot => &s.hot.observed,
+                            };
+                            let list = obs.pod_containers(&t.namespace, &t.pod);
+                            let active = t.container.clone().or_else(|| list.first().cloned());
+                            (list, active)
+                        }
+                        _ => (Vec::new(), None),
+                    };
+                    if let Some(name) = draw_logs(
+                        &tail,
                         &log_filter,
                         log_filter_active,
                         log_previous,
                         log_timestamps,
                         log_window,
+                        &containers,
+                        active.as_deref(),
                         &mut log_scroll,
                         &mut log_follow,
-                    );
+                    ) && let Some(mut r) = net.log_request()
+                        // Compare against the RESOLVED active (which falls back to the
+                        // first container when r.container is None) so re-clicking the
+                        // implicit-first tab doesn't needlessly re-fetch.
+                        && active.as_deref() != Some(name.as_str())
+                    {
+                        // Switch the tailed container — re-issue + restart at the tail.
+                        r.container = Some(name);
+                        net.request_logs(r);
+                        log_scroll = 0;
+                        log_follow = true;
+                    }
                 }
             }
         }
@@ -2438,6 +2533,7 @@ async fn main() {
             && about.is_none()
             && oracle_view.is_none()
             && annals.is_none()
+            && workloads.is_none()
             && chaos.is_none()
             && browser.is_none()
             && !plan_open
@@ -2457,6 +2553,16 @@ async fn main() {
         let menu_click = is_mouse_button_pressed(MouseButton::Left) && menu_live;
         let (menu_action, bar_right) =
             menu::draw_menu_bar(42.0, mouse, menu_click, &mut open_menu, &mctx);
+        // Connection banner under the bar when the API isn't answering (so a VPN
+        // or link drop isn't silent fog). Self-clearing the moment it's live again.
+        {
+            let ctx_label = if current_ctx.is_empty() {
+                "the cluster"
+            } else {
+                current_ctx.as_str()
+            };
+            panels::draw_conn_banner(&net.conn(), ctx_label);
+        }
         match menu_action {
             Some(MenuAction::SwitchContext) => {
                 // No-op when there are no contexts (an empty picker); picker_idx
@@ -2541,6 +2647,10 @@ async fn main() {
             Some(MenuAction::Annals) => {
                 annals = Some(timeline::Annals::new());
                 annals_just_opened = true;
+            }
+            Some(MenuAction::Workloads) => {
+                workloads = Some(workloads::Workloads::new());
+                workloads_just_opened = true;
             }
             None => {}
         }
@@ -2740,6 +2850,22 @@ async fn main() {
                         );
                         toast = Some((msg, get_time() + 4.0));
                     }
+                }
+                _ => {}
+            }
+        }
+
+        // The realm-wide workload table — a click selects a row → its city window.
+        if workloads.is_some() {
+            let click = is_mouse_button_pressed(MouseButton::Left) && !workloads_just_opened;
+            let action = workloads
+                .as_mut()
+                .map(|w| w.draw(snap.as_deref(), mouse, click));
+            match action {
+                Some(workloads::WorkloadsAction::Close) => workloads = None,
+                Some(workloads::WorkloadsAction::Open(cid, r)) => {
+                    panel = Some(Panel::City(cid, r));
+                    workloads = None;
                 }
                 _ => {}
             }

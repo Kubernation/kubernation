@@ -130,6 +130,27 @@ impl ObservedWorld {
         g.pod_usage(namespace, name)
     }
 
+    /// The names of a pod's regular containers, read from the watched store (no
+    /// fetch). Powers the in-overlay log container picker for multi-container pods;
+    /// empty if the pod isn't in the store yet (one-container pods just return one).
+    pub fn pod_containers(&self, namespace: &str, name: &str) -> Vec<String> {
+        self.pods
+            .find(|p| {
+                p.metadata.name.as_deref() == Some(name)
+                    && p.metadata.namespace.as_deref() == Some(namespace)
+            })
+            .and_then(|p| {
+                p.spec.as_ref().map(|s| {
+                    s.containers
+                        .iter()
+                        .map(|c| c.name.clone())
+                        .filter(|n| !n.is_empty())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .unwrap_or_default()
+    }
+
     /// Is a pod with this (namespace, name) currently in the store? Used to
     /// reap a port-forward whose backing pod has disappeared (a forward targets
     /// a specific pod, so once it's gone the tunnel is dead).

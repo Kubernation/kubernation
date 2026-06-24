@@ -497,6 +497,10 @@ fn page_controls(cx: &mut Ctx) {
         "B",
         "blast radius — highlight what a selected node/city (or focused concern) affects",
     );
+    cx.key(
+        "O",
+        "the workload table — sortable/filterable list of every workload",
+    );
     cx.heading("Inspect");
     cx.key("Click land / city", "open the node or city panel");
     cx.key("Click a harbor / gate", "open the city it serves");
@@ -507,6 +511,10 @@ fn page_controls(cx: &mut Ctx) {
     cx.key(
         "in logs: / p T s",
         "filter (AND · !excl) · previous · timestamps · window",
+    );
+    cx.key(
+        "in logs: container tabs",
+        "multi-container pod — click a tab to tail that container",
     );
     cx.key(
         "Hover a pod row",

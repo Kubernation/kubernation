@@ -14,3 +14,6 @@ pub mod util;
 /// parameter and `TimelineEntry::when`.
 pub use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 pub use k8s_openapi::jiff;
+/// Re-exported so frontends (which don't depend on `kube` directly) can name the
+/// client type — e.g. the GUI's connection liveness probe.
+pub use kube::Client;

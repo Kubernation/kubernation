@@ -2504,6 +2504,51 @@ what makes the interesting logic unit-testable without a cluster.
   install). **Deferred:** a per-node OpenCost overlay (`aggregate=node`); a Prometheus/PromQL
   source on the same substrate (Hubble, kube-state-metrics); warm-cluster OpenCost; folding
   `__unmounted__` PV cost into a dedicated field rather than dropping it.
+- **Pre-1.0 readiness — four build items** (2026-06-24, v0.65.0, user "complete the
+  remaining 4 pre-1.0 items" after a v1-readiness gap analysis — design-workflow:
+  5 lenses → synthesis — found the product is *feature-saturated* but *distribution-/
+  robustness-short*; these are the four "build before 1.0" items, the rest deferred to a
+  polish/hardening round): **(1) Release pipeline + CI.** `.github/workflows/ci.yml`
+  (fmt + clippy-workspace + clippy-core-no-features + test + smoke-example build, on
+  ubuntu + macos; Linux installs the macroquad X11/GL/ALSA dev libs) and `release.yml`
+  (on a `v*` tag: macOS **universal** via `lipo` of aarch64 + x86_64, Linux x86_64,
+  tarballs with the licenses + `THIRD-PARTY-NOTICES.md`, `SHA256SUMS`, a
+  `softprops/action-gh-release` publish). The macOS binary is **unsigned** — the release
+  body carries the `xattr -d com.apple.quarantine` Gatekeeper step; notarization is a
+  follow-up needing an Apple Developer cert (a repo secret). `actionlint`-clean; can't be
+  run without a push. **(2) Workload table** (`gui/workloads.rs`, `O` / View ▸ Workloads /
+  `--workloads`): the realm-wide k9s-style triage list the map drill-downs didn't cover.
+  Pure `table_rows(workloads, severity, sort, filter)` (filter = case-insensitive
+  substring over kind/ns/name; sort by health / name / ready / age — clock-free, age sorts
+  on the raw `Time` so it's deterministic + unit-tested) over `Models.workloads` +
+  `workload_severity`; a `window.rs` modal whose filter `TextField` **owns the keyboard
+  while open** (`typing` ORs `workloads.is_some()`; the `O` open flushes the queued char);
+  clicking a row opens `Panel::City`. Hot-only; read-only. **(3) Connection banner**
+  (`net.rs` `ConnState{Connecting,Live,Lost}` + a `spawn_liveness` `apiserver_version()`
+  probe every 5s/4s-timeout; `panels::conn_banner` pure fn + `draw_conn_banner` under the
+  chrome): reflector readiness can be stale-but-served while the API is unreachable, so a
+  dedicated probe drives a banner ("reconnecting to <ctx> — <reason>") instead of silent
+  fog on a VPN drop; self-clears on recovery. `kubernation_core` now re-exports `Client`
+  so the GUI can name it without a direct `kube` dep. **(4) Multi-container log picker**:
+  `LogReq.container: Option` (used directly by the net fetch, else `first_container`); a
+  container tab row in `draw_logs` (returns the clicked container) populated from
+  `ObservedWorld::pod_containers` (watched store, no fetch) — a sidecar/init-crash pod no
+  longer silently tails the wrong container. **Adversarial review (5 confirmed: 1 HIGH, 1
+  MED, 3 LOW, all fixed):** (HIGH) the liveness probe had **no gen-guard** — its `set_conn`
+  runs after the await, past where `abort()` can interrupt, so a switched-away cluster's
+  probe could write the old liveness into the new banner for ~4s; added `Net.conn_gen`
+  (bumped on switch, checked before every write) mirroring the `oracle_gen`/`models_gen`
+  pattern; (MED) the Annals `H` gate omitted `&& workloads.is_none()` (the `!typing` gate
+  already blocked it, but added for explicit symmetric exclusion); (LOW) `release.yml` set
+  both `generate_release_notes` + a custom body (dropped the former); (LOW) the probe now
+  needs **two consecutive failures** before `Lost` (no flap on a single stutter); (LOW)
+  the container re-click guard compares the resolved *active* container, not `r.container`
+  (no redundant re-fetch on re-clicking the implicit-first tab). 318 core + 61 GUI tests;
+  gui-smoke +`workloads`. Verified live on kind (the table shows crashy floated to the top
+  in red under the health sort). **The rest of the v1 work is the polish/hardening round:**
+  panic hook + net-thread `unwrap` audit, end-to-end error UX, multi-platform CI proof,
+  large-cluster resilience, operator docs, generalizing the HTTP-adapter substrate into
+  `k8s/adapter.rs`, a colorblind-safe palette, and a license-drift CI guard.
 
 ## The pair (hot/warm)
 
