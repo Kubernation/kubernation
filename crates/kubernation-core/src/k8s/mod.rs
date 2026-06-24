@@ -1,4 +1,8 @@
 pub mod actions;
+/// Reusable in-cluster HTTP-source substrate (the API-server service proxy) — the
+/// generalized fetch + validation + body-cap behind the OpenCost adapter and any
+/// future Prometheus / kube-state-metrics / Hubble source.
+pub mod adapter;
 pub mod browse;
 pub mod client;
 pub mod logs;

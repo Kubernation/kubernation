@@ -11,19 +11,14 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use futures::AsyncReadExt;
 use kube::Client;
 use tokio::task::JoinHandle;
 
+use super::adapter;
 use crate::state::opencost::{OpenCostData, parse_allocation};
 
 /// Poll cadence (OpenCost recomputes from Prometheus; ~1 min is plenty).
 const POLL: Duration = Duration::from_secs(60);
-/// Per-request timeout — a hung OpenCost must not wedge the poller.
-const TIMEOUT: Duration = Duration::from_secs(20);
-/// Response body cap (8 MiB, matching the Oracle client) — a misconfigured or
-/// hostile in-cluster Service reached through the proxy can't OOM the process.
-const MAX_RESP_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Where OpenCost lives in-cluster + the query window. Defaults match a stock
 /// `helm install opencost` (Service `opencost` in namespace `opencost`, port 9003).
@@ -86,91 +81,15 @@ pub struct OpenCostStore {
 }
 pub type OpenCostArc = Arc<Mutex<OpenCostStore>>;
 
-/// GET an in-cluster Service path through the API-server proxy (reusable for any
-/// in-cluster HTTP tool). Returns the response body text. Needs `get
-/// services/proxy` RBAC for the namespace.
-pub async fn fetch_service_proxy(
-    client: &Client,
-    namespace: &str,
-    service: &str,
-    port: u16,
-    path_and_query: &str,
-) -> Result<String, String> {
-    let p = path_and_query.trim_start_matches('/');
-    let uri = format!("/api/v1/namespaces/{namespace}/services/{service}:{port}/proxy/{p}");
-    let req = http::Request::get(&uri)
-        .body(Vec::new())
-        .map_err(|e| format!("request: {e}"))?;
-    // Stream + cap the body (request_text would buffer it unbounded) so a huge or
-    // hostile response can't OOM the process; the timeout bounds wall-clock.
-    let fut = async {
-        let stream = client
-            .request_stream(req)
-            .await
-            .map_err(|e| classify(&e.to_string()))?;
-        let mut reader = Box::pin(stream).take(MAX_RESP_BYTES + 1);
-        let mut buf = Vec::new();
-        reader
-            .read_to_end(&mut buf)
-            .await
-            .map_err(|e| format!("read: {e}"))?;
-        if buf.len() as u64 > MAX_RESP_BYTES {
-            return Err(format!(
-                "response exceeds {} MiB cap",
-                MAX_RESP_BYTES / (1024 * 1024)
-            ));
-        }
-        Ok::<_, String>(String::from_utf8_lossy(&buf).into_owned())
-    };
-    match tokio::time::timeout(TIMEOUT, fut).await {
-        Ok(r) => r,
-        Err(_) => Err("timed out".into()),
-    }
-}
-
-/// A DNS-1123 label (k8s namespace/service names) — lowercase alnum + `-`, edges
-/// alphanumeric, ≤63 chars. Rejecting a non-label keeps a typo from producing a
-/// silently-wrong "from OpenCost" number (it errors → honest fallback instead).
-fn valid_dns_label(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 63
-        && s.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        && s.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
-        && s.bytes()
-            .next_back()
-            .is_some_and(|b| b.is_ascii_alphanumeric())
-}
-
-/// A safe OpenCost window token — no URL-control chars that could truncate or
-/// inject query params (`#`, `&`, `?`, `/`, whitespace), non-empty, ≤32.
-fn valid_window(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 32
-        && !s
-            .bytes()
-            .any(|b| matches!(b, b'#' | b'&' | b'?' | b'/' | b'%') || b.is_ascii_whitespace())
-}
-
-fn classify(e: &str) -> String {
-    let lo = e.to_lowercase();
-    if e.contains("403") || lo.contains("forbidden") {
-        "forbidden — need RBAC get services/proxy".into()
-    } else if e.contains("404") || lo.contains("not found") {
-        "not found — is OpenCost installed at that service/port?".into()
-    } else {
-        e.chars().take(160).collect()
-    }
-}
-
-/// Fetch + parse one OpenCost allocation snapshot.
+/// Fetch + parse one OpenCost allocation snapshot (over the reusable
+/// [`adapter::fetch_service_proxy`] substrate).
 pub async fn fetch_once(client: &Client, source: &OpenCostSource) -> Result<OpenCostData, String> {
     // Validate up front: a bad ns/svc/window must error (→ honest fallback to the
     // estimate) rather than build a wrong-but-authoritative "from OpenCost" number.
-    if !valid_dns_label(&source.namespace) || !valid_dns_label(&source.service) {
+    if !adapter::valid_dns_label(&source.namespace) || !adapter::valid_dns_label(&source.service) {
         return Err("invalid namespace/service (must be DNS-1123 labels)".into());
     }
-    if !valid_window(&source.window) {
+    if !adapter::valid_query_token(&source.window) {
         return Err("invalid window (use e.g. 1d, today, 1h)".into());
     }
     // accumulate=true collapses any step-sets into one; aggregate=namespace,controller
@@ -185,8 +104,15 @@ pub async fn fetch_once(client: &Client, source: &OpenCostSource) -> Result<Open
         "allocation?window={}&aggregate=namespace,controller&includeIdle=true&accumulate=true",
         source.window
     );
-    let body =
-        fetch_service_proxy(client, &source.namespace, &source.service, source.port, &q).await?;
+    let body = adapter::fetch_service_proxy(
+        client,
+        &source.namespace,
+        &source.service,
+        source.port,
+        &q,
+        adapter::DEFAULT_TIMEOUT,
+    )
+    .await?;
     parse_allocation(&body)
 }
 
@@ -241,21 +167,5 @@ mod tests {
         assert_eq!(OpenCostSource::parse("").port, 9003);
         assert_eq!(OpenCostSource::parse("a/b:nope").port, 9003);
     }
-
-    #[test]
-    fn input_validation_rejects_unsafe_refs() {
-        assert!(valid_dns_label("opencost"));
-        assert!(valid_dns_label("kubecost-cost-analyzer"));
-        assert!(!valid_dns_label("")); // empty
-        assert!(!valid_dns_label("-bad")); // edge non-alnum
-        assert!(!valid_dns_label("Bad")); // uppercase
-        assert!(!valid_dns_label("a/b")); // path injection
-        assert!(valid_window("1d"));
-        assert!(valid_window("today"));
-        assert!(valid_window("7d"));
-        assert!(!valid_window("")); // empty
-        assert!(!valid_window("1d&aggregate=node")); // param injection
-        assert!(!valid_window("1d#x")); // fragment truncation
-        assert!(!valid_window("a b")); // whitespace
-    }
+    // The input-validation tests moved to `k8s::adapter` with the helpers.
 }
