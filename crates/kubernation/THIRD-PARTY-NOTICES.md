@@ -3359,8 +3359,8 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- kubernation 0.66.0
-- kubernation-core 0.66.0
+- kubernation 0.68.0
+- kubernation-core 0.68.0
 - async-stream-impl 0.3.6
 - async-stream 0.3.6
 - gloo-timers 0.3.0

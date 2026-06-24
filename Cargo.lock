@@ -1073,12 +1073,13 @@ dependencies = [
 
 [[package]]
 name = "kubernation"
-version = "0.67.0"
+version = "0.68.0"
 dependencies = [
  "clap",
  "image",
  "kubernation-core",
  "macroquad",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -1087,7 +1088,7 @@ dependencies = [
 
 [[package]]
 name = "kubernation-core"
-version = "0.67.0"
+version = "0.68.0"
 dependencies = [
  "color-eyre",
  "futures",

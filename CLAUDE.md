@@ -2611,8 +2611,29 @@ what makes the interesting logic unit-testable without a cluster.
   `--colorblind`, distinct from the red trouble marks). **Tritanopia (rare blue-yellow) is
   out of scope** — it would want a different remap. **Deferred:** distinct
   deuteranopia/protanopia presets (one red-green-safe palette serves both); namespace-hue
-  categorical colours (labelled, lower priority); persisting the choice (needs the deferred
-  `prefs.toml`).
+  categorical colours (labelled, lower priority). (Persisting the choice landed in the
+  next entry.)
+- **Persisted preferences** (2026-06-24, v0.68.0, user "let's get the persisted
+  preferences in place"; the last v1-hardening item): a small
+  `~/.config/kubernation/prefs.json` (`gui/prefs.rs`) remembers UI choices across runs so
+  they aren't re-set every launch — **CLI flags always win** (`args.x || saved.x` for
+  colorblind, `flag.or(saved).unwrap_or(default)` for overlay). **Scope = surprise-free
+  display state only:** the **colour-blind palette** (now also a live **View ▸ Colour-blind
+  palette** toggle — the palette reads the `COLOR_MODE` atomic each frame, so flipping it
+  re-colours immediately) and the **last map overlay**. JSON (not TOML — no new dep; reuses
+  the `serde_json` already present + mirrors `oracle.json`'s atomic-temp+rename write, with
+  a corrupt file renamed aside, never deleted). Saved on clean exit (after the render loop,
+  **skipped under `--screenshot`** so a dev/CI capture never mutates the operator's prefs);
+  loaded at startup before any draw. **NON-secret, NON-cluster** (the Oracle token stays in
+  its own 0600 file; no cross-run cluster state). The first persisted GUI config that isn't
+  the Oracle's. Serde round-trip + partial/garbage-tolerance unit-tested; verified live (a
+  seeded prefs.json launches blue + the cost view with NO flags). **Deliberately deferred:**
+  **context + namespace-filter** persistence — both carry a real "pin the saved value vs.
+  follow your kubeconfig current-context / show an empty world" UX tension that deserves its
+  own decision, not a silent default; and OS-keychain/encrypted prefs (none of this is
+  sensitive). **This completes the v1 hardening round** (crash-safety, substrate, perf,
+  license guard, docs, colour-blind palette, prefs); the only pre-1.0 items left need the
+  operator: pushing to prove the multi-platform CI green, and macOS signing (no Apple cert).
 
 ## The pair (hot/warm)
 

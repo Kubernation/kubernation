@@ -9,6 +9,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Persisted preferences.** A small `~/.config/kubernation/prefs.json` remembers the
+  colour-blind palette choice and the last map overlay across runs, so you don't re-set
+  them every launch — **CLI flags always win** over the saved value. Non-secret,
+  non-cluster convenience state only (written atomically; a corrupt file is renamed
+  aside, never deleted). The colour-blind palette is now also a **View ▸ Colour-blind
+  palette** toggle (live, not just a launch flag). Persisting the context and namespace
+  filter is deliberately deferred (they need a "pin vs. follow your kubeconfig" decision).
+
 - **Colour-blind-safe palette** (`--colorblind`). The product's grammar rides on
   green (healthy / good / calm / low) vs red (critical / NotReady / high), which
   red-green colour-blindness (deuteranopia + protanopia, ~8% of men) can't tell

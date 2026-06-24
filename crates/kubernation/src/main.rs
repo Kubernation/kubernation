@@ -30,6 +30,7 @@ mod oracle;
 mod oracle_config_io;
 mod panels;
 mod plan;
+mod prefs;
 mod sidebar;
 mod text;
 mod textfield;
@@ -502,6 +503,20 @@ fn focus_concern(
     }
 }
 
+/// Parse an `--overlay` / saved-pref string into an `Overlay` (the inverse of
+/// `Overlay::label`); an unknown value falls back to the default terrain view.
+fn overlay_from_str(s: &str) -> Overlay {
+    match s {
+        "pressure" => Overlay::Pressure,
+        "replicas" => Overlay::Replicas,
+        "namespace" => Overlay::Namespace,
+        "walls" => Overlay::Coverage,
+        "saturation" => Overlay::Saturation,
+        "cost" => Overlay::Cost,
+        _ => Overlay::Terrain,
+    }
+}
+
 fn window_conf() -> Conf {
     Conf {
         window_title: "KuberNation".into(),
@@ -522,8 +537,10 @@ async fn main() {
     }
     // Log any panic (render OR net thread) to that file before it unwinds.
     logging::install_panic_hook();
-    // Select the palette before anything draws (the whole render reads it).
-    theme::set_colorblind(args.colorblind);
+    // Saved preferences (flags always win over them).
+    let saved = prefs::load();
+    // Select the palette before anything draws (the flag OR the saved choice).
+    theme::set_colorblind(args.colorblind || saved.colorblind);
     text::init();
     logo::init();
     let shot = args.screenshot.clone();
@@ -626,16 +643,14 @@ async fn main() {
     // closed). An open menu suspends map navigation, like the other modals.
     let mut open_menu: Option<usize> = None;
     // The active map overlay (the View menu's "map display"): how terrain is
-    // colored. A --overlay dev flag seeds it for headless shots.
-    let mut overlay = match args.overlay.as_deref() {
-        Some("pressure") => Overlay::Pressure,
-        Some("replicas") => Overlay::Replicas,
-        Some("namespace") => Overlay::Namespace,
-        Some("walls") => Overlay::Coverage,
-        Some("saturation") => Overlay::Saturation,
-        Some("cost") => Overlay::Cost,
-        _ => Overlay::Terrain,
-    };
+    // colored. The --overlay flag seeds it (also for headless shots); else the
+    // saved preference; else the default terrain view.
+    let mut overlay = args
+        .overlay
+        .as_deref()
+        .or(saved.overlay.as_deref())
+        .map(overlay_from_str)
+        .unwrap_or(Overlay::Terrain);
     // Menu "Fit view" can't reach `bounds` from the chrome draw, so it defers
     // the camera fit to the next frame's input block (where bounds is in scope).
     let mut pending_fit = false;
@@ -2668,6 +2683,11 @@ async fn main() {
                 workloads = Some(workloads::Workloads::new());
                 workloads_just_opened = true;
             }
+            Some(MenuAction::ToggleColorblind) => {
+                // Runtime-switchable (the palette reads the atomic each frame);
+                // persisted on exit.
+                theme::set_colorblind(!theme::colorblind());
+            }
             None => {}
         }
 
@@ -3356,6 +3376,16 @@ async fn main() {
         }
 
         next_frame().await;
+    }
+
+    // Persist UI preferences on exit — skip a headless --screenshot run so a dev /
+    // CI capture never mutates the user's prefs.
+    if shot.is_none() {
+        prefs::save(&prefs::Prefs {
+            version: prefs::PREFS_VERSION,
+            colorblind: theme::colorblind(),
+            overlay: Some(overlay.label().to_string()),
+        });
     }
 }
 

@@ -457,7 +457,7 @@ fn page_legend(cx: &mut Ctx) {
         "cpu / mem per node: live usage when metrics-server is present, else scheduling pressure (requests / allocatable).",
     );
     cx.para(
-        "Colour-blind? Launch with --colorblind: the green \"healthy\" axis becomes a steel blue, so blue / amber / red are all distinguishable (red-green safe; red + amber are unchanged).",
+        "Colour-blind? Toggle View > Colour-blind palette (or launch with --colorblind): the green \"healthy\" axis becomes a steel blue, so blue / amber / red are all distinguishable (red-green safe; red + amber unchanged). The choice — and your last map overlay — is remembered across runs.",
     );
 }
 

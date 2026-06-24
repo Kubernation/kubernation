@@ -34,6 +34,7 @@ pub enum MenuAction {
     About,
     Annals,
     Workloads,
+    ToggleColorblind,
 }
 
 /// Live state the bar reflects: the active overlay (radio mark), the staged
@@ -156,6 +157,14 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                 Item::sep(),
                 Item::act("Annals (what changed) — H", MenuAction::Annals),
                 Item::act("Workloads (table) — O", MenuAction::Workloads),
+                Item::act(
+                    if crate::theme::colorblind() {
+                        "Colour-blind palette: on"
+                    } else {
+                        "Colour-blind palette: off"
+                    },
+                    MenuAction::ToggleColorblind,
+                ),
             ],
         },
         Menu {
