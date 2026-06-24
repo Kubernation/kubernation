@@ -2465,9 +2465,10 @@ what makes the interesting logic unit-testable without a cluster.
   reached **READ-ONLY through the kube API-server service proxy** (`GET /api/v1/namespaces/
   {ns}/services/{svc}:{port}/proxy/allocation?…`) — the SAME authenticated kube connection
   as the reflectors, **no port-forward, no new off-laptop egress** (distinct from the
-  Oracle's external egress), gated by `get services/proxy` RBAC. `k8s/opencost::
-  fetch_service_proxy` is the **generic, reusable substrate** (the first of a planned set
-  of optional-tool adapters — Prometheus/PromQL next); `opencost::spawn` is a
+  Oracle's external egress), gated by `get services/proxy` RBAC. `k8s/adapter::
+  fetch_service_proxy` is the **generic, reusable substrate** (extracted from opencost in
+  the v0.66 hardening round — the first of a planned set of optional-tool adapters,
+  Prometheus/PromQL next); `opencost::spawn` is a
   fetch-not-watch poller (like `metrics`) filling a shared `OpenCostStore`; no new cargo
   feature (reuses the kube client) and no new crate (`http` + `futures` already in the
   tree). **Pure parse** `state/opencost::parse_allocation` (`/allocation` JSON →
@@ -2549,6 +2550,40 @@ what makes the interesting logic unit-testable without a cluster.
   panic hook + net-thread `unwrap` audit, end-to-end error UX, multi-platform CI proof,
   large-cluster resilience, operator docs, generalizing the HTTP-adapter substrate into
   `k8s/adapter.rs`, a colorblind-safe palette, and a license-drift CI guard.
+- **v1 hardening round** (2026-06-24, v0.66.0, user "yes, hardening"; driven by a 4-lens
+  crash-safety AUDIT workflow → 34 findings deduped to ~5 real themes): the product was
+  feature-complete but **robustness-short**. **(1) Crash safety** (the marquee fix): a
+  global panic hook (`logging::install_panic_hook`) logs every panic (thread · location ·
+  message) to `~/.local/state/kubernation/kubernation.log` *before* unwinding — a
+  macroquad GUI has no console, so an un-logged crash was undiagnosable. The net thread is
+  named **`kn-net`**; the hook sets a `net::NET_PANICKED` flag when it dies and the GUI
+  paints a **fatal banner** (`panels::draw_fatal_banner`) instead of a silently frozen
+  world. **The poison cascade** (the real correctness gap): all **~160** `.lock().unwrap()`
+  in `net.rs` → `.lock().unwrap_or_else(|e| e.into_inner())` — a panic in one background
+  tokio task can no longer poison a shared mutex and crash the **render** thread on its
+  next read (the GUI reads `snapshot`/`conn`/`log_tail`/… every frame). The tokio runtime
+  + the log-file writer degrade gracefully (no panic); the per-session Oracle reply cache
+  is bounded (64). Audit **false positives verified**: the event ring IS bounded
+  (`watch.rs:323`, CAP=500) and the attention index IS guarded (`main.rs:1464`) — the
+  auditor flagged the field decl / wrong line. **(2) Substrate extraction:** OpenCost's
+  reusable plumbing → `k8s/adapter.rs` (service-proxy fetch + body-cap + DNS/query
+  validators) with a documented "pattern for a new adapter" — the extension story is now a
+  design, not a one-off. **(3) Large-cluster evidence:** the `scale_rebuild` perf-test went
+  100N/1kP → **500N/5kP** (~4ms/rebuild, ≪100ms budget). **(4) License-drift CI guard:** a
+  `cargo-about` regenerate-and-diff job fails if `THIRD-PARTY-NOTICES.md` falls out of sync
+  with `Cargo.lock` (regenerated; the `http` dep had drifted it). **(5) Operator docs:** a
+  README on-ramp — Install (release binaries + the macOS Gatekeeper step + from-source),
+  RBAC requirements (read verbs + the gated write verbs + the in-app Charter), and
+  Troubleshooting (won't-connect, the log location, no-metrics). 318 core + 61 GUI tests;
+  lint + actionlint clean; boots + renders with no panics logged. **Deferred (honest
+  scoping):** the **colorblind-safe palette** is a real refactor, not a quick swap — the
+  theme's meaning colors are compile-time `const`s referenced in hundreds of draw calls, so
+  a runtime `ColorMode` needs threading a palette (or `OnceLock`-resolving every color)
+  through the draw layer; and **persisted preferences** (a `prefs.toml`) is pure
+  convenience, below the robustness/accessibility bar of this round. **Cannot be done
+  here:** *proving* the multi-platform CI green needs an actual push (the workflows are
+  written + `actionlint`-clean) and macOS code-signing/notarization needs the operator's
+  Apple Developer cert.
 
 ## The pair (hot/warm)
 
@@ -2705,9 +2740,9 @@ left was fixed). No config-file support yet.
 ## Performance evidence (criterion 6)
 
 Synthetic: `make perf-test` (a core test, `scale_rebuild`) builds a fixture
-world of 100 nodes / 1000 pods and times the full `Models::build` rebuild (map +
-workloads + attention — what the GUI recomputes each tick) — **~1ms/rebuild on
-the M4 Max**, asserted <100ms in release. (Originally this also rendered a TUI
+world of **500 nodes / 5000 pods** (a large real cluster) and times the full
+`Models::build` rebuild (map + workloads + attention — what the GUI recomputes each
+tick) — **~4ms/rebuild on the M4 Max**, asserted <100ms in release. (Originally this also rendered a TUI
 140×40 frame; the render moved to the GUI, which isn't unit-timed.) Live: `make
 perf-up && make perf` runs
 against a kwok-simulated cluster of the same size (`hack/perf-seed.sh`,
