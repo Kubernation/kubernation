@@ -12,6 +12,7 @@ pub mod logline;
 pub mod model;
 pub mod netpol;
 pub mod observed;
+pub mod opencost;
 pub mod oracle;
 // Endpoint profiles + the precedence resolver reference the feature-gated
 // `oracle_client` types (LlmConfig/Endpoint), so this module rides the feature.

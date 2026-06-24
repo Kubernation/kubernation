@@ -208,6 +208,15 @@ struct Args {
     /// Cost: cpu : mem-GiB weight for the unitless "cost units" score (default 4.0).
     #[arg(long, value_name = "N")]
     cost_mem_weight: Option<f64>,
+    /// Cost: read invoice-grade cost from in-cluster OpenCost instead of the
+    /// estimate. Optional `ns/service:port` (default `opencost/opencost:9003`),
+    /// reached read-only through the kube API-server service proxy (needs RBAC
+    /// `get services/proxy`). Hot cluster only.
+    #[arg(long, value_name = "NS/SVC:PORT", num_args = 0..=1, default_missing_value = "")]
+    opencost: Option<String>,
+    /// Cost: the OpenCost allocation window (default "1d"; e.g. "today", "1h").
+    #[arg(long, value_name = "WINDOW")]
+    opencost_window: Option<String>,
     /// Start with a map overlay active: "terrain" (default), "pressure"
     /// (cpu/mem heat), "replicas" (workload health), "namespace" (territory),
     /// "walls" (NetworkPolicy segmentation) or "saturation" (the 4th golden
@@ -547,6 +556,13 @@ async fn main() {
             .collect(),
         mem_weight: args.cost_mem_weight.unwrap_or(0.0),
     };
+    let opencost = args.opencost.as_ref().map(|s| {
+        let mut src = kubernation_core::k8s::opencost::OpenCostSource::parse(s);
+        if let Some(w) = args.opencost_window.as_deref().filter(|w| !w.is_empty()) {
+            src.window = w.to_string();
+        }
+        src
+    });
     net::spawn(
         net::NetArgs {
             context: args.context.clone(),
@@ -555,6 +571,7 @@ async fn main() {
             projections: args.project.clone(),
             slo_default,
             cost_rates,
+            opencost,
         },
         net.clone(),
     );

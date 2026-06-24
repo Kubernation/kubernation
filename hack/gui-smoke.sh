@@ -48,6 +48,7 @@ STATES=(
   "overlay-walls|--overlay walls"
   "overlay-saturation|--overlay saturation"
   "overlay-cost|--overlay cost"
+  "opencost-degrade|--opencost --overlay cost"
   "concern-logs|--concern-logs"
   "namespace-scope|--namespace kubernation-demo"
   "forward|--forward web"

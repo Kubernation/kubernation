@@ -81,6 +81,9 @@ pub enum CostBasis {
     Requests,
     /// Shares from metrics-server *usage* — sharpens idle to paid-for-but-unused.
     Usage,
+    /// Imported from OpenCost — invoice-grade, amortized (incl. network/LB/storage).
+    /// Not KuberNation's own derivation; the UI labels it "from OpenCost".
+    OpenCost,
 }
 
 /// Operator-supplied pricing. All-absent ⇒ [`CostMode::Unitless`].
@@ -411,6 +414,97 @@ pub fn cost_report(world: &ObservedWorld, rates: &CostRates) -> CostReport {
     report
 }
 
+/// Build a [`CostReport`] from imported OpenCost data — the same shape the overlay
+/// and advisor render, so OpenCost simply *replaces* the requests-based estimate
+/// (basis `OpenCost`, real `$`, amortized incl. network/LB/storage). PURE. The
+/// per-node figure is the *allocated* cost on each node (sum of its allocations);
+/// idle is OpenCost's cluster `__idle__`, not a per-node residual.
+pub fn from_opencost(oc: &crate::state::opencost::OpenCostData) -> CostReport {
+    let mut report = CostReport {
+        mode: CostMode::Currency,
+        basis: CostBasis::OpenCost,
+        metrics_available: true,
+        idle_per_hour: oc.idle_per_hour,
+        total_per_hour: oc.total_per_hour,
+        ..Default::default()
+    };
+    let mut ns_acc: HashMap<String, f64> = HashMap::new();
+    let mut node_acc: HashMap<String, f64> = HashMap::new();
+
+    for a in &oc.allocations {
+        // A legitimate allocation always carries a namespace; an empty one is a
+        // control/idle artifact (parse already drops those) — skip defensively so a
+        // blank "" namespace row can never reach the advisor.
+        if a.namespace.is_empty() {
+            continue;
+        }
+        *ns_acc.entry(a.namespace.clone()).or_default() += a.per_hour;
+        if ns_protected(&a.namespace) {
+            report.system_per_hour += a.per_hour;
+        }
+        if let Some(node) = &a.node {
+            *node_acc.entry(node.clone()).or_default() += a.per_hour;
+        }
+        match &a.controller {
+            Some(name) => report.top_workloads.push(WorkloadCost {
+                kind: kind_of(a.controller_kind.as_deref()),
+                namespace: a.namespace.clone(),
+                name: name.clone(),
+                per_hour: a.per_hour,
+            }),
+            None => report.unowned_per_hour += a.per_hour,
+        }
+    }
+
+    report.by_namespace = ns_acc
+        .into_iter()
+        .map(|(namespace, per_hour)| NamespaceCost {
+            system: ns_protected(&namespace),
+            namespace,
+            per_hour,
+        })
+        .collect();
+    report.by_namespace.sort_by(|a, b| {
+        b.per_hour
+            .total_cmp(&a.per_hour)
+            .then(a.namespace.cmp(&b.namespace))
+    });
+
+    for (name, per_hour) in node_acc {
+        report.max_node_cost = report.max_node_cost.max(per_hour);
+        report.nodes_total += 1;
+        report.nodes_priced += 1;
+        report.by_node.insert(
+            name,
+            NodeCost {
+                per_hour,
+                idle_per_hour: 0.0, // OpenCost idle is cluster-level, not per-node here
+                used_frac: 1.0,
+                basis: CostBasis::OpenCost,
+                mode: CostMode::Currency,
+                priced: true,
+                overcommitted: false,
+            },
+        );
+    }
+    report.top_workloads.sort_by(|a, b| {
+        b.per_hour
+            .total_cmp(&a.per_hour)
+            .then((&a.namespace, &a.name).cmp(&(&b.namespace, &b.name)))
+    });
+    report
+}
+
+/// OpenCost's `controllerKind` string → our [`WorkloadKind`] (replicaset folds to
+/// Deployment — a bare RS is rare and reads as its Deployment).
+fn kind_of(controller_kind: Option<&str>) -> WorkloadKind {
+    match controller_kind.unwrap_or("").to_ascii_lowercase().as_str() {
+        "statefulset" => WorkloadKind::StatefulSet,
+        "daemonset" => WorkloadKind::DaemonSet,
+        _ => WorkloadKind::Deployment,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -726,5 +820,54 @@ mod tests {
         assert!(!r.by_node["n2"].priced);
         approx(r.by_node["n2"].per_hour, 0.0);
         let _ = GI; // (keep the binary-GiB constant referenced)
+    }
+
+    #[test]
+    fn opencost_report_maps_namespaces_workloads_nodes_and_idle() {
+        use crate::state::opencost::{OcAllocation, OpenCostData};
+        let alloc = |ns: &str, ctrl: &str, kind: &str, node: &str, ph: f64| OcAllocation {
+            namespace: ns.into(),
+            controller: Some(ctrl.into()),
+            controller_kind: Some(kind.into()),
+            node: Some(node.into()),
+            per_hour: ph,
+            ..Default::default()
+        };
+        let oc = OpenCostData {
+            allocations: vec![
+                alloc("demo", "web", "deployment", "n1", 0.20),
+                alloc("demo", "db", "statefulset", "n2", 0.30),
+                alloc("kube-system", "coredns", "deployment", "n1", 0.05),
+            ],
+            idle_per_hour: 0.40,
+            total_per_hour: 0.95,
+        };
+        let r = from_opencost(&oc);
+        assert_eq!(r.mode, CostMode::Currency);
+        assert_eq!(r.basis, CostBasis::OpenCost);
+        approx(r.total_per_hour, 0.95);
+        approx(r.idle_per_hour, 0.40);
+        // by namespace: demo = web+db = 0.50; kube-system tagged system.
+        approx(
+            r.by_namespace
+                .iter()
+                .find(|n| n.namespace == "demo")
+                .unwrap()
+                .per_hour,
+            0.50,
+        );
+        assert!(
+            r.by_namespace
+                .iter()
+                .any(|n| n.namespace == "kube-system" && n.system)
+        );
+        approx(r.system_per_hour, 0.05);
+        // by node: n1 = web + coredns = 0.25; n2 = db = 0.30 (the allocated cost).
+        approx(r.by_node["n1"].per_hour, 0.25);
+        approx(r.by_node["n2"].per_hour, 0.30);
+        assert_eq!(r.by_node["n2"].basis, CostBasis::OpenCost);
+        // costliest workload + kind mapping.
+        assert_eq!(r.top_workloads[0].name, "db");
+        assert_eq!(r.top_workloads[0].kind, WorkloadKind::StatefulSet);
     }
 }

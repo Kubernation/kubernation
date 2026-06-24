@@ -31,6 +31,20 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   advisor (which says *which* workloads are mis-sized) with the *where-does-the-money-go*
   map.
 
+- **OpenCost integration — invoice-grade cost.** Pass `--opencost` (optionally
+  `--opencost ns/service:port`, default `opencost/opencost:9003`) and KuberNation reads
+  the in-cluster [OpenCost](https://opencost.io) `/allocation` API for real, amortized
+  cost — the network / load-balancer / storage / spot & reserved-discount lines the
+  requests-based estimate structurally can't see — and the cost overlay, the Advisors ▸
+  Cost tab, and the SELECTION line all switch to it (labelled "from OpenCost"). It's
+  reached **read-only through the kube API-server service proxy** — the same
+  authenticated connection as the reflectors, no port-forward and no new off-laptop
+  egress (needs RBAC `get services/proxy`). When OpenCost is absent or unreachable it
+  degrades cleanly to the requests/usage estimate. `--opencost-window` sets the
+  allocation window (default `1d`). The fetch path is a reusable in-cluster HTTP-source
+  substrate (`k8s/opencost::fetch_service_proxy`) — the first of a planned set of
+  optional-tool adapters. Read-only; no new write verb.
+
 - **Own copyright + trademark assertion.** The About window and README now assert
   "© 2026 Jason Olmsted. KuberNation™ and the KuberNation logo are unregistered
   trademarks of Jason Olmsted" (unregistered — ™, not ®), alongside the existing

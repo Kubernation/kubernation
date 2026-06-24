@@ -270,12 +270,16 @@ pub fn cost_lines(nc: &NodeCost) -> Vec<(String, Color)> {
             idle_col,
         ),
     ];
-    if nc.basis == CostBasis::Requests {
-        lines.push(("(idle est. from requests)".into(), STONE_INK_DIM));
-    }
-    // The only on-map $ figure carries the same honesty caveat the advisor does.
-    if nc.mode == cost::CostMode::Currency {
-        lines.push(("(est., not a cloud bill)".into(), STONE_INK_DIM));
+    if nc.basis == CostBasis::OpenCost {
+        lines.push(("(from OpenCost)".into(), STONE_STRUCT));
+    } else {
+        if nc.basis == CostBasis::Requests {
+            lines.push(("(idle est. from requests)".into(), STONE_INK_DIM));
+        }
+        // The only on-map $ figure carries the same honesty caveat the advisor does.
+        if nc.mode == cost::CostMode::Currency {
+            lines.push(("(est., not a cloud bill)".into(), STONE_INK_DIM));
+        }
     }
     lines
 }
@@ -990,6 +994,7 @@ mod tests {
                 slo: Arc::new(std::collections::HashMap::new()),
                 posture,
                 cost,
+                opencost_note: None,
             },
             warm: None,
             pair: None,

@@ -33,6 +33,9 @@ k8s-openapi = { version = "0.27", features = ["v1_33"] }
 # byte pump (`TcpListener`, `copy_bidirectional`).
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 futures = "0.3"
+# `http` builds the raw request for the kube API-server service proxy (the
+# OpenCost adapter). Already in the tree via kube — no new transitive crate.
+http = "1"
 color-eyre = "0.6"
 tracing = "0.1"
 serde = { version = "1.0.228", default-features = false }

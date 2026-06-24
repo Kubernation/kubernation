@@ -11,7 +11,7 @@ use kubernation_core::state::advisor::{
     HealthReport, NetworkReport, RightSizingReport, RsRow, RsVerdict, StorageReport, health_report,
     network_report, rightsizing_report, storage_report,
 };
-use kubernation_core::state::cost::{self, CostMode, CostReport};
+use kubernation_core::state::cost::{self, CostBasis, CostMode, CostReport};
 use kubernation_core::state::harden::{self, HardeningReport, WorkloadFindings};
 use kubernation_core::state::netpol::{self, NetpolReport};
 use kubernation_core::state::posture::{Axis, FactorKind, PostureReport, PostureTier, band};
@@ -459,7 +459,11 @@ pub fn cost_lines(r: &CostReport) -> Vec<(String, RsRole)> {
     let mut out: Vec<(String, RsRole)> = Vec::new();
     let m = r.mode;
 
-    if r.nodes_priced == 0 {
+    // OpenCost aggregates by namespace/controller (no per-node breakdown), so it
+    // populates the rollups WITHOUT priced nodes — gate on "any data", not just
+    // priced nodes, or an OpenCost realm would falsely read as empty.
+    let has_data = r.nodes_priced > 0 || r.total_per_hour > 0.0 || !r.by_namespace.is_empty();
+    if !has_data {
         out.push(("no priced nodes yet".to_string(), RsRole::Dim));
         out.push((
             "(not synced, or — in $ mode — no rate applies to any node)".to_string(),
@@ -473,12 +477,23 @@ pub fn cost_lines(r: &CostReport) -> Vec<(String, RsRole)> {
         RsRole::Headline,
     ));
     out.push((
-        match m {
-            CostMode::Unitless => "relative cost units (cpu + mem/4 weighted) from requests — NOT a cloud bill; set --cpu-rate/--mem-rate or a kubernation.io/cost-hourly annotation for $".to_string(),
-            CostMode::Currency => "$ estimate from your rates × reservation — not a cloud invoice (excludes network/storage/LB/discounts)".to_string(),
+        if r.basis == CostBasis::OpenCost {
+            "from OpenCost — invoice-grade, amortized (incl. network / load-balancer / storage; spot & reserved discounts)".to_string()
+        } else {
+            match m {
+                CostMode::Unitless => "relative cost units (cpu + mem/4 weighted) from requests — NOT a cloud bill; set --cpu-rate/--mem-rate or a kubernation.io/cost-hourly annotation for $".to_string(),
+                CostMode::Currency => "$ estimate from your rates × reservation — not a cloud invoice (excludes network/storage/LB/discounts)".to_string(),
+            }
         },
         RsRole::Dim,
     ));
+    if r.basis == CostBasis::OpenCost {
+        out.push((
+            "per-node map overlay n/a from OpenCost (it bills by workload/namespace, not node)"
+                .to_string(),
+            RsRole::Dim,
+        ));
+    }
 
     // Idle/waste — cost's unique, actionable line.
     let idle_pct = if r.total_per_hour > 0.0 {
@@ -542,10 +557,10 @@ pub fn cost_lines(r: &CostReport) -> Vec<(String, RsRole)> {
     }
 
     out.push((
-        if r.metrics_available {
-            "upkeep = what you pay to HOLD reserved capacity; usage-refined — idle is paid-for-but-unused. rates are operator config; KuberNation reads no cloud billing."
-        } else {
-            "upkeep = what you pay to HOLD reserved capacity (requests); install metrics-server for usage-refined waste. rates are operator config; KuberNation reads no cloud billing."
+        match r.basis {
+            CostBasis::OpenCost => "imported from OpenCost (it reads the cloud billing API + amortizes spot/reserved). idle is OpenCost's cluster __idle__.",
+            _ if r.metrics_available => "upkeep = what you pay to HOLD reserved capacity; usage-refined — idle is paid-for-but-unused. rates are operator config; KuberNation reads no cloud billing.",
+            _ => "upkeep = what you pay to HOLD reserved capacity (requests); install metrics-server for usage-refined waste. rates are operator config; KuberNation reads no cloud billing.",
         }
         .to_string(),
         RsRole::Dim,

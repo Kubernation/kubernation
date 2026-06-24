@@ -409,7 +409,10 @@ pub fn draw_sidebar(
         // Cost names its mode so the operator knows whether the map / SELECTION
         // numbers are real $ or relative units.
         let label = if overlay == Overlay::Cost {
-            let m = if snap.hot.cost.mode == kubernation_core::state::cost::CostMode::Currency {
+            use kubernation_core::state::cost::{CostBasis, CostMode};
+            let m = if snap.hot.cost.basis == CostBasis::OpenCost {
+                "OpenCost"
+            } else if snap.hot.cost.mode == CostMode::Currency {
                 "$"
             } else {
                 "units"
@@ -424,6 +427,15 @@ pub fn draw_sidebar(
     if ns_filter.is_active() {
         text(ascii(&ns_filter.label()), x, y, 13.0, STONE_WARN);
         y += 18.0;
+    }
+    // OpenCost requested but failing → say so (the cost numbers are the estimate,
+    // not OpenCost) so the fallback is never silent.
+    if let Some(err) = &snap.hot.opencost_note {
+        text("OpenCost off (estimate):", x, y, 12.0, STONE_WARN);
+        y += 14.0;
+        let e: String = ascii(err).chars().take(40).collect();
+        text(e, x, y, 12.0, STONE_WARN);
+        y += 16.0;
     }
 
     // --- ATTENTION (the queue — relocated from the old bottom strip) -------

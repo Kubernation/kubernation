@@ -66,7 +66,7 @@ security feature (10). Rollback (4) follows history (3) because it depends on it
 ### Bigger bets — large but high-value
 - Change timeline (L) — folds events + RS revisions into per-subject "what changed"
 - Reachability tracer — inverse blast, "can my pod reach its DB?" (L)
-- Cost cartography — OpenCost-aware + pure pricing fallback (L) — ✅ shipped (v0.63.0; pure derivation: requests + operator rates, OpenCost integration deferred)
+- Cost cartography — OpenCost-aware + pure pricing fallback (L) — ✅ shipped (v0.63.0 pure derivation: requests + operator rates; v0.64.0 OpenCost integration — invoice-grade $ via the in-cluster API-server service proxy, the first reusable HTTP-source substrate)
 - GitOps drift — Argo/Flux read, extends the desired-vs-observed identity (L)
 - Full RBAC matrix + escalation paths — needs broad cluster-read RBAC (L)
 - Local-LLM "Explain" — opt-in, BYO-model, suggest-only (L) — ✅ shipped: the

@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kubernation_core::events::{ClusterId, WorldDelta};
+use kubernation_core::k8s::opencost::{self, OpenCostArc, OpenCostSource, OpenCostStore};
 use kubernation_core::k8s::oracle_client::{self, LlmConfig};
 use kubernation_core::k8s::{actions, browse, client, logs, portforward, rbac, watch};
 use kubernation_core::state::attention::{Concern, Severity, Target};
@@ -208,6 +209,10 @@ pub struct WorldSnap {
     /// Upkeep (cost cartography), computed once per tick — the overlay + advisor
     /// tab read this (the overlay does a by-node lookup every frame, never a scan).
     pub cost: CostReport,
+    /// Set when `--opencost` was requested but the poll is failing (so the operator
+    /// isn't silently shown the estimate while believing OpenCost is active). Carries
+    /// the actionable error; `None` when OpenCost isn't requested or is working.
+    pub opencost_note: Option<String>,
 }
 
 pub struct Snapshot {
@@ -905,6 +910,9 @@ pub struct NetArgs {
     /// `--cost-mem-weight`); empty ⇒ unitless "cost units". Node annotations are
     /// merged on top per tick (the frontend boundary).
     pub cost_rates: CostRates,
+    /// When set, poll OpenCost (`--opencost [ns/svc:port]`) for invoice-grade cost
+    /// that replaces the requests-based estimate. Hot cluster only.
+    pub opencost: Option<OpenCostSource>,
 }
 
 /// Merge per-node `kubernation.io/cost-hourly` annotations into the launch rates'
@@ -987,10 +995,22 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 }
             };
 
+            // OpenCost (hot-only): a poll loop fills this store; the snapshot uses
+            // it for the cost report when fresh, else the request-based estimate.
+            let opencost_store: OpenCostArc = Arc::new(Mutex::new(OpenCostStore::default()));
+            let mut opencost_task: Option<tokio::task::JoinHandle<()>> = None;
+
             let hot_proj =
                 client::resolve_projections(&hot_cluster.client, &args.projections).await;
             let mut hot_handle =
                 watch::spawn(&hot_cluster, ClusterId::Hot, sink.clone(), &hot_proj);
+            if let Some(src) = &args.opencost {
+                opencost_task = Some(opencost::spawn(
+                    hot_cluster.client.clone(),
+                    src.clone(),
+                    opencost_store.clone(),
+                ));
+            }
             let warm_handle = match &warm_cluster {
                 Some(c) => {
                     let proj = client::resolve_projections(&c.client, &args.projections).await;
@@ -1062,6 +1082,20 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             ready_hot.store(false, Ordering::Relaxed);
                             hot_client = c.client.clone();
                             hot_handle = watch::spawn(&c, ClusterId::Hot, sink.clone(), &proj);
+                            // Restart the OpenCost poller against the new cluster.
+                            if let Some(t) = opencost_task.take() {
+                                t.abort();
+                            }
+                            if let Ok(mut g) = opencost_store.lock() {
+                                *g = OpenCostStore::default();
+                            }
+                            if let Some(src) = &args.opencost {
+                                opencost_task = Some(opencost::spawn(
+                                    c.client.clone(),
+                                    src.clone(),
+                                    opencost_store.clone(),
+                                ));
+                            }
                             label = make_label(&c.meta.context, c.meta.platform.label());
                             *net.status.lock().unwrap() = format!("{label} · exploring…");
                             *net.snapshot.lock().unwrap() = None;
@@ -2014,6 +2048,8 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             &h.world,
                             &effective_cost_rates(&args.cost_rates, &h.world),
                         ),
+                        // OpenCost is hot-only.
+                        opencost_note: None,
                     });
                 let pair = warm
                     .as_ref()
@@ -2151,6 +2187,32 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         .then_with(|| a.cluster.cmp(&b.cluster))
                 });
 
+                // OpenCost (when fresh) replaces the requests-based estimate with
+                // invoice-grade $; else degrade to the local model AND, if --opencost
+                // was requested, surface why (so the fallback isn't silent).
+                let (hot_cost, opencost_note) = {
+                    let store = opencost_store.lock().ok();
+                    let fresh = store
+                        .as_ref()
+                        .and_then(|g| g.available.then(|| g.data.clone()).flatten());
+                    match fresh {
+                        Some(d) => (cost::from_opencost(&d), None),
+                        None => {
+                            let note = args.opencost.is_some().then(|| {
+                                store
+                                    .as_ref()
+                                    .and_then(|g| g.error.clone())
+                                    .unwrap_or_else(|| "connecting…".into())
+                            });
+                            let report = cost::cost_report(
+                                &hot_handle.world,
+                                &effective_cost_rates(&args.cost_rates, &hot_handle.world),
+                            );
+                            (report, note)
+                        }
+                    }
+                };
+
                 *net.status.lock().unwrap() = label.clone();
                 *net.snapshot.lock().unwrap() = Some(Arc::new(Snapshot {
                     hot: WorldSnap {
@@ -2158,10 +2220,8 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         observed: hot_handle.world.clone(),
                         slo: hot_slo,
                         posture: posture::posture_report(&hot_handle.world),
-                        cost: cost::cost_report(
-                            &hot_handle.world,
-                            &effective_cost_rates(&args.cost_rates, &hot_handle.world),
-                        ),
+                        cost: hot_cost,
+                        opencost_note,
                     },
                     warm,
                     pair,

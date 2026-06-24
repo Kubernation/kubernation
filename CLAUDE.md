@@ -2456,6 +2456,54 @@ what makes the interesting logic unit-testable without a cluster.
   OpenCost/cloud-billing integration, a real pricing table, a minimap cost choropleth, an
   RBAC-cost 3rd dimension; the ramp is degenerate on a uniform 1-node-per-zone cluster (spreads
   on real multi-node clusters).
+- **OpenCost integration — invoice-grade cost via the first in-cluster HTTP-source
+  substrate** (2026-06-24, v0.64.0, user "the generic Prometheus/REST poller substrate +
+  the OpenCost adapter on top"; design + adversarial review): the requests-derived cost
+  cartography ("upkeep", v0.63.0) gains an optional **OpenCost** backend for real,
+  amortized `$` — the network / load-balancer / storage / spot & reserved-discount lines
+  the requests model structurally can't see. **Reachability (load-bearing):** OpenCost is
+  reached **READ-ONLY through the kube API-server service proxy** (`GET /api/v1/namespaces/
+  {ns}/services/{svc}:{port}/proxy/allocation?…`) — the SAME authenticated kube connection
+  as the reflectors, **no port-forward, no new off-laptop egress** (distinct from the
+  Oracle's external egress), gated by `get services/proxy` RBAC. `k8s/opencost::
+  fetch_service_proxy` is the **generic, reusable substrate** (the first of a planned set
+  of optional-tool adapters — Prometheus/PromQL next); `opencost::spawn` is a
+  fetch-not-watch poller (like `metrics`) filling a shared `OpenCostStore`; no new cargo
+  feature (reuses the kube client) and no new crate (`http` + `futures` already in the
+  tree). **Pure parse** `state/opencost::parse_allocation` (`/allocation` JSON →
+  `OpenCostData`; `totalCost` is cumulative-over-window → hourly = totalCost/minutes×60;
+  tolerant, never panics). **`cost::from_opencost(oc) -> CostReport` (basis `OpenCost`)**
+  builds the SAME report the overlay/advisor/SELECTION already render — so when OpenCost is
+  fresh it simply **REPLACES** the estimate (no two-sources mixing), provenance-labelled
+  "from OpenCost"; absent/unreachable it degrades to the requests/usage estimate AND
+  surfaces WHY (STATUS shows `OpenCost off (estimate): <error>` — never a silent fallback).
+  **Scope decision (honest + certain):** the query aggregates by `namespace,controller`
+  (the workload + namespace + total + idle `$` rollups — OpenCost's invoice value); the
+  **per-node MAP overlay is deliberately NOT driven by OpenCost** (a multi-node controller
+  has no single node under controller aggregation → unreliable per-node attribution), so
+  under OpenCost `by_node` stays empty, the overlay recedes to idle-land, and the advisor
+  says so; a per-node OpenCost overlay (a verified `aggregate=node` query) is a documented
+  future increment. CLI: `--opencost [ns/svc:port]` (default `opencost/opencost:9003`) +
+  `--opencost-window` (default `1d`); hot-cluster only. READ-ONLY — no new write verb.
+  **Adversarial review (8 confirmed, all fixed):** (HIGH) the advisor gate keyed on
+  `nodes_priced==0` → an OpenCost realm (no per-node data) falsely read "no priced nodes
+  yet" and blanked the populated rollups — now gates on "any data"; (HIGH) `rate()` let
+  **Infinity** through (`INF.max(0.0)==INF`, the lone sanitizer) — now clamps non-finite to
+  0; (HIGH/MED) the false per-node "idle 0%"/"upkeep $X" mislabels are MOOT under the
+  no-per-node-OpenCost scope (`by_node` empty → the SELECTION's `by_node` guard shows
+  nothing); (MED) a silent fetch-failure fallback now surfaces the error in STATUS; (MED)
+  OpenCost `__unmounted__`/`__unallocated__` control keys no longer leak a blank-namespace
+  row (skipped in parse; empty-ns skipped in `from_opencost`); (MED) the response body is
+  **capped at 8 MiB** via `request_stream` + `take` (`request_text` buffers unbounded — a
+  hostile in-cluster Service could OOM the process); (LOW) ns/svc/window are validated
+  (DNS-1123 labels; no URL-control chars) so a typo errors → honest fallback instead of a
+  silently-wrong "from OpenCost" number. 318 core + 58 GUI tests. Verified live on kind
+  (degrade path): `--opencost` with no OpenCost installed shows "OpenCost off (estimate):
+  not found — is OpenCost installed…" + the estimate rollup + `view: cost (units)`; the
+  OpenCost-active `$` path is unit-tested (live verification needs a cloud-billing OpenCost
+  install). **Deferred:** a per-node OpenCost overlay (`aggregate=node`); a Prometheus/PromQL
+  source on the same substrate (Hubble, kube-state-metrics); warm-cluster OpenCost; folding
+  `__unmounted__` PV cost into a dedicated field rather than dropping it.
 
 ## The pair (hot/warm)
 
