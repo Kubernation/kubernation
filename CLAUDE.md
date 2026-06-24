@@ -2575,7 +2575,14 @@ what makes the interesting logic unit-testable without a cluster.
   README on-ramp — Install (release binaries + the macOS Gatekeeper step + from-source),
   RBAC requirements (read verbs + the gated write verbs + the in-app Charter), and
   Troubleshooting (won't-connect, the log location, no-metrics). 318 core + 61 GUI tests;
-  lint + actionlint clean; boots + renders with no panics logged. **Deferred (honest
+  lint + actionlint clean; boots + renders with no panics logged. **Adversarial review of
+  the crash-safety change (2 confirmed):** (CRITICAL) the poison sweep used a single-line
+  regex, so **13 multi-line `.lock()\n.unwrap()`** sites (rustfmt-split) were missed — 3
+  render-thread-reachable accessors, the very cascade the change prevents; all converted
+  (0 bare lock-unwraps remain). (MEDIUM) the panic-hook flag keyed on the thread NAME
+  `kn-net`, but the multi-threaded net runtime runs the reflectors (the world loop) on
+  `tokio-runtime-worker` threads → their panic wouldn't flag it; now gates on **ThreadId !=
+  the render thread**, catching any background-thread panic. **Deferred (honest
   scoping):** the **colorblind-safe palette** is a real refactor, not a quick swap — the
   theme's meaning colors are compile-time `const`s referenced in hundreds of draw calls, so
   a runtime `ColorMode` needs threading a palette (or `OnceLock`-resolving every color)
