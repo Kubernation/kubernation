@@ -42,20 +42,24 @@ pub fn init(level: &str) -> std::io::Result<PathBuf> {
 /// is undiagnosable — this makes every crash land in `kubernation.log`. The hook
 /// is process-wide, so it covers the render thread AND the net thread.
 pub fn install_panic_hook() {
+    // Installed from `main` → this IS the render thread. Any panic OFF it means a
+    // background thread died — the net world loop runs on `kn-net`, but its tokio
+    // reflectors/tasks run on `tokio-runtime-worker` threads (the runtime is
+    // multi-threaded), so we key on the THREAD ID, not the name, to catch them all.
+    let render_id = std::thread::current().id();
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let loc = info
             .location()
             .map(|l| format!("{}:{}", l.file(), l.line()))
             .unwrap_or_else(|| "<unknown>".into());
-        let thread = std::thread::current()
-            .name()
-            .unwrap_or("unnamed")
-            .to_string();
+        let cur = std::thread::current();
+        let thread = cur.name().unwrap_or("unnamed").to_string();
         tracing::error!(thread = %thread, location = %loc, "PANIC: {}", panic_message(info));
-        // A net-thread panic freezes the world silently — flag it so the GUI shows
-        // a fatal banner (the render thread keeps running).
-        if thread == crate::net::NET_THREAD {
+        // A panic on any background thread freezes the world silently — flag it so
+        // the GUI shows a fatal banner (the render thread keeps running). A
+        // render-thread panic aborts the app anyway, so there is no banner to show.
+        if cur.id() != render_id {
             crate::net::NET_PANICKED.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         default(info);

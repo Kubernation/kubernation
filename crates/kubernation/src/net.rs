@@ -600,7 +600,7 @@ impl Net {
     pub fn charter(&self, cluster: ClusterId, namespace: &str) -> Option<Arc<Charter>> {
         self.charter_out
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(&(cluster, namespace.to_string()))
             .cloned()
     }
@@ -610,7 +610,7 @@ impl Net {
     pub fn set_slo_target(&self, cluster: ClusterId, wr: WorkloadRef, target: Option<f64>) {
         self.slo_override_req
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .push((cluster, wr, target));
     }
 
@@ -962,7 +962,7 @@ impl Net {
     ) -> Option<ForwardInfo> {
         self.forwards
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|f| f.cluster == cluster && f.namespace == namespace && f.pod == pod)
             .cloned()
@@ -1288,7 +1288,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             let leaving_restore = net
                                 .chaos_session
                                 .lock()
-                                .unwrap()
+                                .unwrap_or_else(|e| e.into_inner())
                                 .as_ref()
                                 .filter(|s| s.cluster == ClusterId::Hot && !s.restore.is_empty())
                                 .map(|s| s.restore.clone());
@@ -1340,7 +1340,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             forwards.retain(|(c, _)| *c != ClusterId::Hot);
                             net.forwards
                                 .lock()
-                                .unwrap()
+                                .unwrap_or_else(|e| e.into_inner())
                                 .retain(|f| f.cluster != ClusterId::Hot);
                             net.forward_perm.lock().unwrap_or_else(|e| e.into_inner()).clear();
                             net.forward_perm_pending.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -1515,7 +1515,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     let cached = net
                         .charter_out
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|e| e.into_inner())
                         .contains_key(&(cluster, ns.clone()));
                     if !cached {
                         let req_gen = net.charter_gen.load(Ordering::Relaxed);
@@ -1537,7 +1537,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         if net.charter_gen.load(Ordering::Relaxed) == req_gen {
                             net.charter_out
                                 .lock()
-                                .unwrap()
+                                .unwrap_or_else(|e| e.into_inner())
                                 .insert((cluster, ns), Arc::new(charter));
                         }
                     }
@@ -1575,7 +1575,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     if let Some(msg) = immediate_err {
                         net.oracle_out
                             .lock()
-                            .unwrap()
+                            .unwrap_or_else(|e| e.into_inner())
                             .insert(hash, Arc::new(OracleReply::Err(msg)));
                     } else if let Some(c) = cfg {
                         // Bound the per-session reply caches (also cleared on
@@ -1627,7 +1627,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                         }
                                         net2.oracle_out
                                             .lock()
-                                            .unwrap()
+                                            .unwrap_or_else(|e| e.into_inner())
                                             .insert(hash, Arc::new(OracleReply::Ok(text)));
                                     }
                                     Err(e) => {
@@ -1635,7 +1635,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                         buf.lock().unwrap_or_else(|e| e.into_inner()).status = StreamStatus::Err(msg.clone());
                                         net2.oracle_out
                                             .lock()
-                                            .unwrap()
+                                            .unwrap_or_else(|e| e.into_inner())
                                             .insert(hash, Arc::new(OracleReply::Err(msg)));
                                     }
                                 }
@@ -1883,7 +1883,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     forwards.retain(|(_, f)| !dead.contains(&f.local_port));
                     net.forwards
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|e| e.into_inner())
                         .retain(|f| !dead.contains(&f.local_port));
                     *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(if dead.len() == 1 {
                         format!("forward :{} ended — pod gone", dead[0])
@@ -2101,7 +2101,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     let allowed = actions::can_evict_pod(client, &ns).await.unwrap_or(false);
                     net.evict_perm
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|e| e.into_inner())
                         .insert((cluster, ns), allowed);
                 }
 
@@ -2118,7 +2118,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     let allowed = portforward::can_forward(client, &ns).await.unwrap_or(false);
                     net.forward_perm
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|e| e.into_inner())
                         .insert((cluster, ns), allowed);
                 }
 
