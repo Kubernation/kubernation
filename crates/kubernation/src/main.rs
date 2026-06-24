@@ -218,6 +218,10 @@ struct Args {
     /// Cost: the OpenCost allocation window (default "1d"; e.g. "today", "1h").
     #[arg(long, value_name = "WINDOW")]
     opencost_window: Option<String>,
+    /// Use the colour-blind-safe palette (red-green safe: "healthy/good" greens
+    /// become a steel blue, so blue/amber/red are all distinguishable).
+    #[arg(long)]
+    colorblind: bool,
     /// Start with a map overlay active: "terrain" (default), "pressure"
     /// (cpu/mem heat), "replicas" (workload health), "namespace" (territory),
     /// "walls" (NetworkPolicy segmentation) or "saturation" (the 4th golden
@@ -518,6 +522,8 @@ async fn main() {
     }
     // Log any panic (render OR net thread) to that file before it unwinds.
     logging::install_panic_hook();
+    // Select the palette before anything draws (the whole render reads it).
+    theme::set_colorblind(args.colorblind);
     text::init();
     logo::init();
     let shot = args.screenshot.clone();

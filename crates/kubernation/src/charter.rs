@@ -267,7 +267,7 @@ impl CharterView {
 
 fn role_color(role: Role) -> Color {
     match role {
-        Role::Good => GOOD,
+        Role::Good => good(),
         Role::Crit => CRIT,
         Role::Warn => WARN,
         Role::Dim => DIM,

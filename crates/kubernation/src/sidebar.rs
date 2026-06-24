@@ -258,7 +258,7 @@ pub fn posture_chip(r: &PostureReport) -> (String, PostureTier) {
 /// calm stays calm — colour discipline).
 fn posture_tier_stone(tier: PostureTier) -> Color {
     match tier {
-        PostureTier::Fortified => darker(GOOD, 0.55),
+        PostureTier::Fortified => darker(good(), 0.55),
         PostureTier::Defended => STONE_INK,
         PostureTier::Exposed => STONE_WARN,
         PostureTier::Breached => STONE_CRIT,

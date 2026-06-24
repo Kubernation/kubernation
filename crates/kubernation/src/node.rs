@@ -444,7 +444,7 @@ fn bucket_color(ratio: f64) -> Color {
     } else if ratio >= 0.7 {
         WARN
     } else {
-        Color::new(0.35, 0.60, 0.30, 1.0)
+        gauge_ok()
     }
 }
 

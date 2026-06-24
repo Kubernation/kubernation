@@ -126,7 +126,7 @@ fn sev_color(s: Option<Severity>) -> Color {
         Some(Severity::Critical) => CRIT,
         Some(Severity::Warning) => WARN,
         Some(Severity::Info) => STRUCT,
-        None => GOOD,
+        None => good(),
     }
 }
 

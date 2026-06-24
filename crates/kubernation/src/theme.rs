@@ -2,11 +2,54 @@
 //! terrain colors for the living world, saturated red/yellow reserved for
 //! attention.
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use kubernation_core::state::attention::Severity;
 use kubernation_core::state::model::NodeHealth;
 use kubernation_core::state::saturation::SatLevel;
 use kubernation_core::util::fnv1a64;
 use macroquad::prelude::*;
+
+// --- colour-vision mode ----------------------------------------------------
+// The product's whole grammar rides on green (healthy/good/calm) vs red
+// (critical/NotReady), which red-green colour-blindness (deuteranopia +
+// protanopia, ~8% of men) cannot distinguish. The colour-blind palette moves the
+// GREEN axis to a steel **blue** — blue / amber / red are all mutually
+// distinguishable for both types — leaving red (CRIT) and amber (WARN), which are
+// already distinguishable, untouched. Set once at startup from `--colorblind`;
+// every meaning-green funnels through `cb_*` so a single switch covers the map
+// terrain, the overlays, the marks, and the advisor text. (Tritanopia — rare
+// blue-yellow — is out of scope; it would want a different remap.)
+static COLOR_MODE: AtomicU8 = AtomicU8::new(0);
+
+/// Switch the palette to the colour-blind-safe variant (call once at startup,
+/// before any draw). `false` is the standard palette (the default).
+pub fn set_colorblind(on: bool) {
+    COLOR_MODE.store(u8::from(on), Ordering::Relaxed);
+}
+
+/// Is the colour-blind-safe palette active?
+pub fn colorblind() -> bool {
+    COLOR_MODE.load(Ordering::Relaxed) != 0
+}
+
+/// Bright "good/healthy" colour for text + marks on dark panels (the steel blue
+/// in colour-blind mode, else the standard green).
+pub const fn cb_good_default() -> Color {
+    Color::new(0.52, 0.80, 0.47, 1.0)
+}
+/// Two-shade "healthy/calm" LAND pair for the map (steel blue in colour-blind
+/// mode) — the shared substitute wherever terrain would otherwise be green.
+fn cb_land(std: (Color, Color)) -> (Color, Color) {
+    if colorblind() {
+        (
+            Color::new(0.22, 0.43, 0.62, 1.0),
+            Color::new(0.27, 0.49, 0.68, 1.0),
+        )
+    } else {
+        std
+    }
+}
 
 pub const OCEAN: Color = Color::new(0.06, 0.17, 0.30, 1.0);
 pub const WAVE: Color = Color::new(0.11, 0.25, 0.41, 1.0);
@@ -18,9 +61,26 @@ pub const INK: Color = Color::new(0.95, 0.94, 0.90, 1.0);
 pub const DIM: Color = Color::new(0.62, 0.60, 0.55, 1.0);
 pub const CRIT: Color = Color::new(0.83, 0.18, 0.13, 1.0);
 pub const WARN: Color = Color::new(0.88, 0.72, 0.18, 1.0);
-/// Readable "healthy / good" green for text on the dark window panels
-/// (advisor screens). Meaning color, like CRIT/WARN — not decoration.
-pub const GOOD: Color = Color::new(0.52, 0.80, 0.47, 1.0);
+/// Readable "healthy / good" color for text on the dark window panels (advisor
+/// screens). Meaning color, like CRIT/WARN — green by default, a steel blue under
+/// the colour-blind palette (red-green safe). A fn, not a const, so it can switch.
+pub fn good() -> Color {
+    if colorblind() {
+        Color::new(0.40, 0.68, 0.98, 1.0)
+    } else {
+        cb_good_default()
+    }
+}
+
+/// "Healthy / low / full" fill for a gauge bar or legend mark (green by default,
+/// the steel blue under the colour-blind palette) — the gauge analogue of [`good`].
+pub fn gauge_ok() -> Color {
+    if colorblind() {
+        Color::new(0.34, 0.58, 0.86, 1.0)
+    } else {
+        Color::new(0.35, 0.60, 0.30, 1.0)
+    }
+}
 pub const ROAD: Color = Color::new(0.42, 0.30, 0.18, 1.0);
 pub const STRUCT: Color = Color::new(0.45, 0.85, 0.90, 1.0);
 pub const HOUSE: Color = Color::new(0.82, 0.78, 0.68, 1.0);
@@ -77,6 +137,7 @@ pub const POP_CALM: Color = Color::new(0.88, 0.83, 0.66, 1.0);
 
 pub fn terrain(h: NodeHealth) -> Color {
     match h {
+        NodeHealth::Healthy if colorblind() => Color::new(0.24, 0.44, 0.62, 1.0),
         NodeHealth::Healthy => Color::new(0.30, 0.50, 0.24, 1.0),
         NodeHealth::Cordoned => Color::new(0.55, 0.50, 0.24, 1.0),
         NodeHealth::Pressure => Color::new(0.62, 0.42, 0.18, 1.0),
@@ -89,10 +150,10 @@ pub fn terrain(h: NodeHealth) -> Color {
 /// reads as terrain, while saturated red/yellow stay reserved for attention.
 pub fn iso_terrain_pair(h: NodeHealth) -> (Color, Color) {
     match h {
-        NodeHealth::Healthy => (
+        NodeHealth::Healthy => cb_land((
             Color::new(0.30, 0.49, 0.25, 1.0),
             Color::new(0.35, 0.55, 0.29, 1.0),
-        ),
+        )),
         NodeHealth::Cordoned => (
             Color::new(0.55, 0.50, 0.26, 1.0),
             Color::new(0.60, 0.55, 0.30, 1.0),
@@ -121,10 +182,10 @@ pub fn heat_pair(level: u8) -> (Color, Color) {
             Color::new(0.62, 0.46, 0.16, 1.0),
             Color::new(0.68, 0.52, 0.20, 1.0),
         ),
-        _ => (
+        _ => cb_land((
             Color::new(0.26, 0.46, 0.24, 1.0),
             Color::new(0.31, 0.52, 0.28, 1.0),
-        ),
+        )),
     }
 }
 
@@ -295,6 +356,7 @@ pub fn ascii(s: &str) -> String {
 pub fn sync_color(state: &kubernation_core::state::pair::SyncState) -> Color {
     use kubernation_core::state::pair::SyncState;
     match state {
+        SyncState::InSync if colorblind() => Color::new(0.42, 0.62, 0.92, 1.0),
         SyncState::InSync => Color::new(0.50, 0.65, 0.45, 1.0),
         SyncState::Drift { .. } => WARN,
         SyncState::OnlyHot => CRIT,
@@ -316,6 +378,26 @@ pub fn sync_on_stone(state: &kubernation_core::state::pair::SyncState) -> Color 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colorblind_palette_swaps_meaning_greens_to_blue() {
+        // Standard: "good"/healthy reads green (green channel dominates blue).
+        set_colorblind(false);
+        assert!(good().g > good().b, "standard good is green");
+        let t = terrain(NodeHealth::Healthy);
+        assert!(t.g > t.b, "standard healthy land is green");
+        assert!(heat_pair(0).0.g > heat_pair(0).0.b, "calm heat is green");
+
+        // Colour-blind: those greens become blue (blue channel dominates green)…
+        set_colorblind(true);
+        assert!(good().b > good().g, "colour-blind good is blue");
+        let tb = terrain(NodeHealth::Healthy);
+        assert!(tb.b > tb.g, "colour-blind healthy land is blue");
+        assert!(heat_pair(0).0.b > heat_pair(0).0.g, "calm heat is blue");
+        // (Red CRIT + amber WARN are consts — untouched in both modes by design.)
+
+        set_colorblind(false); // reset for the rest of the suite
+    }
 
     #[test]
     fn cost_pair_is_a_monotonic_brown_ramp() {

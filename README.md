@@ -347,6 +347,9 @@ The palette is deliberately restrained: parchment chrome, green land, blue ocean
 — with **saturated red and yellow reserved strictly for things that need
 attention**, so trouble pops against terrain instead of competing with it.
 
+Run with `--colorblind` for a red-green-safe palette: the "healthy" greens become a
+steel blue (so blue / amber / red are all distinguishable), red and amber unchanged.
+
 ---
 
 ## Controls

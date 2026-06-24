@@ -733,7 +733,7 @@ fn gauge(x: f32, y: f32, w: f32, label: &str, value: i32, max: i32, col: Color) 
         0.0
     };
     let fill = if value >= max && max > 0 {
-        Color::new(0.35, 0.60, 0.30, 1.0)
+        gauge_ok()
     } else {
         col
     };
@@ -768,7 +768,7 @@ fn treasury_summary(st: Option<&SloStatus>) -> (String, Color) {
                 s.sli * 100.0,
                 s.target * 100.0
             ),
-            GOOD,
+            good(),
         ),
         // Fast burn pages (red), slow burn tickets (yellow) — the coin-gauge colour
         // matches the attention queue's Critical/Warning. Both rates shown.
@@ -876,7 +876,7 @@ mod tests {
         assert_eq!(treasury_summary(None).1, DIM);
         // Each state maps to its meaning colour + a recognisable phrase.
         let (t, c) = treasury_summary(Some(&status(BudgetState::Healthy, 0.5)));
-        assert_eq!(c, GOOD);
+        assert_eq!(c, good());
         assert!(t.contains("budget"));
         assert_eq!(
             treasury_summary(Some(&status(BudgetState::Warming, 1.0))).1,

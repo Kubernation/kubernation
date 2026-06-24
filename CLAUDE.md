@@ -2583,14 +2583,36 @@ what makes the interesting logic unit-testable without a cluster.
   `kn-net`, but the multi-threaded net runtime runs the reflectors (the world loop) on
   `tokio-runtime-worker` threads → their panic wouldn't flag it; now gates on **ThreadId !=
   the render thread**, catching any background-thread panic. **Deferred (honest
-  scoping):** the **colorblind-safe palette** is a real refactor, not a quick swap — the
-  theme's meaning colors are compile-time `const`s referenced in hundreds of draw calls, so
-  a runtime `ColorMode` needs threading a palette (or `OnceLock`-resolving every color)
-  through the draw layer; and **persisted preferences** (a `prefs.toml`) is pure
+  scoping):** the **colorblind-safe palette** was scoped here as a real refactor and then
+  built as a follow-up (v0.67.0, below); **persisted preferences** (a `prefs.toml`) is pure
   convenience, below the robustness/accessibility bar of this round. **Cannot be done
   here:** *proving* the multi-platform CI green needs an actual push (the workflows are
   written + `actionlint`-clean) and macOS code-signing/notarization needs the operator's
   Apple Developer cert.
+- **Colour-blind-safe palette** (2026-06-24, v0.67.0, user "yes, colorblind palette"; the
+  v1-hardening item deferred as a refactor): the product's whole grammar is **green
+  (healthy/good/calm/low) vs red (critical/NotReady/high)**, which red-green colour-blindness
+  (deuteranopia + protanopia, ~8% of men) can't distinguish. **Insight that contained the
+  change:** only the GREEN axis needs to move — to a steel **blue** — because blue / amber /
+  red are all mutually distinguishable; **red (CRIT) and amber (WARN) are left untouched**
+  (already distinguishable, and glyph-redundant in the queue). So instead of converting all
+  ~220 `CRIT`/`WARN`/`GOOD` const references to runtime, only the *green* meaning-colors
+  switch: a `COLOR_MODE` atomic (`theme::set_colorblind`/`colorblind()`, set once at startup
+  from `--colorblind`, before any draw), the `GOOD` const → a `good()` fn + a `gauge_ok()`
+  fn (the gauge/fill green), and the green positions of the funnel fns (`terrain` /
+  `iso_terrain_pair` / `heat_pair` / `sync_color` / `pod_color`) branch on `colorblind()`.
+  `GOOD`→`good()` was a scripted whole-word replace (35 sites). READ-ONLY; no posture
+  change. **Adversarial review (2 confirmed missed meaning-greens, both folded):** a
+  `plan.rs const GREEN` (commit/plan-ok, the opposite of the CRIT-red failure rows — a const
+  can't switch) and the context-picker active-dot, both → `gauge_ok()`; the review confirmed
+  coverage is otherwise complete (every other green funnels through `good()`/`gauge_ok()`/
+  `cb_land` or has an inline `colorblind()` arm). Pure palette-switch test + gui-smoke
+  `colorblind`; verified live (the map's healthy land + minimap go steel-blue under
+  `--colorblind`, distinct from the red trouble marks). **Tritanopia (rare blue-yellow) is
+  out of scope** — it would want a different remap. **Deferred:** distinct
+  deuteranopia/protanopia presets (one red-green-safe palette serves both); namespace-hue
+  categorical colours (labelled, lower priority); persisting the choice (needs the deferred
+  `prefs.toml`).
 
 ## The pair (hot/warm)
 

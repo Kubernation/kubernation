@@ -9,6 +9,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Colour-blind-safe palette** (`--colorblind`). The product's grammar rides on
+  green (healthy / good / calm / low) vs red (critical / NotReady / high), which
+  red-green colour-blindness (deuteranopia + protanopia, ~8% of men) can't tell
+  apart. The flag moves the green meaning-axis to a steel **blue** — blue / amber /
+  red are all mutually distinguishable — across the map terrain, every overlay, the
+  marks, the gauges, and the advisor text; red (critical) and amber (warning) are
+  left unchanged. One switch (`theme::set_colorblind`) read by every meaning-green.
+  (Tritanopia — rare blue-yellow — is out of scope.)
+
 - **Hardening — crash safety + error visibility (v1 polish round).** A global panic
   hook now logs every panic (thread · location · message) to
   `~/.local/state/kubernation/kubernation.log` before it unwinds, so a crash launched

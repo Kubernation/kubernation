@@ -67,7 +67,7 @@ fn role_color(r: Role) -> Color {
         Role::Body => INK,
         Role::Dim => DIM,
         Role::Warn => WARN,
-        Role::Good => GOOD,
+        Role::Good => good(),
     }
 }
 
@@ -1360,7 +1360,7 @@ impl OracleView {
                 if id == FieldId::Url {
                     let kind = endpoint_kind(self.f_url.buf.trim());
                     let (t, c) = match kind {
-                        Endpoint::Local => ("LOCAL", GOOD),
+                        Endpoint::Local => ("LOCAL", good()),
                         Endpoint::Remote => ("REMOTE — publishing", WARN),
                     };
                     text(t, fr.x + fr.w + 8.0, y + 13.0, 12.0, c);
@@ -1396,7 +1396,7 @@ impl OracleView {
                         draw_rectangle(r.x, r.y, r.w, r.h, lighter(PLATE, 1.2));
                     }
                     let mark = if cur { "> " } else { "  " };
-                    let role = if cur { GOOD } else { INK };
+                    let role = if cur { good() } else { INK };
                     text(
                         ascii(&format!("{mark}{m}")),
                         r.x + 4.0,
@@ -1452,7 +1452,7 @@ impl OracleView {
 
             // Action buttons.
             activate_btn = Rect::new(b.x, y, 150.0, 20.0);
-            draw_btn(activate_btn, "Use this endpoint", GOOD, mouse);
+            draw_btn(activate_btn, "Use this endpoint", good(), mouse);
             save_btn = Rect::new(b.x + 160.0, y, 160.0, 20.0);
             draw_btn(save_btn, "Save (incl. token)", PARCHMENT, mouse);
             delete_btn = Rect::new(b.x + 330.0, y, 110.0, 20.0);
@@ -1488,7 +1488,7 @@ impl OracleView {
 
         if let Some(note) = &self.settings_note {
             y += 4.0;
-            text(ascii(note), b.x, y + 12.0, 13.0, GOOD);
+            text(ascii(note), b.x, y + 12.0, 13.0, good());
         }
 
         // --- input ---------------------------------------------------------
@@ -1995,7 +1995,7 @@ impl OracleView {
                             let (lbl, col) = if staged {
                                 ("staged", DIM)
                             } else {
-                                ("Stage", GOOD)
+                                ("Stage", good())
                             };
                             let bg = if !staged && br.contains(mouse) {
                                 lighter(PLATE, 1.7)
@@ -2121,7 +2121,7 @@ impl OracleView {
                             x,
                             cx.y,
                             13.0,
-                            GOOD,
+                            good(),
                         );
                     }
                     LensState::Fetching => {

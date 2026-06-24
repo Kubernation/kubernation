@@ -456,6 +456,9 @@ fn page_legend(cx: &mut Ctx) {
         "Gauge",
         "cpu / mem per node: live usage when metrics-server is present, else scheduling pressure (requests / allocatable).",
     );
+    cx.para(
+        "Colour-blind? Launch with --colorblind: the green \"healthy\" axis becomes a steel blue, so blue / amber / red are all distinguishable (red-green safe; red + amber are unchanged).",
+    );
 }
 
 fn page_world(cx: &mut Ctx) {
@@ -650,13 +653,7 @@ fn draw_mark(m: Mark, c: Vec2) {
         Mark::Gauge => {
             let bw = 24.0;
             draw_rectangle(c.x - bw / 2.0, c.y - 4.0, bw, 8.0, darker(PANEL, 0.6));
-            draw_rectangle(
-                c.x - bw / 2.0,
-                c.y - 4.0,
-                bw * 0.62,
-                8.0,
-                Color::new(0.35, 0.60, 0.30, 1.0),
-            );
+            draw_rectangle(c.x - bw / 2.0, c.y - 4.0, bw * 0.62, 8.0, gauge_ok());
             draw_rectangle_lines(
                 c.x - bw / 2.0,
                 c.y - 4.0,

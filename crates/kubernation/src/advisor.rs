@@ -428,7 +428,7 @@ fn page_rightsizing(cx: &mut Ctx, r: &RightSizingReport) {
         let (color, bold) = match role {
             RsRole::Headline => (PARCHMENT, true),
             RsRole::Heading => (PARCHMENT, true),
-            RsRole::Good => (GOOD, false),
+            RsRole::Good => (good(), false),
             RsRole::Warn => (WARN, false),
             RsRole::Crit => (CRIT, false),
             RsRole::Dim => (DIM, false),
@@ -719,7 +719,7 @@ fn page_hardening(cx: &mut Ctx, r: &HardeningReport) {
     for (line, role) in hardening_lines(r) {
         let (color, bold) = match role {
             RsRole::Headline | RsRole::Heading => (PARCHMENT, true),
-            RsRole::Good => (GOOD, false),
+            RsRole::Good => (good(), false),
             RsRole::Warn => (WARN, false),
             RsRole::Crit => (CRIT, false),
             RsRole::Dim => (DIM, false),
@@ -823,7 +823,7 @@ fn page_posture(cx: &mut Ctx, r: &PostureReport) {
     for (i, (line, role)) in posture_lines(r).into_iter().enumerate() {
         let (color, base_bold) = match role {
             RsRole::Headline | RsRole::Heading => (PARCHMENT, true),
-            RsRole::Good => (GOOD, false),
+            RsRole::Good => (good(), false),
             RsRole::Warn => (WARN, false),
             RsRole::Crit => (CRIT, false),
             RsRole::Dim => (DIM, false),
@@ -832,7 +832,7 @@ fn page_posture(cx: &mut Ctx, r: &PostureReport) {
         let bold = base_bold || i == 0;
         let color = if i == 0 {
             match role {
-                RsRole::Good => GOOD,
+                RsRole::Good => good(),
                 RsRole::Warn => WARN,
                 RsRole::Crit => CRIT,
                 RsRole::Dim => DIM,
@@ -856,7 +856,7 @@ fn warn_if(n: usize, col: Color) -> Color {
 fn page_health(cx: &mut Ctx, r: &HealthReport) {
     cx.heading("PROVINCES (NODES)");
     cx.stat("total", &r.nodes_total.to_string(), INK);
-    cx.stat("healthy", &r.nodes_healthy.to_string(), GOOD);
+    cx.stat("healthy", &r.nodes_healthy.to_string(), good());
     cx.stat(
         "cordoned",
         &r.nodes_cordoned.to_string(),
@@ -875,7 +875,7 @@ fn page_health(cx: &mut Ctx, r: &HealthReport) {
 
     cx.heading("CITIZENS (PODS)");
     cx.stat("total", &r.pods_total.to_string(), INK);
-    cx.stat("running", &r.pods_running.to_string(), GOOD);
+    cx.stat("running", &r.pods_running.to_string(), good());
     cx.stat(
         "starting",
         &r.pods_starting.to_string(),
@@ -914,7 +914,7 @@ fn page_health(cx: &mut Ctx, r: &HealthReport) {
 fn page_storage(cx: &mut Ctx, r: &StorageReport) {
     cx.heading("GRANARIES (PVCs)");
     cx.stat("total", &r.total.to_string(), INK);
-    cx.stat("bound", &r.bound.to_string(), GOOD);
+    cx.stat("bound", &r.bound.to_string(), good());
     cx.stat("pending", &r.pending.to_string(), warn_if(r.pending, WARN));
 
     cx.heading("PENDING CLAIMS");
@@ -1038,7 +1038,7 @@ fn page_network(cx: &mut Ctx, r: &NetworkReport, walls: &NetpolReport) {
     for (line, role) in walls_lines(walls) {
         let (color, bold) = match role {
             RsRole::Headline | RsRole::Heading => (PARCHMENT, role == RsRole::Headline),
-            RsRole::Good => (GOOD, false),
+            RsRole::Good => (good(), false),
             RsRole::Warn => (WARN, false),
             RsRole::Crit => (CRIT, false),
             RsRole::Dim => (DIM, false),

@@ -101,6 +101,7 @@ pub fn draw_map_title(title: &str, subtitle: Option<&str>, map_w: f32) {
 
 pub(crate) fn pod_color(s: PodState) -> Color {
     match s {
+        PodState::Ok if colorblind() => Color::new(0.40, 0.66, 0.95, 1.0),
         PodState::Ok => Color::new(0.45, 0.70, 0.40, 1.0),
         PodState::Starting => Color::new(0.40, 0.75, 0.80, 1.0),
         PodState::Pending => DIM,
@@ -893,12 +894,7 @@ pub fn draw_picker(
             stone_well(r.x, r.y, r.w, r.h);
         }
         if ctx == current {
-            draw_circle(
-                r.x + 12.0,
-                ry + 13.0,
-                4.0,
-                Color::new(0.45, 0.78, 0.45, 1.0),
-            );
+            draw_circle(r.x + 12.0, ry + 13.0, 4.0, gauge_ok());
         }
         let row_ink = if i == idx { INK } else { STONE_INK };
         text(ascii(ctx), r.x + 26.0, ry + 18.0, 15.0, row_ink);

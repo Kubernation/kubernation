@@ -18,8 +18,6 @@ use crate::text::text;
 use crate::theme::*;
 use crate::window::draw_window;
 
-const GREEN: Color = Color::new(0.32, 0.55, 0.30, 1.0);
-
 /// What the review window asks the caller to do this frame.
 #[derive(Default)]
 pub struct PlanAction {
@@ -65,7 +63,11 @@ pub fn draw_plan(
         let (header, hcol) = match outcome {
             Some(o) if o.applied => {
                 let n_ok = o.rows.iter().filter(|r| r.ok).count();
-                let col = if n_ok == o.rows.len() { GREEN } else { WARN };
+                let col = if n_ok == o.rows.len() {
+                    gauge_ok()
+                } else {
+                    WARN
+                };
                 (format!("Committed {n_ok}/{} change(s).", o.rows.len()), col)
             }
             Some(_) => (
@@ -138,7 +140,11 @@ pub fn draw_plan(
             draw_line(b.x, ry, b.x + b.w, ry, 1.0, darker(PARCHMENT, 0.5));
             ry += 4.0;
             for r in o.rows.iter().take(4) {
-                let (mark, col) = if r.ok { ("ok ", GREEN) } else { ("x  ", CRIT) };
+                let (mark, col) = if r.ok {
+                    ("ok ", gauge_ok())
+                } else {
+                    ("x  ", CRIT)
+                };
                 let line = if r.detail.is_empty() {
                     format!("{mark}{}", r.label)
                 } else {
@@ -157,9 +163,9 @@ pub fn draw_plan(
     let cbg = if !enabled {
         darker(PLATE, 0.7)
     } else if commit.contains(mouse) {
-        lighter(GREEN, 1.25)
+        lighter(gauge_ok(), 1.25)
     } else {
-        GREEN
+        gauge_ok()
     };
     draw_rectangle(commit.x, commit.y, commit.w, commit.h, cbg);
     draw_rectangle_lines(

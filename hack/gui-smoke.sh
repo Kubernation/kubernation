@@ -49,6 +49,7 @@ STATES=(
   "overlay-saturation|--overlay saturation"
   "overlay-cost|--overlay cost"
   "opencost-degrade|--opencost --overlay cost"
+  "colorblind|--colorblind"
   "workloads|--workloads"
   "concern-logs|--concern-logs"
   "namespace-scope|--namespace kubernation-demo"

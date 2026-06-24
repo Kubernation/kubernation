@@ -420,7 +420,7 @@ impl Chaos {
                         ry += 16.0;
                     }
                     if !plan.restore.is_empty() {
-                        text("(restorable)", right_x, ry + 12.0, 12.0, GOOD);
+                        text("(restorable)", right_x, ry + 12.0, 12.0, good());
                         ry += 16.0;
                         restorable = true;
                     }
@@ -439,7 +439,7 @@ impl Chaos {
                 box_r.w,
                 box_r.h,
                 if self.auto_restore {
-                    darker(GOOD, 0.7)
+                    darker(good(), 0.7)
                 } else {
                     darker(PLATE, 1.2)
                 },
@@ -531,7 +531,7 @@ impl Chaos {
             if sess.recovery_series.len() >= 2 {
                 let spark = Rect::new(b.x + b.w - 150.0, sy + 38.0, 142.0, 30.0);
                 text("recovery", spark.x, spark.y - 3.0, 11.0, DIM);
-                crate::panels::draw_sparkline(spark, &sess.recovery_series, 1.0, GOOD);
+                crate::panels::draw_sparkline(spark, &sess.recovery_series, 1.0, good());
             }
             // Per-step errors, if any.
             if let Some(out) = &sess.outcome {
@@ -557,9 +557,9 @@ impl Chaos {
                     rb.y,
                     rb.w,
                     rb.h,
-                    if on { GOOD } else { darker(GOOD, 0.7) },
+                    if on { good() } else { darker(good(), 0.7) },
                 );
-                draw_rectangle_lines(rb.x, rb.y, rb.w, rb.h, 1.0, GOOD);
+                draw_rectangle_lines(rb.x, rb.y, rb.w, rb.h, 1.0, good());
                 let m = text_size("Restore", 14.0);
                 text(
                     "Restore",
@@ -820,7 +820,7 @@ impl Chaos {
 
 fn role_color(role: ScoreRole) -> Color {
     match role {
-        ScoreRole::Good => GOOD,
+        ScoreRole::Good => good(),
         ScoreRole::Warn => WARN,
         ScoreRole::Bad => CRIT,
         ScoreRole::Info => INK,

@@ -225,16 +225,16 @@ pub fn forward_button(
 ) -> Option<ForwardBtn> {
     let on = r.contains(mouse);
     if let Some(port) = active {
-        let fill = if on { GOOD } else { darker(GOOD, 0.5) };
+        let fill = if on { good() } else { darker(good(), 0.5) };
         draw_rectangle(r.x, r.y, r.w, r.h, fill);
-        draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, GOOD);
+        draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, good());
         // At rest show the port; on hover show the action.
         let label = if on {
             "stop".to_string()
         } else {
             format!(":{port}")
         };
-        let tc = if on { INK } else { lighter(GOOD, 1.4) };
+        let tc = if on { INK } else { lighter(good(), 1.4) };
         let tm = text_size(&label, 12.0);
         text(
             &label,
@@ -248,12 +248,12 @@ pub fn forward_button(
     let (fill, border, tc, label) = match allowed {
         Some(true) => (
             if on {
-                darker(GOOD, 0.7)
+                darker(good(), 0.7)
             } else {
-                darker(GOOD, 0.45)
+                darker(good(), 0.45)
             },
-            GOOD,
-            if on { INK } else { lighter(GOOD, 1.3) },
+            good(),
+            if on { INK } else { lighter(good(), 1.3) },
             "fwd",
         ),
         Some(false) => (darker(PLATE, 1.3), DIM, DIM, "locked"),
