@@ -3,6 +3,7 @@ pub mod attention;
 pub mod blast;
 pub mod chaos;
 pub mod charter;
+pub mod cost;
 pub mod diagnose;
 pub mod filter;
 pub mod harden;

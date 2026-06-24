@@ -5,6 +5,7 @@
 //! queue now lives in the right column's ATTENTION section — see `sidebar.rs`.)
 
 use kubernation_core::events::ClusterId;
+use kubernation_core::state::cost::{self, CostBasis, NodeCost};
 use kubernation_core::state::logline::{self, FilterExpr, Level};
 use kubernation_core::state::model::{NodeHealth, PodState, WorkloadRef};
 use kubernation_core::state::saturation::{NodeSaturation, SatLevel};
@@ -133,6 +134,11 @@ pub fn region_lines(
         let (tag, color) = cluster_tag(sw.id);
         lines.push((format!("{tag} {}", sw.label), color));
     }
+    // This world's upkeep (for the Cost-overlay SELECTION line) — already on the snap.
+    let cost = match sw.id {
+        ClusterId::Hot => &snap.hot.cost,
+        ClusterId::Warm => snap.warm.as_ref().map_or(&snap.hot.cost, |w| &w.cost),
+    };
     if let Some((_, m)) = sw.world.coast_at(local.0, local.1) {
         // A coast marker (not a land region): the city's harbor / gate.
         let (title, what) = match m.kind {
@@ -178,9 +184,14 @@ pub fn region_lines(
                     lines.push((st.describe(sw.id), sync_on_stone(st)));
                 }
                 // The city sits on the tinted province — show its host node's
-                // strain too, so the distinguisher isn't lost on the settlement.
+                // strain / upkeep too, so the distinguisher isn't lost on the settlement.
                 if overlay == Overlay::Saturation {
                     lines.extend(saturation_lines(&p.tile.saturation));
+                }
+                if overlay == Overlay::Cost
+                    && let Some(nc) = cost.by_node.get(&p.tile.name)
+                {
+                    lines.extend(cost_lines(nc));
                 }
             }
             Region::Province(p) => {
@@ -199,6 +210,12 @@ pub fn region_lines(
                 // dimension(s) — the distinguisher the Pressure overlay lacks.
                 if overlay == Overlay::Saturation {
                     lines.extend(saturation_lines(&p.tile.saturation));
+                }
+                // Under the Cost overlay, name the node's upkeep + idle drain.
+                if overlay == Overlay::Cost
+                    && let Some(nc) = cost.by_node.get(&p.tile.name)
+                {
+                    lines.extend(cost_lines(nc));
                 }
             }
             Region::Structure(_, s) => {
@@ -226,6 +243,43 @@ pub fn region_lines(
 /// by its own level on the stone column. A fully-calm node yields one "calm"
 /// line. Unit-tested (the testability policy). Conditions render "(pegged)"; an
 /// omitted dimension (no honest source) simply isn't in `sat.dims`.
+/// SELECTION/tooltip lines for a node's upkeep, shown under the Cost overlay.
+/// PURE + unit-tested. Unitless shows "cost units" (no `$`); the idle line is the
+/// actionable bit (on-stone cyan when notable, matching the map's idle coin).
+pub fn cost_lines(nc: &NodeCost) -> Vec<(String, Color)> {
+    if !nc.priced {
+        return vec![("upkeep: unpriced".into(), STONE_INK_DIM)];
+    }
+    let idle = 1.0 - nc.used_frac;
+    let idle_col = if idle >= cost::IDLE_NOTABLE {
+        STONE_STRUCT
+    } else {
+        STONE_INK_DIM
+    };
+    let mut lines = vec![
+        (
+            format!("upkeep: {}", cost::fmt_monthly(nc.per_hour, nc.mode)),
+            STONE_INK,
+        ),
+        (
+            format!(
+                "idle {:.0}% · {}",
+                idle * 100.0,
+                cost::fmt_monthly(nc.idle_per_hour, nc.mode)
+            ),
+            idle_col,
+        ),
+    ];
+    if nc.basis == CostBasis::Requests {
+        lines.push(("(idle est. from requests)".into(), STONE_INK_DIM));
+    }
+    // The only on-map $ figure carries the same honesty caveat the advisor does.
+    if nc.mode == cost::CostMode::Currency {
+        lines.push(("(est., not a cloud bill)".into(), STONE_INK_DIM));
+    }
+    lines
+}
+
 pub fn saturation_lines(sat: &NodeSaturation) -> Vec<(String, Color)> {
     let ink = |l: SatLevel| match l {
         SatLevel::Calm => STONE_INK_DIM,
@@ -925,12 +979,17 @@ mod tests {
             (c.x, c.y)
         };
         let posture = kubernation_core::state::posture::posture_report(&world);
+        let cost = kubernation_core::state::cost::cost_report(
+            &world,
+            &kubernation_core::state::cost::CostRates::default(),
+        );
         let snap = Snapshot {
             hot: WorldSnap {
                 models,
                 observed: world,
                 slo: Arc::new(std::collections::HashMap::new()),
                 posture,
+                cost,
             },
             warm: None,
             pair: None,
@@ -973,6 +1032,38 @@ mod tests {
         let cl = saturation_lines(&calm);
         assert_eq!(cl.len(), 1);
         assert!(cl[0].0.contains("calm"));
+    }
+
+    #[test]
+    fn cost_lines_selection_unitless_and_unpriced() {
+        let nc = NodeCost {
+            per_hour: 6.0,
+            idle_per_hour: 3.0,
+            used_frac: 0.5,
+            priced: true,
+            mode: cost::CostMode::Unitless,
+            basis: CostBasis::Requests,
+            overcommitted: false,
+        };
+        let lines = cost_lines(&nc);
+        let txt: String = lines
+            .iter()
+            .map(|(s, _)| s.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(
+            txt.contains("upkeep") && txt.contains("units") && !txt.contains('$'),
+            "{txt}"
+        );
+        assert!(txt.contains("idle 50%"), "{txt}");
+        // The idle is notable (50% ≥ 40%) → on-stone cyan.
+        assert!(lines.iter().any(|(_, c)| *c == STONE_STRUCT));
+        // An unpriced node says so, never a false 0.
+        let up = cost_lines(&NodeCost {
+            priced: false,
+            ..Default::default()
+        });
+        assert!(up[0].0.contains("unpriced"));
     }
 
     #[test]

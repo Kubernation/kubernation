@@ -193,6 +193,21 @@ struct Args {
     /// `kubernation.io/slo-target` annotation or the city-window stepper.
     #[arg(long, value_name = "PCT")]
     slo_target: Option<String>,
+    /// Cost (upkeep): $ per cpu-core-hour. Setting any rate switches the cost
+    /// overlay/advisor from relative "cost units" to real $ (with a ×730 monthly).
+    #[arg(long, value_name = "USD")]
+    cpu_rate: Option<f64>,
+    /// Cost: $ per GiB-hour (binary GiB, matching kube quantities).
+    #[arg(long, value_name = "USD")]
+    mem_rate: Option<f64>,
+    /// Cost: per-node hourly $ override, repeatable as NODE=USD (e.g.
+    /// `--node-rate worker-1=0.096`). Highest precedence; also via a
+    /// `kubernation.io/cost-hourly` node annotation.
+    #[arg(long, value_name = "NODE=USD")]
+    node_rate: Vec<String>,
+    /// Cost: cpu : mem-GiB weight for the unitless "cost units" score (default 4.0).
+    #[arg(long, value_name = "N")]
+    cost_mem_weight: Option<f64>,
     /// Start with a map overlay active: "terrain" (default), "pressure"
     /// (cpu/mem heat), "replicas" (workload health), "namespace" (territory),
     /// "walls" (NetworkPolicy segmentation) or "saturation" (the 4th golden
@@ -516,6 +531,22 @@ async fn main() {
         .as_deref()
         .and_then(|s| slo::parse_target(s).ok())
         .unwrap_or(slo::DEFAULT_TARGET);
+    let cost_rates = kubernation_core::state::cost::CostRates {
+        cpu_hour: args.cpu_rate,
+        mem_gib_hour: args.mem_rate,
+        node_overrides: args
+            .node_rate
+            .iter()
+            .filter_map(|s| {
+                let (n, r) = s.split_once('=')?;
+                let v = r.trim().parse::<f64>().ok()?;
+                // Drop NaN/≤0 (mirrors the annotation path), so a bad override
+                // never leaks a "$NaN" into the SELECTION line / ramp.
+                (v.is_finite() && v > 0.0).then(|| (n.trim().to_string(), v))
+            })
+            .collect(),
+        mem_weight: args.cost_mem_weight.unwrap_or(0.0),
+    };
     net::spawn(
         net::NetArgs {
             context: args.context.clone(),
@@ -523,6 +554,7 @@ async fn main() {
             warm: args.warm.clone(),
             projections: args.project.clone(),
             slo_default,
+            cost_rates,
         },
         net.clone(),
     );
@@ -572,6 +604,7 @@ async fn main() {
         Some("namespace") => Overlay::Namespace,
         Some("walls") => Overlay::Coverage,
         Some("saturation") => Overlay::Saturation,
+        Some("cost") => Overlay::Cost,
         _ => Overlay::Terrain,
     };
     // Menu "Fit view" can't reach `bounds` from the chrome draw, so it defers
@@ -1425,6 +1458,7 @@ async fn main() {
                         "rightsizing" => AdvisorTab::RightSizing,
                         "hardening" => AdvisorTab::Hardening,
                         "posture" => AdvisorTab::Posture,
+                        "cost" => AdvisorTab::Cost,
                         _ => AdvisorTab::Health,
                     }));
                 }
@@ -1930,6 +1964,14 @@ async fn main() {
                         coverage: &wmodels.coverage,
                         exposed: &wmodels.exposed,
                     };
+                    // Per-world upkeep (cost) for the cost overlay.
+                    let wcost = match sw.id {
+                        ClusterId::Hot => &s.hot.cost,
+                        ClusterId::Warm => match &s.warm {
+                            Some(w) => &w.cost,
+                            None => &s.hot.cost,
+                        },
+                    };
                     draw_world(
                         sw.world,
                         &wc,
@@ -1937,6 +1979,7 @@ async fn main() {
                         s.pair.as_deref(),
                         overlay,
                         Some(&walls),
+                        Some(wcost),
                     );
                 }
                 if let Some(sel) = selected {

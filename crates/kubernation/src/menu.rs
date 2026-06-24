@@ -150,6 +150,8 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                     MenuAction::SetOverlay(Overlay::Saturation),
                 )
                 .check(ctx.overlay == Overlay::Saturation),
+                Item::act("Upkeep (cost)", MenuAction::SetOverlay(Overlay::Cost))
+                    .check(ctx.overlay == Overlay::Cost),
                 Item::sep(),
                 Item::act("Annals (what changed) — H", MenuAction::Annals),
             ],
@@ -192,6 +194,7 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                     "Posture (realm defense score)",
                     MenuAction::Advisor(AdvisorTab::Posture),
                 ),
+                Item::act("Cost (upkeep)", MenuAction::Advisor(AdvisorTab::Cost)),
             ],
         },
         Menu {

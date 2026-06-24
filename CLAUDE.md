@@ -2411,6 +2411,51 @@ what makes the interesting logic unit-testable without a cluster.
   verified on screen), reverting the earlier review's defensive `(c)` now that this is
   a formal notice. The `about_sections()` test pins the copyright + the unregistered-TM
   string so they can't drift.
+- **Cost cartography — "upkeep"** (2026-06-23, v0.63.0, the roadmap "bigger bet";
+  design-workflow vetted — 3 lenses → 2 judges → synthesis): visualize what the cluster
+  costs to run, allocated across the map. **Pure core `state/cost.rs`** (`cost_report(world,
+  rates) -> CostReport`, unit-tested) — a sibling of `advisor::rightsizing_report` reusing
+  `OwnerIndex`/`node_allocatable`/`world.pod_usage`; ONE report feeds the overlay + the
+  advisor tab so they can't disagree. **Metaphor: UPKEEP** (the recurring coin to *hold*
+  reserved capacity — code uses literal nouns `Overlay::Cost`/`NodeCost`/`cost_report`,
+  display says "upkeep"), deliberately distinct from the SLO **"treasury"** (`slo.rs`) which
+  money-cost must not overload. **Honest derivation** (load-bearing — k8s has no cost API,
+  the app reads no cloud billing): cost from resource **requests** (any cluster, no
+  metrics-server), refined by **usage** when metrics-server is present; **unitless "cost
+  units"** by default (a cpu + mem/`DEFAULT_MEM_WEIGHT` weighted footprint — NEVER a `$`, no
+  `/mo`), real `$` (hourly + ×730 monthly) ONLY when the operator supplies rates
+  (`--cpu-rate`/`--mem-rate` *per binary GiB*/`--node-rate NODE=USD`, or a
+  `kubernation.io/cost-hourly` node annotation merged at the net boundary into
+  `node_overrides`); `CostRates::currency()` gates ALL `$` presentation; even in `$` mode
+  it's labelled an *estimate from your rates × reservation, not a cloud invoice*.
+  **Allocation = share of CAPACITY** (not share-of-used, which would zero idle): `cap_w =
+  cpu + mem_gib/weight`; a node's cost is distributed to its non-terminal pods by `pod_w/cap_w`,
+  the unallocated remainder is **idle** — the actionable consolidation drain. Exact partition
+  `Σ(pod_cost)+idle == node_cost` (not overcommitted; overcommit clamps idle to 0, shares
+  exceed cost) — pinned by tests. **GUI:** `Overlay::Cost` bronze "spend" choropleth
+  (`theme::cost_pair`, terrain-family — green kept substantial so a "dear" province never
+  reads as NotReady-red; ramp = `node_cost / max_node_cost`, read from the memoized
+  `WorldSnap.cost` — NO `build_map` signature churn), a **gold idle coin** on nodes with
+  idle ≥ `IDLE_NOTABLE` (gold = cost family, NOT the cyan that means PVC/Service), the
+  SELECTION line (`panels::cost_lines`), and the **Advisors ▸ Cost** tab (`advisor::cost_lines`
+  — total/by-namespace/costliest/idle, neutral INK data rows, the idle line warns at the
+  cluster `IDLE_CLUSTER_WARN`). **READ-ONLY — no new write verb**; **NO attention concern**
+  (cost is a standing fact, not an incident — argued, matching right-sizing #5's advisor-only
+  posture). Complements right-sizing (*which* workloads are mis-sized) with the *where-does-
+  the-money-go* map. **Adversarial review (7 confirmed → folded):** (MED) the `request:=limit`
+  default was applied per-pod-aggregate, undercounting a mixed request-only/limit-only pod —
+  fixed by a per-container `model::sum_pod_reserved` scoped to cost (the right-sizing advisor
+  keeps the *literal* request); (MED) an operator-priced node with no allocatable was dropped
+  — now priced all-idle; (LOW) per-node `basis` label (a globally-Usage report's unsampled
+  node now reads request-based); (LOW) `--node-rate` NaN/≤0 filter (mirrors the annotation);
+  (NIT) the on-map `$` SELECTION line gained the "not a cloud bill" caveat; (MED) the idle
+  coin was cyan = ambiguous with PVC/Service marks → recoloured gold; (NIT) the per-node vs
+  cluster idle thresholds documented as intentional. 312 core + 58 GUI tests; verified live on
+  kind in both modes (unitless "UPKEEP 79.7 units · idle 100%" on the ~empty dev cluster;
+  `--cpu-rate`/`--mem-rate` → "$2.25/hr · ~$1645/mo" with the honesty subline). **Deferred:**
+  OpenCost/cloud-billing integration, a real pricing table, a minimap cost choropleth, an
+  RBAC-cost 3rd dimension; the ramp is degenerate on a uniform 1-node-per-zone cluster (spreads
+  on real multi-node clusters).
 
 ## The pair (hot/warm)
 

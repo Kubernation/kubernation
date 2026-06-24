@@ -406,7 +406,19 @@ pub fn draw_sidebar(
     // The map overlay is labeled when non-default so a pressure-recolored
     // terrain (red/amber by load) isn't mistaken for node health.
     if overlay != Overlay::Terrain {
-        text(format!("view: {}", overlay.label()), x, y, 13.0, STONE_WARN);
+        // Cost names its mode so the operator knows whether the map / SELECTION
+        // numbers are real $ or relative units.
+        let label = if overlay == Overlay::Cost {
+            let m = if snap.hot.cost.mode == kubernation_core::state::cost::CostMode::Currency {
+                "$"
+            } else {
+                "units"
+            };
+            format!("view: cost ({m})")
+        } else {
+            format!("view: {}", overlay.label())
+        };
+        text(label, x, y, 13.0, STONE_WARN);
         y += 18.0;
     }
     if ns_filter.is_active() {

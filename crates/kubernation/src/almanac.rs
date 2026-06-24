@@ -534,11 +534,15 @@ fn page_controls(cx: &mut Ctx) {
     cx.key("Q", "quit");
     cx.heading("Menu bar");
     cx.para(
-        "The top bar holds the menus: Game (context, fit, export after-action report, quit), View (the map overlay — terrain health, cpu/mem pressure, replica health, namespace territory, walls, or saturation; and the Annals), Orders (end of turn, discard), Game Day (chaos drills), Advisors (Health / Storage / Network / Right-sizing / Hardening / Posture summaries), World (namespace filter), Help (Charter — your RBAC access — and the field guide). Click a title to open it.",
+        "The top bar holds the menus: Game (context, fit, export after-action report, quit), View (the map overlay — terrain health, cpu/mem pressure, replica health, namespace territory, walls, saturation, or upkeep/cost; and the Annals), Orders (end of turn, discard), Game Day (chaos drills), Advisors (Health / Storage / Network / Right-sizing / Hardening / Posture / Cost summaries), World (namespace filter), Help (Charter — your RBAC access — and the field guide). Click a title to open it.",
     );
     cx.heading("Saturation overlay (strain)");
     cx.para(
         "The 4th golden signal — how full a province is toward its hard limits: cpu/mem usage, scheduled pods vs the kubelet max-pods, and the kubelet Disk/PID/Mem-pressure conditions. Red = at/over a limit and refusing or evicting work; the province SELECTION names the binding dimension (e.g. 'pods 105/110', 'DiskPressure (pegged)'). Distinct from Pressure, which shows cpu/mem utilization only — Saturation also lights up a node at max-pods or under a kubelet condition while cpu/mem look calm (and needs no metrics-server for those axes).",
+    );
+    cx.heading("Upkeep overlay + Cost advisor");
+    cx.para(
+        "What the cluster costs to run, allocated across the map. Each province is tinted bronze by its node's cost (a 'spend' choropleth), a gold idle coin marks a node carrying lots of unrequested capacity, and Advisors > Cost rolls it up (total, by namespace, costliest workloads, idle/waste). Honest about what a laptop can know: with no pricing it's a relative 'cost units' score from resource requests (any cluster, no metrics-server, never a $); supply rates with --cpu-rate / --mem-rate (per GiB) / --node-rate NODE=USD or a kubernation.io/cost-hourly node annotation and it shows real $/hr + a ~$/mo projection — an estimate from your rates x reservation, never a cloud invoice. Idle = the unrequested capacity you could consolidate; metrics-server sharpens it to paid-for-but-unused.",
     );
     cx.heading("Oracle (BYO-LLM)");
     cx.para(

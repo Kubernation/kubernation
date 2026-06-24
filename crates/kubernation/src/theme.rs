@@ -153,6 +153,22 @@ pub fn sat_pair(level: SatLevel) -> (Color, Color) {
     }
 }
 
+/// The **cost (upkeep)** overlay ramp — a coin/bronze "spend" gradient from pale
+/// parchment-gold (cheap) to deep antique-bronze (dear). `pos` is `node_cost /
+/// max_node_cost`, in `0..=1`. Terrain-family (warm metallic, green kept
+/// substantial so it reads brown/gold) — deliberately NOT the saturated red/yellow
+/// reserved for attention, so a "most expensive" province can't be mistaken for a
+/// NotReady one. Returns `(base, lit)` so `land_diamond`'s dither reads as terrain.
+pub fn cost_pair(pos: f64) -> (Color, Color) {
+    let t = pos.clamp(0.0, 1.0) as f32;
+    let lerp = |a: f32, b: f32| a + (b - a) * t;
+    // pale gold (cheap) → deep bronze (dear); g/r ≈ 0.76 at the dark end so it
+    // stays brown, never approaching CRIT red (g ≪ r).
+    let base = Color::new(lerp(0.62, 0.55), lerp(0.57, 0.42), lerp(0.41, 0.16), 1.0);
+    let lit = Color::new(base.r + 0.06, base.g + 0.05, base.b + 0.05, 1.0);
+    (base, lit)
+}
+
 /// Desaturated grey-green land for a province with nothing to encode under the
 /// current overlay (no cities for Replicas / Namespace) — it recedes so the
 /// flagged provinces pop.
@@ -294,5 +310,27 @@ pub fn sync_on_stone(state: &kubernation_core::state::pair::SyncState) -> Color 
         SyncState::Drift { .. } => STONE_WARN,
         SyncState::OnlyHot => STONE_CRIT,
         SyncState::OnlyWarm => STONE_STRUCT,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cost_pair_is_a_monotonic_brown_ramp() {
+        let cheap = cost_pair(0.0).0;
+        let dear = cost_pair(1.0).0;
+        // Dear is darker than cheap (lower luma) — a spend ramp.
+        let luma = |c: Color| c.r + c.g + c.b;
+        assert!(luma(dear) < luma(cheap), "dear should be darker");
+        // Stays brown/gold (green substantial vs red) — never CRIT red (g << r).
+        assert!(
+            dear.g > dear.r * 0.6,
+            "dark end stays brown, not red: {dear:?}"
+        );
+        // Clamps out of range.
+        assert_eq!(cost_pair(2.0).0.r, cost_pair(1.0).0.r);
+        assert_eq!(cost_pair(-1.0).0.r, cost_pair(0.0).0.r);
     }
 }

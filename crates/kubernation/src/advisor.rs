@@ -11,6 +11,7 @@ use kubernation_core::state::advisor::{
     HealthReport, NetworkReport, RightSizingReport, RsRow, RsVerdict, StorageReport, health_report,
     network_report, rightsizing_report, storage_report,
 };
+use kubernation_core::state::cost::{self, CostMode, CostReport};
 use kubernation_core::state::harden::{self, HardeningReport, WorkloadFindings};
 use kubernation_core::state::netpol::{self, NetpolReport};
 use kubernation_core::state::posture::{Axis, FactorKind, PostureReport, PostureTier, band};
@@ -30,16 +31,18 @@ pub enum AdvisorTab {
     RightSizing,
     Hardening,
     Posture,
+    Cost,
 }
 
 impl AdvisorTab {
-    pub const ALL: [AdvisorTab; 6] = [
+    pub const ALL: [AdvisorTab; 7] = [
         AdvisorTab::Health,
         AdvisorTab::Storage,
         AdvisorTab::Network,
         AdvisorTab::RightSizing,
         AdvisorTab::Hardening,
         AdvisorTab::Posture,
+        AdvisorTab::Cost,
     ];
     fn idx(self) -> usize {
         match self {
@@ -49,6 +52,7 @@ impl AdvisorTab {
             AdvisorTab::RightSizing => 3,
             AdvisorTab::Hardening => 4,
             AdvisorTab::Posture => 5,
+            AdvisorTab::Cost => 6,
         }
     }
 }
@@ -96,6 +100,7 @@ impl Advisor {
             "Right-sizing",
             "Hardening",
             "Posture",
+            "Cost",
             "Close",
         ];
         let win = draw_window(
@@ -122,6 +127,8 @@ impl Advisor {
                 // The Posture score is memoized on the snapshot (the STATUS chip
                 // reads it every frame) — render the same value, never re-scan.
                 AdvisorTab::Posture => page_posture(&mut cx, &s.hot.posture),
+                // Upkeep (cost) is memoized on the snapshot beside posture.
+                AdvisorTab::Cost => page_cost(&mut cx, &s.hot.cost),
             }
         } else {
             cx.note("the world is not yet explored", DIM);
@@ -427,6 +434,135 @@ fn page_rightsizing(cx: &mut Ctx, r: &RightSizingReport) {
             RsRole::Dim => (DIM, false),
         };
         // Truncate to the body width so a long row never overflows the window.
+        let size = if bold { 15.0 } else { 13.0 };
+        let avail = cx.body.w - if bold { 10.0 } else { 22.0 };
+        let shown = crate::panels::fit_width(&ascii(&line), size, avail);
+        cx.row(&shown, color, bold);
+    }
+}
+
+// --- cost (upkeep) page (pure line builder + renderer) ----------------------
+
+fn cost_pct(v: f64, total: f64) -> String {
+    if total > 0.0 {
+        format!(" ({:.0}%)", v / total * 100.0)
+    } else {
+        String::new()
+    }
+}
+
+/// PURE: the cost (upkeep) advisor's lines as (text, role). Unit-tested. Never
+/// implies a cloud bill — unitless shows "cost units" (no `$`), currency shows
+/// `$/hr` + `~$/mo`; the footer states the honest caveats. Cost data rows are
+/// NEUTRAL (rendered INK) — only the actionable idle threshold warns.
+pub fn cost_lines(r: &CostReport) -> Vec<(String, RsRole)> {
+    let mut out: Vec<(String, RsRole)> = Vec::new();
+    let m = r.mode;
+
+    if r.nodes_priced == 0 {
+        out.push(("no priced nodes yet".to_string(), RsRole::Dim));
+        out.push((
+            "(not synced, or — in $ mode — no rate applies to any node)".to_string(),
+            RsRole::Dim,
+        ));
+        return out;
+    }
+
+    out.push((
+        format!("UPKEEP  {}", cost::fmt_monthly(r.total_per_hour, m)),
+        RsRole::Headline,
+    ));
+    out.push((
+        match m {
+            CostMode::Unitless => "relative cost units (cpu + mem/4 weighted) from requests — NOT a cloud bill; set --cpu-rate/--mem-rate or a kubernation.io/cost-hourly annotation for $".to_string(),
+            CostMode::Currency => "$ estimate from your rates × reservation — not a cloud invoice (excludes network/storage/LB/discounts)".to_string(),
+        },
+        RsRole::Dim,
+    ));
+
+    // Idle/waste — cost's unique, actionable line.
+    let idle_pct = if r.total_per_hour > 0.0 {
+        r.idle_per_hour / r.total_per_hour * 100.0
+    } else {
+        0.0
+    };
+    out.push((
+        format!(
+            "idle (unrequested capacity): {idle_pct:.0}% · {}",
+            cost::fmt_monthly(r.idle_per_hour, m)
+        ),
+        // Cluster-mean threshold (softer than the per-node coin's IDLE_NOTABLE).
+        if idle_pct > cost::IDLE_CLUSTER_WARN * 100.0 {
+            RsRole::Warn
+        } else {
+            RsRole::Dim
+        },
+    ));
+
+    out.push(("BY NAMESPACE".to_string(), RsRole::Heading));
+    if r.by_namespace.is_empty() {
+        out.push(("(no allocated workloads)".to_string(), RsRole::Dim));
+    }
+    for ns in r.by_namespace.iter().take(RS_CAP) {
+        let tag = if ns.system { " (system)" } else { "" };
+        out.push((
+            format!(
+                "{}{}  {}{}",
+                ns.namespace,
+                tag,
+                cost::fmt_hourly(ns.per_hour, m),
+                cost_pct(ns.per_hour, r.total_per_hour)
+            ),
+            if ns.system { RsRole::Dim } else { RsRole::Good },
+        ));
+    }
+    if r.by_namespace.len() > RS_CAP {
+        out.push((
+            format!("+{} more", r.by_namespace.len() - RS_CAP),
+            RsRole::Dim,
+        ));
+    }
+
+    out.push(("COSTLIEST CITIES".to_string(), RsRole::Heading));
+    if r.top_workloads.is_empty() {
+        out.push(("(no priced workloads)".to_string(), RsRole::Dim));
+    }
+    for w in r.top_workloads.iter().take(8) {
+        out.push((
+            format!(
+                "{} {}/{}  {}{}",
+                w.kind,
+                w.namespace,
+                w.name,
+                cost::fmt_hourly(w.per_hour, m),
+                cost_pct(w.per_hour, r.total_per_hour)
+            ),
+            RsRole::Good,
+        ));
+    }
+
+    out.push((
+        if r.metrics_available {
+            "upkeep = what you pay to HOLD reserved capacity; usage-refined — idle is paid-for-but-unused. rates are operator config; KuberNation reads no cloud billing."
+        } else {
+            "upkeep = what you pay to HOLD reserved capacity (requests); install metrics-server for usage-refined waste. rates are operator config; KuberNation reads no cloud billing."
+        }
+        .to_string(),
+        RsRole::Dim,
+    ));
+    out
+}
+
+fn page_cost(cx: &mut Ctx, r: &CostReport) {
+    for (line, role) in cost_lines(r) {
+        let (color, bold) = match role {
+            RsRole::Headline | RsRole::Heading => (PARCHMENT, true),
+            RsRole::Warn => (WARN, false),
+            RsRole::Crit => (CRIT, false),
+            // Cost data is NEUTRAL spend — not "good"/green, not "bad"/red.
+            RsRole::Good => (INK, false),
+            RsRole::Dim => (DIM, false),
+        };
         let size = if bold { 15.0 } else { 13.0 };
         let avail = cx.body.w - if bold { 10.0 } else { 22.0 };
         let shown = crate::panels::fit_width(&ascii(&line), size, avail);
@@ -1181,5 +1317,50 @@ mod tests {
         let lines = posture_lines(&r);
         assert!(lines[0].0.contains("not yet scanned"));
         assert!(!lines.iter().any(|(_, r)| *r == RsRole::Good));
+    }
+
+    #[test]
+    fn cost_lines_modes_idle_warn_and_honesty() {
+        use kubernation_core::state::cost::NamespaceCost;
+        let mut r = CostReport {
+            nodes_priced: 1,
+            total_per_hour: 10.0,
+            idle_per_hour: 4.0, // 40% > 25% → the idle line warns
+            by_namespace: vec![NamespaceCost {
+                namespace: "demo".into(),
+                per_hour: 6.0,
+                system: false,
+            }],
+            ..Default::default()
+        };
+        let join = |v: &[(String, RsRole)]| {
+            v.iter()
+                .map(|(s, _)| s.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        // Unitless: the headline + the rollups carry "units" and no "$" amount
+        // (the subline may mention "for $" as the how-to — that's instruction).
+        let u = cost_lines(&r);
+        let ut = join(&u);
+        assert!(
+            u[0].0.contains("UPKEEP") && u[0].0.contains("units") && !u[0].0.contains('$'),
+            "{ut}"
+        );
+        assert!(
+            u.iter()
+                .any(|(s, _)| s.contains("demo") && s.contains("units"))
+        );
+        assert!(ut.to_lowercase().contains("cloud"), "honesty footer");
+        assert!(
+            u.iter()
+                .any(|(s, role)| s.starts_with("idle") && *role == RsRole::Warn)
+        );
+        // Currency: shows "$".
+        r.mode = CostMode::Currency;
+        assert!(join(&cost_lines(&r)).contains('$'));
+        // No priced nodes → a quiet placeholder, never a false zero.
+        let empty = cost_lines(&CostReport::default());
+        assert!(empty[0].0.contains("no priced nodes"));
     }
 }

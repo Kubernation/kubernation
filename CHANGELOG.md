@@ -16,6 +16,21 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   `kubernation.io/…` annotations, `KUBERNATION_LLM_TOKEN`).
 
 ### Added
+- **Cost cartography ("upkeep").** A new **View ▸ Upkeep (cost)** map overlay paints
+  each province by what its node costs (a bronze "spend" choropleth, with a gold idle
+  coin on nodes carrying a lot of unrequested capacity), an **Advisors ▸ Cost** tab
+  rolls it up (total · by-namespace · costliest workloads · idle/waste), and the
+  SELECTION line shows a node's upkeep + idle. Honest by construction: with no pricing
+  it's a relative **"cost units"** score derived from resource requests (works on any
+  cluster, no metrics-server, never a `$`); supply rates — `--cpu-rate` / `--mem-rate`
+  (per binary GiB) / `--node-rate NODE=USD`, or a `kubernation.io/cost-hourly` node
+  annotation — and it shows real `$/hr` + a `~$/mo` projection, always labelled an
+  estimate from your rates × reservation, never a cloud invoice. Idle (the unrequested
+  remainder you could consolidate) is the actionable signal; metrics-server sharpens it
+  to paid-for-but-unused. Read-only — no new write verb. Complements the right-sizing
+  advisor (which says *which* workloads are mis-sized) with the *where-does-the-money-go*
+  map.
+
 - **Own copyright + trademark assertion.** The About window and README now assert
   "© 2026 Jason Olmsted. KuberNation™ and the KuberNation logo are unregistered
   trademarks of Jason Olmsted" (unregistered — ™, not ®), alongside the existing

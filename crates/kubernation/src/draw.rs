@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::Severity;
 use kubernation_core::state::blast::{Affected, BlastRadius, Subject};
+use kubernation_core::state::cost::{CostReport, IDLE_NOTABLE};
 use kubernation_core::state::model::{NodeHealth, WorkloadRef};
 use kubernation_core::state::netpol::Coverage;
 use kubernation_core::state::pair::PairSync;
@@ -56,6 +57,8 @@ pub enum Overlay {
     /// The 4th golden signal — "strain": worst of cpu/mem/pod-count + the
     /// kubelet Disk/Mem/PID-pressure conditions per province.
     Saturation,
+    /// Upkeep — per-node cost as a bronze "spend" choropleth (the cost cartography).
+    Cost,
 }
 
 impl Overlay {
@@ -68,6 +71,7 @@ impl Overlay {
             Overlay::Namespace => "namespace",
             Overlay::Coverage => "walls",
             Overlay::Saturation => "saturation",
+            Overlay::Cost => "cost",
         }
     }
 }
@@ -189,7 +193,12 @@ fn dominant_namespace(cities: &[City]) -> Option<&str> {
 /// The two-shade land pair a province's terrain is filled with, per overlay.
 /// `walls` is consulted only for the Coverage overlay (None elsewhere / on the
 /// minimap, where Coverage falls back to terrain).
-fn overlay_pair(overlay: Overlay, prov: &Province, walls: Option<&WallData>) -> (Color, Color) {
+fn overlay_pair(
+    overlay: Overlay,
+    prov: &Province,
+    walls: Option<&WallData>,
+    cost: Option<&CostReport>,
+) -> (Color, Color) {
     match overlay {
         Overlay::Terrain => iso_terrain_pair(prov.tile.health),
         Overlay::Pressure => pressure_pair(prov.tile.cpu_ratio.max(prov.tile.mem_ratio)),
@@ -201,6 +210,15 @@ fn overlay_pair(overlay: Overlay, prov: &Province, walls: Option<&WallData>) -> 
             .map(|w| coverage_pair(&prov.cities, w))
             .unwrap_or_else(|| iso_terrain_pair(prov.tile.health)),
         Overlay::Saturation => sat_pair(prov.tile.saturation.worst_level()),
+        // Bronze choropleth: ramp position = node cost ÷ the world's max node cost.
+        // An unpriced node (no cost) recedes to idle land so priced spend pops.
+        Overlay::Cost => cost
+            .and_then(|r| {
+                let nc = r.by_node.get(&prov.tile.name)?;
+                (nc.priced && r.max_node_cost > 0.0)
+                    .then(|| cost_pair(nc.per_hour / r.max_node_cost))
+            })
+            .unwrap_or_else(idle_land_pair),
     }
 }
 
@@ -210,8 +228,10 @@ fn overlay_pair(overlay: Overlay, prov: &Province, walls: Option<&WallData>) -> 
 /// falls back to terrain there.
 fn overlay_flat(overlay: Overlay, prov: &Province) -> Color {
     match overlay {
-        Overlay::Terrain | Overlay::Coverage => terrain(prov.tile.health),
-        _ => overlay_pair(overlay, prov, None).1,
+        // Walls + Cost have no per-node data threaded to the minimap (an
+        // overview) — fall back to terrain there, like the breach marks.
+        Overlay::Terrain | Overlay::Coverage | Overlay::Cost => terrain(prov.tile.health),
+        _ => overlay_pair(overlay, prov, None, None).1,
     }
 }
 
@@ -644,6 +664,7 @@ pub fn draw_world(
     pair: Option<&PairSync>,
     overlay: Overlay,
     walls: Option<&WallData>,
+    cost: Option<&CostReport>,
 ) {
     let mut detail = lod(cam.zoom);
     detail.name_all = world.cities().take(DENSE_CITIES + 1).count() <= DENSE_CITIES;
@@ -691,7 +712,7 @@ pub fn draw_world(
             draw_province_shallows(prov, cam, &coasts[ci]);
         }
         for prov in &cont.provinces {
-            draw_province_terrain(prov, cam, &coasts[ci], overlay, walls);
+            draw_province_terrain(prov, cam, &coasts[ci], overlay, walls, cost);
         }
     }
     for &ii in &isl_order {
@@ -724,6 +745,18 @@ pub fn draw_world(
         }
         for prov in &cont.provinces {
             draw_province_features(prov, cam, &detail, coast, &mut occupied);
+            // Cost view: a gold "idle" coin on a province whose node carries a lot
+            // of unrequested capacity — the actionable consolidation drain. Cost-
+            // overlay-only + Regional/Local; stroked in coin-gold (NOT the cyan
+            // that means PVC/Service, which is also drawn here) so it's unambiguous.
+            if overlay == Overlay::Cost
+                && detail.scale != Scale::World
+                && let Some(nc) = cost.and_then(|r| r.by_node.get(&prov.tile.name))
+                && nc.priced
+                && (1.0 - nc.used_frac) >= IDLE_NOTABLE
+            {
+                draw_idle_coin(prov, cam);
+            }
         }
         draw_coast(cont, cam, &detail);
         // Settlements: one aggregate badge per province at world scale, else
@@ -757,6 +790,23 @@ pub fn draw_world(
     for &ii in &isl_order {
         draw_island_features(&world.islands[ii], cam, &detail, &mut occupied);
     }
+}
+
+/// A small hollow, slotted "coin" marking an idle node under the Cost overlay —
+/// the unrequested capacity you could consolidate away. Stroked in coin-gold (the
+/// cost family) — NOT the cyan that means "structure" (PVC/Service/Ingress, also
+/// drawn here), and NOT the red/yellow reserved for attention — so on the Cost
+/// overlay it's unambiguous. Cost-overlay-only.
+fn draw_idle_coin(prov: &Province, cam: &Camera) {
+    let (hw, hh) = cam.cell_px();
+    let c = cam.to_screen(
+        prov.x as f32 + prov.w as f32 * 0.5 + 0.5,
+        prov.y as f32 + prov.h as f32 * 0.5 + 0.5,
+    );
+    let r = (hw.min(hh) * 0.5).clamp(5.0, 14.0);
+    let coin = Color::new(0.92, 0.80, 0.42, 1.0); // bright coin-gold (cost family)
+    draw_circle_lines(c.x, c.y, r, 2.0, coin);
+    draw_line(c.x - r * 0.5, c.y, c.x + r * 0.5, c.y, 2.0, coin); // the coin's slot
 }
 
 pub fn draw_selection(cam: &Camera, sel: (u16, u16)) {
@@ -950,14 +1000,15 @@ fn draw_province_terrain(
     coast: &Coast,
     overlay: Overlay,
     walls: Option<&WallData>,
+    cost: Option<&CostReport>,
 ) {
     if province_offscreen(prov, cam) {
         return;
     }
     let (hw, hh) = cam.cell_px();
     // The land pair depends on the active overlay (health / pressure / replicas
-    // / namespace / walls); computed once per province, not per cell.
-    let pair = overlay_pair(overlay, prov, walls);
+    // / namespace / walls / cost); computed once per province, not per cell.
+    let pair = overlay_pair(overlay, prov, walls, cost);
     let x0 = prov.x as i32;
     let w = prov.w as f32;
     let y1 = (prov.y + prov.h) as i32;

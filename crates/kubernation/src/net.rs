@@ -22,6 +22,7 @@ use kubernation_core::state::attention::{Concern, Severity, Target};
 use kubernation_core::state::blast::Subject;
 use kubernation_core::state::chaos::{self, ScoreKind};
 use kubernation_core::state::charter::{self, Charter};
+use kubernation_core::state::cost::{self, CostRates, CostReport};
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::harden;
 use kubernation_core::state::model::{Models, WorkloadRef, WorkloadRow, build_workloads};
@@ -204,6 +205,9 @@ pub struct WorldSnap {
     /// The realm-defense Posture score, computed once per tick (the STATUS chip
     /// is on the 60fps sidebar — it must not re-scan per frame).
     pub posture: PostureReport,
+    /// Upkeep (cost cartography), computed once per tick — the overlay + advisor
+    /// tab read this (the overlay does a by-node lookup every frame, never a scan).
+    pub cost: CostReport,
 }
 
 pub struct Snapshot {
@@ -897,6 +901,34 @@ pub struct NetArgs {
     pub projections: Vec<String>,
     /// Global default SLO availability target (`--slo-target`, else 0.99).
     pub slo_default: f64,
+    /// Launch-resolved cost pricing (`--cpu-rate`/`--mem-rate`/`--node-rate`/
+    /// `--cost-mem-weight`); empty ⇒ unitless "cost units". Node annotations are
+    /// merged on top per tick (the frontend boundary).
+    pub cost_rates: CostRates,
+}
+
+/// Merge per-node `kubernation.io/cost-hourly` annotations into the launch rates'
+/// node_overrides (an annotation wins over a `--node-rate` flag for the same node),
+/// so the pure `cost_report` stays a fn of `(world, rates)`.
+fn effective_cost_rates(base: &CostRates, world: &ObservedWorld) -> CostRates {
+    let mut rates = base.clone();
+    for n in world.nodes.state() {
+        let node = n.as_ref();
+        let Some(name) = node.metadata.name.clone() else {
+            continue;
+        };
+        if let Some(v) = node
+            .metadata
+            .annotations
+            .as_ref()
+            .and_then(|a| a.get(cost::COST_ANNOTATION))
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .filter(|v| *v > 0.0)
+        {
+            rates.node_overrides.insert(name, v);
+        }
+    }
+    rates
 }
 
 pub fn spawn(args: NetArgs, net: Arc<Net>) {
@@ -1978,6 +2010,10 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 .collect(),
                         ),
                         posture: posture::posture_report(&h.world),
+                        cost: cost::cost_report(
+                            &h.world,
+                            &effective_cost_rates(&args.cost_rates, &h.world),
+                        ),
                     });
                 let pair = warm
                     .as_ref()
@@ -2122,6 +2158,10 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         observed: hot_handle.world.clone(),
                         slo: hot_slo,
                         posture: posture::posture_report(&hot_handle.world),
+                        cost: cost::cost_report(
+                            &hot_handle.world,
+                            &effective_cost_rates(&args.cost_rates, &hot_handle.world),
+                        ),
                     },
                     warm,
                     pair,

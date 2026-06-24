@@ -348,6 +348,38 @@ pub(crate) fn sum_pod_limits(pod: &Pod) -> (f64, f64) {
     sum_pod_resources(pod, true)
 }
 
+/// Sum of one pod's **reserved** cpu/mem — each container's request, defaulting
+/// to its limit *per container, per resource* when only a limit is set (the
+/// scheduler's effective reservation, which k8s defaults `request := limit`).
+/// Used by cost allocation. Deliberately NOT shared with the right-sizing advisor
+/// or `node_request_ratios`, which need the *literal* request (a request:=limit
+/// default would corrupt the over/under comparison + QoS).
+pub(crate) fn sum_pod_reserved(pod: &Pod) -> (f64, f64) {
+    let (mut cpu, mut mem) = (0.0, 0.0);
+    let Some(spec) = pod.spec.as_ref() else {
+        return (cpu, mem);
+    };
+    let sidecars = spec
+        .init_containers
+        .iter()
+        .flatten()
+        .filter(|c| c.restart_policy.as_deref() == Some("Always"));
+    for c in spec.containers.iter().chain(sidecars) {
+        let req = c.resources.as_ref().and_then(|r| r.requests.as_ref());
+        let lim = c.resources.as_ref().and_then(|r| r.limits.as_ref());
+        // request, else this container's own limit (the k8s default), else 0.
+        let pick = |k: &str| {
+            req.and_then(|m| m.get(k))
+                .and_then(quantity::value)
+                .or_else(|| lim.and_then(|m| m.get(k)).and_then(quantity::value))
+                .unwrap_or(0.0)
+        };
+        cpu += pick("cpu");
+        mem += pick("memory");
+    }
+    (cpu, mem)
+}
+
 fn sum_pod_resources(pod: &Pod, limits: bool) -> (f64, f64) {
     let (mut cpu, mut mem) = (0.0, 0.0);
     let Some(spec) = pod.spec.as_ref() else {
@@ -392,8 +424,8 @@ pub fn node_allocatable(node: &Node, key: &str) -> Option<f64> {
 }
 
 /// True when a pod's phase is terminal (Succeeded/Failed) — excluded from the
-/// node's scheduling load (requests + pod-count saturation).
-fn pod_terminal(pod: &Pod) -> bool {
+/// node's scheduling load (requests + pod-count saturation + cost allocation).
+pub(crate) fn pod_terminal(pod: &Pod) -> bool {
     matches!(
         pod.status.as_ref().and_then(|s| s.phase.as_deref()),
         Some("Succeeded") | Some("Failed")
