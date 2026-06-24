@@ -516,6 +516,8 @@ async fn main() {
     if let Err(e) = logging::init(&args.log_level) {
         eprintln!("kubernation: could not open the log file: {e}");
     }
+    // Log any panic (render OR net thread) to that file before it unwinds.
+    logging::install_panic_hook();
     text::init();
     logo::init();
     let shot = args.screenshot.clone();
@@ -2561,7 +2563,15 @@ async fn main() {
             } else {
                 current_ctx.as_str()
             };
-            panels::draw_conn_banner(&net.conn(), ctx_label);
+            // A crashed net thread freezes the world — that takes precedence over
+            // the (now-stale) connection state.
+            if net::NET_PANICKED.load(std::sync::atomic::Ordering::Relaxed) {
+                panels::draw_fatal_banner(
+                    "the world loop crashed — restart KuberNation (details in the log)",
+                );
+            } else {
+                panels::draw_conn_banner(&net.conn(), ctx_label);
+            }
         }
         match menu_action {
             Some(MenuAction::SwitchContext) => {

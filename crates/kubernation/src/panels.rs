@@ -961,6 +961,18 @@ pub fn draw_conn_banner(conn: &ConnState, context: &str) {
     text(&msg, 12.0, y + 15.0, fs, col);
 }
 
+/// A persistent CRIT banner under the chrome — used when the net thread has
+/// crashed (the world is frozen). Takes precedence over the connection banner.
+pub fn draw_fatal_banner(msg: &str) {
+    let h = 22.0;
+    let y = CHROME_H + 2.0;
+    let w = map_width();
+    let bg = Color::new(0.24, 0.04, 0.04, 0.96);
+    draw_rectangle(0.0, y, w, h, bg);
+    draw_line(0.0, y + h, w, y + h, 1.0, darker(bg, 0.5));
+    text(ascii(msg), 12.0, y + 15.0, 13.0, CRIT);
+}
+
 /// Map a value series to polyline points inside `rect` — x runs oldest→newest
 /// left to right, y is bottom (0) to top (`max`), each value clamped to
 /// `[0, max]`. Empty series or a non-positive `max` yields no points. Pure +

@@ -22,10 +22,56 @@ pub fn init(level: &str) -> std::io::Result<PathBuf> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_writer(move || file.try_clone().expect("clone log file handle"))
+        // Per-write clone; on a clone failure (fd exhaustion mid-frame) fall back to
+        // a sink rather than panicking inside the logging machinery (which could
+        // take down whichever thread happened to emit the event).
+        .with_writer(move || -> Box<dyn std::io::Write> {
+            match file.try_clone() {
+                Ok(f) => Box::new(f),
+                Err(_) => Box::new(std::io::sink()),
+            }
+        })
         .with_ansi(false)
         .init();
     Ok(path)
+}
+
+/// Install a global panic hook that logs the panic (thread · location · message)
+/// to the file log BEFORE unwinding, then chains the default hook (stderr). A
+/// macroquad GUI launched from a launcher has no terminal, so an un-logged panic
+/// is undiagnosable — this makes every crash land in `kubernation.log`. The hook
+/// is process-wide, so it covers the render thread AND the net thread.
+pub fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "<unknown>".into());
+        let thread = std::thread::current()
+            .name()
+            .unwrap_or("unnamed")
+            .to_string();
+        tracing::error!(thread = %thread, location = %loc, "PANIC: {}", panic_message(info));
+        // A net-thread panic freezes the world silently — flag it so the GUI shows
+        // a fatal banner (the render thread keeps running).
+        if thread == crate::net::NET_THREAD {
+            crate::net::NET_PANICKED.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        default(info);
+    }));
+}
+
+/// Extract the human-readable message from a panic payload.
+fn panic_message(info: &std::panic::PanicHookInfo<'_>) -> String {
+    let p = info.payload();
+    if let Some(s) = p.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = p.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".into()
+    }
 }
 
 fn state_dir() -> PathBuf {

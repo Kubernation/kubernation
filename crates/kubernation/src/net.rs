@@ -571,13 +571,19 @@ impl Net {
 
     /// The in-session operator-action log (the Annals' "(you)" source).
     pub fn operator_actions(&self) -> Arc<Vec<OperatorAction>> {
-        self.operator_actions.lock().unwrap().clone()
+        self.operator_actions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Append an operator action to the in-session log (newest-first, capped).
     /// Called from the net loop when a commit / evict / chaos drill completes.
     fn push_op(&self, action: OperatorAction) {
-        let mut g = self.operator_actions.lock().unwrap();
+        let mut g = self
+            .operator_actions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut v: Vec<OperatorAction> = (**g).clone();
         v.insert(0, action);
         v.truncate(OP_LOG_CAP);
@@ -587,7 +593,7 @@ impl Net {
     /// Request a (re-)probe of the self-scoped RBAC grid for `(cluster, ns)`.
     /// No-op if already cached for that scope (the drain skips a cached scope).
     pub fn request_charter(&self, cluster: ClusterId, namespace: String) {
-        *self.charter_req.lock().unwrap() = Some((cluster, namespace));
+        *self.charter_req.lock().unwrap_or_else(|e| e.into_inner()) = Some((cluster, namespace));
     }
 
     /// The cached Charter for `(cluster, ns)`, if probed this session.
@@ -610,19 +616,25 @@ impl Net {
 
     /// Queue a confirmed chaos drill (the net thread runs it once).
     pub fn request_chaos(&self, run: ChaosRun) {
-        *self.chaos_req.lock().unwrap() = Some(run);
+        *self.chaos_req.lock().unwrap_or_else(|e| e.into_inner()) = Some(run);
     }
 
     /// The live game-day session (scorecard source), if any. The net thread
     /// owns its lifecycle (created on run, cleared on context switch), so the
     /// GUI never clears it — that would race a still-in-flight drill.
     pub fn chaos_session(&self) -> Option<ChaosSession> {
-        self.chaos_session.lock().unwrap().clone()
+        self.chaos_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// The in-session chronicle of finished drills (newest first).
     pub fn chaos_history(&self) -> Vec<ChaosRecord> {
-        self.chaos_history.lock().unwrap().clone()
+        self.chaos_history
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Install/replace the active Oracle config (at launch and on every in-app
@@ -640,18 +652,28 @@ impl Net {
             c.as_ref()
                 .map(|c| (c.base_url.clone(), c.api_key.clone(), c.model.clone()))
         };
-        let changed = identity(&self.oracle_config.lock().unwrap()) != identity(&cfg);
-        *self.oracle_config.lock().unwrap() = cfg;
+        let changed = identity(&self.oracle_config.lock().unwrap_or_else(|e| e.into_inner()))
+            != identity(&cfg);
+        *self.oracle_config.lock().unwrap_or_else(|e| e.into_inner()) = cfg;
         if changed {
             self.oracle_egress_armed.store(false, Ordering::Relaxed);
-            self.oracle_out.lock().unwrap().clear();
-            self.oracle_stream.lock().unwrap().clear();
+            self.oracle_out
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+            self.oracle_stream
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
             self.oracle_gen.fetch_add(1, Ordering::Relaxed);
-            *self.models_out.lock().unwrap() = None;
+            *self.models_out.lock().unwrap_or_else(|e| e.into_inner()) = None;
             self.models_gen.fetch_add(1, Ordering::Relaxed);
-            *self.chat_test_out.lock().unwrap() = None;
+            *self.chat_test_out.lock().unwrap_or_else(|e| e.into_inner()) = None;
             self.chat_test_gen.fetch_add(1, Ordering::Relaxed);
-            *self.oracle_log_out.lock().unwrap() = None;
+            *self
+                .oracle_log_out
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
             self.oracle_log_gen.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -659,87 +681,120 @@ impl Net {
     /// Ask the net thread to list the active endpoint's models (replaces any
     /// in-flight discovery). `cfg` is the endpoint to probe.
     pub fn request_models(&self, cfg: LlmConfig) {
-        *self.models_req.lock().unwrap() = Some(cfg);
-        *self.models_out.lock().unwrap() = None;
+        *self.models_req.lock().unwrap_or_else(|e| e.into_inner()) = Some(cfg);
+        *self.models_out.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.models_gen.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Blank the discovered model list (e.g. when selecting a different profile to
     /// edit, so a remote endpoint never shows the previous endpoint's models).
     pub fn clear_models(&self) {
-        *self.models_req.lock().unwrap() = None;
-        *self.models_out.lock().unwrap() = None;
+        *self.models_req.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.models_out.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.models_gen.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Queue a level-2 chat test (a real tiny completion). `cfg` is the endpoint
     /// to probe; `messages` the small test prompt.
     pub fn request_chat_test(&self, cfg: LlmConfig, messages: Vec<ChatMessage>) {
-        *self.chat_test_req.lock().unwrap() = Some((cfg, messages));
-        *self.chat_test_out.lock().unwrap() = None;
+        *self.chat_test_req.lock().unwrap_or_else(|e| e.into_inner()) = Some((cfg, messages));
+        *self.chat_test_out.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.chat_test_gen.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The chat-test result (`Ok(reply)` / `Err`). `None` ⇒ none run or in flight.
     pub fn chat_test_out(&self) -> Option<Result<String, String>> {
-        self.chat_test_out.lock().unwrap().clone()
+        self.chat_test_out
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Blank the chat-test result (e.g. on selecting a different profile to edit).
     pub fn clear_chat_test(&self) {
-        *self.chat_test_req.lock().unwrap() = None;
-        *self.chat_test_out.lock().unwrap() = None;
+        *self.chat_test_req.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.chat_test_out.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.chat_test_gen.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Queue a one-shot fetch of a probe pod's log tail for the deepen "include
     /// logs" lens.
     pub fn request_oracle_log(&self, req: OracleLogReq) {
-        *self.oracle_log_req.lock().unwrap() = Some(req);
-        *self.oracle_log_out.lock().unwrap() = None;
+        *self
+            .oracle_log_req
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(req);
+        *self
+            .oracle_log_out
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         self.oracle_log_gen.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The fetched deepen logs `(request, Ok(tail)|Err)`, if it has landed. The
     /// GUI matches the request before folding it in (so a stale fetch is ignored).
     pub fn oracle_log_out(&self) -> Option<(OracleLogReq, Result<String, String>)> {
-        self.oracle_log_out.lock().unwrap().clone()
+        self.oracle_log_out
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Blank the deepen log fetch (on scope change / profile reset).
     pub fn clear_oracle_log(&self) {
-        *self.oracle_log_req.lock().unwrap() = None;
-        *self.oracle_log_out.lock().unwrap() = None;
+        *self
+            .oracle_log_req
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .oracle_log_out
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         self.oracle_log_gen.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The discovered model list (an `Arc` — the per-frame picker pull is a
     /// refcount bump). `None` ⇒ none requested or still in flight.
     pub fn models_out(&self) -> Option<Result<Arc<Vec<String>>, String>> {
-        self.models_out.lock().unwrap().clone()
+        self.models_out
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// The Oracle config, for the setup/consult display (the token is never
     /// exposed — `LlmConfig.api_key` stays in the net layer).
     pub fn oracle_config(&self) -> Option<LlmConfig> {
-        self.oracle_config.lock().unwrap().clone()
+        self.oracle_config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Queue ONE consult (the net thread drains it once and spawns the call).
     /// `hash` is the `state::oracle::bundle_hash`; `messages` the rendered prompt.
     pub fn request_oracle(&self, hash: u64, messages: Vec<ChatMessage>) {
-        *self.oracle_req.lock().unwrap() = Some(OracleReq { hash, messages });
+        *self.oracle_req.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(OracleReq { hash, messages });
     }
 
     /// The cached reply for a consult `hash`, if it has returned.
     pub fn oracle_reply(&self, hash: u64) -> Option<Arc<OracleReply>> {
-        self.oracle_out.lock().unwrap().get(&hash).cloned()
+        self.oracle_out
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&hash)
+            .cloned()
     }
 
     /// The live streaming buffer for a consult `hash` (a refcount-bump clone the GUI
     /// locks + reads each frame). `None` once the stream is torn down / never started.
     pub fn oracle_stream(&self, hash: u64) -> Option<Arc<Mutex<StreamBuf>>> {
-        self.oracle_stream.lock().unwrap().get(&hash).cloned()
+        self.oracle_stream
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&hash)
+            .cloned()
     }
 
     /// Cancel an in-flight consult `hash`: bump the gen guard so a not-yet-stored
@@ -751,9 +806,15 @@ impl Net {
     /// Cancel only stops the GUI waiting, it cannot un-send.
     pub fn cancel_oracle(&self, hash: u64) {
         self.oracle_gen.fetch_add(1, Ordering::Relaxed);
-        self.oracle_out.lock().unwrap().remove(&hash);
+        self.oracle_out
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&hash);
         // Drop the live stream too so a cancelled partial stops painting.
-        self.oracle_stream.lock().unwrap().clear();
+        self.oracle_stream
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     /// Arm remote (off-laptop) Oracle egress for this session — a deliberate,
@@ -775,64 +836,79 @@ impl Net {
     /// Discovered kinds, if discovery has completed (an `Arc` — the per-frame
     /// picker pull is a refcount bump, not a deep copy).
     pub fn kinds(&self) -> Option<Arc<Vec<browse::KindEntry>>> {
-        self.kinds.lock().unwrap().clone()
+        self.kinds.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Groups discovery couldn't enumerate (for a "N unavailable" picker note).
     pub fn discover_warnings(&self) -> Vec<String> {
-        self.discover_warnings.lock().unwrap().clone()
+        self.discover_warnings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Ask the net thread to LIST `kind` (replaces any in-flight browse).
     pub fn request_browse(&self, kind: browse::KindEntry) {
-        *self.browse_req.lock().unwrap() = Some(kind);
+        *self.browse_req.lock().unwrap_or_else(|e| e.into_inner()) = Some(kind);
         // `result: None` is the "listing in progress" state.
-        *self.browse_out.lock().unwrap() = BrowseOut::default();
+        *self.browse_out.lock().unwrap_or_else(|e| e.into_inner()) = BrowseOut::default();
     }
 
     pub fn browse_out(&self) -> BrowseOut {
-        self.browse_out.lock().unwrap().clone()
+        self.browse_out
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn clear_browse(&self) {
-        *self.browse_req.lock().unwrap() = None;
-        *self.browse_out.lock().unwrap() = BrowseOut::default();
+        *self.browse_req.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.browse_out.lock().unwrap_or_else(|e| e.into_inner()) = BrowseOut::default();
     }
 
     /// Scope the built models to these namespaces (the net thread rebuilds on
     /// the next tick because the filter changed).
     pub fn set_namespace_filter(&self, filter: NamespaceFilter) {
-        *self.ns_filter.lock().unwrap() = filter;
+        *self.ns_filter.lock().unwrap_or_else(|e| e.into_inner()) = filter;
     }
 
     /// The active namespace filter.
     pub fn namespace_filter(&self) -> NamespaceFilter {
-        self.ns_filter.lock().unwrap().clone()
+        self.ns_filter
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Queue a confirmed End-of-Turn commit (the net thread dry-runs then
     /// applies it to the hot cluster).
     pub fn request_commit(&self, interventions: Vec<Intervention>) {
-        *self.plan_req.lock().unwrap() = Some(interventions);
+        *self.plan_req.lock().unwrap_or_else(|e| e.into_inner()) = Some(interventions);
     }
 
     /// The result of the last commit attempt, if any.
     pub fn plan_outcome(&self) -> Option<PlanOutcome> {
-        self.plan_outcome.lock().unwrap().clone()
+        self.plan_outcome
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn clear_plan_outcome(&self) {
-        *self.plan_outcome.lock().unwrap() = None;
+        *self.plan_outcome.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Queue a confirmed pod eviction (the net thread runs it once).
     pub fn request_evict(&self, req: EvictReq) {
-        *self.evict_req.lock().unwrap() = Some(req);
+        *self.evict_req.lock().unwrap_or_else(|e| e.into_inner()) = Some(req);
     }
 
     /// The transient result of the last eviction (a toast), if any.
     pub fn evict_status(&self) -> Option<String> {
-        self.evict_status.lock().unwrap().clone()
+        self.evict_status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// May the user evict pods in (cluster, namespace)? `Some(true/false)` once
@@ -840,26 +916,40 @@ impl Net {
     /// enqueues the probe, so the UI just polls this each frame.
     pub fn evict_allowed(&self, cluster: ClusterId, namespace: &str) -> Option<bool> {
         let key = (cluster, namespace.to_string());
-        if let Some(b) = self.evict_perm.lock().unwrap().get(&key) {
+        if let Some(b) = self
+            .evict_perm
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+        {
             return Some(*b);
         }
-        self.evict_perm_pending.lock().unwrap().insert(key);
+        self.evict_perm_pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key);
         None
     }
 
     /// Start a port-forward for a pod (the net thread resolves the port).
     pub fn request_forward(&self, req: ForwardReq) {
-        *self.forward_req.lock().unwrap() = Some(req);
+        *self.forward_req.lock().unwrap_or_else(|e| e.into_inner()) = Some(req);
     }
 
     /// Stop the forward listening on `local_port`.
     pub fn stop_forward(&self, local_port: u16) {
-        self.forward_stop.lock().unwrap().push(local_port);
+        self.forward_stop
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(local_port);
     }
 
     /// The live port-forwards, for the strip + pod rows.
     pub fn forwards(&self) -> Vec<ForwardInfo> {
-        self.forwards.lock().unwrap().clone()
+        self.forwards
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// The live forward for (cluster, namespace, pod), if one exists — drives a
@@ -883,29 +973,37 @@ impl Net {
     /// probe (mirrors `evict_allowed`).
     pub fn forward_allowed(&self, cluster: ClusterId, namespace: &str) -> Option<bool> {
         let key = (cluster, namespace.to_string());
-        if let Some(b) = self.forward_perm.lock().unwrap().get(&key) {
+        if let Some(b) = self
+            .forward_perm
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+        {
             return Some(*b);
         }
-        self.forward_perm_pending.lock().unwrap().insert(key);
+        self.forward_perm_pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key);
         None
     }
 
     /// Tail this pod's logs (re-fetched on a poll until cleared).
     /// Current hot-cluster API liveness (for the connection banner).
     pub fn conn(&self) -> ConnState {
-        self.conn.lock().unwrap().clone()
+        self.conn.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
     fn set_conn(&self, s: ConnState) {
-        *self.conn.lock().unwrap() = s;
+        *self.conn.lock().unwrap_or_else(|e| e.into_inner()) = s;
     }
 
     pub fn request_logs(&self, req: LogReq) {
-        *self.log_req.lock().unwrap() = Some(req);
-        *self.log_tail.lock().unwrap() = LogTail::default();
+        *self.log_req.lock().unwrap_or_else(|e| e.into_inner()) = Some(req);
+        *self.log_tail.lock().unwrap_or_else(|e| e.into_inner()) = LogTail::default();
     }
 
     pub fn clear_logs(&self) {
-        *self.log_req.lock().unwrap() = None;
+        *self.log_req.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// The pod whose logs are currently requested — set the instant
@@ -913,24 +1011,36 @@ impl Net {
     /// toggle can re-issue even before the first fetch lands (unlike
     /// `log_tail().target`, which is None until a fetch completes).
     pub fn log_request(&self) -> Option<LogReq> {
-        self.log_req.lock().unwrap().clone()
+        self.log_req
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn log_tail(&self) -> LogTail {
-        self.log_tail.lock().unwrap().clone()
+        self.log_tail
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn snapshot(&self) -> Option<Arc<Snapshot>> {
-        self.snapshot.lock().unwrap().clone()
+        self.snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn status(&self) -> String {
-        self.status.lock().unwrap().clone()
+        self.status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Ask the net thread to switch the hot cluster to `ctx`.
     pub fn request_switch(&self, ctx: String) {
-        *self.switch.lock().unwrap() = Some(ctx);
+        *self.switch.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
     }
 }
 
@@ -1030,30 +1140,49 @@ fn conn_reason(e: &str) -> String {
     }
 }
 
+/// The net thread's name — the panic hook watches for it to set [`NET_PANICKED`]
+/// so a crashed world loop surfaces a banner instead of a silently frozen world.
+pub const NET_THREAD: &str = "kn-net";
+/// Set by the panic hook when the net thread (`kn-net`) panics. The GUI reads it
+/// to show a fatal banner — a dead net thread otherwise freezes the world with no
+/// signal (the world loop, and the liveness probe inside it, both stop).
+pub static NET_PANICKED: AtomicBool = AtomicBool::new(false);
+
 pub fn spawn(args: NetArgs, net: Arc<Net>) {
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        rt.block_on(async move {
-            *net.status.lock().unwrap() = "connecting…".into();
+    let spawned = std::thread::Builder::new()
+        .name(NET_THREAD.into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    // OS thread/fd exhaustion — degrade gracefully (no world) with
+                    // a legible status rather than a bare panic.
+                    *net.status.lock().unwrap_or_else(|x| x.into_inner()) =
+                        format!("could not start the cluster connection: {e}");
+                    return;
+                }
+            };
+            rt.block_on(async move {
+            *net.status.lock().unwrap_or_else(|e| e.into_inner()) = "connecting…".into();
             let hot_cluster =
                 match client::connect(args.kubeconfig.as_deref(), args.context.as_deref()).await {
                     Ok(c) => c,
                     Err(err) => {
-                        *net.status.lock().unwrap() = format!("connect failed: {err}");
+                        *net.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("connect failed: {err}");
                         return;
                     }
                 };
             // A warm failure degrades to single-world rather than aborting.
             let warm_cluster = match &args.warm {
                 Some(w) if *w == hot_cluster.meta.context => {
-                    *net.status.lock().unwrap() =
+                    *net.status.lock().unwrap_or_else(|e| e.into_inner()) =
                         "warm context equals hot; running single-world".into();
                     None
                 }
                 Some(w) => match client::connect(args.kubeconfig.as_deref(), Some(w)).await {
                     Ok(c) => Some(c),
                     Err(err) => {
-                        *net.status.lock().unwrap() = format!("warm connect failed: {err}");
+                        *net.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("warm connect failed: {err}");
                         None
                     }
                 },
@@ -1066,7 +1195,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
             };
             let mut label =
                 make_label(&hot_cluster.meta.context, hot_cluster.meta.platform.label());
-            *net.status.lock().unwrap() = format!("{label} · exploring…");
+            *net.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("{label} · exploring…");
 
             let dirty = Arc::new(AtomicBool::new(false));
             let ready_hot = Arc::new(AtomicBool::new(false));
@@ -1148,9 +1277,9 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // Hot-context switch: connect the new cluster, then drop the
                 // old handle (its informers abort) by reassigning. Snapshot
                 // is cleared so the UI shows fog until the new world syncs.
-                let requested = net.switch.lock().unwrap().take();
+                let requested = net.switch.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(ctx) = requested {
-                    *net.status.lock().unwrap() = format!("switching → {ctx} …");
+                    *net.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("switching → {ctx} …");
                     match client::connect(args.kubeconfig.as_deref(), Some(&ctx)).await {
                         Ok(c) => {
                             // Don't strand the cluster we're leaving: if a live
@@ -1164,7 +1293,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 .filter(|s| s.cluster == ClusterId::Hot && !s.restore.is_empty())
                                 .map(|s| s.restore.clone());
                             if let Some(steps) = leaving_restore {
-                                *net.status.lock().unwrap() =
+                                *net.status.lock().unwrap_or_else(|e| e.into_inner()) =
                                     "restoring drill before switch…".into();
                                 let _ = tokio::time::timeout(
                                     Duration::from_secs(25),
@@ -1201,11 +1330,11 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 ));
                             }
                             label = make_label(&c.meta.context, c.meta.platform.label());
-                            *net.status.lock().unwrap() = format!("{label} · exploring…");
-                            *net.snapshot.lock().unwrap() = None;
+                            *net.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("{label} · exploring…");
+                            *net.snapshot.lock().unwrap_or_else(|e| e.into_inner()) = None;
                             // RBAC answers were for the old cluster.
-                            net.evict_perm.lock().unwrap().clear();
-                            net.evict_perm_pending.lock().unwrap().clear();
+                            net.evict_perm.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                            net.evict_perm_pending.lock().unwrap_or_else(|e| e.into_inner()).clear();
                             // Hot forwards point at the cluster we're leaving —
                             // drop them (abort their tunnels); warm survives.
                             forwards.retain(|(c, _)| *c != ClusterId::Hot);
@@ -1213,60 +1342,60 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 .lock()
                                 .unwrap()
                                 .retain(|f| f.cluster != ClusterId::Hot);
-                            net.forward_perm.lock().unwrap().clear();
-                            net.forward_perm_pending.lock().unwrap().clear();
+                            net.forward_perm.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                            net.forward_perm_pending.lock().unwrap_or_else(|e| e.into_inner()).clear();
                             // Error budgets + SLO config belong to the old cluster.
                             slo.clear();
                             slo_cfg.clear_overrides();
                             slo_ann.clear();
                             // Any chaos drill belonged to the old cluster.
-                            *net.chaos_req.lock().unwrap() = None;
-                            *net.chaos_session.lock().unwrap() = None;
-                            net.chaos_history.lock().unwrap().clear();
+                            *net.chaos_req.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                            *net.chaos_session.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                            net.chaos_history.lock().unwrap_or_else(|e| e.into_inner()).clear();
                             // The operator-action log belonged to the old cluster.
-                            *net.operator_actions.lock().unwrap() = Arc::new(Vec::new());
+                            *net.operator_actions.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(Vec::new());
                             // Namespaces differ across clusters — reset.
-                            *net.ns_filter.lock().unwrap() = NamespaceFilter::All;
+                            *net.ns_filter.lock().unwrap_or_else(|e| e.into_inner()) = NamespaceFilter::All;
                             // Discovered kinds + any open browse are the old
                             // cluster's — drop them so the browser re-discovers
                             // against the new cluster (a CRD on A may be absent
                             // on B). `last_browse` self-resets next tick (the
                             // cleared browse_req makes `breq` None).
-                            *net.kinds.lock().unwrap() = None;
-                            *net.discover_warnings.lock().unwrap() = Vec::new();
-                            *net.browse_req.lock().unwrap() = None;
-                            *net.browse_out.lock().unwrap() = BrowseOut::default();
+                            *net.kinds.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                            *net.discover_warnings.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
+                            *net.browse_req.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                            *net.browse_out.lock().unwrap_or_else(|e| e.into_inner()) = BrowseOut::default();
                             // The Charter is the old cluster's access — drop it and
                             // bump the gen so an in-flight probe can't repopulate.
-                            *net.charter_req.lock().unwrap() = None;
-                            net.charter_out.lock().unwrap().clear();
+                            *net.charter_req.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                            net.charter_out.lock().unwrap_or_else(|e| e.into_inner()).clear();
                             net.charter_gen.fetch_add(1, Ordering::Relaxed);
                             // Oracle replies were about the old cluster — drop them
                             // and bump the gen so an in-flight consult lands nowhere.
                             // (The Oracle CONFIG is cluster-independent — keep it.)
-                            *net.oracle_req.lock().unwrap() = None;
-                            net.oracle_out.lock().unwrap().clear();
-                            net.oracle_stream.lock().unwrap().clear();
+                            *net.oracle_req.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                            net.oracle_out.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                            net.oracle_stream.lock().unwrap_or_else(|e| e.into_inner()).clear();
                             net.oracle_gen.fetch_add(1, Ordering::Relaxed);
                             // Model-discovery + chat-test are endpoint-scoped, not
                             // cluster-scoped, but keep them honest after a switch.
-                            *net.models_req.lock().unwrap() = None;
-                            *net.models_out.lock().unwrap() = None;
+                            *net.models_req.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                            *net.models_out.lock().unwrap_or_else(|e| e.into_inner()) = None;
                             net.models_gen.fetch_add(1, Ordering::Relaxed);
-                            *net.chat_test_req.lock().unwrap() = None;
-                            *net.chat_test_out.lock().unwrap() = None;
+                            *net.chat_test_req.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                            *net.chat_test_out.lock().unwrap_or_else(|e| e.into_inner()) = None;
                             net.chat_test_gen.fetch_add(1, Ordering::Relaxed);
                             // Deepen logs are pod-scoped on the OLD cluster — drop
                             // + bump the gen so a slow fetch can't fold them in.
-                            *net.oracle_log_req.lock().unwrap() = None;
-                            *net.oracle_log_out.lock().unwrap() = None;
+                            *net.oracle_log_req.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                            *net.oracle_log_out.lock().unwrap_or_else(|e| e.into_inner()) = None;
                             net.oracle_log_gen.fetch_add(1, Ordering::Relaxed);
                             // A same-named pod on the new cluster must re-resolve.
                             log_target = None;
                             log_container = None;
                         }
                         Err(err) => {
-                            *net.status.lock().unwrap() = format!("switch failed: {err}");
+                            *net.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("switch failed: {err}");
                         }
                     }
                 }
@@ -1275,7 +1404,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 ticks += 1;
 
                 // Live log tail: fetch on first request and then every ~2s.
-                let req = net.log_req.lock().unwrap().clone();
+                let req = net.log_req.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if let Some(r) = req.clone()
                     && (req != last_log || ticks.is_multiple_of(8))
                 {
@@ -1314,8 +1443,8 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     };
                     let res = logs::tail(client, &r.namespace, &r.pod, resolved, &opts).await;
                     // Only store if still the requested target.
-                    if net.log_req.lock().unwrap().as_ref() == Some(&r) {
-                        let mut g = net.log_tail.lock().unwrap();
+                    if net.log_req.lock().unwrap_or_else(|e| e.into_inner()).as_ref() == Some(&r) {
+                        let mut g = net.log_tail.lock().unwrap_or_else(|e| e.into_inner());
                         g.target = Some(r.clone());
                         match res {
                             Ok(t) => {
@@ -1337,17 +1466,17 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // kind (re-LIST on change or every ~2s, hot cluster).
                 if net.discover_req.swap(false, Ordering::Relaxed) {
                     let d = browse::discover(&hot_client).await;
-                    *net.discover_warnings.lock().unwrap() = d.warnings;
-                    *net.kinds.lock().unwrap() = Some(Arc::new(d.kinds));
+                    *net.discover_warnings.lock().unwrap_or_else(|e| e.into_inner()) = d.warnings;
+                    *net.kinds.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(d.kinds));
                 }
-                let breq = net.browse_req.lock().unwrap().clone();
+                let breq = net.browse_req.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if let Some(k) = breq.clone() {
                     // (Re-)LIST when the kind changed, when the result slot was
                     // just blanked by a fresh request (incl. re-selecting the
                     // SAME kind — `request_browse` resets `browse_out`), or on
                     // the periodic refresh. Keying only off `last_browse` would
                     // strand a same-kind re-request on "listing…" forever.
-                    let pending = net.browse_out.lock().unwrap().result.is_none();
+                    let pending = net.browse_out.lock().unwrap_or_else(|e| e.into_inner()).result.is_none();
                     if pending
                         || last_browse.as_deref() != Some(k.label().as_str())
                         || ticks.is_multiple_of(8)
@@ -1369,10 +1498,10 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             result: Some(res.map(Arc::new)),
                         };
                         // Store only if still the requested kind.
-                        if net.browse_req.lock().unwrap().as_ref().map(|r| r.label())
+                        if net.browse_req.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|r| r.label())
                             == Some(k.label())
                         {
-                            *net.browse_out.lock().unwrap() = stored;
+                            *net.browse_out.lock().unwrap_or_else(|e| e.into_inner()) = stored;
                         }
                     }
                 }
@@ -1381,7 +1510,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // Self-scoped RBAC (the Charter): on request, probe the curated
                 // grid (namespaced cells against the focus ns + cluster-scoped
                 // cells) concurrently and cache it per scope. Read-only self-query.
-                let creq = net.charter_req.lock().unwrap().take();
+                let creq = net.charter_req.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some((cluster, ns)) = creq {
                     let cached = net
                         .charter_out
@@ -1419,10 +1548,10 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // world loop). The GUI built + rendered + hashed the prompt; here
                 // we only POST it and cache the reply by hash. Manual-trigger
                 // only — never on a tick beyond draining a user-set request.
-                let oreq = net.oracle_req.lock().unwrap().take();
+                let oreq = net.oracle_req.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(OracleReq { hash, messages }) = oreq
-                    && !net.oracle_out.lock().unwrap().contains_key(&hash)
-                    && !net.oracle_stream.lock().unwrap().contains_key(&hash)
+                    && !net.oracle_out.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&hash)
+                    && !net.oracle_stream.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&hash)
                 {
                     let cfg = net.oracle_config();
                     let armed = net.oracle_egress_armed.load(Ordering::Relaxed);
@@ -1449,19 +1578,33 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             .unwrap()
                             .insert(hash, Arc::new(OracleReply::Err(msg)));
                     } else if let Some(c) = cfg {
+                        // Bound the per-session reply caches (also cleared on
+                        // switch / endpoint change) so a very long session of
+                        // distinct consults can't grow them without limit.
+                        const ORACLE_CACHE_CAP: usize = 64;
+                        {
+                            let mut out =
+                                net.oracle_out.lock().unwrap_or_else(|e| e.into_inner());
+                            let mut stream =
+                                net.oracle_stream.lock().unwrap_or_else(|e| e.into_inner());
+                            if out.len() >= ORACLE_CACHE_CAP || stream.len() >= ORACLE_CACHE_CAP {
+                                out.clear();
+                                stream.clear();
+                            }
+                        }
                         // Pre-insert the live buffer so the GUI sees "Streaming" with no
                         // one-frame gap; the spawned task appends each token delta.
                         let buf = Arc::new(Mutex::new(StreamBuf {
                             text: String::new(),
                             status: StreamStatus::Streaming,
                         }));
-                        net.oracle_stream.lock().unwrap().insert(hash, buf.clone());
+                        net.oracle_stream.lock().unwrap_or_else(|e| e.into_inner()).insert(hash, buf.clone());
                         let net_cancel = net2.clone();
                         tokio::spawn(async move {
                             let on_token = {
                                 let b = buf.clone();
                                 move |d: &str| {
-                                    b.lock().unwrap().text.push_str(d);
+                                    b.lock().unwrap_or_else(|e| e.into_inner()).text.push_str(d);
                                 }
                             };
                             // Cancel / context-switch / endpoint-change all bump
@@ -1478,7 +1621,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 match res {
                                     Ok(text) => {
                                         {
-                                            let mut b = buf.lock().unwrap();
+                                            let mut b = buf.lock().unwrap_or_else(|e| e.into_inner());
                                             b.text = text.clone();
                                             b.status = StreamStatus::Done;
                                         }
@@ -1489,7 +1632,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                     }
                                     Err(e) => {
                                         let msg = e.to_string();
-                                        buf.lock().unwrap().status = StreamStatus::Err(msg.clone());
+                                        buf.lock().unwrap_or_else(|e| e.into_inner()).status = StreamStatus::Err(msg.clone());
                                         net2.oracle_out
                                             .lock()
                                             .unwrap()
@@ -1498,7 +1641,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 }
                             } else {
                                 // The late stream lands nowhere — drop the orphan buffer.
-                                net2.oracle_stream.lock().unwrap().remove(&hash);
+                                net2.oracle_stream.lock().unwrap_or_else(|e| e.into_inner()).remove(&hash);
                             }
                         });
                     }
@@ -1508,7 +1651,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // GET /v1/models (slow for a cold endpoint; token-bearing egress
                 // for a remote one). Gated like the consult — a remote endpoint
                 // needs the arm before its token leaves the box.
-                let mreq = net.models_req.lock().unwrap().take();
+                let mreq = net.models_req.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(cfg) = mreq {
                     let armed = net.oracle_egress_armed.load(Ordering::Relaxed);
                     // A remote /v1/models GET sends the token off-box, so it is
@@ -1532,7 +1675,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             }
                         };
                         if net2.models_gen.load(Ordering::Relaxed) == req_gen {
-                            *net2.models_out.lock().unwrap() = Some(out);
+                            *net2.models_out.lock().unwrap_or_else(|e| e.into_inner()) = Some(out);
                         }
                     });
                 }
@@ -1540,7 +1683,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // Oracle chat test (level 2): a real tiny completion. Same gating
                 // as discovery/consult — a remote endpoint is token-bearing egress,
                 // allowed ONLY for the ACTIVE, ARMED endpoint.
-                let creq = net.chat_test_req.lock().unwrap().take();
+                let creq = net.chat_test_req.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some((cfg, messages)) = creq {
                     let armed = net.oracle_egress_armed.load(Ordering::Relaxed);
                     let active_url = net.oracle_config().map(|c| c.base_url);
@@ -1562,7 +1705,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             }
                         };
                         if net2.chat_test_gen.load(Ordering::Relaxed) == req_gen {
-                            *net2.chat_test_out.lock().unwrap() = Some(out);
+                            *net2.chat_test_out.lock().unwrap_or_else(|e| e.into_inner()) = Some(out);
                         }
                     });
                 }
@@ -1570,7 +1713,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // Oracle deepen "include logs": one-shot fetch of a probe pod's
                 // tail (hot cluster). Spawned + gen-guarded so a slow fetch landing
                 // after a context switch can't fold the OLD cluster's logs in.
-                let olreq = net.oracle_log_req.lock().unwrap().take();
+                let olreq = net.oracle_log_req.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(req) = olreq {
                     let client = hot_client.clone();
                     let net2 = net.clone();
@@ -1587,7 +1730,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             .await
                             .map_err(|e| e.to_string());
                         if net2.oracle_log_gen.load(Ordering::Relaxed) == req_gen {
-                            *net2.oracle_log_out.lock().unwrap() = Some((req, res));
+                            *net2.oracle_log_out.lock().unwrap_or_else(|e| e.into_inner()) = Some((req, res));
                         }
                     });
                 }
@@ -1597,7 +1740,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // observe the pod's disappearance on a later tick. (Take the
                 // request into a local first so the lock isn't held over the
                 // await.)
-                let evict = net.evict_req.lock().unwrap().take();
+                let evict = net.evict_req.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(ev) = evict {
                     let client = match ev.cluster {
                         ClusterId::Warm => {
@@ -1605,10 +1748,10 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         }
                         ClusterId::Hot => hot_client.clone(),
                     };
-                    *net.evict_status.lock().unwrap() =
+                    *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) =
                         Some(format!("evicting {}/{} …", ev.namespace, ev.pod));
                     let res = actions::evict_pod(client, &ev.namespace, &ev.pod).await;
-                    *net.evict_status.lock().unwrap() = Some(match &res {
+                    *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(match &res {
                         Ok(()) => format!("evicted {}/{}", ev.namespace, ev.pod),
                         Err(e) => format!("evict failed: {e}"),
                     });
@@ -1630,7 +1773,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 if let Some(t0) = evict_set
                     && ticks.saturating_sub(t0) > 12
                 {
-                    *net.evict_status.lock().unwrap() = None;
+                    *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) = None;
                     evict_set = None;
                 }
 
@@ -1640,7 +1783,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // explicit start, visible + stoppable). The transient toast
                 // reuses `evict_status` (the shared action-toast slot, as commit
                 // does); `forwards` is the persistent live list.
-                let freq = net.forward_req.lock().unwrap().take();
+                let freq = net.forward_req.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(fr) = freq {
                     let client = match fr.cluster {
                         ClusterId::Warm => {
@@ -1649,7 +1792,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         ClusterId::Hot => hot_client.clone(),
                     };
                     // Skip if already forwarding this exact pod (no duplicates).
-                    let dup = net.forwards.lock().unwrap().iter().any(|f| {
+                    let dup = net.forwards.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|f| {
                         f.cluster == fr.cluster && f.namespace == fr.namespace && f.pod == fr.pod
                     });
                     if dup {
@@ -1669,11 +1812,11 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 {
                                     Ok(fwd) => {
                                         let local = fwd.local_port;
-                                        *net.evict_status.lock().unwrap() = Some(format!(
+                                        *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!(
                                             "forwarding 127.0.0.1:{local} -> {}/{}:{port}",
                                             fr.namespace, fr.pod
                                         ));
-                                        net.forwards.lock().unwrap().push(ForwardInfo {
+                                        net.forwards.lock().unwrap_or_else(|e| e.into_inner()).push(ForwardInfo {
                                             cluster: fr.cluster,
                                             namespace: fr.namespace.clone(),
                                             pod: fr.pod.clone(),
@@ -1683,19 +1826,19 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                         forwards.push((fr.cluster, fwd));
                                     }
                                     Err(e) => {
-                                        *net.evict_status.lock().unwrap() =
+                                        *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) =
                                             Some(format!("forward failed: {e}"));
                                     }
                                 }
                             }
                             Ok(None) => {
-                                *net.evict_status.lock().unwrap() = Some(format!(
+                                *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!(
                                     "{}/{}: no forwardable port found",
                                     fr.namespace, fr.pod
                                 ));
                             }
                             Err(_) => {
-                                *net.evict_status.lock().unwrap() = Some(format!(
+                                *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!(
                                     "{}/{}: port lookup timed out",
                                     fr.namespace, fr.pod
                                 ));
@@ -1704,14 +1847,14 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         evict_set = Some(ticks);
                     }
                 }
-                let stops: Vec<u16> = net.forward_stop.lock().unwrap().drain(..).collect();
+                let stops: Vec<u16> = net.forward_stop.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
                 for lp in stops {
                     if let Some(pos) = forwards.iter().position(|(_, f)| f.local_port == lp) {
                         // Remove → drop → abort the accept loop + its tunnels.
                         let (_, fwd) = forwards.remove(pos);
                         drop(fwd);
-                        net.forwards.lock().unwrap().retain(|f| f.local_port != lp);
-                        *net.evict_status.lock().unwrap() = Some(format!("stopped forward :{lp}"));
+                        net.forwards.lock().unwrap_or_else(|e| e.into_inner()).retain(|f| f.local_port != lp);
+                        *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("stopped forward :{lp}"));
                         evict_set = Some(ticks);
                     }
                 }
@@ -1742,7 +1885,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         .lock()
                         .unwrap()
                         .retain(|f| !dead.contains(&f.local_port));
-                    *net.evict_status.lock().unwrap() = Some(if dead.len() == 1 {
+                    *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(if dead.len() == 1 {
                         format!("forward :{} ended — pod gone", dead[0])
                     } else {
                         format!("{} forwards ended — pods gone", dead.len())
@@ -1755,10 +1898,10 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // dry-runs every staged change (also enforcing RBAC) and only
                 // applies for real if all pass. The per-row outcome goes back
                 // to the review window; the toast summarizes it.
-                let commit = net.plan_req.lock().unwrap().take();
+                let commit = net.plan_req.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(ivs) = commit {
                     let outcome = actions::commit_interventions(hot_client.clone(), &ivs).await;
-                    *net.evict_status.lock().unwrap() = Some(if outcome.applied {
+                    *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(if outcome.applied {
                         let n_ok = outcome.rows.iter().filter(|r| r.ok).count();
                         format!("committed {n_ok}/{} change(s)", outcome.rows.len())
                     } else {
@@ -1779,7 +1922,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             }
                         }
                     }
-                    *net.plan_outcome.lock().unwrap() = Some(outcome);
+                    *net.plan_outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
                     evict_set = Some(ticks);
                     dirty.store(true, Ordering::Relaxed);
                 }
@@ -1789,7 +1932,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // protected-namespace re-check (a UI bug can't aim chaos at the
                 // control plane). Seed the scorecard: budget before, then track
                 // recovery + spend on the SLO samples below.
-                let chaos_run = net.chaos_req.lock().unwrap().take();
+                let chaos_run = net.chaos_req.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(run) = chaos_run {
                     // Fail-closed re-check of EVERY step — inject AND restore —
                     // so a (future) UI bug that decoupled a step's namespace/node
@@ -1802,7 +1945,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         .chain(run.restore.iter())
                         .any(|s| chaos_step_protected(s, &hot_handle.world));
                     if protected {
-                        *net.evict_status.lock().unwrap() =
+                        *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) =
                             Some("chaos refused: protected target".into());
                         evict_set = Some(ticks);
                     } else {
@@ -1828,7 +1971,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 &build_workloads(&hot_handle.world),
                                 &run.watch,
                             );
-                        *net.evict_status.lock().unwrap() = Some(format!(
+                        *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!(
                             "running chaos: {} on {target_label}",
                             run.experiment
                         ));
@@ -1839,7 +1982,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         )
                         .await
                         .ok();
-                        *net.evict_status.lock().unwrap() = Some(match &outcome {
+                        *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(match &outcome {
                             Some(o) => format!(
                                 "chaos: {}/{} step(s)",
                                 o.rows.iter().filter(|r| r.ok).count(),
@@ -1852,9 +1995,9 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         // not when THIS run is just an undo (it's the same drill,
                         // not a new one), which would double-log it.
                         if !run.is_restore
-                            && let Some(prev) = net.chaos_session.lock().unwrap().as_ref()
+                            && let Some(prev) = net.chaos_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
                         {
-                            let mut h = net.chaos_history.lock().unwrap();
+                            let mut h = net.chaos_history.lock().unwrap_or_else(|e| e.into_inner());
                             h.insert(0, ChaosRecord::from_session(prev));
                             h.truncate(10);
                         }
@@ -1884,7 +2027,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             .auto_restore_secs
                             .filter(|_| !run.restore.is_empty())
                             .map(|secs| ticks + (secs / 0.25).max(1.0) as u64);
-                        *net.chaos_session.lock().unwrap() = Some(ChaosSession {
+                        *net.chaos_session.lock().unwrap_or_else(|e| e.into_inner()) = Some(ChaosSession {
                             cluster: run.cluster,
                             experiment: run.experiment,
                             subject: run.subject,
@@ -1915,7 +2058,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // passed, run the restore now (opt-in "auto-undo"). The restore
                 // steps were vetted fail-closed when the drill was created.
                 let auto_restore: Option<Vec<chaos::ChaosStep>> = {
-                    let g = net.chaos_session.lock().unwrap();
+                    let g = net.chaos_session.lock().unwrap_or_else(|e| e.into_inner());
                     g.as_ref()
                         .filter(|s| s.cluster == ClusterId::Hot && !s.restore.is_empty())
                         .and_then(|s| s.auto_restore_tick)
@@ -1928,7 +2071,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         actions::run_chaos(hot_client.clone(), &restore_steps),
                     )
                     .await;
-                    if let Some(s) = net.chaos_session.lock().unwrap().as_mut() {
+                    if let Some(s) = net.chaos_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
                         s.restore.clear(); // restored — drop the Restore button
                         s.auto_restore_tick = None;
                         // The injection's static notes ("still cordoned" / "policy
@@ -1938,7 +2081,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         s.score_kind = ScoreKind::Workload;
                         s.restored = true;
                     }
-                    *net.evict_status.lock().unwrap() = Some("chaos: auto-restored".into());
+                    *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) = Some("chaos: auto-restored".into());
                     evict_set = Some(ticks);
                     dirty.store(true, Ordering::Relaxed);
                 }
@@ -1947,7 +2090,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // result so the UI can enable/disable the evict control. Deny
                 // on error (the safe default).
                 let perm_todo: Vec<(ClusterId, String)> =
-                    net.evict_perm_pending.lock().unwrap().drain().collect();
+                    net.evict_perm_pending.lock().unwrap_or_else(|e| e.into_inner()).drain().collect();
                 for (cluster, ns) in perm_todo {
                     let client = match cluster {
                         ClusterId::Warm => {
@@ -1964,7 +2107,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
 
                 // Answer pending port-forward (RBAC) probes the same way.
                 let fperm_todo: Vec<(ClusterId, String)> =
-                    net.forward_perm_pending.lock().unwrap().drain().collect();
+                    net.forward_perm_pending.lock().unwrap_or_else(|e| e.into_inner()).drain().collect();
                 for (cluster, ns) in fperm_todo {
                     let client = match cluster {
                         ClusterId::Warm => {
@@ -1983,7 +2126,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // stepper) into the per-cluster config; force a rebuild so the
                 // new target shows immediately.
                 let overrides: Vec<(ClusterId, WorkloadRef, Option<f64>)> =
-                    net.slo_override_req.lock().unwrap().drain(..).collect();
+                    net.slo_override_req.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
                 if !overrides.is_empty() {
                     for (cluster, wr, target) in overrides {
                         match cluster {
@@ -2014,7 +2157,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     // hot rows (chaos is hot-only). Branches on the subject:
                     // a workload tracks its own outage/recovery + budget; a node
                     // drill tracks its drained workloads back to full strength.
-                    if let Some(sess) = net.chaos_session.lock().unwrap().as_mut()
+                    if let Some(sess) = net.chaos_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
                         && sess.cluster == ClusterId::Hot
                     {
                         let secs = ticks.saturating_sub(sess.started_tick) as f64 * 0.25;
@@ -2119,7 +2262,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 let hot_models = Arc::new(Models::build_filtered(&hot_handle.world, &filter));
                 // MTTD: note the first tick the attention queue flags the drill's
                 // subject (the fresh hot concerns are right here).
-                if let Some(sess) = net.chaos_session.lock().unwrap().as_mut()
+                if let Some(sess) = net.chaos_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
                     && sess.cluster == ClusterId::Hot
                     && sess.detect_tick.is_none()
                 {
@@ -2274,7 +2417,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
 
                 // Game Day: while a drill is fresh, announce the raid in the queue
                 // (the product's spine) so `n`/`B` route to it; drops after ~30s.
-                if let Some(sess) = net.chaos_session.lock().unwrap().as_ref()
+                if let Some(sess) = net.chaos_session.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
                     && sess.cluster == ClusterId::Hot
                     && ticks.saturating_sub(sess.started_tick) < 120
                 {
@@ -2325,8 +2468,8 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     }
                 };
 
-                *net.status.lock().unwrap() = label.clone();
-                *net.snapshot.lock().unwrap() = Some(Arc::new(Snapshot {
+                *net.status.lock().unwrap_or_else(|e| e.into_inner()) = label.clone();
+                *net.snapshot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Snapshot {
                     hot: WorldSnap {
                         models: hot_models,
                         observed: hot_handle.world.clone(),
@@ -2341,7 +2484,10 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 }));
             }
         });
-    });
+        });
+    if let Err(e) = spawned {
+        tracing::error!("could not spawn the net thread: {e}");
+    }
 }
 
 #[cfg(test)]

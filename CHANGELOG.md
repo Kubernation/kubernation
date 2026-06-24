@@ -9,6 +9,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Hardening — crash safety + error visibility (v1 polish round).** A global panic
+  hook now logs every panic (thread · location · message) to
+  `~/.local/state/kubernation/kubernation.log` before it unwinds, so a crash launched
+  from a launcher (no terminal) is diagnosable. The cluster-connection thread is named
+  and watched: if its world loop crashes, a **fatal banner** appears ("the world loop
+  crashed — restart") instead of a silently frozen world. All ~160 shared-mutex locks
+  are now **poison-tolerant** — a panic in one background task can no longer cascade
+  into a render-thread crash that takes the whole app down. The tokio runtime and the
+  log-file writer degrade gracefully instead of panicking, and the per-session Oracle
+  reply cache is bounded.
+
 - **Pre-1.0 readiness — four build items.**
   - **Release pipeline + CI.** GitHub Actions: `ci.yml` runs fmt + clippy + test on
     macOS and Linux on every push/PR; `release.yml` builds pre-built binaries on a
