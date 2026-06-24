@@ -2326,6 +2326,45 @@ what makes the interesting logic unit-testable without a cluster.
   balance + scroll math, and clearing all verified). 294 core + 54 GUI (+1) tests; clippy
   clean. **Deferred:** persisting history across modal close; a stacked-transcript toggle;
   per-page metadata (timestamp/question).
+- **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
+  design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
+  treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn
+  pattern, classifying a *fast* burn (page → **Critical** concern) vs a *slow* burn
+  (ticket → **Warning**) so the queue separates "wake someone up" from "file it." **Pure
+  core** (`state/slo.rs`, unit-tested): `from_ring` now computes burn over a SHORT window
+  (`BURN_SHORT=24` samples ~48s — the recent *rate*) and a LONG window (`BURN_LONG=60`
+  ~2min — *sustained?*, a strict slice of the 240-sample ring so a full-ring burn doesn't
+  conflate with `Breached`), gated by an ACTIVE check (`BURN_ACTIVE=4` ~8s — *down right
+  now?*). `BudgetState::Burning` split into `FastBurn`/`SlowBurn`; `SloStatus` gained
+  `burn_long`. Predicates: `fast = active && burn≥BURN_FAST(6) && burn_long≥BURN_SLOW(2)`;
+  `slow = active && n≥BURN_LONG_MIN(24) && !fast && burn_long≥BURN_SLOW && burn≥BURN_HOT(1.5)`
+  (`BURN_FAST>BURN_SLOW>BURN_HOT>1`). Precedence unchanged: `Warming → Breached → FastBurn
+  → SlowBurn → Healthy`. `budget_concern` maps Breached+FastBurn→Critical, SlowBurn→Warning,
+  else None (stable `slo:ns/name` key so a SlowBurn→FastBurn escalation updates in place).
+  The GUI city `treasury_summary` split the Burning arm (CRIT "burning fast Nx/Mx" / WARN
+  "eroding Nx/Mx"); net + chaos `budget_verdict` needed no change (they route through
+  `severity`/`Breached` only). **Two load-bearing facts the adversarial review forced** (it
+  found 2 distinct HIGH issues the design missed): (1) the LONG window is **geometrically
+  bounded** — while the budget is positive a sustained long-window burst can't exceed
+  ≈`WINDOW/BURN_LONG`(~4×) before breaching — so the design's original `burn_long≥FAST`
+  predicate was *impossible* (FastBurn permanently dead); the long window confirms "not a
+  blip" at the SLOW threshold instead. (2) the SHORT window's **integer 1/w quantization**
+  at a tight budget jumps the burn past the slow band (over 8 samples at a 1% budget one
+  down = 12.5×, past FAST), making `SlowBurn` **unreachable at the default 0.99 and every
+  tier ≥~97.9%** — the ticket tier was dead for the default operator. Fixes: widen
+  `BURN_SHORT` 8→24 (one down sample lands at 4.17×, inside the slow band → SlowBurn
+  reachable at 0.99, pinned by `slow_burn_tickets_at_the_default_target`), and add the
+  ACTIVE gate so the wide short window doesn't false-page during its ~48s drain after a
+  recovered dip (the review's 3rd confirmed finding, pinned by `a_partial_recovery_does_not_page`).
+  **Honest physics** (in the module doc + almanac): the page/ticket split sharpens at
+  looser targets (more budget = more dynamic range); at very tight targets (≳99.5%) the
+  8-min/2s ring is too coarse for a sub-breach distinction (one 2s down already breaches) →
+  page-or-breach there, by design not omission. Still in-session + readiness-derived (no
+  metrics-server); no new write verb. 299 core + 54 GUI tests (the blip + recovered +
+  partial-recovery no-alert invariants pin the gates' end-to-end chain — state AND
+  `budget_concern.is_none()`); verified live on kind (smoke). **Deferred:** a configurable
+  multiwindow tuple; a multi-window burn-rate graph in the treasury band; persisting the
+  ring across runs (would enable true longer-horizon burn windows).
 
 ## The pair (hot/warm)
 

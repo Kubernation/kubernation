@@ -20,6 +20,20 @@
 //! cross-restart persistence), so this is a *recent-availability* budget over
 //! the observed window — a live tracker, not a 30-day compliance number. Honest
 //! about what a laptop explorer can know.
+//!
+//! **Multi-burn-rate alerting.** Over that ring we run the SRE multiwindow burn
+//! pattern with three windows: a SHORT window (~48s) gives the recent burn *rate*,
+//! a LONG window (~2 min, a strict slice) confirms it's *sustained*, and a small
+//! ACTIVE gate (~8s) confirms the incident is *current*. A *fast* burn (severe + still
+//! down) **pages** (Critical); a *slow* burn (sustained-but-mild + still down)
+//! **tickets** (Warning). The gates are the point — a one-sample blip (long window
+//! cold) and a recovered incident (not active) both stay quiet, so the queue doesn't
+//! churn on noise. The window sizes + thresholds are tuned to *this* ring/cadence
+//! (recent-window rates, not a 30-day-budget burn rate) and are not portable to a
+//! Prometheus deployment. The page/ticket split sharpens at looser targets (a bigger
+//! budget = more dynamic range); at very tight targets (≳99.5%) the 8-min / 2s ring
+//! is too coarse for a sub-breach burn distinction (one 2s down sample already
+//! breaches) so it reads page-or-breach there — honest physics, not a missing case.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -34,9 +48,46 @@ pub const DEFAULT_TARGET: f64 = 0.99;
 pub const WINDOW: usize = 240;
 /// Below this many samples there's no verdict yet ("warming up").
 pub const MIN_SAMPLES: usize = 8;
-/// Recent samples the burn rate looks at.
-const BURN_RECENT: usize = 8;
-/// Burn rate (× the sustainable spend) above which a budget reads as "burning".
+// --- multi-burn-rate windows (the SRE multiwindow pattern, scaled to this ring) ---
+// Three lookback windows over the availability ring classify a burn: an ACTIVE gate
+// ("is the incident current?"), a SHORT window (the recent burn RATE), and a LONG
+// window (is it SUSTAINED?). fast (page) + slow (ticket) both require the incident to
+// be current, so a recovered/draining incident stays quiet. The window sizes +
+// multipliers are tuned to the 240-sample / 2s ring above — RECENT-window rates, NOT
+// a 30-day-budget burn rate, and not portable to a Prometheus deployment.
+//
+// RESOLUTION NOTE (load-bearing): the down-rate over a `w`-sample window quantizes in
+// 1/w steps, so over a small window at a tight budget the burn JUMPS past the slow
+// band — e.g. over 8 samples at a 1% budget (target 0.99) one down sample is already
+// (1/8)/0.01 = 12.5× (past FAST), leaving the [HOT, FAST) ticket band empty. SHORT is
+// therefore 24 samples (~48s) so a single down sample lands at 4.17× (inside the slow
+// band) and the ticket tier is reachable at the DEFAULT 0.99 target. The split still
+// sharpens at looser targets (a larger budget = more dynamic range); at very tight
+// targets (≳99.5%) the 8-min / 2s ring is simply too coarse for a sub-breach burn
+// distinction — a single 2s down sample already breaches — so it reads page-or-breach
+// there, which is honest physics, not a missing case (see the reachability tests).
+/// The ACTIVE gate: a fast/slow alert requires downtime within the last few samples,
+/// so a recovered incident (its burst draining out of SHORT) doesn't keep alerting.
+/// Small + stable against flapping (~8s), not the most-recent single sample (~2s).
+const BURN_ACTIVE: usize = 4;
+/// The SHORT window: the recent burn RATE (~48s). Wide enough that one down sample at
+/// a 1% budget lands inside the ticket band, not past the page threshold (see above).
+const BURN_SHORT: usize = 24;
+/// The LONG window: "is the burn sustained?" — a strict SLICE of the ring (~2 min).
+/// NOT the full ring: a full-ring burn equals `spent` (= 1−budget_remaining), which
+/// would conflate the burn axis with the Breached axis.
+const BURN_LONG: usize = 60;
+/// The long window must be this populated before a slow-burn verdict, else a single
+/// down sample in a thin early-session ring would falsely read as chronic erosion.
+const BURN_LONG_MIN: usize = 24;
+/// SHORT-window burn (× the sustainable spend) to PAGE (fast burn), with the long
+/// window confirming it's no blip.
+const BURN_FAST: f64 = 6.0;
+/// LONG-window burn for a TICKET (slow burn — sustained moderate erosion) and the
+/// "not a one-sample blip" confirmation a fast burn also requires.
+const BURN_SLOW: f64 = 2.0;
+/// SHORT-window floor a slow burn must clear (some real recent burn, not a single
+/// stale sample). `BURN_FAST > BURN_SLOW > BURN_HOT > 1`.
 const BURN_HOT: f64 = 1.5;
 
 /// Where a workload's SLO target came from (precedence: manual > annotation >
@@ -60,8 +111,12 @@ pub enum BudgetState {
     Warming,
     /// Budget intact, spending at or below the sustainable rate.
     Healthy,
-    /// Budget left, but spending faster than sustainable.
-    Burning,
+    /// Sustained moderate burn (long window) that's still active (short window) —
+    /// chronic erosion: a TICKET (Warning).
+    SlowBurn,
+    /// A severe burn confirmed by BOTH windows — imminent exhaustion: a PAGE
+    /// (Critical).
+    FastBurn,
     /// Budget exhausted (availability below the SLO over the window).
     Breached,
 }
@@ -75,9 +130,12 @@ pub struct SloStatus {
     pub target: f64,
     /// Fraction of the error budget still unspent (1.0 = full, 0.0 = exhausted).
     pub budget_remaining: f64,
-    /// Recent spend as a multiple of the sustainable rate (1.0 = on pace to
-    /// exactly exhaust the budget over the window; >1 = faster; 0 = recovering).
+    /// SHORT-window spend as a multiple of the sustainable rate (1.0 = on pace to
+    /// exactly exhaust the budget over the window; >1 = faster; 0 = recovering) —
+    /// "is it burning right now?".
     pub burn: f64,
+    /// LONG-window spend multiple — "is the burn sustained?" (the slow-burn signal).
+    pub burn_long: f64,
     /// How many samples back this reading (more = more trustworthy).
     pub samples: usize,
     pub state: BudgetState,
@@ -98,17 +156,42 @@ impl SloStatus {
         let spent = (1.0 - sli) / budget; // fraction of budget consumed (may exceed 1)
         let budget_remaining = (1.0 - spent).clamp(0.0, 1.0);
 
-        let recent_n = n.min(BURN_RECENT);
-        let recent_down =
-            ring.iter().rev().take(recent_n).filter(|&&a| !a).count() as f64 / recent_n as f64;
-        let burn = recent_down / budget;
+        // Per-window burn = (down-rate over the last `w` samples) ÷ budget.
+        let burn_over = |w: usize| -> f64 {
+            let w = n.min(w);
+            let down = ring.iter().rev().take(w).filter(|&&a| !a).count() as f64 / w as f64;
+            down / budget
+        };
+        let burn = burn_over(BURN_SHORT); // short window — the recent burn RATE
+        let burn_long = burn_over(BURN_LONG); // long window — "sustained?"
+        // Is the incident CURRENT? A burst draining out of the (wide) SHORT window
+        // would otherwise keep the short-window rate hot for ~48s after recovery and
+        // false-alert — so both fast and slow require a recent down sample.
+        let active = ring.iter().rev().take(BURN_ACTIVE).any(|&a| !a);
 
+        // The multi-window gate. The long window is geometrically bounded — while the
+        // budget is still positive (Breached takes precedence) a sustained burst over
+        // the LONG window can't much exceed WINDOW/BURN_LONG (≈4×) before it breaches —
+        // so the long window is the "this isn't a one-sample blip" confirmation at the
+        // SLOW threshold, NOT a second FAST threshold.
+        //   FAST (page): currently down AND the SHORT-window rate is severe AND the long
+        //   window confirms it's no single-sample spike. A blip (long < SLOW) fails the
+        //   long half. No long-min gate: a real outage early in a session should page.
+        //   SLOW (ticket): currently down AND the long window shows sustained moderate
+        //   burn AND the short-window rate is non-trivial but not severe AND the long
+        //   window is genuinely populated. A recovered incident (not active) and a thin
+        //   ring (n < BURN_LONG_MIN) both fail their gate.
+        let fast = active && burn >= BURN_FAST && burn_long >= BURN_SLOW;
+        let slow =
+            active && n >= BURN_LONG_MIN && !fast && burn_long >= BURN_SLOW && burn >= BURN_HOT;
         let state = if n < MIN_SAMPLES {
             BudgetState::Warming
         } else if budget_remaining <= 0.0 {
             BudgetState::Breached
-        } else if burn > BURN_HOT {
-            BudgetState::Burning
+        } else if fast {
+            BudgetState::FastBurn
+        } else if slow {
+            BudgetState::SlowBurn
         } else {
             BudgetState::Healthy
         };
@@ -117,6 +200,7 @@ impl SloStatus {
             target,
             budget_remaining,
             burn,
+            burn_long,
             samples: n,
             state,
             source: TargetSource::Default,
@@ -292,23 +376,27 @@ pub fn budget_pct(st: &SloStatus) -> String {
 /// `None` when it's healthy/warming. `cluster` defaults to Hot; the frontend
 /// re-tags for the warm world (like the rest of attention).
 pub fn budget_concern(wr: &WorkloadRef, st: &SloStatus) -> Option<Concern> {
+    // FastBurn pages (imminent exhaustion); SlowBurn tickets (chronic erosion).
     let (severity, label) = match st.state {
         BudgetState::Breached => (Severity::Critical, "error budget exhausted"),
-        BudgetState::Burning => (Severity::Warning, "error budget burning"),
+        BudgetState::FastBurn => (Severity::Critical, "error budget burning fast"),
+        BudgetState::SlowBurn => (Severity::Warning, "error budget eroding"),
         _ => return None,
     };
     Some(Concern {
         severity,
         title: format!("{label}: {}/{}", wr.namespace, wr.name),
         detail: format!(
-            "availability {:.2}% vs {:.1}% SLO · {} budget left · {:.1}x burn",
+            "availability {:.2}% vs {:.1}% SLO · {} budget left · {:.1}x/{:.1}x burn (short/long, recent window)",
             st.sli * 100.0,
             st.target * 100.0,
             budget_pct(st),
             st.burn,
+            st.burn_long,
         ),
         target: Target::Workload(wr.clone()),
         probe: None,
+        // Stable key: a workload escalating SlowBurn → FastBurn updates IN PLACE.
         key: format!("slo:{}/{}", wr.namespace, wr.name),
         cluster: ClusterId::default(),
     })
@@ -481,25 +569,153 @@ mod tests {
     }
 
     #[test]
-    fn recent_outages_burn_a_mostly_full_budget() {
-        // A long-healthy workload that just went down reads as Burning (budget
-        // still positive over the window, but the recent rate is unsustainable).
+    fn fast_burn_pages_on_a_recent_hot_burst() {
+        // A long-healthy workload that's down right now with a severe recent rate
+        // (budget still positive) → FastBurn (page / Critical). The short window runs
+        // hot; the long window confirms it's no single-sample blip.
         let mut t = SloTracker::default();
-        // A full window of uptime, then a 2-sample dip — over the whole window
-        // that's 2/240 ≈ 0.83% < the 1% budget (still positive), but the recent
-        // rate is unsustainable.
         for _ in 0..WINDOW {
-            t.record(&[row("flaky", 1, 1)]);
+            t.record(&[row("api", 1, 1)]);
         }
         for _ in 0..2 {
-            t.record(&[row("flaky", 1, 0)]); // recent downtime
+            t.record(&[row("api", 1, 0)]); // currently down, 2-sample burst
         }
-        let st = t.status(&wr("flaky"), 0.99).unwrap();
+        let st = t.status(&wr("api"), 0.99).unwrap();
         assert!(
             st.budget_remaining > 0.0,
             "long history keeps budget positive"
         );
-        assert!(st.burn > BURN_HOT, "recent downtime burns hot: {}", st.burn);
-        assert_eq!(st.state, BudgetState::Burning);
+        assert!(st.burn >= BURN_FAST, "short window severe: {}", st.burn);
+        assert!(
+            st.burn_long >= BURN_SLOW,
+            "long window confirms (not a blip)"
+        );
+        assert_eq!(st.state, BudgetState::FastBurn);
+        assert_eq!(
+            budget_concern(&wr("api"), &st).unwrap().severity,
+            Severity::Critical
+        );
+    }
+
+    #[test]
+    fn slow_burn_tickets_at_the_default_target() {
+        // The ticket tier must be REACHABLE at the DEFAULT 0.99 target (the review's
+        // key finding: at a tight budget an 8-sample short window quantized the burn
+        // past the slow band, leaving it dead). With the 24-sample short window, a
+        // sustained-but-mild burn — one down in the short window plus an earlier one in
+        // the long window, currently down — lands inside [HOT, FAST) → SlowBurn
+        // (ticket / Warning), not a page.
+        let mut t = SloTracker::default();
+        for _ in 0..WINDOW {
+            t.record(&[row("svc", 1, 1)]);
+        }
+        t.record(&[row("svc", 1, 0)]); // an earlier dip (in the long window only)
+        for _ in 0..35 {
+            t.record(&[row("svc", 1, 1)]);
+        }
+        t.record(&[row("svc", 1, 0)]); // currently down (in the short window)
+        let st = t.status(&wr("svc"), 0.99).unwrap();
+        assert!(
+            st.budget_remaining > 0.0,
+            "eroded, not exhausted: {}",
+            st.budget_remaining
+        );
+        assert!(
+            st.burn_long >= BURN_SLOW,
+            "long window sustained: {}",
+            st.burn_long
+        );
+        assert!(
+            st.burn >= BURN_HOT && st.burn < BURN_FAST,
+            "short rate mild, not severe: {}",
+            st.burn
+        );
+        assert_eq!(st.state, BudgetState::SlowBurn);
+        assert_eq!(
+            budget_concern(&wr("svc"), &st).unwrap().severity,
+            Severity::Warning
+        );
+    }
+
+    #[test]
+    fn a_one_sample_blip_does_not_alert() {
+        // A single down sample: the long window stays cold (< SLOW) → no alert, even
+        // though the workload is "down" at this instant. The long-window confirmation
+        // is what rejects the blip.
+        let mut t = SloTracker::default();
+        for _ in 0..WINDOW {
+            t.record(&[row("web", 1, 1)]);
+        }
+        t.record(&[row("web", 1, 0)]); // exactly one down sample
+        let st = t.status(&wr("web"), 0.99).unwrap();
+        assert!(st.burn > BURN_HOT, "short window registers the dip");
+        assert!(st.burn_long < BURN_SLOW, "long window stays cold");
+        assert_eq!(st.state, BudgetState::Healthy);
+        assert!(budget_concern(&wr("web"), &st).is_none());
+    }
+
+    #[test]
+    fn a_recovered_incident_does_not_keep_alerting() {
+        // A past burst still inside the long window, but fully recovered (the short
+        // window cleared): long elevated, not active → no alert.
+        let mut t = SloTracker::default();
+        for _ in 0..WINDOW {
+            t.record(&[row("web", 1, 1)]);
+        }
+        for _ in 0..2 {
+            t.record(&[row("web", 1, 0)]); // the past incident (stays within budget)
+        }
+        for _ in 0..BURN_SHORT {
+            t.record(&[row("web", 1, 1)]); // recovered: clears the short + active windows
+        }
+        let st = t.status(&wr("web"), 0.99).unwrap();
+        assert!(st.budget_remaining > 0.0);
+        assert!(st.burn_long > BURN_SLOW, "long window still elevated");
+        assert!(st.burn < BURN_HOT, "short window recovered");
+        assert_ne!(st.state, BudgetState::SlowBurn);
+        assert_ne!(st.state, BudgetState::FastBurn);
+        assert!(budget_concern(&wr("web"), &st).is_none());
+    }
+
+    #[test]
+    fn a_partial_recovery_does_not_page() {
+        // A burst whose tail is still inside the (wide) short window but has stopped:
+        // the short-window rate is still hot, yet no down sample in the active window.
+        // Without the active gate this would FALSE-PAGE during the ~48s drain (the
+        // review's third finding); the active gate keeps it quiet.
+        let mut t = SloTracker::default();
+        for _ in 0..WINDOW {
+            t.record(&[row("web", 1, 1)]);
+        }
+        for _ in 0..2 {
+            t.record(&[row("web", 1, 0)]); // the burst
+        }
+        for _ in 0..7 {
+            t.record(&[row("web", 1, 1)]); // recovered 7 samples ago (still in short window)
+        }
+        let st = t.status(&wr("web"), 0.99).unwrap();
+        assert!(
+            st.burn >= BURN_FAST,
+            "short window is still hot from the drain"
+        );
+        assert_ne!(st.state, BudgetState::FastBurn, "but not active → no page");
+        assert_ne!(st.state, BudgetState::SlowBurn);
+        assert!(budget_concern(&wr("web"), &st).is_none());
+    }
+
+    #[test]
+    fn a_thin_ring_does_not_falsely_ticket() {
+        // Between MIN_SAMPLES and BURN_LONG_MIN, a down sample must NOT read as chronic
+        // erosion (the BURN_LONG_MIN populated-enough gate). At 0.90 the budget stays
+        // positive, so the gate — not a breach — is what keeps it out of SlowBurn.
+        let mut t = SloTracker::default();
+        for _ in 0..(MIN_SAMPLES + 4) {
+            t.record(&[row("web", 1, 1)]);
+        }
+        t.record(&[row("web", 1, 0)]);
+        let st = t.status(&wr("web"), 0.90).unwrap();
+        assert!(st.samples < BURN_LONG_MIN);
+        assert!(st.budget_remaining > 0.0);
+        assert_ne!(st.state, BudgetState::SlowBurn);
     }
 }

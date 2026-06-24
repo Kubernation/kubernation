@@ -16,6 +16,18 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   with any key).
 
 ### Added
+- **Multi-burn-rate SLO alerting.** The treasury's single burn threshold became the
+  SRE multiwindow pattern: a short (~48s) burn rate, a long (~2 min) sustained-burn
+  window, and a small "is it down right now" gate drive a *fast* burn (severe +
+  active → pages as a **Critical** queue concern, "burning fast") vs a *slow* burn
+  (sustained but mild + active → tickets as a **Warning**, "eroding"). The gates are
+  the point — a one-sample blip (long window cold) and a recovered incident (not
+  active) both stay quiet, so the queue doesn't churn on noise; the ticket tier is
+  reachable at the default 99% target. The city window's TREASURY band shows the
+  classification + both rates. Still in-session and derived from pod readiness (no
+  metrics-server); the window sizes/thresholds are recent-window rates tuned to the
+  ring, not a 30-day compliance burn rate.
+
 - **Oracle reply carousel.** Drilling into the next consult no longer wipes the
   prior reply — a `◀ reply N/M ▶` pager keeps the session's replies so you can flip
   back and re-read reply 1 *while* reply 2 streams (handy when a local model takes a

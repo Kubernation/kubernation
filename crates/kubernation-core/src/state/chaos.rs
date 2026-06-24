@@ -1443,6 +1443,7 @@ mod tests {
             target: 0.99,
             budget_remaining: remaining,
             burn: 0.0,
+            burn_long: 0.0,
             samples: 100,
             state,
             source: TargetSource::Default,

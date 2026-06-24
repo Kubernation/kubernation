@@ -770,11 +770,24 @@ fn treasury_summary(st: Option<&SloStatus>) -> (String, Color) {
             ),
             GOOD,
         ),
-        BudgetState::Burning => (
+        // Fast burn pages (red), slow burn tickets (yellow) — the coin-gauge colour
+        // matches the attention queue's Critical/Warning. Both rates shown.
+        BudgetState::FastBurn => (
             format!(
-                "{} budget . burning {:.1}x . avail {:.2}%",
+                "{} budget . burning fast {:.1}x/{:.1}x . avail {:.2}%",
                 slo::budget_pct(s),
                 s.burn,
+                s.burn_long,
+                s.sli * 100.0
+            ),
+            CRIT,
+        ),
+        BudgetState::SlowBurn => (
+            format!(
+                "{} budget . eroding {:.1}x/{:.1}x . avail {:.2}%",
+                slo::budget_pct(s),
+                s.burn,
+                s.burn_long,
                 s.sli * 100.0
             ),
             WARN,
@@ -828,7 +841,8 @@ mod tests {
             sli: 0.995,
             target: 0.99,
             budget_remaining,
-            burn: 2.0,
+            burn: 8.0,
+            burn_long: 3.0,
             samples: 100,
             state,
             source: slo::TargetSource::Default,
@@ -868,10 +882,13 @@ mod tests {
             treasury_summary(Some(&status(BudgetState::Warming, 1.0))).1,
             DIM
         );
-        assert_eq!(
-            treasury_summary(Some(&status(BudgetState::Burning, 0.3))).1,
-            WARN
-        );
+        // Fast burn pages (red, "fast"); slow burn tickets (yellow, "erod").
+        let (t, c) = treasury_summary(Some(&status(BudgetState::FastBurn, 0.3)));
+        assert_eq!(c, CRIT);
+        assert!(t.contains("fast"));
+        let (t, c) = treasury_summary(Some(&status(BudgetState::SlowBurn, 0.3)));
+        assert_eq!(c, WARN);
+        assert!(t.contains("erod"));
         let (t, c) = treasury_summary(Some(&status(BudgetState::Breached, 0.0)));
         assert_eq!(c, CRIT);
         assert!(t.contains("exhausted"));

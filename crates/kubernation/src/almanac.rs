@@ -563,7 +563,7 @@ fn page_reading(cx: &mut Ctx) {
     );
     cx.heading("Treasury (error budget)");
     cx.para(
-        "Each city window shows an availability SLO and the error budget it spends down — full when the workload stays up, draining when it flaps, exhausted when availability falls below the target (default 99%). Availability is derived from pod readiness (at least one replica up) over a recent window — no metrics-server needed. Set a per-workload target with the city's SLO stepper or a `kubernation.io/slo-target` annotation (e.g. \"99.9\"). A burning or exhausted budget also raises a queue concern.",
+        "Each city window shows an availability SLO and the error budget it spends down — full when the workload stays up, draining when it flaps, exhausted when availability falls below the target (default 99%). Availability is derived from pod readiness (at least one replica up) over a recent window — no metrics-server needed. Set a per-workload target with the city's SLO stepper or a `kubernation.io/slo-target` annotation (e.g. \"99.9\"). Multi-burn-rate alerting watches a short (~48s) burn rate and a long (~2 min) window, gated on the workload being down right now: a fast burn (severe + active) pages as a Critical queue concern, a slow burn (sustained but mild + active) tickets as a Warning, and a one-sample blip or a recovered incident stays quiet. An exhausted budget is always Critical.",
     );
     cx.heading("Game Day (chaos)");
     cx.para(
