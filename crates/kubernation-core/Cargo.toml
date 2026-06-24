@@ -1,8 +1,9 @@
 [package]
 name = "kubernation-core"
-description = "Kubernation core: observed-world data layer and pure world/attention models"
+description = "KuberNation core: observed-world data layer and pure world/attention models"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
 license.workspace = true
 repository.workspace = true
 

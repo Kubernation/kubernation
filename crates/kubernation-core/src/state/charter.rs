@@ -6,7 +6,7 @@
 //! into a [`Charter`] grid + rollups. PURE + unit-tested — no cluster, no UI.
 //!
 //! The set covers the OWASP-K03 escalation primitives (exec, secrets-list,
-//! rbac-write, node patch/proxy, SA-token) AND Kubernation's own write surface
+//! rbac-write, node patch/proxy, SA-token) AND KuberNation's own write surface
 //! (delete pods = evict, patch nodes = cordon, patch deployments = scale/
 //! restart/image/rollback, create pods/portforward = the fwd button, create
 //! networkpolicies = a chaos partition), so the Charter doubles as a "which
@@ -54,7 +54,7 @@ static NS_PROBES: &[AccessProbe] = &[
     p("list", "", "configmaps", None, true, Risk::Normal),
     p("get", "apps", "deployments", None, true, Risk::Normal),
     p("create", "apps", "deployments", None, true, Risk::High),
-    // PATCH, not UPDATE: every Kubernation deployment write (scale / restart /
+    // PATCH, not UPDATE: every KuberNation deployment write (scale / restart /
     // image / rollback) is an HTTP PATCH, which RBAC authorizes under the `patch`
     // verb. Probing `update` would give a false ✓/✗ for the feature's own writes.
     p("patch", "apps", "deployments", None, true, Risk::High),
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn own_write_surface_uses_patch_not_update_for_deployments() {
-        // Kubernation writes deployments via HTTP PATCH (scale/restart/image/
+        // KuberNation writes deployments via HTTP PATCH (scale/restart/image/
         // rollback), which RBAC authorizes under `patch`, never `update`. The grid
         // must probe the verb the dry-run commit actually issues, else it gives a
         // false ✓/✗ for the feature's own writes.
@@ -340,7 +340,7 @@ mod tests {
         assert!(dep("patch"), "deployments write surface must probe `patch`");
         assert!(
             !dep("update"),
-            "must not probe `update` (no Kubernation write uses it)"
+            "must not probe `update` (no KuberNation write uses it)"
         );
     }
 

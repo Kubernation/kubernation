@@ -7,7 +7,7 @@
 //! Rollback intervention uses [`revision_template`] to stage a roll-back.
 //!
 //! StatefulSets and DaemonSets track their revisions in `ControllerRevision`
-//! objects, which Kubernation deliberately doesn't watch — so history here is
+//! objects, which KuberNation deliberately doesn't watch — so history here is
 //! **Deployment-only** (an empty list for the others, surfaced honestly).
 
 use k8s_openapi::api::apps::v1::ReplicaSet;

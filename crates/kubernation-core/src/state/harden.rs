@@ -3,7 +3,7 @@
 //! A PURE, read-only lint of each workload's pod *template* for security
 //! misconfigurations, mapped to the standard each comes from: OWASP K8s K01
 //! (insecure workload config), the Pod Security Standards (baseline / restricted),
-//! and a Popeye-style sanitizer subset. It reports; it never writes (Kubernation's
+//! and a Popeye-style sanitizer subset. It reports; it never writes (KuberNation's
 //! gated write surface gains nothing here). Cluster-wide, metrics-free,
 //! unit-tested without a cluster — `scan_template` takes a `PodTemplateSpec`
 //! directly so every rule is testable in isolation.

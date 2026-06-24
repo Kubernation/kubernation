@@ -327,7 +327,7 @@ fn push_section(
 /// PURE: the right-sizing advisor's lines as (text, role). Unit-tested.
 pub fn rightsizing_lines(r: &RightSizingReport) -> Vec<(String, RsRole)> {
     let mut out: Vec<(String, RsRole)> = Vec::new();
-    let footer = "advice only — Kubernation can't edit container requests; apply via kubectl/manifest, then observe over time.";
+    let footer = "advice only — KuberNation can't edit container requests; apply via kubectl/manifest, then observe over time.";
 
     if !r.metrics_available {
         out.push((

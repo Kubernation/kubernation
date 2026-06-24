@@ -1,12 +1,12 @@
-# Kubernation
+# KuberNation
 
 <p align="center">
-  <img src="kubernation-logo-full.png" alt="Kubernation" width="420">
+  <img src="kubernation-logo-full.png" alt="KuberNation" width="420">
 </p>
 
 **Your Kubernetes cluster as an explorable world map.**
 
-Kubernation is a desktop application that renders a Kubernetes cluster the way a
+KuberNation is a desktop application that renders a Kubernetes cluster the way a
 turn-based strategy game renders its world. Instead of scrolling tables of pods
 and nodes, you look at a map: each node is a patch of terrain whose colour shows
 its health, each workload is a city sited on the node its pods run on, and the
@@ -24,7 +24,7 @@ Kubernetes (a "city" is a Deployment, a "province" is a node).
 > for the one-table explanation of how Kubernetes maps onto the game, then
 > **[Quick start](#quick-start)** to run it.
 
-![A Kubernation world](docs/gui-world.png)
+![A KuberNation world](docs/gui-world.png)
 
 *A live cluster from `make dev`: an isometric world where one city (`crashy`)
 flies a warning flag, the `✦` structures on the southern island are custom
@@ -37,7 +37,7 @@ resources, and DaemonSets pave roads across the provinces.*
 Most Kubernetes UIs — `kubectl`, and table/dashboard tools like k9s, Lens, or
 Headlamp — present your cluster as lists you filter and sort. That works, but it
 hides two things a map makes obvious: **where** things run (failure domains,
-placement, drift between clusters) and **what matters right now**. Kubernation is
+placement, drift between clusters) and **what matters right now**. KuberNation is
 built around three ideas:
 
 - **Spatial, not tabular.** Resources project onto a stable world map, and the
@@ -48,7 +48,7 @@ built around three ideas:
   nodes under pressure, burning error budgets — all aggregated and ranked into one
   **attention queue**. Press `N` to fly to the next problem, `L` to jump straight
   into the offending pod's logs.
-- **Read-first, with deliberate writes.** Kubernation observes by default. It can
+- **Read-first, with deliberate writes.** KuberNation observes by default. It can
   change the cluster, but only through a few explicit, confirmed, RBAC-checked
   actions (evict a pod, commit a batch of staged changes, run a chaos drill) —
   and every line of write code lives in one small, auditable file.
@@ -211,11 +211,11 @@ exhausted budget also raises an attention-queue concern.
 
 ### Acting on the cluster
 
-Kubernation performs only a handful of writes, each explicit, confirmed, and
+KuberNation performs only a handful of writes, each explicit, confirmed, and
 RBAC-checked — and all of them live in one small file (`crates/kubernation-core/src/k8s/actions.rs`).
 
 **Evict a pod.** Hover a pod in a city's citizens (or node's garrison) list and an
-`evict` button appears; on confirm, Kubernation issues a real `DELETE` (a managed
+`evict` button appears; on confirm, KuberNation issues a real `DELETE` (a managed
 pod is recreated by its controller; a bare pod is gone). The button is disabled
 (`locked`) unless an RBAC check says you may delete pods there.
 
@@ -246,7 +246,7 @@ spends. Pick a target and an experiment:
 The console previews the exact steps, the blast radius, and the budget cost
 *before* you run it (a confirmed write); afterward a **scorecard** reports the
 response: a steady-state check, recovery time, **MTTD** (how long the attention
-queue took to notice — Kubernation grading its own observability), a recovery
+queue took to notice — KuberNation grading its own observability), a recovery
 sparkline, and budget spent. Everything reuses the existing gated write primitives
 (so chaos adds no new powers beyond the NetworkPolicy), control-plane and system
 namespaces are refused, and reversible drills auto-restore — on demand, after a
@@ -327,7 +327,7 @@ attention**, so trouble pops against terrain instead of competing with it.
 
 ## Controls
 
-Kubernation is mouse-first with a strategy-game menu bar and a few keys. The
+KuberNation is mouse-first with a strategy-game menu bar and a few keys. The
 in-app Almanac (`?`) always has the complete, current list.
 
 | Input | Action |
@@ -359,7 +359,7 @@ Two more ways to explore any object, including kinds that aren't on the map:
 
 ## Architecture & design
 
-Kubernation is a Cargo workspace with a clean split:
+KuberNation is a Cargo workspace with a clean split:
 
 - **`kubernation-core`** — the data + model layer, with **no UI dependencies**:
   the Kubernetes client and watch/reflector layer, and a set of **pure functions**
@@ -433,7 +433,7 @@ cluster is skipped quietly (so a hot/warm pair may project asymmetrically).
 
 ## Status & roadmap
 
-Kubernation is well past its MVP and in active development. **Built today:** the
+KuberNation is well past its MVP and in active development. **Built today:** the
 isometric world map with overlays and a minimap; city/node drill-downs; the
 attention queue; the Almanac and Advisor screens; log tailing (severity colours,
 filters, timestamps, history, previous-container, concern→logs); metrics-server
@@ -453,9 +453,13 @@ reasoning behind each decision.
 
 ---
 
-## Trademark & inspiration
+## Copyright, trademark & inspiration
 
-*Kubernation is an independent, unaffiliated homage. It is not associated with,
+© 2026 Jason Olmsted. **KuberNation**™ and the KuberNation logo are unregistered
+trademarks of Jason Olmsted. The software is dual-licensed under **MIT OR
+Apache-2.0** (see `LICENSE-MIT` and `LICENSE-APACHE`).
+
+*KuberNation is an independent, unaffiliated homage. It is not associated with,
 endorsed by, or sponsored by Take-Two Interactive Software, Inc., Firaxis Games,
 or the Civilization franchise. "Sid Meier's Civilization" and "Civ" are trademarks
 of Take-Two Interactive, referenced here only to describe this project's design

@@ -279,7 +279,7 @@ pub struct Net {
     charter_req: Mutex<Option<(ClusterId, String)>>,
     charter_out: Mutex<HashMap<(ClusterId, String), Arc<Charter>>>,
     charter_gen: AtomicU64,
-    /// In-session log of operator actions Kubernation itself performed (commits /
+    /// In-session log of operator actions KuberNation itself performed (commits /
     /// evicts / chaos drills) — the uniquely-knowable, most-correlatable source
     /// for the Annals change-feed. An `Arc` so the per-frame pull is a refcount
     /// bump; bounded + cleared on context switch (no cross-run persistence).

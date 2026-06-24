@@ -35,7 +35,7 @@ smoke:
 
 ## metrics-up: install metrics-server on the dev cluster (kind needs
 ## --kubelet-insecure-tls); gauges switch from scheduling pressure to live
-## usage within ~30s. Absent it, Kubernation falls back automatically.
+## usage within ~30s. Absent it, KuberNation falls back automatically.
 metrics-up:
 	kubectl --context $(KCTX) apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 	kubectl --context $(KCTX) patch -n kube-system deployment metrics-server --type=json \

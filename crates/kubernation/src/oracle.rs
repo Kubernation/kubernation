@@ -1826,7 +1826,7 @@ impl OracleView {
             cx.row("laptop to a third party (publishing it).", WARN);
             cx.gap();
             cx.row(
-                "Kubernation redacts credential-shaped text and shows you the",
+                "KuberNation redacts credential-shaped text and shows you the",
                 DIM,
             );
             cx.row(

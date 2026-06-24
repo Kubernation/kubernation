@@ -1,10 +1,11 @@
 //! The About window — opened from Help ▸ About. Features the splash logo, then
 //! credits (Jason Olmsted + Claude), the third-party license obligations we owe
-//! (the bundled SIL-OFL fonts + the Rust crate ecosystem), and the trademark
-//! disclaimer (this is an unaffiliated homage, not associated with the
-//! Civilization rights-holders). A modal on `window.rs`, mirroring the Almanac's
-//! window/scroll machinery; the content builder is pure + unit-tested (the GUI
-//! testability policy) so the legal obligations can't silently drift away.
+//! (the bundled SIL-OFL fonts + the Rust crate ecosystem), our own copyright +
+//! unregistered KuberNation™ trademark, and the trademark disclaimer (this is an
+//! unaffiliated homage, not associated with the Civilization rights-holders). A
+//! modal on `window.rs`, mirroring the Almanac's window/scroll machinery; the
+//! content builder is pure + unit-tested (the GUI testability policy) so the
+//! legal obligations can't silently drift away.
 
 use macroquad::prelude::*;
 
@@ -43,7 +44,8 @@ pub fn about_sections() -> Vec<AboutSection> {
             lines: vec![
                 "Fira Sans (Mozilla Foundation, Telefonica S.A.)".into(),
                 "    — SIL Open Font License 1.1.".into(),
-                "Liberation Serif & Liberation Mono (Red Hat; digitized data (c) Google)".into(),
+                "Liberation Serif & Liberation Mono (Red Hat; digitized data \u{00a9} Google)"
+                    .into(),
                 "    — SIL Open Font License 1.1.".into(),
                 "Many open-source Rust crates — mostly MIT / Apache-2.0, plus some".into(),
                 "    ISC, BSD-3-Clause, Zlib & Unicode-3.0 (the rustls/ring TLS stack).".into(),
@@ -51,9 +53,14 @@ pub fn about_sections() -> Vec<AboutSection> {
             ],
         },
         AboutSection {
-            heading: "Trademark & inspiration",
+            heading: "Copyright & trademark",
             lines: vec![
-                "Kubernation is an independent, unaffiliated homage. It is not".into(),
+                "\u{00a9} 2026 Jason Olmsted. KuberNation\u{2122} and the KuberNation logo are"
+                    .into(),
+                "unregistered trademarks of Jason Olmsted. The software is licensed".into(),
+                "under MIT OR Apache-2.0.".into(),
+                "".into(),
+                "KuberNation is an independent, unaffiliated homage. It is not".into(),
                 "associated with, endorsed by, or sponsored by Take-Two Interactive".into(),
                 "Software, Inc., Firaxis Games, or the Civilization franchise.".into(),
                 "\"Sid Meier's Civilization\" and \"Civ\" are trademarks of Take-Two".into(),
@@ -90,7 +97,7 @@ impl About {
         // Sized so all content — including the trademark disclaimer — fits without
         // scrolling on the default window (the disclaimer is the point; it shouldn't
         // be below the fold). Scroll remains a fallback for a short window.
-        let win = draw_window("About KuberNation", vec2(640.0, 740.0), &["Close"], 0);
+        let win = draw_window("About KuberNation", vec2(640.0, 800.0), &["Close"], 0);
         let b = win.body;
         let top0 = b.y - self.scroll;
         let mut y = top0;
@@ -205,6 +212,16 @@ mod tests {
         // that the non-permissive-default licenses + the full-notice pointer are named.
         assert!(all.contains("ISC") && all.contains("BSD-3-Clause"));
         assert!(all.contains("THIRD-PARTY-NOTICES"));
+
+        // Our own copyright + unregistered trademark assertion.
+        assert!(
+            all.contains("\u{00a9} 2026 Jason Olmsted"),
+            "asserts copyright"
+        );
+        assert!(
+            all.contains("KuberNation\u{2122}") && all.contains("unregistered trademark"),
+            "asserts the unregistered KuberNation trademark"
+        );
 
         // The trademark disclaimer: non-association + the named rights-holders.
         assert!(

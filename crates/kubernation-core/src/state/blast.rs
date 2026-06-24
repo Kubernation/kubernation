@@ -4,7 +4,7 @@
 //! can isolate the impact (see the AIM observability/AIOps notes on
 //! topology-driven blast-radius isolation).
 //!
-//! Kubernation already *owns* that topology — workloads, the Services that
+//! KuberNation already *owns* that topology — workloads, the Services that
 //! select them, the Ingresses that route to those Services, and which node each
 //! pod runs on — so the fan-out is a pure graph walk over `ObservedWorld`:
 //!

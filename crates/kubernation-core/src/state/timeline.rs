@@ -54,7 +54,7 @@ pub enum ChangeKind {
     Schedule,
     /// Node lifecycle (NotReady / Ready / cordon / register).
     NodeChange,
-    /// Something Kubernation itself did this session (injected).
+    /// Something KuberNation itself did this session (injected).
     Operator,
     /// A failure event (crash / OOM / probe / image-pull / config).
     Failure,
@@ -86,7 +86,7 @@ pub enum OpVerb {
     Chaos,
 }
 
-/// A change Kubernation itself made this session — injected by the GUI (which
+/// A change KuberNation itself made this session — injected by the GUI (which
 /// owns these facts), keeping core pure + persistence-free. The GUI stamps
 /// `when` at action time with `util::now()`.
 #[derive(Debug, Clone, PartialEq, Eq)]

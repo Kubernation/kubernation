@@ -1,8 +1,9 @@
 [package]
 name = "kubernation"
-description = "Kubernation: a 4X-inspired Kubernetes explorer (windowed map client over kubernation-core)"
+description = "KuberNation: a 4X-inspired Kubernetes explorer (windowed map client over kubernation-core)"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
 license.workspace = true
 repository.workspace = true
 

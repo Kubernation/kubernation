@@ -4,7 +4,7 @@
 //! bar + icon, a button/tab row, and hands back a clipped body rect the
 //! caller fills (culling + scrolling its own content, since macroquad has no
 //! easy scissor). Mirrors the 4X window structure (titlebar / body /
-//! buttons) in the Kubernation parchment palette.
+//! buttons) in the KuberNation parchment palette.
 
 use kubernation_core::state::planned::Intervention;
 use macroquad::prelude::*;

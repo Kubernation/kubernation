@@ -1,12 +1,28 @@
 # Changelog
 
-All notable changes to **Kubernation** are recorded here. The format follows
+All notable changes to **KuberNation** are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project uses
 [Semantic Versioning](https://semver.org/) — pre-1.0, so `minor` covers new
 features/behaviour and `patch` covers fixes/docs/refactors. One workspace
 version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
+
+### Changed
+- **Brand name is "KuberNation" (camelCase) on every user-facing surface** — the OS
+  window titlebar, the menu bar, the About window, the in-app help/almanac text, the
+  README, and the crate descriptions. Technical identifiers stay lowercase
+  (`kubernation` binary/crate, `kind-kubernation` context, `~/.config/kubernation`,
+  `kubernation.io/…` annotations, `KUBERNATION_LLM_TOKEN`).
+
+### Added
+- **Own copyright + trademark assertion.** The About window and README now assert
+  "© 2026 Jason Olmsted. KuberNation™ and the KuberNation logo are unregistered
+  trademarks of Jason Olmsted" (unregistered — ™, not ®), alongside the existing
+  Civilization-rights-holder disclaimer. The license copyright line and a workspace
+  `authors` field name Jason Olmsted, and the dual license now ships both texts as
+  `LICENSE-MIT` + `LICENSE-APACHE` (the asserted "MIT OR Apache-2.0" was missing the
+  Apache text).
 
 ### Fixed
 - **Intro splash caption.** The title/"press any key" caption is now anchored to the
@@ -60,7 +76,7 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   model is asked the operator's real question ("Why is demo/crashy unhealthy and
   what should I do?", "What is straining node worker?", realm "What are the top 1-3
   issues to fix first, worst-first?"); (2) the **root-cause diagnosis** of the worst
-  not-ready pod (the why + the fix Kubernation already computes) is **folded into
+  not-ready pod (the why + the fix KuberNation already computes) is **folded into
   the workload and concern consults**, so the model reasons over the actual failure
   instead of re-guessing it; (3) **node consults now seed CONSULT NEXT** from the
   troubled workloads stationed on that node (mirroring the realm seeding), so a node
@@ -73,7 +89,7 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   "drill into one of these" links came only from the model's structured
   `investigate` block — so when a small local model described the problem in prose
   but didn't emit the block, a realm consult with a clear critical issue showed *no*
-  links. Now a realm consult seeds CONSULT NEXT from Kubernation's OWN attention
+  links. Now a realm consult seeds CONSULT NEXT from KuberNation's OWN attention
   queue (the concerns it already computed, severity-ordered), and the model's
   validated block only *adds* targets the queue didn't flag. The app curates; the
   model advises — so a clearly identified concern always yields a one-click
@@ -105,7 +121,7 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   bundle fresh, gets the same redaction + fencing, and re-Previews for re-consent
   on a remote endpoint. One consult per click (no auto-cascade).
 - **Oracle "deepen" follow-up drill-down.** Instead of the model telling you to
-  "go review the logs / the PVC" (data Kubernation already holds but withheld), it
+  "go review the logs / the PVC" (data KuberNation already holds but withheld), it
   now folds that context in. For a crash/error concern the offending pod's **logs
   are included by default** — the model reasons over the actual log lines instead
   of recommending you fetch them. After any reply, an **INVESTIGATE FURTHER** row
@@ -196,7 +212,7 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   **Oracle** menu consults a bring-your-own language model to *explain* a scope —
   the whole realm, a selected workload or node, or a focused concern. It is
   advisory only: the model is shown a redacted, fenced summary built from what
-  Kubernation already observed (never raw cluster dumps, never Secret values) and
+  KuberNation already observed (never raw cluster dumps, never Secret values) and
   it can **never** change the cluster. A mandatory **Preview** shows the exact
   text that will be sent before you Consult. Local-first: point `--llm-url` at a
   local model (default: Ollama at `localhost:11434`), pick `--llm-model`; any API
@@ -243,7 +259,7 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   Ingress-fronted), the real finding. The **Network advisor** gains a WALLS
   section (cities walled, unwalled-&-exposed, wide-open namespaces), and an
   unwalled-&-exposed workload raises one Warning in the attention queue.
-  Read-only — Kubernation watches NetworkPolicies, never writes them; honest
+  Read-only — KuberNation watches NetworkPolicies, never writes them; honest
   about its limits (matchExpressions handled; namespaceSelector / ipBlock /
   port rules not analyzed; CNI *enforcement* not verified). (Roadmap #10.)
 - **Change timeline — "The Annals".** A recent, classified change-feed answering
@@ -333,7 +349,7 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   crash, and high restart counts are called out. (Roadmap #1.)
 
 ### Fixed
-- **Stale "observe-only" text in the in-app Almanac** — it claimed "Kubernation
+- **Stale "observe-only" text in the in-app Almanac** — it claimed "KuberNation
   only watches; there are no mutation paths anywhere", which predates the gated
   write paths (evict / planning turn / Game Day chaos). Now describes the
   read-first-with-gated-writes posture accurately.
@@ -382,7 +398,7 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   - **Deeper scorecard.** A **steady-state gate** warns when the target was
     already degraded before the drill (a noisy baseline); **MTTD** reports how
     long the attention queue took to flag the drill ("flagged in Ns" or "never
-    flagged it — a monitoring gap", Kubernation measuring its own observability);
+    flagged it — a monitoring gap", KuberNation measuring its own observability);
     and a **recovery curve** sparkline shows the watch set's ready-fraction over
     the drill.
   - **"Raid underway" in the queue.** While a drill is fresh (~30s) the attention
@@ -490,7 +506,7 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   node → hosted workloads → their Services → Ingresses ("if this province falls,
   these cities lose citizens and their routes go dark"); a *workload* walks to
   its own Services + Ingresses. It's the SRE practice of topology-driven impact
-  isolation — and Kubernation already owns the topology, so it's a pure graph
+  isolation — and KuberNation already owns the topology, so it's a pure graph
   walk (no traffic data / service mesh needed). We deliberately don't invent
   app-level "who calls whom" edges, so a workload with no Service has an honestly
   empty radius. Pure + unit-tested; verified live on kind (a node → 12 affected;
@@ -860,7 +876,7 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 - **Bundled logos.** The compass **mark** is the OS window icon and the
   top-bar emblem; the full **KuberNation** scene is the splash on the
   fog-of-war screen. Downsized copies are compiled in (`assets/logo/`).
-- **Intro splash.** On launch the GUI now holds the full Kubernation scene for
+- **Intro splash.** On launch the GUI now holds the full KuberNation scene for
   a couple of seconds (fade in/out + a slow Ken-Burns zoom) so it's actually
   seen instead of flashing past as the world syncs; any key / click skips it.
   Suppressed for headless `--screenshot` runs (a `--splash` flag holds/captures
@@ -918,7 +934,7 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   storage, island marks) can be captured deterministically headlessly.
 
 ### Changed
-- Completed the **Kubernation** rename: the codename is gone from every
+- Completed the **KuberNation** rename: the codename is gone from every
   identifier — crate names (`kubernation-core` / `kubernation` /
   `kubernation-gui`), the `kubernation` binary, the kind cluster, kubeconfig
   context, config/log paths, and the sample namespace.
@@ -927,7 +943,7 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   nominative attribution homage is kept, and a trademark disclaimer was added
   to the README and `--help`.
 - Regenerated all GUI screenshots in `docs/` so the window chrome reads
-  **Kubernation** (they predated the rebrand and still showed the codename).
+  **KuberNation** (they predated the rebrand and still showed the codename).
 
 ### Removed
 - Four stale/unreferenced screenshots (`gui-spike`, `gui-metrics`,
@@ -960,7 +976,7 @@ no mutation paths exist.
 - GUI cartographic **scale tiers** and **label de-confliction**.
 
 ### Changed
-- Branded the app **Kubernation** (display name).
+- Branded the app **KuberNation** (display name).
 
 ## [0.1.0]
 

@@ -1,4 +1,4 @@
-//! The bundled Kubernation logos. The **mark** (compass medallion, alpha) is
+//! The bundled KuberNation logos. The **mark** (compass medallion, alpha) is
 //! the small icon-grade art — the OS window icon and the top-bar emblem; the
 //! **full** scene is the splash shown on the fog-of-war screen before sync.
 //! Both are compiled in (downsized from the originals) so the binary stays

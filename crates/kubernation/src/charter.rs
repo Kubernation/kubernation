@@ -221,7 +221,7 @@ impl CharterView {
                 draw_band(&mut cx, &charter_lines(&c.cluster_cells));
                 cx.gap();
                 cx.row(
-                    "read-only self-query (same API as kubectl auth can-i) — Kubernation can't grant or change RBAC; ask your cluster admin.",
+                    "read-only self-query (same API as kubectl auth can-i) — KuberNation can't grant or change RBAC; ask your cluster admin.",
                     DIM,
                     false,
                 );

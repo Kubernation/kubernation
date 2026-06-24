@@ -1,7 +1,7 @@
 //! A classic-4X dropdown menu bar for the GUI chrome. Replaces the scattered
 //! chrome buttons (almanac `?`, End-Turn, namespace filter) with Game / View /
 //! Orders / Advisors / World / Help menus — the iconic menu bar of the genre, in the
-//! Kubernation carved-stone palette. Immediate-mode like the rest of the GUI:
+//! KuberNation carved-stone palette. Immediate-mode like the rest of the GUI:
 //! `draw_menu_bar` both paints the bar (+ any open dropdown) and hit-tests,
 //! returning the chosen action. An open menu is GUI-loop state
 //! (`open: &mut Option<usize>`); the caller suspends map nav while it's set.

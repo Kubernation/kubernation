@@ -11,7 +11,7 @@
   (see `fonts/OFL.txt`). Used for the log overlay (fixed-width so timestamps
   and columns align).
 
-- `logo/mark.png`, `logo/full.png` — Kubernation's own logos (the compass
+- `logo/mark.png`, `logo/full.png` — KuberNation's own logos (the compass
   mark and the "KuberNation" scene), downsized from the originals at the repo
   root for the window icon, top-bar emblem, and fog-screen splash.
 

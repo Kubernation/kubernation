@@ -1,4 +1,4 @@
-//! Kubernation: the observed world rendered as a windowed strategy map — the
+//! KuberNation: the observed world rendered as a windowed strategy map — the
 //! pure `kubernation-core` models painted with macroquad. (This is the product;
 //! a ratatui TUI over the same core was removed 2026-06-18.)
 //! With `--warm`, the standby cluster appears as a second archipelago
@@ -162,7 +162,7 @@ struct Args {
     /// --chaos-go, auto-run it on the --chaos target. Overrides --chaos-exp.
     #[arg(long, value_name = "TIER")]
     chaos_tier: Option<String>,
-    /// Hold the intro splash (the full Kubernation scene) — replays it, and
+    /// Hold the intro splash (the full KuberNation scene) — replays it, and
     /// with --screenshot captures it (development verification / demo)
     #[arg(long)]
     splash: bool,
@@ -472,7 +472,7 @@ fn focus_concern(
 
 fn window_conf() -> Conf {
     Conf {
-        window_title: "Kubernation".into(),
+        window_title: "KuberNation".into(),
         window_width: 1380,
         window_height: 860,
         high_dpi: true,
@@ -627,7 +627,7 @@ async fn main() {
     // its confirm modal. (`chaos_just_opened` is frame-local, declared below.)
     let mut chaos: Option<Chaos> = None;
     let mut pending_chaos: Option<PendingChaos> = None;
-    // Intro splash: hold the full Kubernation scene a few moments on launch.
+    // Intro splash: hold the full KuberNation scene a few moments on launch.
     let mut splash_start: Option<f64> = None;
     let mut splash_skipped = false;
     let mut splash_frames: u32 = 0;
@@ -651,7 +651,7 @@ async fn main() {
         prev_had_snap = snap.is_some();
 
         // ---- intro splash -------------------------------------------------
-        // Give the full Kubernation scene a few moments on launch (it would
+        // Give the full KuberNation scene a few moments on launch (it would
         // otherwise vanish the instant the world syncs). Fades in, drifts a
         // slow zoom, fades out; any key / click skips it. Suppressed for
         // headless captures unless `--splash` asks to hold (and shoot) it.

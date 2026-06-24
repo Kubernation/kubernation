@@ -2393,6 +2393,24 @@ what makes the interesting logic unit-testable without a cluster.
   --screenshot`): renders the splash + both credits + the full license spread + the
   disclaimer, no scroll, no panic. Read-only; no new write verb. **Deferred:** a CI check
   that re-runs `cargo-about` so the notice can't drift from `Cargo.lock`.
+- **Branding: "KuberNation" + own copyright/trademark** (2026-06-23, v0.62.1, user
+  request): the displayed brand name is the camelCase **"KuberNation"** on every
+  user-facing surface — the OS window titlebar (`window_conf`), the menu bar, the
+  About + almanac/help text, the README, and the crate `description`s — fixed by a
+  `\bKubernation\b → KuberNation` sweep (safe because every *identifier* is lowercase
+  `kubernation` / `kubernation_core`, the kind context `kind-kubernation`, the config
+  dir `~/.config/kubernation`, the `kubernation.io/…` annotations, and the
+  `KUBERNATION_LLM_TOKEN` env var — none match the capital-K word boundary). **Kept
+  lowercase deliberately:** those identifiers/paths/URLs (incl. the `repository` URL
+  and clap's `name = "kubernation"`, which is the invocation name, not the brand). The
+  internal CLAUDE.md / docs prose isn't swept (historical record). We also **assert our
+  own rights**: "© 2026 Jason Olmsted. KuberNation™ and the KuberNation logo are
+  unregistered trademarks of Jason Olmsted" (unregistered → **™, not ®**) in the About
+  window + README, the `LICENSE` copyright line set to Jason Olmsted, and a workspace
+  `authors` field. The About uses the real `©`/`™` glyphs (Fira Sans covers them —
+  verified on screen), reverting the earlier review's defensive `(c)` now that this is
+  a formal notice. The `about_sections()` test pins the copyright + the unregistered-TM
+  string so they can't drift.
 
 ## The pair (hot/warm)
 
