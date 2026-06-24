@@ -3,6 +3,18 @@
 #   cargo about generate about.hbs -o crates/kubernation/THIRD-PARTY-NOTICES.md
 # The `accepted` list is every SPDX license present in the tree; cargo-about
 # picks an accepted option for each crate's OR-expression.
+
+# Pin the platforms we ship (release.yml builds macOS-universal + Linux x86_64),
+# so the notices are the UNION of their dependency trees and identical no matter
+# which OS regenerates them. Without this, a macOS run omits the Linux X11/ALSA
+# crates and the CI diff (on Linux) fails. cargo-about evaluates cfg per triple
+# from Cargo.lock; the target toolchains need not be installed.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+]
+
 accepted = [
     "MIT",
     "Apache-2.0",

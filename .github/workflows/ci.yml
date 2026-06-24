@@ -71,7 +71,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-about
-        run: cargo install --locked cargo-about
+        # cargo-about 0.9 moved its binary behind the `cli` feature, so a plain
+        # install builds only the lib (no `cargo about` subcommand). Clear the
+        # workspace's `-D warnings` for this third-party build so a future warning
+        # in cargo-about or a dep can't fail the install.
+        env:
+          RUSTFLAGS: ""
+        run: cargo install --locked cargo-about --features cli
       - name: Regenerate + diff THIRD-PARTY-NOTICES.md
         run: |
           cargo about generate about.hbs -o /tmp/notices.md
