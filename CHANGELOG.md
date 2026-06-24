@@ -16,6 +16,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   with any key).
 
 ### Added
+- **About window.** Help ▸ About opens a window featuring the splash logo, then
+  credits (Jason Olmsted; built in collaboration with Claude), the third-party license
+  obligations (the bundled SIL-OFL fonts + the Rust crate ecosystem — MIT/Apache-2.0
+  plus the ISC/BSD-3-Clause/Zlib/Unicode-3.0 components, with full per-crate notices in
+  `THIRD-PARTY-NOTICES.md`), and the trademark disclaimer (an unaffiliated homage, not
+  associated with Take-Two / Firaxis / the Civilization franchise). Adds a generated
+  `crates/kubernation/THIRD-PARTY-NOTICES.md` (via `cargo-about`).
+
 - **Multi-burn-rate SLO alerting.** The treasury's single burn threshold became the
   SRE multiwindow pattern: a short (~48s) burn rate, a long (~2 min) sustained-burn
   window, and a small "is it down right now" gate drive a *fast* burn (severe +

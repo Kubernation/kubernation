@@ -17,3 +17,12 @@
 
 The world map is rendered with original procedural geometry (isometric
 diamonds, settlements, terrain) — no sprite assets are bundled.
+
+## Third-party crate licenses
+
+The shipped binary links many open-source Rust crates — mostly **MIT** /
+**Apache-2.0**, with some **ISC** (the rustls/`ring` TLS stack), **BSD-3-Clause**,
+**Zlib**, and **Unicode-3.0** components. The full per-crate license texts are in
+`crates/kubernation/THIRD-PARTY-NOTICES.md`, generated from the dependency tree by
+[`cargo-about`](https://github.com/EmbarkStudios/cargo-about) (`cargo about
+generate about.hbs -o crates/kubernation/THIRD-PARTY-NOTICES.md`).

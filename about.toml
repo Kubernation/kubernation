@@ -1,0 +1,23 @@
+# cargo-about config — generates THIRD-PARTY-NOTICES.md (the third-party license
+# notices for the shipped binary's dependency tree). Regenerate with:
+#   cargo about generate about.hbs -o crates/kubernation/THIRD-PARTY-NOTICES.md
+# The `accepted` list is every SPDX license present in the tree; cargo-about
+# picks an accepted option for each crate's OR-expression.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "0BSD",
+    "BSL-1.0",
+    "Unlicense",
+    "CC0-1.0",
+    "MPL-2.0",
+    "OpenSSL",
+    "LGPL-2.1-or-later",
+]

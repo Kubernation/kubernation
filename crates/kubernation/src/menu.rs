@@ -31,6 +31,7 @@ pub enum MenuAction {
     Charter,
     OracleConsult,
     Almanac,
+    About,
     Annals,
 }
 
@@ -214,6 +215,7 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
             items: vec![
                 Item::act("Charter (your access)", MenuAction::Charter),
                 Item::act("Field guide (almanac)", MenuAction::Almanac),
+                Item::act("About KuberNation\u{2026}", MenuAction::About),
                 Item::sep(),
                 Item::header(format!("KuberNation v{}", env!("CARGO_PKG_VERSION"))),
             ],

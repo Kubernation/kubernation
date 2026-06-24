@@ -2365,6 +2365,34 @@ what makes the interesting logic unit-testable without a cluster.
   `budget_concern.is_none()`); verified live on kind (smoke). **Deferred:** a configurable
   multiwindow tuple; a multi-window burn-rate graph in the treasury band; persisting the
   ring across runs (would enable true longer-horizon burn windows).
+- **About window** (2026-06-23, v0.62.0, user request): a Help ▸ About modal
+  (`gui/about.rs`, on `window.rs`, mirroring the Almanac's window/scroll machinery)
+  featuring the splash logo (`logo::draw_full`) then three sections — Credits (Jason
+  Olmsted + "built in collaboration with Claude"), Third-party licenses, and the
+  Trademark disclaimer (the README's verbatim "unaffiliated homage … not associated with
+  Take-Two / Firaxis / Civilization" wording). The content builder `about_sections()` is
+  **pure + unit-tested** (the testability policy) — the test pins the legal obligations
+  (both authors, the SIL-OFL, ISC+BSD-3-Clause named, the notices pointer) so they can't
+  silently drift. Wired through `menu.rs` (`MenuAction::About`) + the usual `main.rs`
+  modal touchpoints (the 11 world-nav suspend gates, Esc chain, wheel, just-opened guard,
+  draw-on-top, `--about` dev flag + gui-smoke state). The window is sized so **all content
+  including the disclaimer fits without scrolling** on the default 1380×860 window (the
+  disclaimer is the point — it shouldn't be below the fold); scroll is a fallback, and the
+  logo is suppressed once scrolled above the body top (macroquad has no scissor).
+  **Adversarial review (3 confirmed, all legal-accuracy):** (HIGH) the crate-license line
+  claimed the binary is "MIT / Apache-2.0" but the shipped rustls/`ring` TLS stack bundles
+  **ISC** (ring, rustls-webpki, untrusted), **BSD-3-Clause** (subtle), **Zlib** (foldhash),
+  and **Unicode-3.0** (unicode-ident) crates — an affirmatively false notice; fixed by
+  broadening the wording AND generating a complete `crates/kubernation/THIRD-PARTY-NOTICES.md`
+  with every crate's actual license text via **`cargo-about`** (`about.toml` + `about.hbs`
+  at the repo root regenerate it), referenced from the About + CREDITS.md, with a
+  test-guard asserting the line names ISC/BSD-3-Clause. (LOW) the bundled `OFL.txt` carried
+  only the Fira Sans copyright — appended the Liberation (Red Hat / digitized © Google)
+  reservation so both copyright statements travel with the fonts as the OFL requires. (NIT)
+  the `©` glyph → `(c)` (ASCII, no font-coverage dependency). Verified live (`--about
+  --screenshot`): renders the splash + both credits + the full license spread + the
+  disclaimer, no scroll, no panic. Read-only; no new write verb. **Deferred:** a CI check
+  that re-runs `cargo-about` so the notice can't drift from `Cargo.lock`.
 
 ## The pair (hot/warm)
 

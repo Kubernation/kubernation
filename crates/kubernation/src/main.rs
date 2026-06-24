@@ -12,6 +12,7 @@
 //! between cities · N fly to the next concern · L tail its logs ·
 //! `:` resource browser · ?/F1 Almanac (in-app reference) · Esc close · Q quit.
 
+mod about;
 mod advisor;
 mod almanac;
 mod browse;
@@ -38,6 +39,7 @@ mod window;
 
 use std::path::PathBuf;
 
+use about::{About, AboutAction};
 use advisor::{Advisor, AdvisorAction, AdvisorTab};
 use almanac::{Almanac, AlmanacAction};
 use browse::{BrowseAction, Browser};
@@ -106,6 +108,9 @@ struct Args {
     /// Open the Almanac (in-app reference) on sync (development verification)
     #[arg(long)]
     almanac: bool,
+    /// Open the About window on sync (development verification)
+    #[arg(long)]
+    about: bool,
     /// Stage a demo scale + cordon and open the End-of-Turn review on sync
     /// (development verification)
     #[arg(long)]
@@ -596,6 +601,8 @@ async fn main() {
     let mut advisor: Option<Advisor> = None;
     // The Charter — self-scoped RBAC ("what can I do here?") — a modal window.
     let mut charter: Option<CharterView> = None;
+    // The About window (credits / licenses / trademark) — a modal window.
+    let mut about: Option<About> = None;
     // The Oracle — the BYO-LLM consult Wonder (local, explain-only) — a modal.
     let mut oracle_view: Option<OracleView> = None;
     // The object inspector (read-only YAML dossier) — a modal window.
@@ -817,6 +824,7 @@ async fn main() {
         let mut almanac_just_opened = false;
         let mut advisor_just_opened = false;
         let mut charter_just_opened = false;
+        let mut about_just_opened = false;
         let mut oracle_just_opened = false;
         let mut inspector_just_opened = false;
         let mut browser_just_opened = false;
@@ -830,6 +838,7 @@ async fn main() {
             && !typing
             && advisor.is_none()
             && charter.is_none()
+            && about.is_none()
             && oracle_view.is_none()
             && annals.is_none()
             && chaos.is_none()
@@ -849,6 +858,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && about.is_none()
             && oracle_view.is_none()
             && annals.is_none()
             && chaos.is_none()
@@ -868,6 +878,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && about.is_none()
             && oracle_view.is_none()
             && chaos.is_none()
             && browser.is_none()
@@ -894,6 +905,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && about.is_none()
             && oracle_view.is_none()
             && annals.is_none()
             && chaos.is_none()
@@ -939,6 +951,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && about.is_none()
             && oracle_view.is_none()
             && annals.is_none()
             && chaos.is_none()
@@ -986,6 +999,8 @@ async fn main() {
                 advisor = None;
             } else if charter.is_some() {
                 charter = None;
+            } else if about.is_some() {
+                about = None;
             } else if oracle_view.as_ref().is_some_and(|v| v.field_focused()) {
                 // First Esc defocuses the Settings field (so a typo-dismissal
                 // doesn't nuke the modal + an unsaved token); a second closes.
@@ -1230,6 +1245,13 @@ async fn main() {
                 c.scroll_by(wheel);
             }
         }
+        // The About window swallows the wheel to scroll its content.
+        if let Some(a) = about.as_mut() {
+            let (_, wheel) = mouse_wheel();
+            if wheel.abs() > 0.0 {
+                a.scroll_by(wheel);
+            }
+        }
         // The Oracle swallows the wheel to scroll the preview / reply.
         if let Some(o) = oracle_view.as_mut() {
             let (_, wheel) = mouse_wheel();
@@ -1278,6 +1300,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && about.is_none()
             && oracle_view.is_none()
             && annals.is_none()
             && chaos.is_none()
@@ -1391,6 +1414,9 @@ async fn main() {
                 }
                 if args.almanac {
                     almanac = Some(Almanac::new());
+                }
+                if args.about {
+                    about = Some(About::new());
                 }
                 if let Some(a) = &args.advisor {
                     advisor = Some(Advisor::new(match a.as_str() {
@@ -1529,6 +1555,7 @@ async fn main() {
                 || almanac.is_some()
                 || advisor.is_some()
                 || charter.is_some()
+                || about.is_some()
                 || oracle_view.is_some()
                 || chaos.is_some()
                 || pending_chaos.is_some()
@@ -1801,6 +1828,7 @@ async fn main() {
                 && almanac.is_none()
                 && advisor.is_none()
                 && charter.is_none()
+                && about.is_none()
                 && oracle_view.is_none()
                 && annals.is_none()
                 && chaos.is_none()
@@ -1846,6 +1874,7 @@ async fn main() {
                 && almanac.is_none()
                 && advisor.is_none()
                 && charter.is_none()
+                && about.is_none()
                 && oracle_view.is_none()
                 && annals.is_none()
                 && chaos.is_none()
@@ -2018,6 +2047,7 @@ async fn main() {
                     && almanac.is_none()
                     && advisor.is_none()
                     && charter.is_none()
+                    && about.is_none()
                     && oracle_view.is_none()
                     && annals.is_none()
                     && chaos.is_none()
@@ -2100,6 +2130,7 @@ async fn main() {
                     && almanac.is_none()
                     && advisor.is_none()
                     && charter.is_none()
+                    && about.is_none()
                     && oracle_view.is_none()
                     && annals.is_none()
                     && chaos.is_none()
@@ -2344,6 +2375,7 @@ async fn main() {
             && almanac.is_none()
             && advisor.is_none()
             && charter.is_none()
+            && about.is_none()
             && oracle_view.is_none()
             && annals.is_none()
             && chaos.is_none()
@@ -2441,6 +2473,10 @@ async fn main() {
             Some(MenuAction::Almanac) => {
                 almanac = Some(Almanac::new());
                 almanac_just_opened = true;
+            }
+            Some(MenuAction::About) => {
+                about = Some(About::new());
+                about_just_opened = true;
             }
             Some(MenuAction::Annals) => {
                 annals = Some(timeline::Annals::new());
@@ -2570,6 +2606,16 @@ async fn main() {
                 .map(|c| c.draw(snap.as_deref(), &net, mouse, click));
             if let Some(CharterAction::Close) = action {
                 charter = None;
+            }
+        }
+
+        // The About window (credits / licenses / trademark), drawn on top (own
+        // clicks, not the opening one). Static content — no snapshot needed.
+        if about.is_some() {
+            let click = is_mouse_button_pressed(MouseButton::Left) && !about_just_opened;
+            let action = about.as_mut().map(|a| a.draw(mouse, click));
+            if let Some(AboutAction::Close) = action {
+                about = None;
             }
         }
 

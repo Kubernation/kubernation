@@ -17,6 +17,7 @@ COMMON=(--context "$CTX" --project gizmos.example.com)
 STATES=(
   "map|"
   "almanac|--almanac"
+  "about|--about"
   "advisor|--advisor health"
   "advisor-rightsizing|--advisor rightsizing"
   "advisor-hardening|--advisor hardening"

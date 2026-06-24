@@ -461,3 +461,6 @@ or the Civilization franchise. "Sid Meier's Civilization" and "Civ" are trademar
 of Take-Two Interactive, referenced here only to describe this project's design
 inspiration.* Bundled fonts (Fira Sans, Liberation Serif, Liberation Mono) are
 licensed under the SIL Open Font License 1.1; see `crates/kubernation/assets/CREDITS.md`.
+Third-party crate licenses (mostly MIT/Apache-2.0, plus ISC/BSD-3-Clause/Zlib/Unicode-3.0)
+are in `crates/kubernation/THIRD-PARTY-NOTICES.md`. The in-app **Help ▸ About** window
+surfaces the same credits, licenses, and disclaimer.
