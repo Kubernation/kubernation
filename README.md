@@ -64,8 +64,9 @@ built around four ideas:
 ## Install
 
 **Pre-built binaries** are attached to each [GitHub release](../../releases) — a
-macOS universal binary (Apple Silicon + Intel) and a Linux x86_64 binary. Download,
-verify against `SHA256SUMS`, and run it against your current kube-context:
+macOS universal binary (Apple Silicon + Intel), a Linux x86_64 binary, and a
+Windows x86_64 binary. Download, verify against `SHA256SUMS`, and run it against
+your current kube-context:
 
 ```sh
 tar xzf kubernation-vX.Y.Z-macos-universal.tar.gz

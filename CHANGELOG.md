@@ -8,6 +8,16 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Windows x86_64 binary.** The release now builds and publishes a Windows
+  binary (`kubernation-vX.Y.Z-windows-x86_64.zip`) alongside the macOS-universal
+  and Linux tarballs, and CI builds + tests on `windows-latest` on every push so
+  the target can't silently break. The code was already largely Windows-ready
+  (the unix-only bits are `cfg(unix)`-gated, the clipboard has a Windows branch);
+  config/log directories now resolve to `%APPDATA%`/`%LOCALAPPDATA%` on Windows
+  instead of falling back to the cwd. Unsigned (SmartScreen warns on first launch
+  → "More info ▸ Run anyway").
+
 ### Documentation
 - **README refreshed for the v1 release.** Rewrote the README to reflect the full
   current feature set — added the **Oracle** (bring-your-own-LLM consult, streaming

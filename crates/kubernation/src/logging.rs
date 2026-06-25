@@ -82,6 +82,11 @@ fn state_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("XDG_STATE_HOME") {
         return PathBuf::from(p);
     }
+    // Windows: per-machine state/logs live under %LOCALAPPDATA% (non-roaming).
+    #[cfg(windows)]
+    if let Some(p) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(p);
+    }
     if let Some(h) = std::env::var_os("HOME") {
         return PathBuf::from(h).join(".local/state");
     }

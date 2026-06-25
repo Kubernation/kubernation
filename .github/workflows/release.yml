@@ -25,6 +25,8 @@ jobs:
             name: macos-universal # aarch64 + x86_64 lipo'd together
           - os: ubuntu-latest
             name: linux-x86_64
+          - os: windows-latest
+            name: windows-x86_64
     steps:
       - uses: actions/checkout@v4
 
@@ -58,22 +60,41 @@ jobs:
             "target/x86_64-apple-darwin/release/${BIN}"
           lipo -info "out/${BIN}"
 
+      - name: Build (Windows x86_64)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --release --locked
+          mkdir -p out && cp "target/release/${BIN}.exe" "out/${BIN}.exe"
+
       # Stage the binary alongside the licenses + third-party notices so the
-      # tarball is self-contained and legally complete.
+      # archive is self-contained and legally complete. A `.zip` on Windows
+      # (what users expect), a `.tar.gz` elsewhere. `shell: bash` so the same
+      # script runs on the Windows runner (via Git Bash).
       - name: Package
+        shell: bash
         run: |
           STAGE="${BIN}-${{ github.ref_name }}-${{ matrix.name }}"
           mkdir -p "$STAGE"
-          cp "out/${BIN}" "$STAGE/"
           cp LICENSE-MIT LICENSE-APACHE README.md "$STAGE/"
           cp crates/kubernation/THIRD-PARTY-NOTICES.md "$STAGE/" || true
-          chmod +x "$STAGE/${BIN}"
-          tar -czf "${STAGE}.tar.gz" "$STAGE"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp "out/${BIN}.exe" "$STAGE/"
+            7z a "${STAGE}.zip" "$STAGE" >/dev/null
+          else
+            cp "out/${BIN}" "$STAGE/"
+            chmod +x "$STAGE/${BIN}"
+            tar -czf "${STAGE}.tar.gz" "$STAGE"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: ${{ env.BIN }}-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+          # One of these exists per OS (.zip on Windows, .tar.gz elsewhere);
+          # if-no-files-found errors only when NEITHER matches.
+          path: |
+            ${{ env.BIN }}-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+            ${{ env.BIN }}-${{ github.ref_name }}-${{ matrix.name }}.zip
           if-no-files-found: error
 
   publish:
@@ -89,7 +110,8 @@ jobs:
       - name: Checksums
         run: |
           cd artifacts
-          sha256sum ./*.tar.gz > SHA256SUMS
+          shopt -s nullglob
+          sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
           cat SHA256SUMS
 
       - name: Publish GitHub Release
@@ -97,6 +119,7 @@ jobs:
         with:
           files: |
             artifacts/*.tar.gz
+            artifacts/*.zip
             artifacts/SHA256SUMS
           # Full control of the body (don't append the API's auto "What's Changed").
           # The macOS binary is NOT yet code-signed/notarized (that needs an Apple
@@ -107,10 +130,14 @@ jobs:
             Pre-built binaries (verify with `SHA256SUMS`):
             - `kubernation-${{ github.ref_name }}-macos-universal.tar.gz` — Apple Silicon + Intel
             - `kubernation-${{ github.ref_name }}-linux-x86_64.tar.gz`
+            - `kubernation-${{ github.ref_name }}-windows-x86_64.zip`
 
             **macOS:** the binary is unsigned for now, so on first launch Gatekeeper
             will block it — remove the quarantine flag once:
             `xattr -d com.apple.quarantine ./kubernation` (or right-click ▸ Open).
+
+            **Windows:** the binary is unsigned, so SmartScreen may warn on first
+            launch — choose "More info ▸ Run anyway".
 
             Run against your current kube-context: `./kubernation`. See the README
             for flags and RBAC requirements.

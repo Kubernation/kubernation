@@ -35,6 +35,11 @@ fn config_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("XDG_CONFIG_HOME") {
         return PathBuf::from(p).join("kubernation");
     }
+    // Windows: user config lives under %APPDATA% (roaming).
+    #[cfg(windows)]
+    if let Some(p) = std::env::var_os("APPDATA") {
+        return PathBuf::from(p).join("kubernation");
+    }
     if let Some(h) = std::env::var_os("HOME") {
         return PathBuf::from(h).join(".config/kubernation");
     }
