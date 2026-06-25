@@ -1,4 +1,10 @@
-# Kubernation — Feature Roadmap
+# KuberNation — Feature Roadmap
+
+> **Historical triage doc.** The Top-10 below shipped through mid-2026 (the
+> version numbers in the Status column predate later renumbering — read them as
+> "shipped", not exact). For what's current see [CHANGELOG.md](../CHANGELOG.md)
+> and the decision log in [CLAUDE.md](../CLAUDE.md); this file is kept as a record
+> of how the roadmap was triaged, not as a live plan.
 
 A living triage doc for feature opportunities. Generated 2026-06-19 from a
 five-lens research scan (SRE · DevSecOps · cluster admin · app developer ·

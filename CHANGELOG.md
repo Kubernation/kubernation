@@ -8,6 +8,19 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Documentation
+- **README refreshed for the v1 release.** Rewrote the README to reflect the full
+  current feature set — added the **Oracle** (bring-your-own-LLM consult, streaming
+  + suggest-to-gate), **cost cartography** + OpenCost, the **security suite**
+  (Charter / hardening scan / NetworkPolicy walls / posture score), the **Annals**
+  change timeline, the **workload table**, **postmortem export**, **multi-burn-rate
+  SLO alerting**, the new **saturation / walls / upkeep** map views, and the four
+  new **Advisor** tabs — and corrected stale claims (perf is now 500 nodes / 5000
+  pods ≈ 4ms; the 8-menu bar with **Wonders**; the two config files; the full CLI
+  flag list). Recaptured every screenshot against the current UI (16 images: added
+  Oracle / cost / Charter / Annals / workloads; dropped the menu / evict shots) and
+  marked `docs/ROADMAP.md` as a historical triage doc.
+
 ### Added
 - **Persisted preferences.** A small `~/.config/kubernation/prefs.json` remembers the
   colour-blind palette choice and the last map overlay across runs, so you don't re-set
