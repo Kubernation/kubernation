@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KuberNation — your Kubernetes cluster as an explorable world map</title>
+  <meta name="description" content="KuberNation renders a Kubernetes cluster as a turn-based-strategy world map: nodes are terrain, workloads are cities, and the problems that need you surface in an attention queue. Read-first, with deliberate gated writes — and an optional bring-your-own-LLM Oracle.">
+  <link rel="icon" type="image/png" href="img/logo-mark.png">
+  <link rel="canonical" href="https://kubernation.dev/">
+  <meta name="theme-color" content="#0c1c2b">
+  <link rel="stylesheet" href="style.css">
+
+  <!-- Open Graph / social previews -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://kubernation.dev/">
+  <meta property="og:title" content="KuberNation — your Kubernetes cluster as an explorable world map">
+  <meta property="og:description" content="A desktop Kubernetes explorer with a 4X-strategy world map: nodes are terrain, workloads are cities, problems surface in an attention queue. Read-first, deliberate gated writes, an optional BYO-LLM Oracle.">
+  <meta property="og:image" content="https://kubernation.dev/img/gui-world.png">
+  <meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="img/logo-mark.png" alt="">KuberNation</a>
+    <div class="nav-links">
+      <a href="#why">Why a map</a>
+      <a href="#features">Features</a>
+      <a href="#oracle">Oracle</a>
+      <a href="#install">Install</a>
+      <a class="nav-cta" href="https://github.com/Kubernation/kubernation">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero wrap">
+  <h1>KuberNation</h1>
+  <p class="tag">Your Kubernetes cluster as an explorable world map.</p>
+  <p class="lede">
+    Instead of scrolling tables of pods and nodes, you look at a map. Each node is
+    a patch of terrain coloured by its health, each workload is a city sited on the
+    node its pods run on, and the problems that need you surface in a queue — the
+    next thing needing your attention — rather than buried in dashboards.
+  </p>
+  <div class="btns">
+    <a class="btn btn-primary" href="#install">Download</a>
+    <a class="btn btn-ghost" href="https://github.com/Kubernation/kubernation">View on GitHub</a>
+  </div>
+  <figure class="hero-shot">
+    <img class="shot" width="2760" height="1720" decoding="async" fetchpriority="high" src="img/gui-world.png" alt="A live Kubernetes cluster rendered as an isometric world map, with cities for workloads and an attention queue in the right column.">
+    <figcaption>A live cluster as an isometric world — terrain is node health, cities are workloads, and the right-column attention queue ranks what needs you.</figcaption>
+  </figure>
+</header>
+
+<section id="why" class="wrap">
+  <h2 class="section-title">Why a map?</h2>
+  <p class="section-sub">
+    Table and dashboard tools hide two things a map makes obvious: <b>where</b>
+    things run, and <b>what matters right now</b>. KuberNation is built around four ideas.
+  </p>
+  <div class="pillars">
+    <div class="pillar">
+      <h3>Spatial, not tabular</h3>
+      <p>Resources project onto a stable world. A node's terrain is its health; a workload's city moves when its pods reschedule; two clusters sit side by side so drift is visible at a glance.</p>
+    </div>
+    <div class="pillar">
+      <h3>Attention-driven</h3>
+      <p>Crash loops, stalled rollouts, pending volumes, nodes under pressure, burning error budgets — aggregated and ranked into one queue. Press <code>N</code> to fly to the next problem.</p>
+    </div>
+    <div class="pillar">
+      <h3>Read-first writes</h3>
+      <p>It observes by default. Every change is explicit, confirmed, RBAC-checked, and server-side dry-run validated — and all the write code lives in one small, auditable file.</p>
+    </div>
+    <div class="pillar">
+      <h3>Ask a model</h3>
+      <p>Consult a local or corporate LLM to explain a workload or the whole realm — from a redacted, fenced summary, never raw dumps or Secrets. The model proposes; you and the gate dispose.</p>
+    </div>
+  </div>
+</section>
+
+<section id="features" class="wrap">
+  <h2 class="section-title">A whole cluster, as geography</h2>
+  <p class="section-sub">
+    Everything on screen is a real Kubernetes object you could <code>kubectl get</code> —
+    the game words are just a lens.
+  </p>
+
+  <div class="feature">
+    <div class="feat-text">
+      <p class="kicker">Drill-downs</p>
+      <h3>Cities and provinces</h3>
+      <p>Click a city to open the workload in full; click open land for the node. Both are classic 4X-style screens reframed for Kubernetes.</p>
+      <ul>
+        <li><b>City window</b> — replica/update gauges, a pod census, owned Services, Ingresses &amp; PVCs, the availability treasury, rollout history with one-click rollback, and a merged change log.</li>
+        <li><b>Province window</b> — zone &amp; health, CPU/memory gauges with live trend sparklines, the garrison of pods, terrain facts, and node conditions.</li>
+      </ul>
+    </div>
+    <figure><img class="shot" width="2760" height="1720" loading="lazy" decoding="async" src="img/gui-city.png" alt="The city window for a Deployment, showing gauges, pod census, improvements, treasury, and change annals."></figure>
+  </div>
+
+  <div class="feature flip">
+    <div class="feat-text">
+      <p class="kicker">Map views</p>
+      <h3>Seven ways to colour the board</h3>
+      <p>The View menu recolours the whole world like a strategy game's map modes, so a different question gets a different map.</p>
+      <ul>
+        <li><b>Terrain</b> (health) · <b>Pressure</b> (CPU/mem) · <b>Replicas</b> (workload strength) · <b>Namespace</b> (territory).</li>
+        <li><b>Saturation</b> — fullness toward hard limits, catching the silent max-pods failure Pressure misses.</li>
+        <li><b>Walls</b> — NetworkPolicy segmentation gaps · <b>Upkeep</b> — what each node costs to run.</li>
+      </ul>
+    </div>
+    <figure><img class="shot" width="2760" height="1720" loading="lazy" decoding="async" src="img/gui-overlay.png" alt="The map recoloured as a namespace territory map."></figure>
+  </div>
+
+  <div class="feature">
+    <div class="feat-text">
+      <p class="kicker">Triage</p>
+      <h3>What's wrong, what else it hits, what changed</h3>
+      <p>Three axes answer an incident, and each has a home.</p>
+      <ul>
+        <li><b>Attention queue</b> — ranked problems with one-line next-action hints.</li>
+        <li><b>Blast radius</b> (<code>B</code>) — the dependency fan-out across the map, with a clickable impact list (honest topology, never invented edges).</li>
+        <li><b>The Annals</b> (<code>H</code>) — a classified change-feed with a "trouble begins here" fault line, plus a one-click after-action report.</li>
+      </ul>
+    </div>
+    <figure><img class="shot" width="2760" height="1720" loading="lazy" decoding="async" src="img/gui-annals.png" alt="The Annals change timeline with a fault line marking the first failure."></figure>
+  </div>
+
+  <div class="feature flip">
+    <div class="feat-text">
+      <p class="kicker">Advisors &amp; cost</p>
+      <h3>Read-only reports for the whole realm</h3>
+      <p>Seven advisor tabs roll up the cluster as pure functions of what's observed.</p>
+      <ul>
+        <li>Health · Storage · Network, plus <b>Right-sizing</b> (requests vs. live usage, with reclaimable totals).</li>
+        <li><b>Cost cartography</b> — an Upkeep overlay + advisor; honest "cost units" by default, real <code>$/mo</code> with your rates, or invoice-grade via OpenCost.</li>
+      </ul>
+    </div>
+    <figure><img class="shot" width="2760" height="1720" loading="lazy" decoding="async" src="img/gui-advisors.png" alt="The Right-sizing advisor showing over- and under-provisioned workloads and reclaimable CPU."></figure>
+  </div>
+
+  <div class="feature">
+    <div class="feat-text">
+      <p class="kicker">Security &amp; posture</p>
+      <h3>See your exposure, before an attacker does</h3>
+      <p>A small security suite, all read-only and all reusing what KuberNation already watches.</p>
+      <ul>
+        <li><b>The Charter</b> — a self-scoped <code>can-i</code> grid of what <em>you</em> can do here, dangerous capabilities flagged. It kills surprise 403s.</li>
+        <li><b>Hardening scan</b> (PSS / OWASP) · <b>Walls</b> (segmentation, OWASP K07) · a 0–100 <b>posture score</b>.</li>
+      </ul>
+    </div>
+    <figure><img class="shot" width="2760" height="1720" loading="lazy" decoding="async" src="img/gui-charter.png" alt="The Charter: a can-i grid of the operator's permissions with dangerous ones highlighted."></figure>
+  </div>
+
+  <div class="feature flip">
+    <div class="feat-text">
+      <p class="kicker">Game Day</p>
+      <h3>Break it on purpose, watch it heal</h3>
+      <p>A chaos-engineering console: inject a real, confirmed, RBAC-gated failure and watch the cluster respond — the queue lights up, the blast radius spreads, the budget spends.</p>
+      <ul>
+        <li>Nine experiments (kill pods, outage, scale spike, broken image, node failure, partition…) or a compound Skirmish / Raid / Siege drill.</li>
+        <li>A scorecard grades recovery and <b>time-to-detect</b>; control-plane &amp; system namespaces are refused, and drills auto-restore so the cluster is never stranded.</li>
+      </ul>
+    </div>
+    <figure><img class="shot" width="2760" height="1720" loading="lazy" decoding="async" src="img/gui-chaos.png" alt="The Game Day chaos console with experiment choices and a blast-radius preview."></figure>
+  </div>
+</section>
+
+<section id="oracle" class="wrap">
+  <h2 class="section-title">The Oracle — bring your own model</h2>
+  <p class="section-sub">
+    Consult a language model <em>you</em> bring to explain a workload, a node, or the
+    whole realm. Advisory, private by construction, and it can never touch the cluster on its own.
+  </p>
+  <div class="feature" style="margin-bottom:0">
+    <div class="feat-text">
+      <ul>
+        <li><b>It sees a redacted, fenced summary, never your cluster</b> — built from what KuberNation already observed, with a mandatory preview of the exact bytes before anything is sent.</li>
+        <li><b>Bring your own endpoint</b> — a local model (Ollama by default) or any OpenAI-compatible / corporate endpoint. Remote egress stays behind an explicit per-session arm gate.</li>
+        <li><b>It streams its answer</b>, with one-click links to drill into the worst concern and lenses to fold in logs, storage, or blast radius.</li>
+        <li><b>It can propose a fix, never apply one</b> — a suggestion enters the planning turn and commits only through the same dry-run + RBAC gate.</li>
+      </ul>
+    </div>
+    <figure>
+      <img class="shot" width="2760" height="1720" loading="lazy" decoding="async" src="img/gui-oracle.png" alt="The Oracle modal showing the mandatory pre-send preview of the exact redacted, fenced payload.">
+      <figcaption>The mandatory pre-send preview — exactly what leaves your laptop, with credential redaction and a prompt-injection fence.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2 class="section-title">The mapping</h2>
+  <p class="section-sub">Every shape on the map is a live Kubernetes object.</p>
+  <div class="mapwrap">
+    <table>
+      <caption class="sr-only">Kubernetes objects and how each appears on the map</caption>
+      <thead><tr><th scope="col">Kubernetes</th><th scope="col">On the map</th></tr></thead>
+      <tbody>
+      <tr><td>Zone / failure domain</td><td>a continent — nodes in the same zone cluster together</td></tr>
+      <tr><td>Node</td><td>a province of terrain, coloured by health</td></tr>
+      <tr><td>Workload (Deployment, StatefulSet)</td><td>a city, sited where its pods run — it moves when they do</td></tr>
+      <tr><td>Pod</td><td>a citizen of its city / garrison of its node</td></tr>
+      <tr><td>DaemonSet</td><td>a road, paved across every node it runs on</td></tr>
+      <tr><td>Service / Ingress</td><td>a harbor / gate on the city's coast</td></tr>
+      <tr><td>PersistentVolumeClaim</td><td>a granary inland of the city</td></tr>
+      <tr><td>Job / CronJob / custom resource</td><td>structures on the namespace islands</td></tr>
+      <tr><td>A problem</td><td>a ranked attention-queue entry + a flag on the map</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="callout">
+    <h3>Honest about what it is</h3>
+    <p>
+      KuberNation is an operator-laptop tool. It talks to your cluster through your
+      kubeconfig and runs no in-cluster agent. The whole write surface is one
+      auditable file; there is deliberately no exec/shell, and Secret contents are
+      never surfaced. The only call KuberNation makes to a third-party endpoint is
+      the optional Oracle — opt-in, off by default for remote, and gated like
+      everything else (OpenCost, if used, is read through your existing cluster connection).
+    </p>
+  </div>
+</section>
+
+<section id="install" class="wrap">
+  <h2 class="section-title">Install</h2>
+  <p class="section-sub">
+    Pre-built binaries are attached to every
+    <a href="https://github.com/Kubernation/kubernation/releases">GitHub release</a>.
+    Download, verify against <code>SHA256SUMS</code>, and run it against your current
+    kube-context. From source: <code>cargo run --release -- --context &lt;ctx&gt;</code>.
+  </p>
+  <div class="cards">
+    <div class="card">
+      <div class="plat">macOS</div>
+      <h3>Universal binary</h3>
+      <p>Apple Silicon + Intel. Unsigned for now, so clear the quarantine flag once:</p>
+      <code class="codeblock">xattr -d com.apple.quarantine ./kubernation</code>
+    </div>
+    <div class="card">
+      <div class="plat">Linux</div>
+      <h3>x86_64</h3>
+      <p>Unpack and run against your current context:</p>
+      <code class="codeblock">tar xzf kubernation-*-linux-x86_64.tar.gz
+./kubernation</code>
+    </div>
+    <div class="card">
+      <div class="plat">Windows</div>
+      <h3>x86_64</h3>
+      <p>Unzip and run. Unsigned, so SmartScreen may warn on first launch — choose “More info ▸ Run anyway”.</p>
+      <code class="codeblock">kubernation.exe</code>
+    </div>
+  </div>
+  <p class="note">
+    It's a windowed desktop app (not a TUI), so it needs a display — it runs on your
+    laptop, not over SSH. It needs read access to the usual kinds; the few write
+    actions each check RBAC and show as <em>locked</em> if you lack the verb.
+  </p>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="disclaimer">
+      © 2026 Jason Olmsted. <b>KuberNation</b>™ and the KuberNation logo are
+      unregistered trademarks of Jason Olmsted. Dual-licensed under MIT OR Apache-2.0.
+      <br><br>
+      KuberNation is an independent, unaffiliated homage. It is not associated with,
+      endorsed by, or sponsored by Take-Two Interactive Software, Inc., Firaxis
+      Games, or the Civilization franchise.
+    </div>
+    <div>
+      <a href="https://github.com/Kubernation/kubernation">GitHub</a> ·
+      <a href="https://github.com/Kubernation/kubernation/releases">Releases</a> ·
+      <a href="https://github.com/Kubernation/kubernation/blob/main/README.md">Docs</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

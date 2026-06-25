@@ -1,0 +1,52 @@
+name: Pages
+
+# Build + deploy the kubernation.dev landing page to GitHub Pages.
+# Requires once, in repo Settings ▸ Pages ▸ Build and deployment:
+#   Source = "GitHub Actions", and Custom domain = kubernation.dev.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'docs/gui-*.png'
+      - 'kubernation-logo-small.png'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; let an in-flight run finish (don't cancel a publish).
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Assemble the static site: the hand-written pages from site/, plus the app
+      # screenshots and the logo mark pulled in under img/ (so the repo doesn't
+      # carry duplicate copies of the PNGs).
+      - name: Assemble site
+        run: |
+          mkdir -p _site/img
+          cp -r site/. _site/
+          cp docs/gui-*.png _site/img/
+          cp kubernation-logo-small.png _site/img/logo-mark.png
+          touch _site/.nojekyll   # serve _-prefixed paths verbatim; skip Jekyll
+          find _site | head -40   # log the assembled tree
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
