@@ -1343,7 +1343,9 @@ impl OracleView {
                 let shown = if disp.is_empty() && !focused {
                     placeholder.to_string()
                 } else {
-                    truncate(&disp, 48)
+                    // Follow the caret: focused + overflowing shows the tail (what
+                    // you're typing), unfocused shows the head (recognizable start).
+                    crate::textfield::field_view(&disp, 48, focused)
                 };
                 let col = if disp.is_empty() && !focused {
                     DIM
@@ -1352,7 +1354,10 @@ impl OracleView {
                 };
                 text(ascii(&shown), fr.x + 4.0, y + 13.0, 13.0, col);
                 if focused {
-                    let cw = text_size(truncate(&disp, 48).as_str(), 13.0).width;
+                    // Caret at the end of the focused (tail) view.
+                    let cw =
+                        text_size(crate::textfield::field_view(&disp, 48, true).as_str(), 13.0)
+                            .width;
                     draw_rectangle(fr.x + 5.0 + cw, fr.y + 3.0, 1.5, 12.0, PARCHMENT);
                 }
                 field_rects.push((id, fr));

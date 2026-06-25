@@ -8,6 +8,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **Oracle Settings text fields — long values + held-key erase.** A long value (e.g.
+  a corporate/Azure endpoint URL) now **scrolls to follow the caret** — an overflowing
+  field shows its *tail* (leading `…`) while focused so you can see what you're typing,
+  and its head (trailing `…`) when unfocused so it's recognizable; previously it always
+  showed only the first ~48 characters. **Backspace / Delete now auto-repeat when held**
+  (after a short delay, ~28 chars/sec) so you can clear a long field by holding the key
+  instead of one tap per character. The full value was always stored correctly — these
+  fix the *display* and *editing ergonomics*. Pure `field_view` + `erase_repeats` helpers,
+  unit-tested.
+
 ### Added
 - **Windows x86_64 binary.** The release now builds and publishes a Windows
   binary (`kubernation-vX.Y.Z-windows-x86_64.zip`) alongside the macOS-universal

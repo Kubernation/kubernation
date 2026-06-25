@@ -16,6 +16,11 @@
 
 use macroquad::prelude::*;
 
+/// Held-erase auto-repeat: wait this long after the initial press, then erase a
+/// char every `ERASE_INTERVAL` (≈28/sec) — matching a typical OS key-repeat.
+const ERASE_DELAY: f64 = 0.40;
+const ERASE_INTERVAL: f64 = 0.035;
+
 /// Which field currently owns the global char queue (exactly one at a time).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FieldId {
@@ -32,6 +37,10 @@ pub enum FieldId {
 pub struct TextField {
     pub buf: String,
     pub masked: bool,
+    /// Held-erase bookkeeping: when the current Backspace/Delete hold began and
+    /// when we last emitted an erase (`None` ⇒ not currently held).
+    erase_since: Option<f64>,
+    erase_last: f64,
 }
 
 impl TextField {
@@ -39,6 +48,7 @@ impl TextField {
         TextField {
             buf: initial.to_string(),
             masked,
+            ..Default::default()
         }
     }
 
@@ -68,7 +78,27 @@ impl TextField {
                 }
             }
         }
-        if is_key_pressed(KeyCode::Backspace) {
+        // Erase = Backspace or forward Delete, with held-key auto-repeat: one
+        // erase on the initial press, then repeats after a delay while held (so
+        // holding the key clears a long value instead of nibbling one char).
+        let erase_pressed = is_key_pressed(KeyCode::Backspace) || is_key_pressed(KeyCode::Delete);
+        let erase_down = is_key_down(KeyCode::Backspace) || is_key_down(KeyCode::Delete);
+        let now = get_time();
+        let mut erases = 0u32;
+        if erase_pressed {
+            erases = 1;
+            self.erase_since = Some(now);
+            self.erase_last = now;
+        } else if erase_down {
+            if let Some(since) = self.erase_since {
+                let (n, last) = erase_repeats(now, since, self.erase_last);
+                erases = n;
+                self.erase_last = last;
+            }
+        } else {
+            self.erase_since = None;
+        }
+        for _ in 0..erases {
             self.buf.pop();
         }
         self.buf.len() != before
@@ -89,6 +119,48 @@ pub fn masked_display(buf: &str, masked: bool) -> String {
     } else {
         buf.to_string()
     }
+}
+
+/// PURE: what to render in a fixed-width (~`cap` chars) single-line field. When
+/// the value overflows: focused ⇒ show the TAIL (leading `…`) so the caret and
+/// what you're typing stay visible; unfocused ⇒ show the HEAD (trailing `…`) so
+/// the value is recognizable by its start. Result is at most `cap` chars.
+pub fn field_view(disp: &str, cap: usize, focused: bool) -> String {
+    let n = disp.chars().count();
+    if cap == 0 || n <= cap {
+        return disp.to_string();
+    }
+    let keep = cap - 1; // leave a column for the ellipsis
+    if focused {
+        let tail: String = disp.chars().skip(n - keep).collect();
+        format!("…{tail}")
+    } else {
+        let head: String = disp.chars().take(keep).collect();
+        format!("{head}…")
+    }
+}
+
+/// PURE: held-erase auto-repeat. Given the current time, when the hold began, and
+/// when the last erase was emitted, return how many repeat erases to apply this
+/// frame and the updated `last` time. The initial press is counted by the caller;
+/// this adds only the repeats that come after `ERASE_DELAY`. Capped so a huge
+/// frame gap (e.g. a debugger pause) can't erase the whole buffer at once.
+pub fn erase_repeats(now: f64, since: f64, last: f64) -> (u32, f64) {
+    let mut last = last;
+    let mut count = 0u32;
+    loop {
+        let next = (last + ERASE_INTERVAL).max(since + ERASE_DELAY);
+        if now + 1e-9 >= next {
+            last = next;
+            count += 1;
+            if count >= 1000 {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    (count, last)
 }
 
 /// Drain macroquad's char queue (call when a field acquires focus so stale nav
@@ -151,5 +223,44 @@ mod tests {
         assert_eq!(masked_display("gpt-4o", false), "gpt-4o");
         // Multibyte: one bullet per char, not per byte.
         assert_eq!(masked_display("café", true), "****");
+    }
+
+    #[test]
+    fn field_view_follows_caret_when_focused() {
+        // Fits → rendered whole.
+        assert_eq!(
+            field_view("http://localhost:11434/v1", 48, true),
+            "http://localhost:11434/v1"
+        );
+        let long = "https://my-resource.openai.azure.com/openai/deployments/gpt-4";
+        // Focused + overflow → tail, leading ellipsis, exactly `cap` chars: you
+        // can see what you're typing at the end.
+        let v = field_view(long, 20, true);
+        assert!(v.starts_with('…'));
+        assert!(v.ends_with("gpt-4"));
+        assert_eq!(v.chars().count(), 20);
+        // Unfocused + overflow → head, trailing ellipsis: recognizable by its start.
+        let v = field_view(long, 20, false);
+        assert!(v.starts_with("https://"));
+        assert!(v.ends_with('…'));
+        assert_eq!(v.chars().count(), 20);
+    }
+
+    #[test]
+    fn erase_repeats_respects_delay_then_repeats() {
+        // Before the initial delay: no repeats yet (the press itself is the
+        // caller's job).
+        assert_eq!(erase_repeats(0.1, 0.0, 0.0), (0, 0.0));
+        // At the delay: the first repeat fires.
+        let (n, last) = erase_repeats(ERASE_DELAY, 0.0, 0.0);
+        assert_eq!(n, 1);
+        assert!((last - ERASE_DELAY).abs() < 1e-9);
+        // Held to delay + 4.5 intervals → the at-delay one + 4 more = 5 (the .5
+        // avoids a float boundary).
+        let (n2, _) = erase_repeats(ERASE_DELAY + 4.5 * ERASE_INTERVAL, 0.0, 0.0);
+        assert_eq!(n2, 5);
+        // A huge frame gap is capped, not a full-buffer wipe.
+        let (n3, _) = erase_repeats(10_000.0, 0.0, 0.0);
+        assert_eq!(n3, 1000);
     }
 }
