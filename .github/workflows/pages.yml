@@ -1,8 +1,10 @@
 name: Pages
 
 # Build + deploy the kubernation.dev landing page to GitHub Pages.
-# The configure-pages step (enablement: true) turns Pages on automatically; the
-# only manual step is Settings ▸ Pages ▸ Custom domain = kubernation.dev (+ DNS).
+# One-time manual setup (the Actions token can't enable Pages itself), in repo
+# Settings ▸ Pages ▸ Build and deployment:
+#   Source = "GitHub Actions"  — then this workflow deploys on every push to main.
+# Plus Settings ▸ Pages ▸ Custom domain = kubernation.dev (+ the apex DNS records).
 on:
   push:
     branches: [main]
@@ -44,11 +46,7 @@ jobs:
           touch _site/.nojekyll   # serve _-prefixed paths verbatim; skip Jekyll
           find _site | head -40   # log the assembled tree
 
-      # enablement: true turns Pages on (source = GitHub Actions) via the API on
-      # first run, so no manual Settings ▸ Pages step is needed.
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
