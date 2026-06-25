@@ -597,6 +597,66 @@ pub(crate) fn fit_width(s: &str, size: f32, max_w: f32) -> String {
     out
 }
 
+// --- Drill-down window sizing + per-column scroll (node.rs / city.rs) --------
+// macroquad has no scissor, so the windows cull rows against a view rect and
+// clamp the scroll offset with these. Pure + unit-tested so node + city can't
+// drift on the math.
+
+/// Request a drill-down window size that uses the screen (`draw_window` already
+/// caps to screen − 40), clamped to a sane band.
+pub(crate) fn panel_size(sw: f32, sh: f32) -> Vec2 {
+    vec2(
+        (sw - 80.0).clamp(900.0, 1100.0),
+        (sh - 80.0).clamp(560.0, 1000.0),
+    )
+}
+
+/// The x boundary between the left (garrison/citizens) and right (terrain/…)
+/// columns, for routing the scroll wheel by hover. Mirrors `draw_window`'s
+/// centering + PAD and the windows' inter-column gutter (left ends ~0.55·body,
+/// right starts ~0.58·body).
+pub(crate) fn panel_split_x(sw: f32, sh: f32) -> f32 {
+    let w = panel_size(sw, sh).x.min(sw - 40.0);
+    let x = ((sw - w) / 2.0).floor();
+    let body_x = x + 14.0; // window PAD
+    let body_w = w - 28.0; // PAD * 2
+    body_x + body_w * 0.565 // midway through the gutter
+}
+
+/// The centered drill-down window frame (mirrors `draw_window`'s screen clamp +
+/// centering), for gating the scroll wheel to the actual window bounds.
+pub(crate) fn panel_frame(sw: f32, sh: f32) -> Rect {
+    let sz = panel_size(sw, sh);
+    let w = sz.x.min(sw - 40.0);
+    let h = sz.y.min(sh - 40.0);
+    let x = ((sw - w) / 2.0).floor();
+    let y = ((sh - h) / 2.0).floor();
+    Rect::new(x, y, w, h)
+}
+
+/// Clamp a scroll offset to its content/view heights.
+pub(crate) fn clamp_scroll(offset: f32, content_h: f32, view_h: f32) -> f32 {
+    offset.clamp(0.0, (content_h - view_h).max(0.0))
+}
+
+/// Scrollbar thumb `(top_y, height)` within a `view_h` track from `view_top`, or
+/// `None` when the content fits. `offset` is treated as already clamped.
+pub(crate) fn scroll_thumb(
+    view_top: f32,
+    view_h: f32,
+    content_h: f32,
+    offset: f32,
+) -> Option<(f32, f32)> {
+    if content_h <= view_h || view_h <= 0.0 {
+        return None;
+    }
+    let frac = (view_h / content_h).clamp(0.05, 1.0);
+    let thumb_h = view_h * frac;
+    let max = (content_h - view_h).max(1.0);
+    let t = offset.clamp(0.0, max) / max;
+    Some((view_top + t * (view_h - thumb_h), thumb_h))
+}
+
 /// `fit_width` for the fixed-width log face: every glyph has the same advance,
 /// so the fit is a single char-width division — no binary search.
 pub(crate) fn fit_width_mono(s: &str, size: f32, max_w: f32) -> String {
@@ -1044,6 +1104,26 @@ mod tests {
     use kubernation_core::state::fixtures as fx;
     use kubernation_core::state::model::Models;
     use std::sync::Arc;
+
+    #[test]
+    fn panel_scroll_and_size_helpers() {
+        // clamp_scroll
+        assert_eq!(clamp_scroll(50.0, 100.0, 200.0), 0.0); // content fits → pinned
+        assert_eq!(clamp_scroll(30.0, 300.0, 200.0), 30.0); // in range, unchanged
+        assert_eq!(clamp_scroll(999.0, 300.0, 200.0), 100.0); // clamped to max (300-200)
+        // scroll_thumb: None when it fits; in-track at top and at max.
+        assert!(scroll_thumb(10.0, 200.0, 150.0, 0.0).is_none());
+        let (ty, th) = scroll_thumb(10.0, 100.0, 400.0, 0.0).unwrap();
+        assert!((ty - 10.0).abs() < 1e-3 && th > 0.0 && th <= 100.0);
+        let (ty2, th2) = scroll_thumb(10.0, 100.0, 400.0, 300.0).unwrap(); // max offset
+        assert!((ty2 + th2 - 110.0).abs() < 1e-3); // thumb bottom flush with view bottom
+        // panel_size: clamps small up, big down.
+        assert_eq!(panel_size(400.0, 400.0), vec2(900.0, 560.0));
+        assert_eq!(panel_size(4000.0, 4000.0), vec2(1100.0, 1000.0));
+        // panel_split_x sits between the columns (≈0.565 of the body).
+        let sx = panel_split_x(1380.0, 860.0);
+        assert!(sx > 600.0 && sx < 800.0);
+    }
 
     #[test]
     fn conn_banner_states() {

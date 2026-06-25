@@ -8,6 +8,21 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+- **City & province drill-down windows now scale + scroll for busy clusters.** On a
+  real node with 29+ pods (or a workload with many pods/revisions) the fixed
+  900×580 window clipped content (the pod list capped at "+N more", ANNALS fell off
+  the bottom). The windows are now **adaptive** (they use the screen, up to
+  ~1100×1000) and each column **scrolls independently** with the mouse wheel — the
+  citizen/garrison pod list on the left, terrain/conditions/annals (or
+  improvements/annals) on the right — with a scrollbar, while the status band stays
+  pinned. Every per-row action (evict / port-forward / yaml / logs / rollback) is
+  gated to fully-visible rows, so a scrolled-off control can never be clicked.
+- **Node CONDITIONS column aligned.** The value (True/False) is now right-aligned at
+  the column edge and the condition name truncates to fit, so a long name like
+  `FilesystemCorruptionProblem` no longer overruns its value. New pure helpers
+  (`clamp_scroll`, `scroll_thumb`, `panel_size`, `panel_split_x`) are unit-tested.
+
 ### Fixed
 - **Oracle Settings text fields — long values + held-key erase.** A long value (e.g.
   a corporate/Azure endpoint URL) now **scrolls to follow the caret** — an overflowing

@@ -9,7 +9,8 @@
 //!   annals      →  one merged change-feed (rollouts + events + your actions),
 //!                  with a roll-back button on prior Deployment revisions
 //!
-//! Fixed size with caps + "+N more" (4X's panels don't scroll).
+//! Adaptive size (uses the screen); the citizen list and the right column
+//! scroll independently when a busy workload overflows.
 
 use macroquad::prelude::*;
 
@@ -24,13 +25,12 @@ use kubernation_core::state::timeline::{
 use kubernation_core::util::{format_age_opt, format_usage};
 
 use crate::net::Snapshot;
-use crate::panels::{observed_for, pod_color, truncate_str};
+use crate::panels::{
+    clamp_scroll, observed_for, panel_size, pod_color, scroll_thumb, truncate_str,
+};
 use crate::text::{text, text_bold, text_size};
 use crate::theme::*;
 use crate::window::{ForwardBtn, WinAction, draw_window};
-
-const W: f32 = 920.0;
-const H: f32 = 600.0;
 
 /// Draw the city window for `r` and resolve this frame's clicks. `auto_log`
 /// (headless verification) opens the first pod's logs without a click.
@@ -45,6 +45,8 @@ pub fn draw_city(
     auto_log: bool,
     net: &crate::net::Net,
     image_edit: &mut Option<String>,
+    scroll_l: &mut f32,
+    scroll_r: &mut f32,
 ) -> WinAction {
     let mut act = WinAction::default();
     let tag = match (snap.warm.is_some(), id) {
@@ -53,7 +55,12 @@ pub fn draw_city(
         _ => "",
     };
     let title = format!("{} {}/{}{tag}", r.kind, r.namespace, r.name);
-    let win = draw_window(&ascii(&title), vec2(W, H), &[], usize::MAX);
+    let win = draw_window(
+        &ascii(&title),
+        panel_size(screen_width(), screen_height()),
+        &[],
+        usize::MAX,
+    );
     let b = win.body;
 
     // Resolve the observed world + models for this cluster.
@@ -457,99 +464,114 @@ pub fn draw_city(
     let evict_perm = net.evict_allowed(id, &r.namespace);
     let fwd_perm = net.forward_allowed(id, &r.namespace);
     let row_h = 18.0;
-    let max_rows = (((col_bottom - ly) / row_h) as usize).saturating_sub(1);
-    for p in city.pods.iter().take(max_rows) {
-        let rect = Rect::new(left_x, ly, left_w, row_h);
-        let evict_btn = Rect::new(left_x + left_w - 52.0, ly + 1.0, 50.0, row_h - 2.0);
-        let yaml_btn = Rect::new(left_x + left_w - 104.0, ly + 1.0, 48.0, row_h - 2.0);
-        let fwd_btn = Rect::new(left_x + left_w - 156.0, ly + 1.0, 48.0, row_h - 2.0);
-        let row_hover = rect.contains(mouse);
-        if row_hover {
-            draw_rectangle(
-                rect.x,
-                rect.y,
-                rect.w,
-                rect.h,
-                Color::new(1.0, 1.0, 1.0, 0.06),
+    // Scroll the pod list within its column; census + header above and the hint
+    // below stay pinned. EVERY draw AND hit-test sits inside `vis`, so a
+    // scrolled-off row can't be hovered or (critically) evicted.
+    let list_top = ly;
+    let list_bottom = col_bottom - 16.0;
+    let list_view_h = (list_bottom - list_top).max(0.0);
+    let content_h = city.pods.len() as f32 * row_h;
+    *scroll_l = clamp_scroll(*scroll_l, content_h, list_view_h);
+    let mut ly = list_top - *scroll_l;
+    for p in city.pods.iter() {
+        let vis = ly + row_h > list_top && ly < list_bottom;
+        if vis {
+            let rect = Rect::new(left_x, ly, left_w, row_h);
+            let evict_btn = Rect::new(left_x + left_w - 52.0, ly + 1.0, 50.0, row_h - 2.0);
+            let yaml_btn = Rect::new(left_x + left_w - 104.0, ly + 1.0, 48.0, row_h - 2.0);
+            let fwd_btn = Rect::new(left_x + left_w - 156.0, ly + 1.0, 48.0, row_h - 2.0);
+            // Only a fully-visible row is interactive: a row straddling the band
+            // edge still draws (no scissor), but its off-band evict/fwd/yaml
+            // buttons must not be hoverable or clickable.
+            let row_hover = ly >= list_top && ly + row_h <= list_bottom && rect.contains(mouse);
+            if row_hover {
+                draw_rectangle(
+                    rect.x,
+                    rect.y,
+                    rect.w,
+                    rect.h,
+                    Color::new(1.0, 1.0, 1.0, 0.06),
+                );
+            }
+            draw_circle(left_x + 5.0, ly + row_h / 2.0, 4.0, pod_color(p.state));
+            let reason = if p.reason.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", p.reason)
+            };
+            let use_suffix = p
+                .usage
+                .map(|u| format!(" . {}", format_usage(u.cpu, u.mem)))
+                .unwrap_or_default();
+            let label = format!(
+                "{}{} . r{} . {}{}",
+                truncate_str(&p.name, 22),
+                reason,
+                p.restarts,
+                format_age_opt(p.age.as_ref()),
+                use_suffix
             );
-        }
-        draw_circle(left_x + 5.0, ly + row_h / 2.0, 4.0, pod_color(p.state));
-        let reason = if p.reason.is_empty() {
-            String::new()
-        } else {
-            format!("  {}", p.reason)
-        };
-        let use_suffix = p
-            .usage
-            .map(|u| format!(" . {}", format_usage(u.cpu, u.mem)))
-            .unwrap_or_default();
-        let label = format!(
-            "{}{} . r{} . {}{}",
-            truncate_str(&p.name, 22),
-            reason,
-            p.restarts,
-            format_age_opt(p.age.as_ref()),
-            use_suffix
-        );
-        let col = if p.state == kubernation_core::state::model::PodState::Failing {
-            CRIT
-        } else {
-            INK
-        };
-        text(ascii(&label), left_x + 16.0, ly + 13.0, 13.0, col);
-        // Hover affordances: forward / yaml / evict (all RBAC-aware where it
-        // applies), drawn together so hovering reveals the whole set. A plain
-        // click elsewhere on the row tails logs. Suppressed while the image
-        // editor is open so a stray pod click can't orphan the editor.
-        if row_hover && image_edit.is_none() {
-            let fwd_active = net
-                .forward_for(id, &r.namespace, &p.name)
-                .map(|f| f.local_port);
-            let fwd = crate::window::forward_button(fwd_btn, mouse, click, fwd_perm, fwd_active);
-            let ev = crate::window::evict_button(evict_btn, mouse, click, evict_perm);
-            let ya = crate::window::row_button(yaml_btn, mouse, click, "yaml");
-            if let Some(fb) = fwd {
-                match fb {
-                    ForwardBtn::Start => act.forward = Some((r.namespace.clone(), p.name.clone())),
-                    ForwardBtn::Stop => act.stop_forward = fwd_active,
+            let col = if p.state == kubernation_core::state::model::PodState::Failing {
+                CRIT
+            } else {
+                INK
+            };
+            text(ascii(&label), left_x + 16.0, ly + 13.0, 13.0, col);
+            // Hover affordances: forward / yaml / evict (RBAC-aware). A plain
+            // click elsewhere on the row tails logs. Suppressed while the image
+            // editor is open so a stray pod click can't orphan the editor.
+            if row_hover && image_edit.is_none() {
+                let fwd_active = net
+                    .forward_for(id, &r.namespace, &p.name)
+                    .map(|f| f.local_port);
+                let fwd =
+                    crate::window::forward_button(fwd_btn, mouse, click, fwd_perm, fwd_active);
+                let ev = crate::window::evict_button(evict_btn, mouse, click, evict_perm);
+                let ya = crate::window::row_button(yaml_btn, mouse, click, "yaml");
+                if let Some(fb) = fwd {
+                    match fb {
+                        ForwardBtn::Start => {
+                            act.forward = Some((r.namespace.clone(), p.name.clone()))
+                        }
+                        ForwardBtn::Stop => act.stop_forward = fwd_active,
+                    }
+                } else if ev {
+                    act.evict = Some((r.namespace.clone(), p.name.clone()));
+                } else if ya {
+                    act.inspect = Some((r.namespace.clone(), p.name.clone()));
+                } else if click
+                    && !fwd_btn.contains(mouse)
+                    && !evict_btn.contains(mouse)
+                    && !yaml_btn.contains(mouse)
+                {
+                    act.log = Some((
+                        r.namespace.clone(),
+                        p.name.clone(),
+                        kubernation_core::state::model::prefer_previous(
+                            p.state, &p.reason, p.restarts,
+                        ),
+                    ));
                 }
-            } else if ev {
-                act.evict = Some((r.namespace.clone(), p.name.clone()));
-            } else if ya {
-                act.inspect = Some((r.namespace.clone(), p.name.clone()));
-            } else if click
-                && !fwd_btn.contains(mouse)
-                && !evict_btn.contains(mouse)
-                && !yaml_btn.contains(mouse)
-            {
-                act.log = Some((
-                    r.namespace.clone(),
-                    p.name.clone(),
-                    kubernation_core::state::model::prefer_previous(p.state, &p.reason, p.restarts),
-                ));
             }
         }
         ly += row_h;
     }
-    if city.pods.len() > max_rows {
-        text(
-            format!("+{} more", city.pods.len() - max_rows),
-            left_x + 16.0,
-            ly + 13.0,
-            13.0,
-            DIM,
-        );
+    if let Some((ty, th)) = scroll_thumb(list_top, list_view_h, content_h, *scroll_l) {
+        let bx = left_x + left_w + 2.0;
+        draw_rectangle(bx, list_top, 3.0, list_view_h, darker(PANEL, 0.6));
+        draw_rectangle(bx, ty, 3.0, th, PARCHMENT);
     }
     text(
-        "click a pod = logs · hover: fwd / yaml / evict · y: workload yaml",
+        "scroll · click a pod = logs · hover: fwd / yaml / evict · y: workload yaml",
         left_x,
         col_bottom + 0.0,
         12.0,
         DIM,
     );
 
-    // Right: IMPROVEMENTS (owned) then CHRONICLE (events).
-    let mut ry = col_top;
+    // Right: IMPROVEMENTS → ANNALS. The divider stays pinned. Scroll+cull both
+    // sections; the ANNALS `rollback` button is a hit-test (a real write), so it
+    // MUST sit inside the visibility gate — a scrolled-off rollback can't fire.
     draw_line(
         right_x - 14.0,
         col_top - 4.0,
@@ -558,67 +580,69 @@ pub fn draw_city(
         1.0,
         darker(PARCHMENT, 0.5),
     );
-    text_bold(
-        format!("IMPROVEMENTS ({})", city.owned.len()),
-        right_x,
-        ry + 12.0,
-        15.0,
-        PARCHMENT,
-    );
-    ry += 22.0;
-    let imp_max = 10;
-    for o in city.owned.iter().take(imp_max) {
-        let note_col = if o.kind == "pvc" && o.note != "Bound" {
-            WARN
-        } else {
-            DIM
-        };
-        text(
-            format!("{:>6}/", o.kind),
+    let r_top = col_top;
+    let r_view_h = (col_bottom - r_top).max(0.0);
+    let r_origin = r_top - *scroll_r;
+    let mut ry = r_origin;
+    let visr = |yy: f32, h: f32| yy + h > r_top && yy < col_bottom;
+
+    if visr(ry, 18.0) {
+        text_bold(
+            format!("IMPROVEMENTS ({})", city.owned.len()),
             right_x,
             ry + 12.0,
-            13.0,
+            15.0,
             PARCHMENT,
         );
-        text(
-            ascii(&truncate_str(&o.name, 22)),
-            right_x + 52.0,
-            ry + 12.0,
-            13.0,
-            INK,
-        );
-        if !o.note.is_empty() {
+    }
+    ry += 22.0;
+    for o in city.owned.iter() {
+        if visr(ry, row_h) {
+            let note_col = if o.kind == "pvc" && o.note != "Bound" {
+                WARN
+            } else {
+                DIM
+            };
             text(
-                ascii(&truncate_str(&o.note, 18)),
-                right_x + 200.0,
+                format!("{:>6}/", o.kind),
+                right_x,
                 ry + 12.0,
-                12.0,
-                note_col,
+                13.0,
+                PARCHMENT,
             );
+            text(
+                ascii(&truncate_str(&o.name, 22)),
+                right_x + 52.0,
+                ry + 12.0,
+                13.0,
+                INK,
+            );
+            if !o.note.is_empty() {
+                text(
+                    ascii(&truncate_str(&o.note, 18)),
+                    right_x + 200.0,
+                    ry + 12.0,
+                    12.0,
+                    note_col,
+                );
+            }
         }
         ry += row_h;
     }
-    if city.owned.len() > imp_max {
-        text(
-            format!("+{} more", city.owned.len() - imp_max),
-            right_x,
-            ry + 12.0,
-            13.0,
-            DIM,
-        );
-        ry += row_h;
-    }
     if city.owned.is_empty() {
-        text("nothing owned", right_x, ry + 12.0, 13.0, DIM);
+        if visr(ry, row_h) {
+            text("nothing owned", right_x, ry + 12.0, 13.0, DIM);
+        }
         ry += row_h;
     }
 
-    // ANNALS — one merged, classified, chronological change-feed (rollouts +
-    // recent events + this session's operator actions), replacing the old
-    // separate HISTORY + CHRONICLE lists. A non-current Deployment revision row
+    // ANNALS — one merged, classified change-feed (rollouts + recent events +
+    // this session's operator actions). A non-current Deployment revision row
     // carries a `rollback` button (the planning turn's 5th verb).
     ry += 10.0;
-    text_bold("ANNALS", right_x, ry + 12.0, 15.0, PARCHMENT);
+    if visr(ry, 18.0) {
+        text_bold("ANNALS", right_x, ry + 12.0, 15.0, PARCHMENT);
+    }
     ry += 22.0;
     let now = kubernation_core::util::now();
     let ops = net.operator_actions();
@@ -639,7 +663,10 @@ pub fn draw_city(
         } else {
             "no recent changes"
         };
-        text(msg, right_x, ry + 12.0, 13.0, DIM);
+        if visr(ry, 16.0) {
+            text(msg, right_x, ry + 12.0, 13.0, DIM);
+        }
+        ry += 16.0;
     } else {
         // The current (highest) revision can't be rolled back to.
         let current_rev = tl
@@ -649,14 +676,12 @@ pub fn draw_city(
             .filter_map(|e| e.revision)
             .max();
         let staged_rev = planned.rolled_back(r);
-        let cap = (((col_bottom - ry) / 16.0) as usize).max(1);
-        let lines = crate::timeline::annals_lines(&tl, now, cap);
+        let lines = crate::timeline::annals_lines(&tl, now, SUBJECT_CAP);
         for (i, ln) in lines.iter().enumerate() {
-            if ry > col_bottom {
-                break;
-            }
             if ln.fault_line_above {
-                draw_line(right_x, ry + 3.0, b.x + b.w - 8.0, ry + 3.0, 1.0, CRIT);
+                if visr(ry, 6.0) {
+                    draw_line(right_x, ry + 3.0, b.x + b.w - 8.0, ry + 3.0, 1.0, CRIT);
+                }
                 ry += 6.0;
             }
             // A non-current Deployment revision can be staged for roll-back.
@@ -670,29 +695,45 @@ pub fn draw_city(
             }
             let width = if rollback_rev.is_some() { 30 } else { 46 };
             let mut col = crate::timeline::role_color(ln.role);
-            if let Some(rev) = rollback_rev {
-                let staged_here = staged_rev == Some(rev);
-                if staged_here {
-                    col = WARN;
+            if visr(ry, 16.0) {
+                if let Some(rev) = rollback_rev {
+                    let staged_here = staged_rev == Some(rev);
+                    if staged_here {
+                        col = WARN;
+                    }
+                    let rb = Rect::new(b.x + b.w - 86.0, ry, 80.0, 16.0);
+                    let label = if staged_here { "staged" } else { "rollback" };
+                    // Only fire when the row is fully within the band, so a
+                    // partially-scrolled rollback button can't be clicked.
+                    let rb_visible = ry >= r_top && ry + 16.0 <= col_bottom;
+                    if rb_visible
+                        && crate::window::row_button(rb, mouse, click, label)
+                        && !staged_here
+                    {
+                        act.stage = Some(Intervention::Rollback {
+                            workload: r.clone(),
+                            to_revision: rev,
+                        });
+                    }
                 }
-                let rb = Rect::new(b.x + b.w - 86.0, ry, 80.0, 16.0);
-                let label = if staged_here { "staged" } else { "rollback" };
-                if crate::window::row_button(rb, mouse, click, label) && !staged_here {
-                    act.stage = Some(Intervention::Rollback {
-                        workload: r.clone(),
-                        to_revision: rev,
-                    });
-                }
+                text(
+                    ascii(&truncate_str(&s, width)),
+                    right_x,
+                    ry + 12.0,
+                    12.0,
+                    col,
+                );
             }
-            text(
-                ascii(&truncate_str(&s, width)),
-                right_x,
-                ry + 12.0,
-                12.0,
-                col,
-            );
             ry += 16.0;
         }
+    }
+    // Right-column scrollbar + clamp (content height = the drawn extent).
+    let r_content_h = ry - r_origin;
+    *scroll_r = clamp_scroll(*scroll_r, r_content_h, r_view_h);
+    if let Some((ty, th)) = scroll_thumb(r_top, r_view_h, r_content_h, *scroll_r) {
+        let bx = b.x + b.w + 2.0;
+        draw_rectangle(bx, r_top, 3.0, r_view_h, darker(PANEL, 0.6));
+        draw_rectangle(bx, ty, 3.0, th, PARCHMENT);
     }
 
     // Headless verification: tail the first pod without a click.

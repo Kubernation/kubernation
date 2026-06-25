@@ -611,6 +611,12 @@ async fn main() {
     let mut cam = Camera::new();
     let mut selected: Option<(u16, u16)> = None;
     let mut panel: Option<Panel> = None;
+    // Per-column scroll for the city/node drill-down windows (left = citizens/
+    // garrison, right = improvements/terrain+conditions+annals). Reset when the
+    // panel target changes; clamped to content height inside the draw fns.
+    let mut panel_scroll_l: f32 = 0.0;
+    let mut panel_scroll_r: f32 = 0.0;
+    let mut panel_scroll_for: Option<Panel> = None;
     let mut concern_idx: usize = 0;
     let mut city_idx: usize = 0;
     // Blast-radius overlay: when on, highlight the dependency fan-out of the
@@ -918,6 +924,7 @@ async fn main() {
         if (is_key_pressed(KeyCode::F1) || is_key_pressed(KeyCode::Slash))
             && !log_open
             && !typing
+            && panel.is_none()
             && advisor.is_none()
             && charter.is_none()
             && about.is_none()
@@ -1403,6 +1410,30 @@ async fn main() {
             if is_key_pressed(KeyCode::W) {
                 toast = Some((export_to_file(&i.text(), &i.filename()), get_time() + 4.0));
             }
+        }
+        // A drill-down panel (city/node) scrolls its hovered column. Gated so it
+        // is the topmost modal — a log overlay or the YAML inspector opens ON TOP
+        // of a panel and owns the wheel (mouse_wheel() isn't a drain).
+        if panel.is_some() && !log_open && inspector.is_none() {
+            let (_, wheel) = mouse_wheel();
+            let frame = panels::panel_frame(screen_width(), screen_height());
+            if wheel.abs() > 0.0 && frame.contains(mouse) {
+                let split = panels::panel_split_x(screen_width(), screen_height());
+                if mouse.x < split {
+                    panel_scroll_l = (panel_scroll_l - wheel * 36.0).max(0.0);
+                } else {
+                    panel_scroll_r = (panel_scroll_r - wheel * 36.0).max(0.0);
+                }
+            }
+        }
+        // Reset per-column scroll when the open panel's target changes (reopening
+        // a different — or the same, after closing — city/node), but keep it
+        // across frames for an unchanged target. Runs every frame, independent of
+        // which modal is drawn, so a panel closed-then-reopened starts at the top.
+        if panel != panel_scroll_for {
+            panel_scroll_l = 0.0;
+            panel_scroll_r = 0.0;
+            panel_scroll_for = panel.clone();
         }
         // The resource browser swallows the wheel to scroll its list/table —
         // but only when the inspector isn't drilled in on top of it (else one
@@ -2347,6 +2378,8 @@ async fn main() {
                                 auto_tail && !log_open,
                                 &net,
                                 &mut city_image_edit,
+                                &mut panel_scroll_l,
+                                &mut panel_scroll_r,
                             );
                             if let Some(iv) = act.stage {
                                 planned.stage(iv);
@@ -2419,6 +2452,8 @@ async fn main() {
                                 click,
                                 auto_tail && !log_open,
                                 &net,
+                                &mut panel_scroll_l,
+                                &mut panel_scroll_r,
                             );
                             if let Some(iv) = act.stage {
                                 planned.stage(iv);
