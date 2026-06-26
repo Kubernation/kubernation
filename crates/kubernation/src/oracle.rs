@@ -36,7 +36,7 @@ use macroquad::prelude::*;
 
 use crate::net::{Net, OracleLogReq, OracleReply, Snapshot, StreamStatus};
 use crate::oracle_config_io;
-use crate::text::{text, text_bold, text_size};
+use crate::text::{mono_text, text, text_bold, text_size};
 use crate::textfield::{FieldId, TextField};
 use crate::theme::*;
 use crate::window::draw_window;
@@ -330,6 +330,121 @@ fn wrap(s: &str, width: usize) -> Vec<String> {
         }
     }
     out
+}
+
+/// The display style of one rendered markdown line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MdKind {
+    Body,
+    Heading,
+    Bullet,
+    Code,
+    Blank,
+}
+
+/// One already-wrapped line of a rendered markdown reply, with its style.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MdLine {
+    pub text: String,
+    pub kind: MdKind,
+}
+
+/// PURE: render a model reply's lightweight markdown into styled, width-wrapped
+/// lines for the immediate-mode row renderer. Block-level only (the row model is
+/// one style per line): ATX headings (`#`..`######`), bullet/numbered lists,
+/// fenced code blocks, blank-line gaps; inline `**bold**` markers are stripped
+/// (the row can't mix styles). Unknown syntax falls through as Body, so a
+/// non-markdown reply renders verbatim. Unit-tested.
+pub fn render_markdown(text: &str, width: usize) -> Vec<MdLine> {
+    let mut out = Vec::new();
+    let mut in_code = false;
+    for raw in text.split('\n') {
+        let trimmed = raw.trim_start();
+        // Fence toggles a code block; the ``` line itself is dropped.
+        if trimmed.starts_with("```") {
+            in_code = !in_code;
+            continue;
+        }
+        if in_code {
+            for ln in wrap(raw, width) {
+                out.push(MdLine {
+                    text: ln,
+                    kind: MdKind::Code,
+                });
+            }
+            continue;
+        }
+        if raw.trim().is_empty() {
+            out.push(MdLine {
+                text: String::new(),
+                kind: MdKind::Blank,
+            });
+            continue;
+        }
+        if let Some(rest) = md_heading(trimmed) {
+            for ln in wrap(&strip_emphasis(rest), width) {
+                out.push(MdLine {
+                    text: ln,
+                    kind: MdKind::Heading,
+                });
+            }
+            continue;
+        }
+        if let Some(item) = md_bullet(trimmed) {
+            let lines = wrap(&strip_emphasis(&item), width.saturating_sub(2).max(8));
+            for (i, ln) in lines.into_iter().enumerate() {
+                let prefix = if i == 0 { "• " } else { "  " };
+                out.push(MdLine {
+                    text: format!("{prefix}{ln}"),
+                    kind: MdKind::Bullet,
+                });
+            }
+            continue;
+        }
+        for ln in wrap(&strip_emphasis(raw.trim_end()), width) {
+            out.push(MdLine {
+                text: ln,
+                kind: MdKind::Body,
+            });
+        }
+    }
+    out
+}
+
+/// The heading text after the `#`..`######` marker, or None.
+fn md_heading(s: &str) -> Option<&str> {
+    let hashes = s.bytes().take_while(|&b| b == b'#').count();
+    if (1..=6).contains(&hashes) {
+        let rest = s[hashes..].trim_start();
+        if !rest.is_empty() {
+            return Some(rest);
+        }
+    }
+    None
+}
+
+/// The list-item text after a `-`/`*`/`+ ` or `N.`/`N) ` marker, or None.
+fn md_bullet(s: &str) -> Option<String> {
+    for m in ["- ", "* ", "+ "] {
+        if let Some(r) = s.strip_prefix(m) {
+            return Some(r.to_string());
+        }
+    }
+    let digits = s.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if (1..=3).contains(&digits) {
+        let rest = &s[digits..];
+        if let Some(r) = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") ")) {
+            return Some(r.to_string());
+        }
+    }
+    None
+}
+
+/// Strip `**bold**` markers (the row renderer can't mix inline styles). Only the
+/// unambiguous double-asterisk form — single `*`/`_` and `__` are left alone so
+/// identifiers like `__unmounted__` and arithmetic aren't mangled.
+fn strip_emphasis(s: &str) -> String {
+    s.replace("**", "")
 }
 
 /// Truncate to `n` chars with an ellipsis.
@@ -1768,7 +1883,7 @@ impl OracleView {
                 };
                 let (ok, rej) = oracle_suggest::validate_envelope(&env, &s.hot.observed);
                 self.reply = Some(
-                    "(demo reply) Based on the observed data, here is a suggested change you can stage and review.".into(),
+                    "## Summary\n\nThe **web** deployment looks unhealthy. Likely causes:\n\n- a recent image change that didn't roll out cleanly\n- a failing readiness probe keeping pods out of service\n\nRunning `kubectl rollout restart` re-rolls the pods.\n\nStage the suggested change below to review it in Orders > End of Turn.".into(),
                 );
                 self.suggestions = ok;
                 self.rejects = rej;
@@ -1919,9 +2034,7 @@ impl OracleView {
                         DIM,
                     );
                     cx.gap();
-                    for line in wrap(&strip_machine_blocks(&a.text), 96) {
-                        cx.row(&ascii(&line), INK);
-                    }
+                    cx.md_block(&strip_machine_blocks(&a.text), 96);
                 }
             } else if self.pending.is_some() {
                 let elapsed = (get_time() - self.pending_started).max(0.0) as u64;
@@ -1929,9 +2042,7 @@ impl OracleView {
                     // Streaming: the text grows in place; the heavy reply-land parsers
                     // (Stage buttons, CONSULT NEXT) wait for the Done edge.
                     let shown = strip_machine_blocks(reply);
-                    for line in wrap(&shown, 96) {
-                        cx.row(&ascii(&line), INK);
-                    }
+                    cx.md_block(&shown, 96);
                     cx.gap();
                     cx.row(&stream_status_line(elapsed, reply.chars().count()), DIM);
                     cx.row("(Cancel to stop)", DIM);
@@ -1968,9 +2079,7 @@ impl OracleView {
                         DIM,
                     );
                 } else {
-                    for line in wrap(&shown, 96) {
-                        cx.row(&ascii(&line), INK);
-                    }
+                    cx.md_block(&shown, 96);
                 }
                 // A stream that ended in error after some text arrived: keep the partial
                 // (above) + explain the interruption (no Stage buttons — not finalized).
@@ -2469,7 +2578,10 @@ struct Ctx {
 
 impl Ctx {
     fn visible(&self) -> bool {
-        self.y > self.body.y - 18.0 && self.y < self.body.y + self.body.h
+        // Cull a row whose text would draw ABOVE the scroll zone (over the pinned
+        // scope chip / header) or below it. A baseline at `body.y + 13` puts the
+        // 13px text top at the zone top, so require the baseline that far down.
+        self.y - 13.0 > self.body.y && self.y < self.body.y + self.body.h
     }
     fn gap(&mut self) {
         self.y += 8.0;
@@ -2480,11 +2592,90 @@ impl Ctx {
             text(s, self.body.x + 2.0, self.y, 13.0, color);
         }
     }
+    /// Draw one rendered-markdown line in its style (heading bold/parchment,
+    /// bullet indented, code monospace/cyan, body ink, blank → a gap).
+    fn md(&mut self, line: &MdLine) {
+        match line.kind {
+            MdKind::Blank => self.y += 8.0,
+            MdKind::Heading => {
+                self.y += 19.0;
+                if self.visible() {
+                    text_bold(
+                        ascii(&line.text),
+                        self.body.x + 2.0,
+                        self.y,
+                        14.0,
+                        PARCHMENT,
+                    );
+                }
+            }
+            MdKind::Code => {
+                self.y += 16.0;
+                if self.visible() {
+                    mono_text(ascii(&line.text), self.body.x + 8.0, self.y, 13.0, STRUCT);
+                }
+            }
+            MdKind::Bullet => {
+                self.y += 16.0;
+                if self.visible() {
+                    text(ascii(&line.text), self.body.x + 8.0, self.y, 13.0, INK);
+                }
+            }
+            MdKind::Body => {
+                self.y += 16.0;
+                if self.visible() {
+                    text(ascii(&line.text), self.body.x + 2.0, self.y, 13.0, INK);
+                }
+            }
+        }
+    }
+    /// Render a whole markdown reply block (the model's prose).
+    fn md_block(&mut self, text: &str, width: usize) {
+        for line in render_markdown(text, width) {
+            self.md(&line);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_markdown_classifies_blocks_and_strips_bold() {
+        let md = "# Title\n\nSome **bold** prose here.\n\n- first item\n- second item\n\n```\ncode line\n```\n3. numbered";
+        let lines = render_markdown(md, 96);
+        let kinds: Vec<MdKind> = lines.iter().map(|l| l.kind).collect();
+        // Heading present, with the leading '#'/space stripped.
+        let h = lines.iter().find(|l| l.kind == MdKind::Heading).unwrap();
+        assert_eq!(h.text, "Title");
+        // Bold markers stripped from body.
+        let body = lines.iter().find(|l| l.kind == MdKind::Body).unwrap();
+        assert_eq!(body.text, "Some bold prose here.");
+        assert!(!body.text.contains('*'));
+        // Bullets get a • prefix; the marker is consumed.
+        let bullets: Vec<&MdLine> = lines.iter().filter(|l| l.kind == MdKind::Bullet).collect();
+        assert_eq!(bullets.len(), 3, "two dashes + one numbered");
+        assert!(bullets[0].text.starts_with("• first item"));
+        assert!(bullets[2].text.starts_with("• numbered"));
+        // Fenced code: the content is Code, the ``` fence lines are dropped.
+        let code: Vec<&MdLine> = lines.iter().filter(|l| l.kind == MdKind::Code).collect();
+        assert_eq!(code.len(), 1);
+        assert_eq!(code[0].text, "code line");
+        assert!(!code.iter().any(|l| l.text.contains("```")));
+        // Blank lines become gaps.
+        assert!(kinds.contains(&MdKind::Blank));
+    }
+
+    #[test]
+    fn render_markdown_leaves_plain_text_and_identifiers_intact() {
+        // A non-markdown reply renders verbatim as Body; single `_`/`*` and the
+        // `__x__` identifier form are NOT mangled (only `**` is stripped).
+        let lines = render_markdown("the __unmounted__ key and 2*3 are kept", 96);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].kind, MdKind::Body);
+        assert_eq!(lines[0].text, "the __unmounted__ key and 2*3 are kept");
+    }
 
     #[test]
     fn setup_lines_show_profile_location_and_token_source_never_value() {

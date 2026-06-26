@@ -346,7 +346,7 @@ pub fn ascii(s: &str) -> String {
             '‼' => '!',
             '⊘' => 'o',
             '≣' => '=',
-            c if c.is_ascii() || "·—–…×≠↔−≈✓✗".contains(c) => c,
+            c if c.is_ascii() || "·—–…×≠↔−≈✓✗•".contains(c) => c,
             _ => '?',
         })
         .collect()

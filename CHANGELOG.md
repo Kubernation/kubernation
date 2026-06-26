@@ -9,6 +9,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Changed
+- **Oracle replies render markdown for easier reading.** The model's answer is now shown
+  with lightweight markdown formatting instead of flat text: `#`…`######` headings render
+  bold, `-`/`*`/`+` and `1.`/`1)` lists get proper `•` bullets, fenced ```` ``` ```` code
+  blocks render in monospace, blank lines become spacing, and `**bold**` markers are
+  stripped (the immediate-mode row renderer is one style per line, so emphasis can't be
+  inline). A non-markdown reply still renders verbatim, and the streaming/past-page/demo
+  replies use the same path. Pure `render_markdown` helper, unit-tested.
 - **City & province drill-down windows now scale + scroll for busy clusters.** On a
   real node with 29+ pods (or a workload with many pods/revisions) the fixed
   900×580 window clipped content (the pod list capped at "+N more", ANNALS fell off
@@ -24,6 +31,11 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   (`clamp_scroll`, `scroll_thumb`, `panel_size`, `panel_split_x`) are unit-tested.
 
 ### Fixed
+- **Oracle reply no longer scrolls under the header.** When a long consult reply was
+  scrolled, its top lines drew *over* the pinned `scope:` chip above the reply zone (the
+  scroll-zone cull was too lenient at the top edge). The zone now clips cleanly below the
+  header. Interactive controls (Stage / CONSULT NEXT / deepen chips) were already gated to
+  fully-visible rows, so none could be clicked while scrolled off.
 - **Oracle Settings text fields — long values + held-key erase.** A long value (e.g.
   a corporate/Azure endpoint URL) now **scrolls to follow the caret** — an overflowing
   field shows its *tail* (leading `…`) while focused so you can see what you're typing,
