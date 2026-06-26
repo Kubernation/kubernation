@@ -52,13 +52,15 @@ jobs:
       - name: Clippy (core, no features)
         run: cargo clippy -p kubernation-core --all-targets -- -D warnings
 
+      # --locked so a stale Cargo.lock (e.g. a version bump not refreshed into the
+      # lock) fails CI here, before the release job hits it with --locked.
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       # The UI-free CI gate (the GUI's smoke needs a display, so it is a local-only
       # gate); this just proves the headless core example links + builds.
       - name: Build smoke example (headless core)
-        run: cargo build -p kubernation-core --example smoke
+        run: cargo build -p kubernation-core --example smoke --locked
 
   # The committed THIRD-PARTY-NOTICES.md must stay in sync with Cargo.lock — a
   # 1.0 legal posture can't silently drift (a new transitive crate with a new
