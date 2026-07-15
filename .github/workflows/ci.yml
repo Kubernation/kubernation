@@ -75,8 +75,9 @@ jobs:
       # loudly instead.
       - name: Assert the vendored miniquad patch is active
         shell: bash
+        # `[/\\]`: cargo tree prints the path with backslashes on Windows.
         run: |
-          if ! cargo tree -p miniquad --depth 0 | grep -q "third_party/miniquad"; then
+          if ! cargo tree -p miniquad --depth 0 | grep -Eq 'third_party[/\\]miniquad'; then
             echo "::error::miniquad no longer resolves to third_party/miniquad — the vendored crash patches are NOT in the build (did a macroquad upgrade change its miniquad pin?). Re-vendor or drop the patch deliberately; see third_party/README.md."
             cargo tree -p miniquad --depth 0
             exit 1
