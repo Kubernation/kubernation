@@ -2678,6 +2678,64 @@ what makes the interesting logic unit-testable without a cluster.
   a FATAL line = native fault (→ escalate the GL/live-resize suspect, likely a
   miniquad fork or Metal backend), an abnormal-exit warn with no FATAL = kill,
   and neither = it was the Esc-quit, now fixed.
+- **Vendored miniquad + macOS resize-crash mitigations** (2026-06-25, v0.74.0,
+  follow-up: the user clarified the crash was on a DIFFERENT machine — a
+  business Mac whose logs can't be exported — and **Esc was not pressed**, so
+  the v0.73.0 Esc fix, while real, was not their incident; this was a genuine
+  native crash; user chose "ship both patches"): miniquad 0.4.10 is now
+  **vendored** at `third_party/miniquad` via `[patch.crates-io]` (the FIRST
+  vendored dependency — justified because macroquad 0.4.15 pins `=0.4.10`
+  exactly, 0.4.11's macOS backend is byte-identical, and both fixes exist
+  nowhere released), carrying two marked patches in `src/native/macos.rs`:
+  **(1) `backingScaleFactor = 0` guard** — backported verbatim from upstream
+  master `14c6fc31` (unreleased): macOS reports scale 0.0 while the window is
+  screen-detached (startup + transiently during display/zoom transitions on
+  docked/multi-monitor setups — plausible on a business Mac); 0.4.10 recorded
+  `dpi_scale = 0` → 0×0/NaN dimensions downstream. **(2) skip GL frames during
+  interactive live-resize** (`inLiveResize` check before `perform_redraw` in
+  the GL view's `drawRect:`) — the mitigation for the lead suspect, Apple's
+  GL-on-Metal `EXC_BAD_ACCESS` when drawing mid-live-resize on macOS 26 +
+  Apple Silicon (allegro5 #1749 documents a guaranteed crash; miniquad ran a
+  FULL app frame from the resize tracking loop — exactly the trigger; my
+  programmatic storm used `setFrame`/`toggleFullScreen`, a different runloop
+  regime, which is why it never reproduced). Tradeoff (accepted): window
+  content freezes during a drag-resize, repaints on release; the
+  `resize_event` still fires (layout stays fresh) and fullscreen/zoom
+  animations still paint. `third_party/README.md` records provenance + the
+  drop-when-upstream-lands exit; the license guard passes unchanged (the
+  notices already covered miniquad; LICENSE files ship in the vendored copy).
+  Verified: renders normally on the patched backend, `--resize-storm` passes,
+  47 gui-smoke states, 69+318 tests, `--locked` clean. **Adversarial review (7
+  confirmed → all addressed):** (HIGH) ci.yml's global `RUSTFLAGS: -D warnings`
+  would have hard-failed macOS+Linux CI — a PATH dependency loses the
+  `--cap-lints allow` registry deps get, and the vendored crate carries
+  platform-specific upstream warnings (Linux's `static_mut_refs` in the x11
+  backend was reproduced — un-fixable by per-lint allows enumerated on macOS);
+  fixed by dropping the global env (the clippy step's `-- -D warnings`
+  argument, scoped to workspace members, is the real gate). (MEDIUM) a future
+  macroquad upgrade changing the `=0.4.10` pin makes cargo SILENTLY ignore the
+  `[patch]` (warning + `[[patch.unused]]` only) — both crash fixes would vanish
+  with green CI; added a CI step asserting `cargo tree -p miniquad` resolves to
+  `third_party/`. (MEDIUM) skipping only the draw left the drawable being
+  resized (`[gl_context update]` in `update_dimensions`) but never re-presented
+  → implementation-defined mid-drag visuals; the skip now sits BEFORE
+  `update_dimensions` in `drawRect:` AND gates `windowDidResize:` — the intact
+  last-presented surface is compositor-stretched (deterministic), and the
+  drawable-reallocation churn (GL work of the same class as the crash trigger)
+  is deferred to drag-end too. (LOW) `== YES` → `!= NO` (objc-rs BOOL is
+  c_schar on x86_64 — any non-zero is truthy; `== YES` failed open on the Intel
+  half of the universal binary). (LOW, accepted+documented) one large
+  frame-time delta on the first post-drag frame (lerps snap); the unreachable
+  `blocking_event_loop` deferral. (LOW, pre-existing, deferred) `about.toml`'s
+  pinned targets omit Windows, so the Windows zip's notices lack the
+  Windows-only crates (winapi) — predates this change; fix in its own pass.
+  **Diagnostics still wanted from the business machine** (viewable locally,
+  nothing exported):
+  install ≥v0.73.0 there and read the log tail after a recurrence (`FATAL
+  native fault` = confirmed native crash), or glance at Console.app ▸ Crash
+  Reports for the top frame module (`AppleMetalOpenGLRenderer`/`GLD…` would
+  convict suspect 2); also: Apple Silicon or Intel, macOS version, docked to
+  an external display, and whether it crashes every time.
 
 ## The pair (hot/warm)
 

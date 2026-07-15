@@ -8,9 +8,15 @@ on:
 permissions:
   contents: read
 
+# No global `RUSTFLAGS: -D warnings`: the vendored miniquad (a PATH dependency,
+# which loses the --cap-lints allow registry deps get) carries upstream's own
+# pre-existing warnings — different per platform (the Linux x11/wayland backends
+# compile files macOS never sees) — and a global -D would turn them into
+# build/test errors. Warnings-as-errors on OUR crates is enforced by the clippy
+# step's `-- -D warnings` argument (clippy includes the rustc lints), which
+# scopes to workspace members only.
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
   check:
@@ -62,6 +68,20 @@ jobs:
       - name: Build smoke example (headless core)
         run: cargo build -p kubernation-core --example smoke --locked
 
+      # The vendored miniquad crash patches must actually be in the build. A
+      # future macroquad upgrade that changes its `=0.4.10` pin makes cargo
+      # silently IGNORE the [patch.crates-io] entry (a warning + [[patch.unused]]
+      # only) — CI would stay green while both macOS crash fixes vanish. Fail
+      # loudly instead.
+      - name: Assert the vendored miniquad patch is active
+        shell: bash
+        run: |
+          if ! cargo tree -p miniquad --depth 0 | grep -q "third_party/miniquad"; then
+            echo "::error::miniquad no longer resolves to third_party/miniquad — the vendored crash patches are NOT in the build (did a macroquad upgrade change its miniquad pin?). Re-vendor or drop the patch deliberately; see third_party/README.md."
+            cargo tree -p miniquad --depth 0
+            exit 1
+          fi
+
   # The committed THIRD-PARTY-NOTICES.md must stay in sync with Cargo.lock — a
   # 1.0 legal posture can't silently drift (a new transitive crate with a new
   # license). Regenerate + diff; fail on any change.
@@ -74,11 +94,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-about
         # cargo-about 0.9 moved its binary behind the `cli` feature, so a plain
-        # install builds only the lib (no `cargo about` subcommand). Clear the
-        # workspace's `-D warnings` for this third-party build so a future warning
-        # in cargo-about or a dep can't fail the install.
-        env:
-          RUSTFLAGS: ""
+        # install builds only the lib (no `cargo about` subcommand).
         run: cargo install --locked cargo-about --features cli
       - name: Regenerate + diff THIRD-PARTY-NOTICES.md
         # -B ignores blank-line-only differences: cargo-about renders one license's

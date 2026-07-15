@@ -1073,7 +1073,7 @@ dependencies = [
 
 [[package]]
 name = "kubernation"
-version = "0.73.0"
+version = "0.74.0"
 dependencies = [
  "clap",
  "image",
@@ -1089,7 +1089,7 @@ dependencies = [
 
 [[package]]
 name = "kubernation-core"
-version = "0.73.0"
+version = "0.74.0"
 dependencies = [
  "color-eyre",
  "futures",
@@ -1188,8 +1188,6 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 [[package]]
 name = "miniquad"
 version = "0.4.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f64fd94ff70fdc425766c78a3fa9f263d02cb25725a49f255f6a66d8a186c3f"
 dependencies = [
  "libc",
  "ndk-sys",

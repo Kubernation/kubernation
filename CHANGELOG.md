@@ -9,6 +9,23 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **macOS crash mitigations for window maximize/resize (vendored miniquad
+  patches).** The reported silent disappearance on maximize occurred on a
+  machine where Esc was not pressed — a genuine native-layer crash. Two
+  grounded suspects are now mitigated by carrying miniquad 0.4.10 in-repo
+  (`third_party/miniquad`, via `[patch.crates-io]` — macroquad pins the exact
+  version, so no released upgrade can deliver either fix) with two targeted
+  patches: **(1)** the upstream (unreleased) `backingScaleFactor = 0` guard —
+  macOS reports scale 0 while a window is detached from a screen (transiently
+  during display/zoom transitions on docked/multi-monitor setups), which
+  poisoned dimensions to 0×0/NaN; **(2)** GL frames are no longer drawn during
+  an interactive live-resize — Apple's deprecated GL-on-Metal layer can
+  segfault when an app draws mid-resize on macOS 26 + Apple Silicon
+  (allegro5 hit a guaranteed crash there), and miniquad ran a full app frame
+  from the resize tracking loop. The window content now freezes during a
+  drag-resize and repaints on release (the standard mitigation); fullscreen /
+  zoom animations still paint. See `third_party/README.md`; the vendored copy
+  is dropped when a fixed upstream release lands.
 - **Esc on the bare map no longer quits the app.** The Esc key chain's final
   fallthrough silently exited the app when nothing was open — so on macOS,
   clicking the green button (which enters native *fullscreen*, not a maximize)

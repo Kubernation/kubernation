@@ -7,7 +7,7 @@ default-members = ["crates/kubernation"]
 # Single source of truth for every crate's version (semver). Bump in the same
 # commit as the change: pre-1.0, minor = features/behaviour, patch =
 # fixes/docs/refactor. See CLAUDE.md "Versioning". Releases are tagged vX.Y.Z.
-version = "0.73.0"
+version = "0.74.0"
 edition = "2024"
 authors = ["Jason Olmsted"]
 license = "MIT OR Apache-2.0"
@@ -15,3 +15,12 @@ repository = "https://github.com/Kubernation/kubernation"
 
 [profile.release]
 lto = "thin"
+
+# Vendored miniquad 0.4.10 + 2 targeted macOS crash patches (a dpi_scale=0
+# guard backported from upstream master, and skip-GL-draw-during-live-resize —
+# Apple's GL-on-Metal layer can segfault when drawn mid-resize on macOS 26 +
+# Apple Silicon). macroquad pins `=0.4.10`, so no released upgrade can deliver
+# either fix; the path patch satisfies the pin. See third_party/README.md;
+# drop this when a fixed release lands that macroquad accepts.
+[patch.crates-io]
+miniquad = { path = "third_party/miniquad" }
