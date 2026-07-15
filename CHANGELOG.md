@@ -8,6 +8,34 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **Esc on the bare map no longer quits the app.** The Esc key chain's final
+  fallthrough silently exited the app when nothing was open — so on macOS,
+  clicking the green button (which enters native *fullscreen*, not a maximize)
+  and then reflexively pressing Esc to leave fullscreen made the app instantly
+  disappear with no trace: a clean exit that read as a crash. Bare-map Esc now
+  **leaves fullscreen on macOS** (a no-op when windowed) and otherwise does
+  nothing; quitting stays on `Q`, **Game ▸ Quit**, Cmd+Q, and the window close
+  button — all of which (unlike the removed Esc path) run the Game Day
+  restore-on-exit intercept, closing a safety gap where an Esc-quit could
+  strand a live chaos drill unrestored.
+
+### Added
+- **Native-crash forensics.** A fault in the windowing / GL / Objective-C layer
+  kills the process with no Rust unwind, so the v0.66 panic hook never saw it —
+  such a crash left zero trace. Now (1) an **async-signal-safe fault handler**
+  (SIGSEGV / SIGBUS / SIGILL / SIGFPE / SIGABRT, Unix) writes one `FATAL native
+  fault: …` line to `kubernation.log` before the OS terminates the process, and
+  (2) a **session marker** detects any abnormal end (including SIGKILL / power
+  loss): the next launch logs "the previous session ended abnormally". Verified
+  live (SIGSEGV → the FATAL line; kill -9 → the next-launch warning; a clean
+  exit removes the marker).
+- **`--resize-storm` dev flag** — drives the window through the transition
+  gauntlet (mid-splash resize, rapid ping-pong resizes, back-to-back fullscreen
+  toggles, resize during the fullscreen animation, tiny window) and exits: the
+  crash gate for the window-transition paths, added while investigating the
+  report above (the storm passes clean in both debug and release).
+
 ### Changed
 - **Oracle replies render markdown for easier reading.** The model's answer is now shown
   with lightweight markdown formatting instead of flat text: `#`…`######` headings render

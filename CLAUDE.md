@@ -2635,6 +2635,50 @@ what makes the interesting logic unit-testable without a cluster.
   license guard, docs, colour-blind palette, prefs); the only pre-1.0 items left need the
   operator: pushing to prove the multi-platform CI green, and macOS signing (no Apple cert).
 
+- **"Silent crash on maximize" — Esc-quit fix + native-fault forensics**
+  (2026-06-25, v0.73.0, user reported the app "quickly disappears" when
+  maximizing the window on macOS; investigation-workflow: 3 hunt dimensions →
+  verified findings + live repro attempts): the reported symptom left NO trace —
+  no Rust panic in the log (the v0.66 hook is unbuffered + verified working), no
+  macOS crash report (this machine's DiagnosticReports is inert, so absence
+  proves nothing), nothing in the unified log. **Programmatic repro attempts all
+  survived** (debug + release): a new storm harness drove zoom-sized resizes,
+  `toggleFullScreen:` (the REAL green-button path — verified in miniquad
+  source), rapid toggles, resize-mid-animation, and tiny windows through the
+  live app with zero faults; the resize-math sweep found the layout panic-free
+  at maximize scale (every computed-bound clamp/division is guarded). **The
+  probable cause found by the exit-path audit:** the Esc chain's bare-map
+  fallthrough was `break` — quit. The green button enters native **fullscreen**
+  (not maximize); a reflexive Esc to leave fullscreen therefore **cleanly and
+  instantly exited the app** — exactly matching "maximized, it disappeared, no
+  trace" (a clean exit writes nothing anywhere). It ALSO bypassed the chaos
+  restore-on-exit intercept (the `break` skips the `want_quit` gate) — a real
+  safety-triad hole. **Fix:** bare-map Esc never quits; on macOS it calls
+  `set_fullscreen(false)` (miniquad's macOS impl no-ops when windowed — the
+  Windows/X11 backends lack that guard, hence the cfg); quit remains on Q /
+  Game ▸ Quit / Cmd+Q / close — all through the restore gate. **Forensics** (the
+  can't-reproduce insurance; a native EXC_BAD_ACCESS in Apple's deprecated
+  GL-on-Metal layer during live-resize remains a grounded second suspect —
+  allegro5 hit exactly that on macOS 26 + Apple Silicon, and miniquad draws from
+  `drawRect:` during live resize; no miniquad release fixes it, 0.4.11's macOS
+  backend is byte-identical to 0.4.10, and macroquad pins `=0.4.10`):
+  `logging::install_fault_handler` — async-signal-safe SIGSEGV/SIGBUS/SIGILL/
+  SIGFPE/SIGABRT handlers writing one static line to a pre-opened log fd
+  (`write(2)` only; `SA_ONSTACK` + `SA_RESETHAND`, then re-raise) — plus a
+  **session marker** (`session_begin`/`session_end` around the render loop;
+  skipped under `--screenshot`) so ANY abnormal end, SIGKILL included, is
+  reported at the next launch. libc was already in the lock (zero new crates).
+  The storm harness shipped as the **`--resize-storm`** dev flag (exits through
+  the clean path). Two latent total-function gaps hardened in passing
+  (`truncate_str` max==0 underflow; oracle `wrap` width==0 chunks-panic — both
+  currently unreachable, flagged by the review). Verified live: SIGSEGV → the
+  FATAL log line; kill -9 → "previous session ended abnormally" on relaunch;
+  clean exit removes the marker; the storm passes in both profiles; gui-smoke
+  47. If the user's crash recurs on this build, the log now says which it was:
+  a FATAL line = native fault (→ escalate the GL/live-resize suspect, likely a
+  miniquad fork or Metal backend), an abnormal-exit warn with no FATAL = kill,
+  and neither = it was the Esc-quit, now fixed.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

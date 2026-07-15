@@ -303,6 +303,9 @@ pub fn error_hint(msg: &str) -> Option<&'static str> {
 /// Wrap text to ~`width` chars per line (whitespace-greedy), preserving existing
 /// newlines. Keeps long prompt/reply lines inside the modal body.
 fn wrap(s: &str, width: usize) -> Vec<String> {
+    // Total on width == 0 (the `chunks(width)` below panics on 0; all callers
+    // pass constants ≥ 92 today — this guards a future computed width).
+    let width = width.max(1);
     let mut out = Vec::new();
     for line in s.split('\n') {
         if line.chars().count() <= width {

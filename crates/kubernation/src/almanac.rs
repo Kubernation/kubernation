@@ -541,7 +541,10 @@ fn page_controls(cx: &mut Ctx) {
     cx.key("t", "open the End-of-Turn review (staged changes)");
     cx.key("C", "switch kube context");
     cx.key("? / F1", "this Almanac");
-    cx.key("Esc", "close the open panel / window");
+    cx.key(
+        "Esc",
+        "close the open panel / window (macOS: also leaves fullscreen)",
+    );
     cx.key("Q", "quit");
     cx.heading("Menu bar");
     cx.para(

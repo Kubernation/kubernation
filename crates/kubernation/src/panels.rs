@@ -564,7 +564,9 @@ pub(crate) fn truncate_str(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
-        let cut: String = s.chars().take(max - 1).collect();
+        // saturating_sub: total on max == 0 (all callers pass ≥ 1 today, but a
+        // future screen-derived width must not arm an underflow panic here).
+        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
         format!("{cut}~")
     }
 }

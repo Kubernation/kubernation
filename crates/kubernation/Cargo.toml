@@ -23,6 +23,11 @@ serde_json = "1"
 # PNG decode + resize for the bundled logo (window icon at 16/32/64).
 image = { version = "0.24", default-features = false, features = ["png"] }
 
+# The async-signal-safe native-fault handler (SIGSEGV/SIGBUS/… → one log line
+# before the OS terminates us). Already in the lock transitively — zero new crates.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # Synthetic worlds for testing the pure draw-decision helpers (region_lines,
 # …) without a cluster or a GL context.

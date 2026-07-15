@@ -308,6 +308,12 @@ struct Args {
     /// table (e.g. "configmaps") — development verification of the browser
     #[arg(long, value_name = "KIND", num_args = 0..=1, default_missing_value = "")]
     browse: Option<String>,
+    /// Drive the window through a resize/fullscreen storm (mid-splash resize,
+    /// rapid ping-pong resizes, back-to-back fullscreen toggles, resize during
+    /// the fullscreen animation, tiny window) then exit — the crash gate for
+    /// the window-transition paths (development verification; ~25s)
+    #[arg(long)]
+    resize_storm: bool,
 }
 
 /// A chaos drill awaiting its confirm modal — the run to submit plus the
@@ -537,6 +543,19 @@ async fn main() {
     }
     // Log any panic (render OR net thread) to that file before it unwinds.
     logging::install_panic_hook();
+    // Log fatal NATIVE signals (segfault in the windowing/GL layer — no Rust
+    // unwind, so the panic hook never sees them) + detect an abnormal previous
+    // exit via the session marker. Skipped for headless --screenshot captures
+    // (a dev/CI shot must not consume or plant the operator's marker).
+    logging::install_fault_handler(&logging::log_dir().join("kubernation.log"));
+    if args.screenshot.is_none() && logging::session_begin(&logging::log_dir()) {
+        tracing::warn!(
+            "the previous session ended abnormally (no clean shutdown) — \
+             if it crashed, the line above/nearby may say why; a native \
+             crash with no FATAL line means the fault predates this build's \
+             signal handler or was a SIGKILL"
+        );
+    }
     // Saved preferences (flags always win over them).
     let saved = prefs::load();
     // Select the palette before anything draws (the flag OR the saved choice).
@@ -729,6 +748,57 @@ async fn main() {
     let mut quitting: Option<f64> = None;
 
     loop {
+        // Dev crash gate (`--resize-storm`): drive the window through the
+        // transition paths a user maximize/zoom exercises — added while
+        // investigating a reported silent macOS crash on maximize (which did
+        // NOT reproduce under this storm; see the decision log). Markers go to
+        // stderr; the final step breaks to the clean-exit path.
+        if args.resize_storm {
+            static STORM_FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let f = STORM_FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            match f {
+                // Mid-SPLASH resize (the splash suspends the loop early).
+                30 => {
+                    eprintln!("[storm] mid-splash resize");
+                    miniquad::window::set_window_size(2600, 1600);
+                }
+                // Rapid ping-pong resizes (live-resize-like churn).
+                s @ 400..=460 if s % 4 == 0 => {
+                    let big = s % 8 == 0;
+                    miniquad::window::set_window_size(
+                        if big { 3400 } else { 900 },
+                        if big { 2100 } else { 600 },
+                    );
+                }
+                470 => eprintln!("[storm] survived resize ping-pong"),
+                // Back-to-back fullscreen toggles (mid-animation re-toggle).
+                500 => {
+                    eprintln!("[storm] rapid fullscreen toggles");
+                    macroquad::window::set_fullscreen(true);
+                }
+                510 => macroquad::window::set_fullscreen(false),
+                520 => macroquad::window::set_fullscreen(true),
+                560 => macroquad::window::set_fullscreen(false),
+                // Resize DURING the fullscreen animation.
+                700 => {
+                    eprintln!("[storm] fullscreen + resize during animation");
+                    macroquad::window::set_fullscreen(true);
+                }
+                705 => miniquad::window::set_window_size(3000, 1800),
+                900 => macroquad::window::set_fullscreen(false),
+                // Tiny window.
+                1100 => {
+                    eprintln!("[storm] tiny window");
+                    miniquad::window::set_window_size(120, 80);
+                }
+                1200 => miniquad::window::set_window_size(3400, 2100),
+                1500 => {
+                    eprintln!("[storm] SURVIVED ALL — clean exit");
+                    break; // through the normal clean-exit path (prefs + marker)
+                }
+                _ => {}
+            }
+        }
         let snap = net.snapshot();
         let status = net.status();
         let mouse = Vec2::from(mouse_position());
@@ -1159,12 +1229,21 @@ async fn main() {
                 // First Esc leaves the image editor; a second closes the window.
                 city_image_edit = None;
             } else if open_menu.is_some() {
-                // Esc dismisses an open dropdown before it can quit the app.
                 open_menu = None;
             } else if panel.is_some() {
                 panel = None;
             } else {
-                break;
+                // Bare map: Esc deliberately does NOT quit. It used to (`break`),
+                // which made "green button → native fullscreen → reflexive Esc"
+                // silently exit the app (reported as a phantom crash on maximize)
+                // AND bypassed the chaos restore-on-exit intercept. Quit stays on
+                // Q / Game ▸ Quit / Cmd+Q / the close button — all routed through
+                // the restore gate. On macOS, Esc instead leaves fullscreen (the
+                // native expectation); miniquad's macOS set_fullscreen is a no-op
+                // when already windowed, so this is safe to call unconditionally
+                // (the Windows/X11 backends lack that guard, hence the cfg).
+                #[cfg(target_os = "macos")]
+                macroquad::window::set_fullscreen(false);
             }
         }
         // Log overlay owns its keys: `/` edits a filter, `p` toggles previous.
@@ -3421,6 +3500,9 @@ async fn main() {
             colorblind: theme::colorblind(),
             overlay: Some(overlay.label().to_string()),
         });
+        // Clean shutdown — remove the abnormal-exit marker (every exit path
+        // funnels through this point; a crash never reaches it).
+        logging::session_end(&logging::log_dir());
     }
 }
 
