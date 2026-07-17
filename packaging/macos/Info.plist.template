@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Info.plist for the KuberNation.app bundle. @VERSION@ is substituted with the
+  workspace version by packaging/macos/release-macos.sh. The bundle wraps the
+  universal `kubernation` binary so macOS treats it as a real GUI app
+  (double-click to launch the window, Dock icon, notarization ticket can be
+  stapled — a bare Mach-O can't be stapled). Developer ID distribution needs no
+  registered App ID, so the bundle identifier is any stable reverse-DNS string.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>KuberNation</string>
+  <key>CFBundleDisplayName</key>
+  <string>KuberNation</string>
+  <key>CFBundleIdentifier</key>
+  <string>io.kubernation.KuberNation</string>
+  <key>CFBundleExecutable</key>
+  <string>kubernation</string>
+  <key>CFBundleIconFile</key>
+  <string>kubernation</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@VERSION@</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>10.15</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>© 2026 Jason Olmsted. KuberNation™ and the KuberNation logo are unregistered trademarks of Jason Olmsted.</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.developer-tools</string>
+</dict>
+</plist>

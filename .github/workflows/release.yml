@@ -67,11 +67,90 @@ jobs:
           cargo build --release --locked
           mkdir -p out && cp "target/release/${BIN}.exe" "out/${BIN}.exe"
 
+      # ---- macOS code-signing + notarization -------------------------------
+      # Produces a signed, notarized, STAPLED KuberNation.app inside a
+      # drag-to-Applications .dmg — Gatekeeper clears it on first launch with no
+      # `xattr` step for the user. Gated on the signing secrets being present so
+      # a tag pushed without them still releases (degrading to the unsigned
+      # bare-binary tarball via the Package step below). Required repo secrets:
+      #   MACOS_CERT_P12_BASE64  Developer ID Application cert + key, as a
+      #                          base64-encoded .p12 (`base64 -i cert.p12`)
+      #   MACOS_CERT_PASSWORD    the .p12 export password
+      #   APPLE_API_KEY_P8_BASE64  App Store Connect API key .p8, base64-encoded
+      #   APPLE_API_KEY_ID         the key's Key ID
+      #   APPLE_API_ISSUER_ID      the key's Issuer ID
+      - name: Detect macOS signing secrets
+        id: signing
+        if: runner.os == 'macOS'
+        env:
+          CERT: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+        run: |
+          if [ -n "$CERT" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::macOS signing secrets absent — releasing an UNSIGNED binary."
+          fi
+
+      - name: Import signing certificate
+        if: runner.os == 'macOS' && steps.signing.outputs.enabled == 'true'
+        env:
+          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KC_PW="$(openssl rand -base64 24)"
+          security create-keychain -p "$KC_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"   # don't auto-lock mid-job
+          security unlock-keychain -p "$KC_PW" "$KEYCHAIN"
+          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          # allow codesign to use the key non-interactively
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PW" "$KEYCHAIN" >/dev/null
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk '/Developer ID Application/ {print $2; exit}')"
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::No 'Developer ID Application' identity in the imported .p12" >&2
+            exit 1
+          fi
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Sign, notarize, staple, and package .dmg
+        if: runner.os == 'macOS' && steps.signing.outputs.enabled == 'true'
+        env:
+          NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_API_ISSUER_ID }}
+          API_KEY_B64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          echo "$API_KEY_B64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          BIN_PATH="out/${BIN}" \
+          VERSION="${GITHUB_REF_NAME#v}" \
+          ICON_PNG="crates/kubernation/assets/logo/mark.png" \
+          IDENTITY="$SIGN_IDENTITY" \
+          KEYCHAIN="$KEYCHAIN" \
+          NOTARY_KEY="$RUNNER_TEMP/AuthKey.p8" \
+          NOTARY_KEY_ID="$NOTARY_KEY_ID" \
+          NOTARY_ISSUER="$NOTARY_ISSUER" \
+          EXTRA_RESOURCES="LICENSE-MIT LICENSE-APACHE crates/kubernation/THIRD-PARTY-NOTICES.md" \
+          OUT_DMG="${BIN}-${GITHUB_REF_NAME}-macos-universal.dmg" \
+          bash packaging/macos/release-macos.sh
+          rm -f "$RUNNER_TEMP/AuthKey.p8"
+
+      - name: Clean up keychain
+        if: always() && runner.os == 'macOS'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+      # ----------------------------------------------------------------------
+
       # Stage the binary alongside the licenses + third-party notices so the
       # archive is self-contained and legally complete. A `.zip` on Windows
       # (what users expect), a `.tar.gz` elsewhere. `shell: bash` so the same
-      # script runs on the Windows runner (via Git Bash).
+      # script runs on the Windows runner (via Git Bash). Skipped on macOS when
+      # the signed .dmg above was produced (its bundle carries the notices).
       - name: Package
+        if: runner.os != 'macOS' || steps.signing.outputs.enabled != 'true'
         shell: bash
         run: |
           STAGE="${BIN}-${{ github.ref_name }}-${{ matrix.name }}"
@@ -90,9 +169,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          # One of these exists per OS (.zip on Windows, .tar.gz elsewhere);
-          # if-no-files-found errors only when NEITHER matches.
+          # One exists per OS: a signed .dmg (macOS), a .zip (Windows), or a
+          # .tar.gz (Linux, or macOS when signing secrets are absent).
+          # if-no-files-found errors only when NONE matches.
           path: |
+            ${{ env.BIN }}-${{ github.ref_name }}-${{ matrix.name }}.dmg
             ${{ env.BIN }}-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
             ${{ env.BIN }}-${{ github.ref_name }}-${{ matrix.name }}.zip
           if-no-files-found: error
@@ -111,33 +192,32 @@ jobs:
         run: |
           cd artifacts
           shopt -s nullglob
-          sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
+          sha256sum ./*.dmg ./*.tar.gz ./*.zip > SHA256SUMS
           cat SHA256SUMS
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            artifacts/*.dmg
             artifacts/*.tar.gz
             artifacts/*.zip
             artifacts/SHA256SUMS
           # Full control of the body (don't append the API's auto "What's Changed").
-          # The macOS binary is NOT yet code-signed/notarized (that needs an Apple
-          # Developer cert as a repo secret — see docs). Note the Gatekeeper step.
           body: |
             ## KuberNation ${{ github.ref_name }}
 
             Pre-built binaries (verify with `SHA256SUMS`):
-            - `kubernation-${{ github.ref_name }}-macos-universal.tar.gz` — Apple Silicon + Intel
+            - `kubernation-${{ github.ref_name }}-macos-universal.dmg` — Apple Silicon + Intel, signed & notarized
             - `kubernation-${{ github.ref_name }}-linux-x86_64.tar.gz`
             - `kubernation-${{ github.ref_name }}-windows-x86_64.zip`
 
-            **macOS:** the binary is unsigned for now, so on first launch Gatekeeper
-            will block it — remove the quarantine flag once:
-            `xattr -d com.apple.quarantine ./kubernation` (or right-click ▸ Open).
+            **macOS:** open the `.dmg` and drag **KuberNation** to Applications, then
+            launch it. It's signed with a Developer ID and notarized by Apple, so
+            Gatekeeper clears it on first launch — no `xattr` workaround needed.
 
             **Windows:** the binary is unsigned, so SmartScreen may warn on first
             launch — choose "More info ▸ Run anyway".
 
-            Run against your current kube-context: `./kubernation`. See the README
-            for flags and RBAC requirements.
+            Run against your current kube-context. See the README for flags and RBAC
+            requirements.

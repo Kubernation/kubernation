@@ -64,19 +64,20 @@ built around four ideas:
 ## Install
 
 **Pre-built binaries** are attached to each [GitHub release](../../releases) — a
-macOS universal binary (Apple Silicon + Intel), a Linux x86_64 binary, and a
-Windows x86_64 binary. Download, verify against `SHA256SUMS`, and run it against
-your current kube-context:
+macOS universal `.dmg` (Apple Silicon + Intel), a Linux x86_64 binary, and a
+Windows x86_64 binary. Download and verify against `SHA256SUMS`.
+
+**macOS:** open `kubernation-vX.Y.Z-macos-universal.dmg` and drag **KuberNation**
+to Applications, then launch it. It's signed with a Developer ID and notarized by
+Apple, so Gatekeeper clears it on first launch — no `xattr` workaround needed.
+
+**Linux:** unpack and run against your current kubeconfig context:
 
 ```sh
-tar xzf kubernation-vX.Y.Z-macos-universal.tar.gz
-cd kubernation-vX.Y.Z-macos-universal
+tar xzf kubernation-vX.Y.Z-linux-x86_64.tar.gz
+cd kubernation-vX.Y.Z-linux-x86_64
 ./kubernation                 # uses your current kubeconfig context
 ```
-
-> **macOS:** the binary is not yet code-signed/notarized, so Gatekeeper blocks it on
-> first launch — clear the quarantine flag once: `xattr -d com.apple.quarantine
-> ./kubernation` (or right-click ▸ Open).
 
 **From source** (Rust stable; on Linux you also need the X11/GL/ALSA dev libraries
 `libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev`):

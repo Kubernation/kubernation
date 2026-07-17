@@ -2736,6 +2736,67 @@ what makes the interesting logic unit-testable without a cluster.
   Reports for the top frame module (`AppleMetalOpenGLRenderer`/`GLD…` would
   convict suspect 2); also: Apple Silicon or Intel, macOS version, docked to
   an external display, and whether it crashes every time.
+- **Signed & notarized macOS releases** (2026-07-15, v0.75.0, user has an Apple
+  Developer account + a Developer ID Application cert + an App Store Connect API
+  key): the release pipeline closes the v1 "unsigned macOS binary" gap. **Chosen
+  form (user's call): a `.app` bundle in a `.dmg`**, over a bare notarized binary
+  or an `.app` in a tarball — because KuberNation is a *windowed GUI*, so a bare
+  Mach-O double-clicked in Finder just opens Terminal, AND a notarization ticket
+  **cannot be stapled to a bare binary** (only `.app`/`.dmg`/`.pkg`), so a bare
+  binary would fail Gatekeeper offline. The `.app` gives a real Dock/window
+  identity + an offline-verifiable stapled ticket; the `.dmg` gives drag-to-
+  Applications. **`packaging/macos/release-macos.sh`** (locally runnable, not
+  CI-only) does the whole flow: assemble `KuberNation.app` (Info.plist from
+  `packaging/macos/Info.plist.template` with `@VERSION@` substituted; `.icns`
+  built from the 256px `assets/logo/mark.png` via `sips`+`iconutil`; license/
+  notice files copied into `Contents/Resources` **before** signing so codesign
+  seals them) → `codesign --options runtime --timestamp` (hardened runtime, a
+  notarization prerequisite; **no entitlements** — the statically-linked Rust GUI
+  needs no JIT / library-validation exception) → `notarytool submit --wait` (a
+  zip of the `.app`) → **staple the `.app`** → build the `.dmg` (with an
+  `/Applications` symlink) → sign → **`notarytool submit` the `.dmg` too** →
+  **staple the `.dmg`**. **TWO notarization round-trips, load-bearing** (found by
+  the pre-tag dry-run, which failed here): a ticket is keyed to the cdhash of the
+  code that was **submitted**, and the `.dmg` is its own separately-signed code
+  object with its own cdhash — so notarizing only the `.app` leaves the `.dmg`
+  unstapleable (`stapler` → "Record not found"). Stapling both is what makes the
+  `.dmg` verify offline at mount **and** the `.app` verify offline once dragged
+  out to /Applications. **CI (`release.yml`):** a `Detect macOS signing
+  secrets` step gates signing on `MACOS_CERT_P12_BASE64` being present — **a tag
+  pushed without secrets still releases**, degrading to the prior unsigned
+  bare-binary tarball (a `::warning::`) rather than hard-failing; when signing,
+  the cert `.p12` is imported into an **ephemeral throwaway keychain** (password
+  generated in-runner with `openssl rand`, `set-key-partition-list` so codesign
+  runs non-interactively, deleted in an `always()` cleanup step), the identity is
+  resolved with `security find-identity`, and the script runs with the API key
+  `.p8` (base64 secret, decoded to `$RUNNER_TEMP`, removed after). **5 repo
+  secrets** (documented in `packaging/macos/README.md` with the `.p12` export +
+  base64 steps): `MACOS_CERT_P12_BASE64`, `MACOS_CERT_PASSWORD`,
+  `APPLE_API_KEY_P8_BASE64`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID` (Team ID
+  isn't needed — the identity resolves from the single-identity keychain and
+  notarytool authenticates by API key). The macOS artifact is now
+  `kubernation-vX.Y.Z-macos-universal.dmg` (SHA256SUMS + release body + README +
+  `site/index.html` updated; the `xattr -d com.apple.quarantine` workaround is
+  gone for macOS users). Linux `.tar.gz` / Windows `.zip` unchanged (Windows
+  stays unsigned — SmartScreen "More info ▸ Run anyway"). **Verified end-to-end
+  locally against the real cert + a real Apple notary round-trip** (v0.75.0 dry
+  run, 2026-07-16): universal `lipo` binary → signed → **both** submissions
+  Accepted → both stapled → `spctl -a` reports **"accepted, source=Notarized
+  Developer ID"** for the `.dmg` AND for the `.app` mounted from inside it, which
+  is exactly what a downloading user's Gatekeeper evaluates; `stapler validate`
+  passes on both (offline tickets present); the bundled binary is `x86_64 arm64`
+  and `Contents/Resources` carries the licenses + notices. `actionlint` +
+  `shellcheck` clean; `cargo metadata --locked` consistent. The dry run earned its
+  keep: it caught **two real bugs** that would have failed every release — the
+  `set -u` empty-array crash (`"${KC_ARGS[@]}"` on macOS bash 3.2) and the
+  one-vs-two notarization error above. **Apple-side caveat observed:** a
+  submission sat `In Progress` for ~90 min (normal is 1–5) before being Accepted —
+  their queue backs up, so `NOTARY_TIMEOUT` (default 45m) is configurable; a CI
+  timeout fails the build job and `publish` (`needs: build`) never runs, so there
+  is no half-published release — just re-run the workflow. **Still needs the
+  operator:** proving the *CI* path green needs a real `v*` tag push with the five
+  secrets set (the local flow is proven). **Deferred:** Windows Authenticode
+  signing; a Homebrew cask; a `sparkle`-style auto-updater.
 
 ## The pair (hot/warm)
 
