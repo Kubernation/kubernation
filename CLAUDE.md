@@ -2736,7 +2736,7 @@ what makes the interesting logic unit-testable without a cluster.
   Reports for the top frame module (`AppleMetalOpenGLRenderer`/`GLD…` would
   convict suspect 2); also: Apple Silicon or Intel, macOS version, docked to
   an external display, and whether it crashes every time.
-- **Signed & notarized macOS releases** (2026-07-15, v0.75.0, user has an Apple
+- **Signed & notarized macOS releases** (2026-07-15, shipped in v1.0.0, user has an Apple
   Developer account + a Developer ID Application cert + an App Store Connect API
   key): the release pipeline closes the v1 "unsigned macOS binary" gap. **Chosen
   form (user's call): a `.app` bundle in a `.dmg`**, over a bare notarized binary
@@ -2779,7 +2779,7 @@ what makes the interesting logic unit-testable without a cluster.
   `site/index.html` updated; the `xattr -d com.apple.quarantine` workaround is
   gone for macOS users). Linux `.tar.gz` / Windows `.zip` unchanged (Windows
   stays unsigned — SmartScreen "More info ▸ Run anyway"). **Verified end-to-end
-  locally against the real cert + a real Apple notary round-trip** (v0.75.0 dry
+  locally against the real cert + a real Apple notary round-trip** (v1.0.0 dry
   run, 2026-07-16): universal `lipo` binary → signed → **both** submissions
   Accepted → both stapled → `spctl -a` reports **"accepted, source=Notarized
   Developer ID"** for the `.dmg` AND for the `.app` mounted from inside it, which
@@ -2941,12 +2941,15 @@ left was fixed). No config-file support yet.
 - **Versioning (semver):** one workspace version is the source of truth
   (`[workspace.package] version` in the root `Cargo.toml`; every crate
   inherits it via `version.workspace = true`). **Bump it in the same commit
-  as a user-facing change** — pre-1.0, so `minor` = new feature/behaviour,
-  `patch` = fix/docs/refactor, and (still pre-1.0) a breaking change also
-  bumps `minor`. The version is surfaced by `--version` and the GUI chrome
-  (`env!("CARGO_PKG_VERSION")`). Update `CHANGELOG.md` under `[Unreleased]` as
-  you go; a release rolls Unreleased into a dated `[X.Y.Z]` section and is marked
-  by a git tag `vX.Y.Z`.
+  as a user-facing change** — **post-1.0 since 2026-07-17**, so `major` = a
+  breaking change, `minor` = new feature/behaviour, `patch` = fix/docs/refactor.
+  (Pre-1.0 a breaking change bumped `minor`; that no longer applies.) The version
+  is surfaced by `--version` and the GUI chrome (`env!("CARGO_PKG_VERSION")`).
+  Update `CHANGELOG.md` under `[Unreleased]` as you go; a release rolls Unreleased
+  into a dated `[X.Y.Z]` section and is marked by a git tag `vX.Y.Z`. **Actually
+  roll it at tag time** — through 0.74 the tags were cut without rolling, so 70
+  versions' entries piled up under Unreleased and had to be aggregated into
+  `[1.0.0]`; don't let that drift restart.
 - Document non-obvious decisions in this file's Decisions log as you make
   them.
 

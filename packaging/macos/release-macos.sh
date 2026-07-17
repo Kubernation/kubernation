@@ -12,7 +12,7 @@
 #
 # Required env:
 #   BIN_PATH        path to the (universal) `kubernation` Mach-O
-#   VERSION         version string, no leading v (e.g. 0.75.0)
+#   VERSION         version string, no leading v (e.g. 1.0.0)
 #   ICON_PNG        path to a square PNG >=512px for the .icns (mark.png is 256,
 #                   upscaled; fine for an icon)
 #   IDENTITY        codesign identity — the "Developer ID Application: NAME (TEAMID)"
