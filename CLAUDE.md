@@ -2769,7 +2769,13 @@ what makes the interesting logic unit-testable without a cluster.
   generated in-runner with `openssl rand`, `set-key-partition-list` so codesign
   runs non-interactively, deleted in an `always()` cleanup step), the identity is
   resolved with `security find-identity`, and the script runs with the API key
-  `.p8` (base64 secret, decoded to `$RUNNER_TEMP`, removed after). **5 repo
+  `.p8` (base64 secret, decoded to `$RUNNER_TEMP`, removed after). **The imported
+  keychain MUST be added to the `security list-keychains` search list** — the
+  v1.0.0 release failed with `<hash>: no identity found` because `codesign`
+  resolves the identity through the *search list*, and `--keychain` alone doesn't
+  suffice. This is **structurally invisible locally** (a dev Mac's login keychain
+  holds the identity and is already in the search list), so only a real CI run can
+  catch it. **5 repo
   secrets** (documented in `packaging/macos/README.md` with the `.p12` export +
   base64 steps): `MACOS_CERT_P12_BASE64`, `MACOS_CERT_PASSWORD`,
   `APPLE_API_KEY_P8_BASE64`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID` (Team ID

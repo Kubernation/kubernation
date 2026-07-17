@@ -108,6 +108,12 @@ jobs:
           security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
           # allow codesign to use the key non-interactively
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PW" "$KEYCHAIN" >/dev/null
+          # codesign resolves the signing identity through the keychain SEARCH
+          # LIST — passing --keychain alone is NOT enough (it fails with "no
+          # identity found"). Prepend ours, keeping the runner's existing entries.
+          EXISTING="$(security list-keychains -d user | tr -d '"' | tr '\n' ' ')"
+          # shellcheck disable=SC2086  # deliberate split: a list of keychain paths
+          security list-keychains -d user -s "$KEYCHAIN" $EXISTING
           IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk '/Developer ID Application/ {print $2; exit}')"
           if [ -z "$IDENTITY" ]; then
             echo "::error::No 'Developer ID Application' identity in the imported .p12" >&2

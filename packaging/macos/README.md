@@ -13,6 +13,13 @@ runs in CI and locally.
 > verify offline at mount and the `.app` verify offline after being dragged to
 > /Applications.
 
+> **Gotcha — the signing keychain must be in the search list.** `codesign`
+> resolves the signing identity through the keychain **search list**; passing
+> `--keychain` alone is not enough and fails with *"<hash>: no identity found"*.
+> CI therefore runs `security list-keychains -d user -s "$KEYCHAIN" …` after
+> importing. This can only bite in CI — on a dev Mac the identity is in your
+> login keychain, which is already in the search list.
+
 > **Apple's notary service can be slow.** It's usually 1–5 minutes, but a
 > submission has been observed sitting `In Progress` for ~90 minutes before being
 > accepted. `NOTARY_TIMEOUT` (default `45m`) tunes the wait. If CI times out, the
