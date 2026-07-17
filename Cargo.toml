@@ -5,9 +5,10 @@ default-members = ["crates/kubernation"]
 
 [workspace.package]
 # Single source of truth for every crate's version (semver). Bump in the same
-# commit as the change: pre-1.0, minor = features/behaviour, patch =
-# fixes/docs/refactor. See CLAUDE.md "Versioning". Releases are tagged vX.Y.Z.
-version = "0.75.0"
+# commit as the change: post-1.0, major = breaking change, minor =
+# features/behaviour, patch = fixes/docs/refactor. See CLAUDE.md "Versioning".
+# Releases are tagged vX.Y.Z.
+version = "1.0.0"
 edition = "2024"
 authors = ["Jason Olmsted"]
 license = "MIT OR Apache-2.0"

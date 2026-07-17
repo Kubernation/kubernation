@@ -73,14 +73,14 @@ lipo -create -output out/kubernation \
   target/x86_64-apple-darwin/release/kubernation
 
 BIN_PATH=out/kubernation \
-VERSION=0.75.0 \
+VERSION=1.0.0 \
 ICON_PNG=crates/kubernation/assets/logo/mark.png \
 IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 NOTARY_KEY=~/keys/AuthKey_XXXXXXXXXX.p8 \
 NOTARY_KEY_ID=XXXXXXXXXX \
 NOTARY_ISSUER=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
 EXTRA_RESOURCES="LICENSE-MIT LICENSE-APACHE crates/kubernation/THIRD-PARTY-NOTICES.md" \
-OUT_DMG=kubernation-v0.75.0-macos-universal.dmg \
+OUT_DMG=kubernation-v1.0.0-macos-universal.dmg \
 bash packaging/macos/release-macos.sh
 ```
 

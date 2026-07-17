@@ -2,11 +2,25 @@
 
 All notable changes to **KuberNation** are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project uses
-[Semantic Versioning](https://semver.org/) — pre-1.0, so `minor` covers new
-features/behaviour and `patch` covers fixes/docs/refactors. One workspace
+[Semantic Versioning](https://semver.org/) — `major` covers breaking changes,
+`minor` new features/behaviour, and `patch` fixes/docs/refactors. One workspace
 version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
+
+## [1.0.0] — 2026-07-17
+
+**First stable release.** 1.0.0 is the milestone, not a big-bang feature drop:
+the two items that had been holding it back — proving the multi-platform CI
+green, and shipping a code-signed, notarized macOS build — both landed here.
+The API/UX surface is now considered stable, so from this point a breaking
+change bumps `major`.
+
+> This section aggregates the `0.4`–`0.75` development line, whose entries had
+> accumulated under *Unreleased* rather than being rolled into dated sections as
+> each version was tagged. Those changes did ship — the git tags `vX.Y.Z` record
+> which version each one actually landed in. Everything below `[0.3.0]` is
+> unaffected.
 
 ### Added
 - **Signed & notarized macOS releases (`.dmg`).** The release pipeline now wraps
