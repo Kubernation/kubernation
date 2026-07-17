@@ -8,6 +8,20 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Signed & notarized macOS releases (`.dmg`).** The release pipeline now wraps
+  the universal binary in a `KuberNation.app` bundle (Info.plist + `.icns` from
+  the logo mark), signs it with a Developer ID Application certificate under the
+  hardened runtime, notarizes it with Apple (App Store Connect API key), staples
+  the ticket, and ships it in a drag-to-Applications `.dmg`. Gatekeeper clears it
+  on first launch with no `xattr -d com.apple.quarantine` workaround. The bundle
+  carries the licenses + third-party notices. Signing is gated on repo secrets
+  (`MACOS_CERT_P12_BASE64`, `MACOS_CERT_PASSWORD`, `APPLE_API_KEY_P8_BASE64`,
+  `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`); a tag pushed without them still
+  releases, degrading to the prior unsigned tarball. The bundle/sign/notarize/
+  staple/dmg flow lives in `packaging/macos/release-macos.sh`, runnable locally
+  for a signed build. Linux `.tar.gz` and Windows `.zip` are unchanged.
+
 ### Fixed
 - **macOS crash mitigations for window maximize/resize (vendored miniquad
   patches).** The reported silent disappearance on maximize occurred on a
