@@ -76,6 +76,62 @@ impl Overlay {
     }
 }
 
+// --- map styles (the View menu's "map style") ------------------------------
+
+/// How the world's *geometry* is drawn — the flat iso chart (`Plain`) or raised
+/// terrain with cliff faces (`Relief`). Distinct from [`Overlay`], which changes
+/// what the land is *coloured* by: a style changes where a cell lands on screen,
+/// so it participates in the INVERSE projection too (see [`Camera::hit`]).
+///
+/// Lives here, beside `Overlay`, so `from_str`/`label` round-trip in one place
+/// with their test (main.rs has no test module).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MapStyle {
+    /// The flat isometric chart — every cell drawn at sea level.
+    #[default]
+    Plain,
+    /// Raised land: tile tops lift by `land_lift()` px with shaded cliff faces
+    /// on their sea-facing edges. A cartographic *relief map*.
+    Relief,
+}
+
+impl MapStyle {
+    pub const ALL: [MapStyle; 2] = [MapStyle::Plain, MapStyle::Relief];
+
+    /// Short label for the chrome / menu radio — the persisted spelling too.
+    pub fn label(self) -> &'static str {
+        match self {
+            MapStyle::Plain => "plain",
+            MapStyle::Relief => "relief",
+        }
+    }
+
+    /// Land's height above sea level in UNZOOMED px. `Camera::lift_px` scales it
+    /// so the extrusion tracks the tiles.
+    ///
+    /// Kept well under `TILE_H` (16.0): the lift-to-tile-height ratio is
+    /// zoom-invariant (both scale with zoom), so at 7.0 a cliff is a constant
+    /// ~44% of a tile at every zoom and the painter's-algorithm sort by `x + y`
+    /// stays correct. Raising this past ~16.0 would need pass 1 re-sorted.
+    pub fn land_lift(self) -> f32 {
+        match self {
+            MapStyle::Plain => 0.0,
+            // Phase 0: the seam ships as a no-op so the capability lands with
+            // zero visual risk. Phase 1 turns this into a real lift.
+            MapStyle::Relief => 0.0,
+        }
+    }
+}
+
+/// Parse a persisted / CLI map-style spelling; unknown values fall back to the
+/// default (mirrors `overlay_from_str`).
+pub fn map_style_from_str(s: &str) -> MapStyle {
+    MapStyle::ALL
+        .into_iter()
+        .find(|m| m.label() == s)
+        .unwrap_or_default()
+}
+
 /// Per-workload NetworkPolicy coverage + exposure, for the walls overlay + the
 /// city breach-marks. Borrowed from `Models` for one frame.
 pub struct WallData<'a> {
@@ -280,12 +336,67 @@ pub fn locate<'a, 'b>(
         .map(|s| (s, (cell.0 - s.off, cell.1)))
 }
 
+/// Resolve a two-plane [`Hit`] to the world + local cell of whatever the pointer
+/// is actually over, choosing the plane each feature is DRAWN on:
+///
+/// - a **coast marker** (harbour / gate) is moored in water, so it is looked up
+///   on the `sea` plane and wins when present — this is what keeps "click a
+///   harbour → open the city it serves" working once land lifts;
+/// - everything else (terrain, cities, structures) resolves on the `land` plane.
+///
+/// Returning the plane-appropriate cell means the single-cell consumers
+/// (`panel_for`, `panels::region_lines`) stay correct unchanged: handed the sea
+/// cell their `coast_at` probe matches, handed the land cell it does not and they
+/// fall through to the region. Under `MapStyle::Plain` both planes are the same
+/// cell, so this is a no-op.
+pub fn locate_hit<'a, 'b>(
+    worlds: &'b [SceneWorld<'a>],
+    hit: Hit,
+) -> Option<(&'b SceneWorld<'a>, (u16, u16))> {
+    if let Some(sea) = hit.sea
+        && let Some((sw, local)) = locate(worlds, sea)
+        && sw.world.coast_at(local.0, local.1).is_some()
+    {
+        return Some((sw, local));
+    }
+    hit.land.and_then(|land| locate(worlds, land))
+}
+
 // --- camera ----------------------------------------------------------------
 
 pub struct Camera {
     pub pos: Vec2,
     pub zoom: f32,
     target: Option<Vec2>,
+    /// Active map style. GEOMETRY only — the palette lives in `theme`. Held per
+    /// camera (not in a global) because it participates in the inverse
+    /// projection and because `shifted()` mints a second camera for the warm
+    /// world: a global could not express "this camera's style".
+    pub style: MapStyle,
+}
+
+/// One screen point resolved on BOTH draw planes. Land tops lift under
+/// `MapStyle::Relief` while the sea does not, so a single inverse cannot serve
+/// both: callers resolve each feature on the plane it is *drawn* on — coast
+/// markers (moored in water) from `sea`, terrain/cities/structures from `land`.
+/// Under `Plain` the lift is 0, so `sea == land` and every path is identical to
+/// the pre-relief behaviour.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Hit {
+    pub sea: Option<(u16, u16)>,
+    pub land: Option<(u16, u16)>,
+}
+
+impl Hit {
+    /// A hit already resolved to one cell — a keyboard selection or an attention
+    /// jump, where no screen point (and so no plane) is involved. Both planes are
+    /// that cell, so `locate_hit` describes whatever is sited there.
+    pub fn at(cell: (u16, u16)) -> Self {
+        Self {
+            sea: Some(cell),
+            land: Some(cell),
+        }
+    }
 }
 
 impl Camera {
@@ -294,6 +405,7 @@ impl Camera {
             pos: vec2(-300.0, -80.0),
             zoom: 1.0,
             target: None,
+            style: MapStyle::default(),
         }
     }
     /// Tile diamond HALF-extents in screen pixels: (half_width, half_height).
@@ -321,19 +433,58 @@ impl Camera {
             pos: self.pos - vec2(d * hw, d * hh),
             zoom: self.zoom,
             target: None,
+            // Load-bearing: without this the warm world renders flat beside a
+            // raised primary.
+            style: self.style,
         }
     }
-    /// Screen point → world cell. Invert the iso projection, then floor: with
-    /// the "integer = north vertex / center = +0.5" convention, the diamond
-    /// that owns a pixel is `floor` of the solved continuous coords.
+    /// Land's height above sea level in SCREEN px (0.0 under `Plain`). Scaled by
+    /// zoom so the extrusion tracks the tiles.
+    pub fn lift_px(&self) -> f32 {
+        self.style.land_lift() * self.zoom
+    }
+    /// Screen point for something STANDING ON LAND. Sea-level things — the
+    /// shallows ring, harbours and gates moored in water, the ocean, the minimap
+    /// — keep using [`Camera::to_screen`].
+    pub fn to_land(&self, wx: f32, wy: f32) -> Vec2 {
+        let p = self.to_screen(wx, wy);
+        vec2(p.x, p.y - self.lift_px())
+    }
+    /// Screen point → world cell on the SEA plane. Invert the iso projection,
+    /// then floor: with the "integer = north vertex / center = +0.5" convention,
+    /// the diamond that owns a pixel is `floor` of the solved continuous coords.
+    ///
+    /// This is the inverse of [`Camera::to_screen`] — use it for what is DRAWN
+    /// there (ocean, shallows, coast markers). For land-standing features use
+    /// [`Camera::cell_at_land`], or [`Camera::hit`] for both at once.
     pub fn cell_at(&self, screen: Vec2, bounds: (u16, u16)) -> Option<(u16, u16)> {
+        self.cell_at_plane(screen, bounds, 0.0)
+    }
+    /// Screen point → world cell on the LAND plane: the inverse of
+    /// [`Camera::to_land`]. Identical to [`Camera::cell_at`] when the style has
+    /// no lift, which is what keeps `Plain` byte-identical.
+    pub fn cell_at_land(&self, screen: Vec2, bounds: (u16, u16)) -> Option<(u16, u16)> {
+        self.cell_at_plane(screen, bounds, self.lift_px())
+    }
+    /// Shared inverse. `lift` is the plane's height above sea level in screen px;
+    /// `to_land` subtracts it from y only, so undoing it adds it back to y and
+    /// leaves the `a = wx - wy` axis untouched.
+    fn cell_at_plane(&self, screen: Vec2, bounds: (u16, u16), lift: f32) -> Option<(u16, u16)> {
         let (hw, hh) = self.cell_px();
         let a = (screen.x + self.pos.x) / hw; // = wx - wy
-        let b = (screen.y + self.pos.y) / hh; // = wx + wy
+        let b = (screen.y + self.pos.y + lift) / hh; // = wx + wy
         let wx = (a + b) * 0.5;
         let wy = (b - a) * 0.5;
         (wx >= 0.0 && wy >= 0.0 && wx < bounds.0 as f32 && wy < bounds.1 as f32)
             .then_some((wx as u16, wy as u16))
+    }
+    /// Resolve a screen point on both draw planes at once — the input to
+    /// `panel_for` / `panels::region_lines`, which pick per feature.
+    pub fn hit(&self, screen: Vec2, bounds: (u16, u16)) -> Hit {
+        Hit {
+            sea: self.cell_at(screen, bounds),
+            land: self.cell_at_land(screen, bounds),
+        }
     }
     /// Glide so `cell`'s diamond center sits at the screen middle.
     pub fn fly_to(&mut self, cell: (u16, u16)) {
@@ -729,7 +880,7 @@ pub fn draw_world(
         if detail.province_labels {
             // Anchor the continent name above its north tip, but keep it fully
             // on-screen (zoomed in, the tip can sit far off the top edge).
-            let tip = cam.to_screen(cont.x as f32, cont.y as f32);
+            let tip = cam.to_land(cont.x as f32, cont.y as f32);
             let label = ascii(&format!(
                 "{}  ({} provinces)",
                 cont.zone,
@@ -799,7 +950,7 @@ pub fn draw_world(
 /// overlay it's unambiguous. Cost-overlay-only.
 fn draw_idle_coin(prov: &Province, cam: &Camera) {
     let (hw, hh) = cam.cell_px();
-    let c = cam.to_screen(
+    let c = cam.to_land(
         prov.x as f32 + prov.w as f32 * 0.5 + 0.5,
         prov.y as f32 + prov.h as f32 * 0.5 + 0.5,
     );
@@ -812,7 +963,7 @@ fn draw_idle_coin(prov: &Province, cam: &Camera) {
 pub fn draw_selection(cam: &Camera, sel: (u16, u16)) {
     let (hw, hh) = cam.cell_px();
     let t = get_time() as f32;
-    let c = cam.to_screen(sel.0 as f32 + 0.5, sel.1 as f32 + 0.5); // diamond center
+    let c = cam.to_land(sel.0 as f32 + 0.5, sel.1 as f32 + 0.5); // diamond center
     let pulse = 1.0 + (t * 5.0).sin() * 0.12;
     stroke_diamond(c, hw * pulse, hh * pulse, 2.5, INK);
 }
@@ -1097,7 +1248,7 @@ fn draw_province_features(
 
     if detail.province_labels {
         let (top_li, _) = coast.land_span(prov.y as i32, prov.w as f32);
-        let anchor = cam.to_screen(prov.x as f32 + top_li + 0.5, prov.y as f32 + 0.5);
+        let anchor = cam.to_land(prov.x as f32 + top_li + 0.5, prov.y as f32 + 0.5);
         let ls = label_scale(cam.zoom);
         let fs = 15.0 * ls;
         let name = ascii(&prov.tile.name);
@@ -1165,7 +1316,7 @@ fn draw_forest_iso(prov: &Province, cam: &Camera, coast: &Coast, detail: &Lod) {
             continue;
         }
         let cx = prov.x as f32 + li + 1.0 + ((hx >> 8) % (lw as u64).max(1)) as f32;
-        let c = cam.to_screen(cx + 0.5, cy as f32 + 0.5);
+        let c = cam.to_land(cx + 0.5, cy as f32 + 0.5);
         draw_tree(vec2(c.x, c.y + hh * 0.35), z);
     }
 }
@@ -1189,8 +1340,8 @@ fn draw_road_iso(prov: &Province, cam: &Camera, coast: &Coast, detail: &Lod) {
     let n = prov.infra.min(10).min(lw as usize);
     for i in 0..n {
         let cx = prov.x as f32 + li + 0.5 + i as f32;
-        let a = cam.to_screen(cx, row as f32 + 0.5);
-        let b = cam.to_screen(cx + 0.7, row as f32 + 0.5);
+        let a = cam.to_land(cx, row as f32 + 0.5);
+        let b = cam.to_land(cx + 0.7, row as f32 + 0.5);
         draw_line(a.x, a.y, b.x, b.y, (2.0 * z).max(1.5), ROAD);
     }
 }
@@ -1206,7 +1357,7 @@ fn draw_province_aggregate(prov: &Province, cam: &Camera, coast: &Coast) {
     let count = prov.cities.len();
     let worst = prov.cities.iter().filter_map(|c| c.severity).max();
     let _ = coast;
-    let center = cam.to_screen(
+    let center = cam.to_land(
         prov.x as f32 + prov.w as f32 / 2.0,
         prov.y as f32 + prov.h as f32 / 2.0,
     );
@@ -1302,7 +1453,7 @@ fn draw_city_wall(c: Vec2, z: f32) {
 /// city's lower-right, away from the pop chip / name. Render-only.
 fn draw_breach(cam: &Camera, city: &City, exposed: bool) {
     let z = cam.zoom.max(0.5);
-    let c = cam.to_screen(city.x as f32 + 0.5, city.y as f32 + 0.5);
+    let c = cam.to_land(city.x as f32 + 0.5, city.y as f32 + 0.5);
     let s = (3.5 * z).clamp(2.0, 6.0);
     // lower-right of the settlement diamond.
     let bx = c.x + 9.0 * z;
@@ -1387,7 +1538,7 @@ fn draw_city(
     occupied: &mut Vec<Rect>,
 ) {
     let z = cam.zoom;
-    let c = cam.to_screen(city.x as f32 + 0.5, city.y as f32 + 0.5); // diamond center
+    let c = cam.to_land(city.x as f32 + 0.5, city.y as f32 + 0.5); // diamond center
     let (hw, hh) = cam.cell_px();
     let tier: u8 = match city.ready {
         0 => 0,
@@ -1643,7 +1794,7 @@ fn draw_island_terrain(isl: &Island, cam: &Camera) {
     // Sand body.
     for wy in isl.y as i32..y1 {
         for wx in isl.x as i32..x1 {
-            let c = cam.to_screen(wx as f32 + 0.5, wy as f32 + 0.5);
+            let c = cam.to_land(wx as f32 + 0.5, wy as f32 + 0.5);
             if !on_screen(c, 1.0) {
                 continue;
             }
@@ -1665,7 +1816,7 @@ fn draw_island_terrain(isl: &Island, cam: &Camera) {
 /// badge, the structure marks, and the "+N more" overflow.
 fn draw_island_features(isl: &Island, cam: &Camera, detail: &Lod, _occupied: &mut Vec<Rect>) {
     let ls = label_scale(cam.zoom);
-    let center_top = cam.to_screen(isl.x as f32 + isl.w as f32 * 0.5, isl.y as f32);
+    let center_top = cam.to_land(isl.x as f32 + isl.w as f32 * 0.5, isl.y as f32);
     if detail.structures_labels {
         let s = ascii(&format!("isle of {}", isl.label));
         let fs = 13.0 * ls;
@@ -1683,7 +1834,7 @@ fn draw_island_features(isl: &Island, cam: &Camera, detail: &Lod, _occupied: &mu
     if detail.scale == Scale::World {
         let total = isl.structures.len() + isl.more;
         if total > 0 {
-            let center = cam.to_screen(
+            let center = cam.to_land(
                 isl.x as f32 + isl.w as f32 / 2.0,
                 isl.y as f32 + isl.h as f32 / 2.0,
             );
@@ -1716,7 +1867,7 @@ fn draw_island_features(isl: &Island, cam: &Camera, detail: &Lod, _occupied: &mu
     // Below the label threshold: just dot the marks on the band.
     if !detail.structures_labels {
         for s in &isl.structures {
-            let p = cam.to_screen(isl.x as f32 + isl.w as f32 * 0.5, s.y as f32 + 0.5);
+            let p = cam.to_land(isl.x as f32 + isl.w as f32 * 0.5, s.y as f32 + 0.5);
             draw_struct_mark(s.glyph, p, cam.zoom, mark_color(s));
         }
         return;
@@ -1752,7 +1903,7 @@ fn draw_island_features(isl: &Island, cam: &Camera, detail: &Lod, _occupied: &mu
     let bw = mark_w + maxw + 12.0;
     let bh = rows.len() as f32 * line_h + 8.0;
     let last_y = isl.structures.iter().map(|s| s.y).max().unwrap_or(isl.y);
-    let base = cam.to_screen(isl.x as f32 + isl.w as f32 * 0.5, last_y as f32 + 1.0);
+    let base = cam.to_land(isl.x as f32 + isl.w as f32 * 0.5, last_y as f32 + 1.0);
     let bx = base.x - bw * 0.5;
     let by = base.y;
     draw_rectangle(bx, by, bw, bh, Color::new(0.08, 0.09, 0.07, 0.76));
@@ -1999,17 +2150,38 @@ mod tests {
     // cell that owns a screen point is `floor` of the inverted coords. If this
     // ever fails, clicks/hover land on the wrong diamond near tile edges.
     fn roundtrip(zoom: f32, pos: Vec2, bounds: (u16, u16), cells: &[(u16, u16)]) {
+        roundtrip_styled(MapStyle::Plain, zoom, pos, bounds, cells);
+    }
+
+    /// Round-trip each cell center through the projection and back, on the plane
+    /// the style draws it on: `to_screen`/`cell_at` at sea level, and
+    /// `to_land`/`cell_at_land` for land. Both must be exact inverses.
+    fn roundtrip_styled(
+        style: MapStyle,
+        zoom: f32,
+        pos: Vec2,
+        bounds: (u16, u16),
+        cells: &[(u16, u16)],
+    ) {
         let cam = Camera {
             pos,
             zoom,
             target: None,
+            style,
         };
         for &(wx, wy) in cells {
             let center = cam.to_screen(wx as f32 + 0.5, wy as f32 + 0.5);
             assert_eq!(
                 cam.cell_at(center, bounds),
                 Some((wx, wy)),
-                "cell ({wx},{wy}) center misrouted at zoom {zoom}"
+                "cell ({wx},{wy}) sea-plane center misrouted at zoom {zoom}"
+            );
+            let land = cam.to_land(wx as f32 + 0.5, wy as f32 + 0.5);
+            assert_eq!(
+                cam.cell_at_land(land, bounds),
+                Some((wx, wy)),
+                "cell ({wx},{wy}) land-plane center misrouted at zoom {zoom} under {}",
+                style.label()
             );
         }
     }
@@ -2040,6 +2212,116 @@ mod tests {
         assert_eq!(Overlay::Namespace.label(), "namespace");
         assert_eq!(Overlay::Coverage.label(), "walls");
         assert_eq!(Overlay::Saturation.label(), "saturation");
+    }
+
+    #[test]
+    fn map_style_defaults_to_plain_and_round_trips_its_label() {
+        assert_eq!(MapStyle::default(), MapStyle::Plain);
+        // The labels ARE the persisted / CLI spellings — round-trip every variant.
+        for m in MapStyle::ALL {
+            assert_eq!(
+                map_style_from_str(m.label()),
+                m,
+                "{} lost its label",
+                m.label()
+            );
+        }
+        // Unrecognised persisted or flag values fall back to the default, never panic
+        // (mirrors `overlay_from_str`).
+        assert_eq!(map_style_from_str("hex"), MapStyle::Plain);
+        assert_eq!(map_style_from_str(""), MapStyle::Plain);
+        // Plain is flat by definition.
+        assert_eq!(MapStyle::Plain.land_lift(), 0.0);
+    }
+
+    /// PHASE-0 SEAM GUARD. The selector ships before the pixels: every style's
+    /// lift is 0, so `to_land ≡ to_screen`, both hit planes coincide, and the map
+    /// is identical whichever style is active — the capability lands with zero
+    /// visual risk. **Phase 1 deliberately breaks this test**: when
+    /// `Relief.land_lift()` becomes a real value, delete this and rely on
+    /// `cell_at_land_inverts_to_land_at_a_nonzero_lift` (which already covers the
+    /// lifted math) plus the `map-style-relief` gui-smoke state.
+    #[test]
+    fn phase0_every_style_is_still_a_flat_no_op() {
+        for m in MapStyle::ALL {
+            assert_eq!(
+                m.land_lift(),
+                0.0,
+                "{} lifted before the Phase-1 painters landed — terrain would \
+                 detach from the shallows, harbours and minimap",
+                m.label()
+            );
+        }
+    }
+
+    /// The load-bearing invariant of the two-plane design: `cell_at` inverts
+    /// `to_screen` and `cell_at_land` inverts `to_land`, EXACTLY, at any lift.
+    /// Phase 0's `land_lift()` is 0.0 for both styles, so the lift is injected
+    /// directly here — otherwise this test would silently prove nothing once
+    /// Phase 1 turns the lift on.
+    #[test]
+    fn cell_at_land_inverts_to_land_at_a_nonzero_lift() {
+        let bounds = (40u16, 30u16);
+        for zoom in [0.30f32, 0.5, 1.0, 1.4, 2.0, 3.0] {
+            let cam = Camera {
+                pos: vec2(-300.0, -80.0),
+                zoom,
+                target: None,
+                style: MapStyle::Plain,
+            };
+            for lift in [0.0f32, 7.0, 15.9] {
+                let l = lift * zoom; // what lift_px() would return
+                for &(wx, wy) in &[(0u16, 0u16), (1, 0), (7, 3), (19, 11), (39, 29)] {
+                    let (fx, fy) = (wx as f32 + 0.5, wy as f32 + 0.5);
+                    // A land-plane point is the sea point raised by the lift…
+                    let land = cam.to_screen(fx, fy) - vec2(0.0, l);
+                    // …and the land inverse must put it back on its own cell.
+                    assert_eq!(
+                        cam.cell_at_plane(land, bounds, l),
+                        Some((wx, wy)),
+                        "cell ({wx},{wy}) misrouted at zoom {zoom}, lift {lift}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Under `Plain` the two planes coincide, which is what makes the Phase-0
+    /// seam byte-identical to the pre-relief behaviour: every `Hit` a click can
+    /// produce has `sea == land`, so `locate_hit` resolves exactly as the old
+    /// single-cell `cell_at` path did.
+    #[test]
+    fn plain_style_collapses_both_hit_planes() {
+        let cam = Camera {
+            pos: vec2(-300.0, -80.0),
+            zoom: 1.4,
+            target: None,
+            style: MapStyle::Plain,
+        };
+        assert_eq!(cam.lift_px(), 0.0);
+        let bounds = (40u16, 30u16);
+        for p in [vec2(400.0, 300.0), vec2(650.0, 120.0), vec2(120.0, 500.0)] {
+            let hit = cam.hit(p, bounds);
+            assert_eq!(hit.sea, hit.land, "planes diverged under Plain at {p:?}");
+            assert_eq!(hit.land, cam.cell_at(p, bounds));
+        }
+        // A keyboard/attention selection is plane-free: both sides are that cell.
+        assert_eq!(Hit::at((3, 4)).sea, Some((3, 4)));
+        assert_eq!(Hit::at((3, 4)).land, Some((3, 4)));
+    }
+
+    /// `shifted()` must carry the style, or the warm world in a pair session
+    /// renders flat beside a raised primary.
+    #[test]
+    fn shifted_camera_keeps_the_map_style() {
+        let cam = Camera {
+            pos: vec2(-300.0, -80.0),
+            zoom: 1.0,
+            target: None,
+            style: MapStyle::Relief,
+        };
+        assert_eq!(cam.shifted(12).style, MapStyle::Relief);
+        assert_eq!(cam.shifted(12).lift_px(), cam.lift_px());
     }
 
     #[test]

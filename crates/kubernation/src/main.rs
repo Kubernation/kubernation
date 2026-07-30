@@ -229,6 +229,11 @@ struct Args {
     /// signal — strain). Set from the View menu at runtime; flag is for shots.
     #[arg(long, value_name = "MODE")]
     overlay: Option<String>,
+    /// Map rendering style: "plain" (default — the flat isometric chart) or
+    /// "relief" (raised terrain with cliff faces). Set from the View menu at
+    /// runtime; flag is for shots.
+    #[arg(long, value_name = "STYLE")]
+    map_style: Option<String>,
     /// Open a chrome menu on sync — game / view / orders / advisors / world /
     /// help (development verification of the menu bar dropdowns)
     #[arg(long, value_name = "NAME")]
@@ -676,6 +681,13 @@ async fn main() {
         .or(saved.overlay.as_deref())
         .map(overlay_from_str)
         .unwrap_or(Overlay::Terrain);
+    // Map style, same precedence: --map-style flag > saved preference > default.
+    cam.style = args
+        .map_style
+        .as_deref()
+        .or(saved.map_style.as_deref())
+        .map(draw::map_style_from_str)
+        .unwrap_or_default();
     // Menu "Fit view" can't reach `bounds` from the chrome draw, so it defers
     // the camera fit to the next frame's input block (where bounds is in scope).
     let mut pending_fit = false;
@@ -1848,7 +1860,7 @@ async fn main() {
                 if is_key_pressed(KeyCode::Enter)
                     && let Some(sel) = selected
                 {
-                    panel = panel_for(&worlds, sel);
+                    panel = panel_for(&worlds, draw::Hit::at(sel));
                 }
 
                 // Minimap navigation: click or drag to recenter the main view
@@ -1876,9 +1888,14 @@ async fn main() {
                     && mouse.y > panels::CHROME_H
                     && mouse.x < panels::map_width()
                 {
-                    selected = cam.cell_at(mouse, bounds);
-                    if let Some(sel) = selected {
-                        panel = panel_for(&worlds, sel);
+                    // Two-plane hit: `selected` (the highlight + blast subject)
+                    // tracks the LAND plane the terrain is drawn on; the panel
+                    // resolver picks per feature so a sea-moored harbour still
+                    // opens its city.
+                    let hit = cam.hit(mouse, bounds);
+                    selected = hit.land;
+                    if selected.is_some() {
+                        panel = panel_for(&worlds, hit);
                         panel_just_opened = panel.is_some();
                     }
                 }
@@ -2287,9 +2304,8 @@ async fn main() {
                 let ml = minimap_layout(bounds);
                 let over_map = mouse.x < panels::map_width() && mouse.y > panels::CHROME_H;
                 let hovered = over_map
-                    .then(|| cam.cell_at(mouse, bounds))
-                    .flatten()
-                    .and_then(|cell| locate(&worlds, cell));
+                    .then(|| draw::locate_hit(&worlds, cam.hit(mouse, bounds)))
+                    .flatten();
                 let sidebar_sel = selected.and_then(|cell| locate(&worlds, cell)).or(hovered);
                 // The FORWARDS section's stop buttons act only when no modal is
                 // up (the column is dimmed behind a scrim otherwise).
@@ -2684,6 +2700,7 @@ async fn main() {
         }
         let mctx = MenuCtx {
             overlay,
+            style: cam.style,
             staged: planned.len(),
             ns_active: ns_filter_now.is_active(),
         };
@@ -2731,6 +2748,9 @@ async fn main() {
             }
             Some(MenuAction::Quit) => want_quit = true,
             Some(MenuAction::SetOverlay(o)) => overlay = o,
+            // Geometry lives on the camera, so switching style is one assignment
+            // — the next frame draws (and hit-tests) through the new plane.
+            Some(MenuAction::SetMapStyle(m)) => cam.style = m,
             Some(MenuAction::EndTurn) => {
                 // The review draws next frame; by then the press edge is gone,
                 // so the opening click can't reach it as a click-outside
@@ -3499,6 +3519,7 @@ async fn main() {
             version: prefs::PREFS_VERSION,
             colorblind: theme::colorblind(),
             overlay: Some(overlay.label().to_string()),
+            map_style: Some(cam.style.label().to_string()),
         });
         // Clean shutdown — remove the abnormal-exit marker (every exit path
         // funnels through this point; a crash never reaches it).
@@ -3631,8 +3652,11 @@ fn export_to_file(text: &str, filename: &str) -> String {
     }
 }
 
-fn panel_for(worlds: &[SceneWorld], sel: (u16, u16)) -> Option<Panel> {
-    let (sw, local) = locate(worlds, sel)?;
+/// The drill-down for a two-plane pointer hit. `locate_hit` picks the plane each
+/// feature is drawn on (coast markers float at sea level, everything else stands
+/// on land), so the probes below stay correct once land lifts under `Relief`.
+fn panel_for(worlds: &[SceneWorld], hit: draw::Hit) -> Option<Panel> {
+    let (sw, local) = draw::locate_hit(worlds, hit)?;
     // A coast marker opens the city it serves.
     if let Some((_, m)) = sw.world.coast_at(local.0, local.1) {
         return Some(Panel::City(sw.id, m.workload.clone()));

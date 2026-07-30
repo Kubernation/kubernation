@@ -48,6 +48,7 @@ STATES=(
   "overlay-walls|--overlay walls"
   "overlay-saturation|--overlay saturation"
   "overlay-cost|--overlay cost"
+  "map-style-relief|--map-style relief"
   "opencost-degrade|--opencost --overlay cost"
   "colorblind|--colorblind"
   "workloads|--workloads"

@@ -24,3 +24,6 @@ oracle-egress-*.txt
 oracle.json
 oracle.json.tmp
 oracle.json.corrupt-*
+
+# VOR code-intelligence local index (per-machine, not shared).
+.vor/

@@ -9,7 +9,7 @@
 use macroquad::prelude::*;
 
 use crate::advisor::AdvisorTab;
-use crate::draw::Overlay;
+use crate::draw::{MapStyle, Overlay};
 use crate::panels::CHROME_H;
 use crate::text::{text, text_bold, text_size};
 use crate::theme::*;
@@ -23,6 +23,7 @@ pub enum MenuAction {
     ExportPostmortem,
     Quit,
     SetOverlay(Overlay),
+    SetMapStyle(MapStyle),
     EndTurn,
     DiscardTurn,
     ChaosOpen,
@@ -37,11 +38,12 @@ pub enum MenuAction {
     ToggleColorblind,
 }
 
-/// Live state the bar reflects: the active overlay (radio mark), the staged
-/// intervention count (Orders badge + enable), and whether a namespace filter
-/// is active (World check).
+/// Live state the bar reflects: the active overlay and map style (radio marks),
+/// the staged intervention count (Orders badge + enable), and whether a
+/// namespace filter is active (World check).
 pub struct MenuCtx {
     pub overlay: Overlay,
+    pub style: MapStyle,
     pub staged: usize,
     pub ns_active: bool,
 }
@@ -154,6 +156,18 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                 .check(ctx.overlay == Overlay::Saturation),
                 Item::act("Upkeep (cost)", MenuAction::SetOverlay(Overlay::Cost))
                     .check(ctx.overlay == Overlay::Cost),
+                Item::sep(),
+                Item::header("MAP STYLE"),
+                Item::act(
+                    "Plain (flat chart)",
+                    MenuAction::SetMapStyle(MapStyle::Plain),
+                )
+                .check(ctx.style == MapStyle::Plain),
+                Item::act(
+                    "Relief (raised terrain)",
+                    MenuAction::SetMapStyle(MapStyle::Relief),
+                )
+                .check(ctx.style == MapStyle::Relief),
                 Item::sep(),
                 Item::act("Annals (what changed) — H", MenuAction::Annals),
                 Item::act("Workloads (table) — O", MenuAction::Workloads),

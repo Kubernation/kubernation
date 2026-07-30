@@ -1,7 +1,8 @@
 //! Persisted UI preferences — a small `~/.config/kubernation/prefs.json` restored
 //! at the next launch so you don't re-set them every run. **CLI flags always win**
 //! over the saved value. NON-SECRET, NON-CLUSTER convenience state ONLY: the
-//! colour-blind palette choice and the last map overlay — never any cluster data
+//! colour-blind palette choice, the last map overlay and the map style — never
+//! any cluster data
 //! (no cross-run cluster state) and no secrets (the Oracle token lives in its own
 //! file). Written atomically (temp + rename) so a crash mid-write can't truncate
 //! it; a corrupt file is renamed aside (never deleted) and we fall back to defaults.
@@ -27,6 +28,9 @@ pub struct Prefs {
     /// Last map overlay, in its `--overlay` string form (e.g. "pressure"); `None`
     /// or unrecognised → the default terrain view.
     pub overlay: Option<String>,
+    /// Last map style, in its `--map-style` string form ("plain" / "relief");
+    /// `None` or unrecognised → the default plain chart.
+    pub map_style: Option<String>,
 }
 
 /// `$XDG_CONFIG_HOME` else `$HOME/.config` else the cwd — the same dir as
@@ -114,11 +118,13 @@ mod tests {
             version: PREFS_VERSION,
             colorblind: true,
             overlay: Some("cost".into()),
+            map_style: Some("relief".into()),
         };
         let json = serde_json::to_vec(&p).unwrap();
         let back: Prefs = serde_json::from_slice(&json).unwrap();
         assert!(back.colorblind);
         assert_eq!(back.overlay.as_deref(), Some("cost"));
+        assert_eq!(back.map_style.as_deref(), Some("relief"));
         assert_eq!(back.version, PREFS_VERSION);
     }
 
@@ -126,10 +132,14 @@ mod tests {
     fn missing_and_partial_fields_default() {
         // An empty object → all defaults (forward/backward compat).
         let p: Prefs = serde_json::from_str("{}").unwrap();
-        assert!(!p.colorblind && p.overlay.is_none());
+        assert!(!p.colorblind && p.overlay.is_none() && p.map_style.is_none());
         // A partial object keeps the present field, defaults the rest.
         let p: Prefs = serde_json::from_str(r#"{"colorblind":true}"#).unwrap();
-        assert!(p.colorblind && p.overlay.is_none());
+        assert!(p.colorblind && p.overlay.is_none() && p.map_style.is_none());
+        // An old file with no map_style loads → None → the default style (so no
+        // PREFS_VERSION bump was needed for this field).
+        let p: Prefs = serde_json::from_str(r#"{"overlay":"cost"}"#).unwrap();
+        assert!(p.map_style.is_none());
         // Garbage is rejected (the loader renames it aside → defaults).
         assert!(serde_json::from_str::<Prefs>("not json").is_err());
     }
