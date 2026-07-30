@@ -2804,6 +2804,55 @@ what makes the interesting logic unit-testable without a cluster.
   secrets set (the local flow is proven). **Deferred:** Windows Authenticode
   signing; a Homebrew cask; a `sparkle`-style auto-updater.
 
+- **Map styles — Plain / Relief + two-plane hit-testing** (2026-07-30, v1.1.0,
+  user asked for runtime-selectable map rendering styles from
+  `docs/kubernation-map-style-guidance.md`; the doc was fact-checked to **v2**
+  first — 28 confirmed corrections, three of which changed the design): a
+  **View ▸ MAP STYLE** radio switches the world between `Plain` (the flat iso
+  chart) and `Relief` (land raised `7.0` unzoomed px with shaded cliff faces).
+  **Modelled on `Overlay`, not the colourblind atomic** — but NOT for v1's
+  stated reason (it claimed the atomic is startup-only, reading a *stale doc
+  comment*; it has been runtime-switchable since v0.68.0). The real reason:
+  style is **geometry**, so it participates in the inverse projection, and
+  `Camera::shifted()` mints a second camera for the warm world — a global can't
+  say "this camera's style". **The load-bearing consequence: hit-testing became
+  a TWO-PLANE problem.** Land tops lift, the sea does not, and coast markers are
+  the one sea-level thing that is *clicked* (`panel_for` probes `coast_at`
+  before `region_at`). A single lift-corrected `cell_at` — v1's proposed
+  one-line fix — is right for land and wrong for harbours by a **zoom-invariant
+  0.875 cells** (both `lift` and `hh` scale with zoom), leaving only ~32% of a
+  mark clickable. So `cell_at` **stays** the sea inverse, `cell_at_land` was
+  added, and `Hit`/`locate_hit` resolve each feature on the plane it is DRAWN
+  on — pinned by `relief_keeps_sea_level_marks_clickable`, which probes
+  *off-centre* because at the exact cell centre the 0.4375-per-axis shift falls
+  just short of crossing a boundary (a dead-centre click survives even the
+  broken design — only the other half of the mark exposes it). **Cliff colour is
+  DERIVED, not tabulated:** `theme::cliff_pair(top)` shades whatever colour the
+  top was drawn with (v1 aimed it at `iso_terrain_pair`, but land fill has nine
+  `overlay_pair` producers and the cells that actually silhouette are `ISO_SAND`
+  beaches — a fixed pair would be wrong for eight overlays), so all nine plus
+  the colour-blind variants compose for free, keeping `iso_block`'s
+  sunlit-SE/shadow-SW convention. **Depth needs no re-sort:** lift and tile
+  height both scale with zoom, so a cliff is a fixed ~44% of a tile at every
+  zoom and only ever hangs over water (continents sort back-to-front; shallows
+  precede terrain per continent) — a lift ≥ `TILE_H` would need pass 1 re-sorted,
+  pinned by `only_relief_lifts_the_land`. **Shipped in two commits:** Phase 0
+  was the whole capability with `land_lift()` returning 0.0 — menu, prefs, CLI,
+  the two-plane machinery and the 15-painter `to_land` sweep, all provably
+  pixel-identical (identity at lift 0) and **deliberately unversioned**, since
+  the only user-visible surface was a menu item that didn't change the map yet;
+  Phase 1 (the first feature after the 1.0.0 release, so a MINOR bump to 1.1.0)
+  added `fill_prism`, `cliff_pair`, the island rim, the `draw_blast`
+  plane split, lift-aware cull margins (they break from zoom ~1.07 — *below* the
+  default `--zoom 1.4` — otherwise) and turned the lift on. Sea level stays sea
+  level: the shallows rings, coast marks, ocean and minimap are untouched.
+  Verified live on kind (plain vs relief at a coastline); 75 GUI + 318 core
+  tests; gui-smoke 48 (`map-style-relief`). **Deferred:** hex topology (the
+  `MapStyle` enum is where a `Hex` variant slots in — deliberately no
+  `trait MapGeometry` until there is a second geometry to abstract over);
+  `fit`/`fly_to` framing still centres on the sea-level point (off by the lift,
+  ≤21px at max zoom); the minimap stays flat by design.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

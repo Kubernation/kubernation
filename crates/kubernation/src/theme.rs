@@ -169,6 +169,26 @@ pub fn iso_terrain_pair(h: NodeHealth) -> (Color, Color) {
     }
 }
 
+/// Cliff faces for a raised land tile (`MapStyle::Relief`), DERIVED from the
+/// colour its top was drawn with: `(sunlit_se, shadow_sw)`.
+///
+/// Deriving rather than tabulating is load-bearing. Land fill has nine
+/// producers (`draw::overlay_pair` — one per overlay) plus the `ISO_SAND` beach
+/// branch, and each has a colour-blind variant; a fixed cliff colour would be
+/// wrong for eight of them and would need re-checking every time an overlay is
+/// added. A pure function of the top colour composes with all of them, and with
+/// `set_colorblind`, for free.
+///
+/// The two factors keep `iso_block`'s convention — front-right sunlit,
+/// front-left shadowed (`WALL_SHADE / WALL` ≈ 0.71) — so a cliff and a city
+/// wall catch the light the same way.
+pub fn cliff_pair(top: Color) -> (Color, Color) {
+    const SUNLIT: f32 = 0.78;
+    const SHADOW: f32 = 0.55; // ≈ 0.71 × SUNLIT, matching WALL_SHADE / WALL
+    let scale = |f: f32| Color::new(top.r * f, top.g * f, top.b * f, top.a);
+    (scale(SUNLIT), scale(SHADOW))
+}
+
 /// A two-shade land "heat" pair by severity level (0 calm green, 1 elevated
 /// amber, 2 high red), shared by the Pressure and Replicas overlays. Two shades
 /// so the iso terrain checker/jitter still reads as textured land.

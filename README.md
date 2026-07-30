@@ -579,6 +579,7 @@ The client is driven by CLI flags — `--context`, `--kubeconfig`, `--namespace 
 filter), `--warm <context>`,
 `--project <crd>` (repeatable, to project a custom resource onto the islands),
 `--log-level`, `--colorblind`, `--overlay <terrain|pressure|replicas|namespace|walls|saturation|cost>`,
+`--map-style <plain|relief>`,
 `--slo-target`, the cost flags (`--cpu-rate` / `--mem-rate` / `--node-rate` /
 `--opencost [ns/svc:port]` / `--opencost-window`), and the Oracle flags
 (`--llm-url` / `--llm-model`; the API token comes from the `KUBERNATION_LLM_TOKEN`
@@ -586,8 +587,8 @@ environment variable, never a flag).
 
 It persists two small JSON files under `~/.config/kubernation/`: **`oracle.json`**
 (Oracle endpoint profiles — written `0600`, with optional opt-in token persistence)
-and **`prefs.json`** (UI preferences: the colour-blind palette and your last map
-view; CLI flags always override). The kube context and namespace filter are
+and **`prefs.json`** (UI preferences: the colour-blind palette, your last map
+view and your map style; CLI flags always override). The kube context and namespace filter are
 deliberately *not* persisted — they follow your kubeconfig on each launch.
 Diagnostics are written to `~/.local/state/kubernation/kubernation.log`
 (`RUST_LOG` is also honored).

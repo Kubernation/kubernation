@@ -548,7 +548,11 @@ fn page_controls(cx: &mut Ctx) {
     cx.key("Q", "quit");
     cx.heading("Menu bar");
     cx.para(
-        "The top bar holds the menus: Game (context, fit, export after-action report, quit), View (the map overlay — terrain health, cpu/mem pressure, replica health, namespace territory, walls, saturation, or upkeep/cost; and the Annals), Orders (end of turn, discard), Game Day (chaos drills), Advisors (Health / Storage / Network / Right-sizing / Hardening / Posture / Cost summaries), World (namespace filter), Help (Charter — your RBAC access — and the field guide). Click a title to open it.",
+        "The top bar holds the menus: Game (context, fit, export after-action report, quit), View (the map overlay — terrain health, cpu/mem pressure, replica health, namespace territory, walls, saturation, or upkeep/cost; the map style; and the Annals), Orders (end of turn, discard), Game Day (chaos drills), Advisors (Health / Storage / Network / Right-sizing / Hardening / Posture / Cost summaries), World (namespace filter), Help (Charter — your RBAC access — and the field guide). Click a title to open it.",
+    );
+    cx.heading("Map style (plain / relief)");
+    cx.para(
+        "How the world is DRAWN, independent of what the land is coloured by. Plain is the flat isometric chart; Relief raises the land off the sea so coastlines read as cliffs — the same data, a cartographer's relief map. Your choice is remembered between runs (--map-style plain|relief overrides it for one run). It changes geometry only: overlays, marks and the minimap are unaffected, harbours and gates still moor at sea level, and clicking picks the same tile under either style.",
     );
     cx.heading("Saturation overlay (strain)");
     cx.para(

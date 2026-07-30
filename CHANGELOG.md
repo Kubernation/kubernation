@@ -8,6 +8,20 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Map styles — a runtime-selectable relief map.** **View ▸ MAP STYLE** switches
+  the world between **Plain** (the flat isometric chart) and **Relief**, which
+  raises the land off the sea so coastlines read as cliffs — the same data drawn
+  as a cartographer's relief map. It's geometry only: every overlay, mark and
+  the minimap are unaffected, and the choice persists between runs
+  (`--map-style plain|relief` overrides it for one run).
+  **Clicking is unaffected under either style**, which took the interesting part
+  of the work: with land raised and the sea not, one screen point sits on *two*
+  planes, so the app now resolves each feature on the plane it is drawn on —
+  harbours and gates (moored in water) on the sea plane, terrain and cities on
+  the land plane. A single lift-corrected inverse would have silently broken
+  "click a harbour → open the city it serves" over roughly half of each mark.
+
 ## [1.0.0] — 2026-07-17
 
 **First stable release.** 1.0.0 is the milestone, not a big-bang feature drop:

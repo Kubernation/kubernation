@@ -116,9 +116,7 @@ impl MapStyle {
     pub fn land_lift(self) -> f32 {
         match self {
             MapStyle::Plain => 0.0,
-            // Phase 0: the seam ships as a no-op so the capability lands with
-            // zero visual risk. Phase 1 turns this into a real lift.
-            MapStyle::Relief => 0.0,
+            MapStyle::Relief => 7.0,
         }
     }
 }
@@ -554,6 +552,37 @@ fn fill_diamond(c: Vec2, hw: f32, hh: f32, fill: Color) {
     let p = diamond_pts(c, hw, hh);
     draw_triangle(p[0], p[1], p[2], fill);
     draw_triangle(p[0], p[2], p[3], fill);
+}
+
+/// A land tile as a raised prism (`MapStyle::Relief`): the top diamond at `c`
+/// with cliff walls dropping `lift` px to sea level.
+///
+/// Only the two SOUTH-facing walls can be seen from an iso viewpoint — the
+/// north ones are hidden behind the tile itself — so the caller passes which of
+/// them is exposed: `se` when the +wx neighbour is sea (down-RIGHT on screen),
+/// `sw` when the +wy neighbour is sea (down-LEFT). An interior tile passes
+/// neither and this is just `fill_diamond` at the lifted position.
+///
+/// Walls are painted BEFORE the top so the top covers the shared edge seam, and
+/// they hang only over water (the caller only reports sea neighbours), so the
+/// existing back-to-front pass needs no re-sorting — see `MapStyle::land_lift`.
+fn fill_prism(c: Vec2, hw: f32, hh: f32, lift: f32, top: Color, se: bool, sw: bool) {
+    if lift > 0.0 && (se || sw) {
+        let p = diamond_pts(c, hw, hh); // [N, E, S, W]
+        let drop = |v: Vec2| vec2(v.x, v.y + lift);
+        let (sunlit, shadow) = cliff_pair(top);
+        let wall = |a: Vec2, b: Vec2, col: Color| {
+            draw_triangle(a, b, drop(b), col);
+            draw_triangle(a, drop(b), drop(a), col);
+        };
+        if se {
+            wall(p[1], p[2], sunlit); // E→S face, catching the light
+        }
+        if sw {
+            wall(p[2], p[3], shadow); // S→W face, in shadow
+        }
+    }
+    fill_diamond(c, hw, hh, top);
 }
 
 /// Stroke an iso diamond's four edges.
@@ -1023,20 +1052,30 @@ pub fn draw_blast(cam: &Camera, sw: &SceneWorld, blast: &BlastRadius) -> Option<
     let (hw, hh) = cam.cell_px();
     let t = get_time() as f32;
 
-    let center = |p: (u16, u16)| cam.to_screen(p.0 as f32 + 0.5, p.1 as f32 + 0.5);
+    // Land things (cities, provinces, island structures) are drawn on the lifted
+    // plane; harbours and gates moor in water. Project each on its OWN plane or
+    // the lines and halos detach from what they mark under `Relief`.
+    let on_land = |p: (u16, u16)| cam.to_land(p.0 as f32 + 0.5, p.1 as f32 + 0.5);
+    let on_sea = |p: (u16, u16)| cam.to_screen(p.0 as f32 + 0.5, p.1 as f32 + 0.5);
     let src = match &blast.subject {
         Subject::Workload(wr) => w.city_pos(wr).or_else(|| w.structure_pos(wr)),
         Subject::Node(n) => w.province_pos(n),
     };
     let src = src?;
-    let sc = center(src);
+    // A blast subject is always a workload or a node — both stand on land.
+    let sc = on_land(src);
 
     // Resolve each affected resource to its on-map cell + hop (silently skipping
     // any with no position — a DaemonSet city, a marker dropped by COAST_CAP).
     let mut targets: Vec<(Vec2, u8)> = Vec::new();
     for it in &blast.items {
         if let Some(p) = affected_cell(w, &it.item) {
-            targets.push((center(p), it.hop));
+            let c = match &it.item {
+                Affected::Workload(_) => on_land(p),
+                // Harbour / gate — moored in the sea, like `draw_coast` paints them.
+                Affected::Service { .. } | Affected::Ingress { .. } => on_sea(p),
+            };
+            targets.push((c, it.hop));
         }
     }
 
@@ -1076,10 +1115,12 @@ fn province_offscreen(prov: &Province, cam: &Camera) -> bool {
     let maxx = corners.iter().map(|p| p.x).fold(f32::MIN, f32::max);
     let miny = corners.iter().map(|p| p.y).fold(f32::MAX, f32::min);
     let maxy = corners.iter().map(|p| p.y).fold(f32::MIN, f32::max);
-    maxx < -TILE_W
-        || minx > screen_width() + TILE_W
-        || maxy < -TILE_H
-        || miny > screen_height() + TILE_H
+    // Corners are sea-level points, but under `Relief` the land tops sit `lift`
+    // px higher and their cliffs hang `lift` px lower — so widen the vertical
+    // margin, or a province at either screen edge pops out while still visible
+    // (it triggers from zoom ~1.07, below the default --zoom 1.4).
+    let m = TILE_H + cam.lift_px();
+    maxx < -TILE_W || minx > screen_width() + TILE_W || maxy < -m || miny > screen_height() + m
 }
 
 /// Shallows ring (PASS 1, before any land): two graded faint-blue diamonds,
@@ -1157,6 +1198,7 @@ fn draw_province_terrain(
         return;
     }
     let (hw, hh) = cam.cell_px();
+    let lift = cam.lift_px();
     // The land pair depends on the active overlay (health / pressure / replicas
     // / namespace / walls / cost); computed once per province, not per cell.
     let pair = overlay_pair(overlay, prov, walls, cost);
@@ -1184,11 +1226,15 @@ fn draw_province_terrain(
             if rel < li || rel >= w - ri {
                 continue; // sea cell — ocean shows through
             }
-            let c = cam.to_screen(wx as f32 + 0.5, wy as f32 + 0.5);
+            let c = cam.to_land(wx as f32 + 0.5, wy as f32 + 0.5);
+            // The cull margin carries the lift: a tile whose lifted top is on
+            // screen must not be dropped because its sea-level point is not
+            // (and vice versa for a cliff hanging below).
+            let m = TILE_H + lift;
             if c.x < -TILE_W
                 || c.x > screen_width() + TILE_W
-                || c.y < -TILE_H
-                || c.y > screen_height() + TILE_H
+                || c.y < -m
+                || c.y > screen_height() + m
             {
                 continue;
             }
@@ -1206,9 +1252,13 @@ fn draw_province_terrain(
                     (ISO_SAND.b + j).clamp(0.0, 1.0),
                     1.0,
                 );
-                fill_diamond(c, hw, hh, sand);
+                // Beach cells are the ones that actually silhouette, so they
+                // get cliffs too — from the sand colour, not the land pair.
+                fill_prism(c, hw, hh, lift, sand, right_sea, dn_sea);
             } else {
-                land_diamond(c, hw, hh, pair, wx as u16, wy as u16);
+                land_diamond(
+                    c, hw, hh, pair, wx as u16, wy as u16, lift, right_sea, dn_sea,
+                );
             }
         }
     }
@@ -1216,7 +1266,18 @@ fn draw_province_terrain(
 
 /// A single health-tinted land diamond with a 2-shade grassland checker plus a
 /// cheap per-cell micro-jitter, so big fields read as textured, not a grid.
-fn land_diamond(c: Vec2, hw: f32, hh: f32, pair: (Color, Color), wx: u16, wy: u16) {
+#[allow(clippy::too_many_arguments)]
+fn land_diamond(
+    c: Vec2,
+    hw: f32,
+    hh: f32,
+    pair: (Color, Color),
+    wx: u16,
+    wy: u16,
+    lift: f32,
+    se: bool,
+    sw: bool,
+) {
     let (a, b) = pair;
     let base = if (wx as u32 + wy as u32) & 1 == 0 {
         a
@@ -1230,7 +1291,9 @@ fn land_diamond(c: Vec2, hw: f32, hh: f32, pair: (Color, Color), wx: u16, wy: u1
         (base.b + d).clamp(0.0, 1.0),
         1.0,
     );
-    fill_diamond(c, hw, hh, col);
+    // Colour math unchanged; the cliffs derive from `col` so every overlay's
+    // palette (and the colour-blind variant) carries through automatically.
+    fill_prism(c, hw, hh, lift, col, se, sw);
 }
 
 /// One province's over-terrain detail (PASS 2): forests, daemonset roads, and
@@ -1807,7 +1870,12 @@ fn draw_island_terrain(isl: &Island, cam: &Camera) {
                 (base.b + j).clamp(0.0, 1.0),
                 1.0,
             );
-            fill_diamond(c, hw, hh, col);
+            // An island is a free-standing rectangle in open sea, so its south
+            // and east rims always face water — unlike a continent, whose
+            // provinces abut. Expose each wall only on the actual rim.
+            let se = wx == x1 - 1;
+            let sw = wy == y1 - 1;
+            fill_prism(c, hw, hh, cam.lift_px(), col, se, sw);
         }
     }
 }
@@ -2234,24 +2302,20 @@ mod tests {
         assert_eq!(MapStyle::Plain.land_lift(), 0.0);
     }
 
-    /// PHASE-0 SEAM GUARD. The selector ships before the pixels: every style's
-    /// lift is 0, so `to_land ≡ to_screen`, both hit planes coincide, and the map
-    /// is identical whichever style is active — the capability lands with zero
-    /// visual risk. **Phase 1 deliberately breaks this test**: when
-    /// `Relief.land_lift()` becomes a real value, delete this and rely on
-    /// `cell_at_land_inverts_to_land_at_a_nonzero_lift` (which already covers the
-    /// lifted math) plus the `map-style-relief` gui-smoke state.
+    /// `Plain` must stay flat — it is the fallback every unknown persisted or
+    /// flag value lands on, and the style the minimap, shallows and coast marks
+    /// are all drawn in agreement with. (The Phase-0 seam guard that asserted
+    /// EVERY style was flat retired here, when Relief gained its real lift.)
     #[test]
-    fn phase0_every_style_is_still_a_flat_no_op() {
-        for m in MapStyle::ALL {
-            assert_eq!(
-                m.land_lift(),
-                0.0,
-                "{} lifted before the Phase-1 painters landed — terrain would \
-                 detach from the shallows, harbours and minimap",
-                m.label()
-            );
-        }
+    fn only_relief_lifts_the_land() {
+        assert_eq!(MapStyle::Plain.land_lift(), 0.0);
+        assert!(MapStyle::Relief.land_lift() > 0.0);
+        // Kept well under TILE_H so cliffs never reach the tile behind them and
+        // the back-to-front pass needs no re-sorting.
+        assert!(
+            MapStyle::Relief.land_lift() < TILE_H,
+            "a lift >= a full tile height would need pass 1 re-sorted by wx+wy"
+        );
     }
 
     /// The load-bearing invariant of the two-plane design: `cell_at` inverts
@@ -2308,6 +2372,54 @@ mod tests {
         // A keyboard/attention selection is plane-free: both sides are that cell.
         assert_eq!(Hit::at((3, 4)).sea, Some((3, 4)));
         assert_eq!(Hit::at((3, 4)).land, Some((3, 4)));
+    }
+
+    /// THE regression pin for the two-plane design. Under `Relief` a harbour is
+    /// still drawn at sea level (`to_screen`, like `draw_coast`), so clicking
+    /// where it appears MUST resolve to its own cell on the sea plane. A single
+    /// lift-corrected inverse — the tempting one-line "fix" — would answer with
+    /// a cell 0.875 rows away instead, silently breaking "click a harbour →
+    /// open the city it serves".
+    #[test]
+    fn relief_keeps_sea_level_marks_clickable() {
+        let cam = Camera {
+            pos: vec2(-300.0, -80.0),
+            zoom: 1.4,
+            target: None,
+            style: MapStyle::Relief,
+        };
+        assert!(
+            cam.lift_px() > 0.0,
+            "Relief must lift for this to mean anything"
+        );
+        let bounds = (40u16, 30u16);
+        let (_, hh) = cam.cell_px();
+        for &marker in &[(9u16, 4u16), (21, 13), (33, 7)] {
+            // Where `draw_coast` actually paints it, and a point in the LOWER
+            // half of that mark. The lift shifts the inverse by 0.875 rows =
+            // 0.4375 in each axis, which is just shy of the 0.5 needed to cross
+            // a boundary — so a dead-centre click survives even the broken
+            // design, and only an off-centre one exposes it. Half the mark is
+            // off-centre, which is why this matters in practice.
+            let mid = cam.to_screen(marker.0 as f32 + 0.5, marker.1 as f32 + 0.5);
+            let lower = mid + vec2(0.0, hh * 0.5);
+            for probe in [mid, lower] {
+                assert_eq!(
+                    cam.hit(probe, bounds).sea,
+                    Some(marker),
+                    "a click on the drawn harbour must resolve to it on the sea plane"
+                );
+            }
+            // The land plane genuinely differs over the mark, so the split is
+            // load-bearing rather than decorative: resolving a coast marker
+            // through the land inverse WOULD pick the wrong cell here.
+            let h = cam.hit(lower, bounds);
+            assert_ne!(
+                h.land, h.sea,
+                "the planes must diverge over a harbour under a real lift — \
+                 otherwise this test would pass with the broken single-inverse design"
+            );
+        }
     }
 
     /// `shifted()` must carry the style, or the warm world in a pair session
