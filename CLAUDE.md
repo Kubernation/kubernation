@@ -3092,8 +3092,21 @@ what makes the interesting logic unit-testable without a cluster.
   advisor output, and is deferred. **(5) Pod granularity is a hard limit**
   (`Metrics.pods` is summed across containers): request-vs-usage works per POD,
   per-container efficiency does not, and `containers` is a count only — stated on
-  the fields. 341 core + 83 GUI tests; the four §2/usage/ratio/QoS invariants are
-  mutation-verified. **Guidance defects found — see the A0 report:** §5's first
+  the fields. 345 core + 83 GUI tests; every invariant that could produce a wrong number is
+  mutation-verified. **Adversarial review (5 lenses, 9 raised, 0 defects
+  confirmed — but 4 real COVERAGE holes found, each with a demonstrated
+  surviving mutation, all now closed):** a limits-only pod misclassified
+  BestEffort (evicted first instead of after); `eq`'s relative tolerance replaced
+  by exact equality — load-bearing, since `cpu: "0.7"` and `cpu: "700m"` parse to
+  0.7 vs 0.7000000000000001 and Kubernetes calls that pod Guaranteed; the
+  census-vs-load distinction untested; and `build_node_detail`'s pod-usage
+  closure untested (the exact field §7 names as the first unlocked consumer). The
+  first was self-inflicted: I dropped §5's prescribed QoS test because its *prose*
+  was wrong about a live cluster, when the *assertion* was correct and covered a
+  branch nothing else reached. The two findings that CONVERGED across lenses were
+  both refuted on evidence — the census-vs-load split predates this work
+  (d84f41d) and is already pinned — so convergence indicated "confusing area",
+  not "defect"; both are now documented at the point of use. **Guidance defects found — see the A0 report:** §5's first
   two prescribed tests are wrong (a live API server *defaults* `requests := limits`
   at admission, so "limits set, requests unset" cannot occur for a stored pod, and
   such a pod's QoS is **Guaranteed**, not the Burstable the doc asserts); §4.2's

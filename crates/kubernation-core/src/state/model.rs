@@ -2336,6 +2336,67 @@ mod tests {
         );
     }
 
+    /// CENSUS vs LOAD, pinned. The glyph list includes terminal pods; the node's
+    /// request ratio excludes them. Both are right and they are not comparable —
+    /// summing glyphs to get occupancy would read 150% of a half-claimed node.
+    /// Documented on `PodGlyph.requests`; asserted here so the difference is a
+    /// decision rather than an accident.
+    #[test]
+    fn glyph_requests_are_a_census_the_node_ratio_is_scheduling_load() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a"))); // 4 cores allocatable
+        s.pod(fx::pod_requests(
+            fx::pod("demo", "live", Some("n1")),
+            "1",
+            "1Gi",
+        ));
+        // A completed Job pod that once requested the whole node.
+        s.pod(fx::pod_phase(
+            fx::pod_requests(fx::pod("demo", "done", Some("n1")), "4", "4Gi"),
+            "Succeeded",
+        ));
+        let tile = a0_tile(&world);
+        assert!(
+            (tile.cpu_request_ratio - 0.25).abs() < 1e-9,
+            "load excludes the terminal pod: {}",
+            tile.cpu_request_ratio
+        );
+        let census: f64 = tile.pods.iter().map(|g| g.requests.cpu).sum();
+        assert!(
+            (census - 5.0).abs() < 1e-9,
+            "census includes it, and exceeds allocatable: {census}"
+        );
+        assert_eq!(tile.pods.len(), 2, "the terminal pod is still drawn");
+    }
+
+    /// `build_node_detail`'s tile must carry per-pod usage too. §7 names
+    /// `detail.tile.pods[*].usage` as this phase's first unlocked consumer, and
+    /// it is filled through a DIFFERENT closure than the map's — so without this
+    /// the province window would show "unknown" for every pod on a
+    /// metrics-server cluster, an unearned degrade-dark.
+    #[test]
+    fn node_detail_tile_glyphs_carry_usage() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.pod(fx::pod("demo", "p", Some("n1")));
+        {
+            let mut g = world.metrics.lock().unwrap();
+            g.available = true;
+            g.pods.insert(
+                ("demo".into(), "p".into()),
+                NodeUsage {
+                    cpu: 0.25,
+                    mem: 32.0 * 1024.0 * 1024.0,
+                },
+            );
+        }
+        let detail = build_node_detail(&world, "n1").expect("node detail");
+        let u = detail.tile.pods[0]
+            .usage
+            .expect("the tile's glyph must carry usage, not just NodePodRow");
+        assert!((u.cpu - 0.25).abs() < 1e-9);
+    }
+
     /// ANTI-DRIFT: the map and the advisor must classify the same pod the same
     /// way where they are asking the same question — a single-container pod, the
     /// only granularity at which the advisor's totals-based view is exact.

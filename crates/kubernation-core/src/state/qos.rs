@@ -284,10 +284,37 @@ mod tests {
         assert_eq!(pod_qos(&p), QosClass::BestEffort);
     }
 
-    /// Byte-scale equality needs a relative tolerance; an absolute epsilon would
-    /// call two identical gibibyte values unequal.
+    /// The tolerance is LOAD-BEARING, and this pins it with operands that are
+    /// genuinely unequal in f64 rather than bit-identical ones (which would
+    /// reduce the comparison to `==` and test nothing).
+    ///
+    /// The shape is real and common: a container authored `cpu: "0.7"` against
+    /// `cpu: "700m"` — one quantity, two spellings — parses to 0.7 and
+    /// 0.7000000000000001. Kubernetes calls that pod Guaranteed; exact equality
+    /// would call it Burstable, drawing timber where the kubelet evicts stone.
     #[test]
-    fn guaranteed_uses_a_relative_tolerance() {
+    fn guaranteed_tolerance_survives_two_spellings_of_one_quantity() {
+        let a = quantity::parse("0.7").expect("0.7");
+        let b = quantity::parse("700m").expect("700m");
+        assert_ne!(a, b, "the premise: these differ in f64");
+        assert_eq!(
+            pod_qos(&pod_with(vec![container(
+                "c",
+                Some(("0.7", "1Gi")),
+                Some(("700m", "1024Mi"))
+            )])),
+            QosClass::Guaranteed,
+            "one quantity written two ways is still Guaranteed"
+        );
+        assert_eq!(
+            qos_from_totals(a, b, 64.0 * MI, 64.0 * MI),
+            QosClass::Guaranteed,
+            "and the totals path agrees"
+        );
+    }
+
+    #[test]
+    fn the_three_classes_from_totals() {
         assert_eq!(
             qos_from_totals(0.1, 0.1, 64.0 * MI, 64.0 * MI),
             QosClass::Guaranteed
@@ -297,5 +324,28 @@ mod tests {
             QosClass::Burstable
         );
         assert_eq!(qos_from_totals(0.0, 0.0, 0.0, 0.0), QosClass::BestEffort);
+    }
+
+    /// A pod that sets ONLY limits is Burstable, not BestEffort. The `any_lim`
+    /// half of `qos_from_spec`'s BestEffort guard is otherwise uncovered, and
+    /// getting it wrong evicts the pod FIRST instead of after BestEffort — the
+    /// opposite end of the order.
+    ///
+    /// This is guidance §5's second prescribed test. I dropped it initially
+    /// because the doc's framing is wrong about a *live* cluster (the API server
+    /// defaults requests := limits, so such a pod is stored Guaranteed) — but the
+    /// assertion about this fixture is correct and reaches a branch nothing else
+    /// does. Dropping coverage because the surrounding prose was wrong was my
+    /// error, caught by review.
+    #[test]
+    fn a_limits_only_pod_is_burstable_not_besteffort() {
+        assert_eq!(
+            pod_qos(&pod_with(vec![container(
+                "c",
+                None,
+                Some(("250m", "64Mi"))
+            )])),
+            QosClass::Burstable
+        );
     }
 }
