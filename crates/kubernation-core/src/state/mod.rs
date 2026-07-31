@@ -27,6 +27,7 @@ pub mod posture;
 pub mod rollout;
 pub mod saturation;
 pub mod slo;
+pub mod substrate;
 pub mod timeline;
 pub mod world;
 

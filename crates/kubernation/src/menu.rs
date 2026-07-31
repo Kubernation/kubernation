@@ -156,6 +156,11 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                 .check(ctx.overlay == Overlay::Saturation),
                 Item::act("Upkeep (cost)", MenuAction::SetOverlay(Overlay::Cost))
                     .check(ctx.overlay == Overlay::Cost),
+                Item::act(
+                    "Substrate (daemonsets)",
+                    MenuAction::SetOverlay(Overlay::Substrate),
+                )
+                .check(ctx.overlay == Overlay::Substrate),
                 Item::sep(),
                 Item::header("MAP STYLE"),
                 Item::act(

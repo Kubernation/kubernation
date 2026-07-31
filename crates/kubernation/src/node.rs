@@ -34,13 +34,20 @@ use crate::window::{ForwardBtn, WinAction, draw_window};
 
 /// Draw the province (node) window and resolve this frame's clicks. `scroll_l` /
 /// PURE draw-decision fn: the SUBSTRATE section's lines — the node's DaemonSet
-/// inventory by name, and any kubelet pressure conditions flagged on the tile.
+/// inventory by name, what the rest of the fleet has that it LACKS, and any
+/// kubelet pressure conditions flagged on the tile.
 ///
 /// Substrate pressure is the point of pairing them: `MemoryPressure` /
 /// `DiskPressure` / `PIDPressure` are the kubelet refusing or evicting work for
 /// reasons that have nothing to do with any workload's own pods, so they belong
 /// beside the things that run underneath. Unit-tested (the testability policy).
-pub fn substrate_lines(detail: &NodeDetailModel) -> Vec<(String, Color)> {
+///
+/// `missing` comes from the cluster-wide `SubstrateReport` (a node can't know it
+/// alone — the expectation is set by the fleet). Shown here regardless of the
+/// active map overlay: once you have drilled into a node, what it is missing is
+/// a fact worth having, not something you should need the right view turned on
+/// to see. The Substrate overlay's SELECTION line is the at-a-glance twin.
+pub fn substrate_lines(detail: &NodeDetailModel, missing: &[String]) -> Vec<(String, Color)> {
     let mut out: Vec<(String, Color)> = Vec::new();
     // Pressure first — it is the actionable half when present.
     if detail.tile.abnormal.is_empty() {
@@ -61,6 +68,20 @@ pub fn substrate_lines(detail: &NodeDetailModel) -> Vec<(String, Color)> {
         ));
         for d in &detail.daemonsets {
             out.push((format!("  {d}"), INK));
+        }
+    }
+    // The gap: what the fleet runs and this node doesn't. Silent when there is
+    // none — an absent line is the common case and shouldn't cost a row.
+    if !missing.is_empty() {
+        out.push((
+            format!("{} missing vs the fleet", missing.len()),
+            if missing.len() > 1 { CRIT } else { WARN },
+        ));
+        for m in missing {
+            out.push((
+                format!("  {m}"),
+                if missing.len() > 1 { CRIT } else { WARN },
+            ));
         }
     }
     out
@@ -465,7 +486,16 @@ pub fn draw_node(
         text_bold("SUBSTRATE", right_x, ry + 12.0, 15.0, PARCHMENT);
     }
     ry += 22.0;
-    for (line, col) in substrate_lines(&detail) {
+    // The fleet-wide report is per-world (a hot/warm pair runs different
+    // infrastructure), and lives on `Models` — no new plumbing needed.
+    let substrate = match id {
+        ClusterId::Hot => &snap.hot.models.substrate,
+        ClusterId::Warm => snap
+            .warm
+            .as_ref()
+            .map_or(&snap.hot.models.substrate, |w| &w.models.substrate),
+    };
+    for (line, col) in substrate_lines(&detail, substrate.missing(name)) {
         if visr(ry, row_h) {
             text(ascii(&line), right_x, ry + 12.0, 13.0, col);
         }
@@ -597,16 +627,63 @@ mod substrate_tests {
         ));
         let d = build_node_detail(&world, "n1").expect("node detail");
         assert_eq!(d.daemonsets, vec!["agent"], "the NAME, not a count");
-        let joined: String = substrate_lines(&d)
-            .iter()
-            .map(|(t, _)| t.as_str())
-            .collect::<Vec<_>>()
-            .join("|");
+        let join = |m: &[String]| {
+            substrate_lines(&d, m)
+                .iter()
+                .map(|(t, _)| t.as_str())
+                .collect::<Vec<_>>()
+                .join("|")
+        };
+        let joined = join(&[]);
         assert!(joined.contains("agent"), "names the daemonset: {joined}");
         assert!(joined.contains("1 daemonsets"), "counts them too: {joined}");
         assert!(
             joined.contains("no substrate pressure"),
             "states the absence explicitly: {joined}"
+        );
+        // A fully-covered node spends no row on the gap — absence is the norm.
+        assert!(!joined.contains("missing"), "silent when covered: {joined}");
+    }
+
+    /// The other half of the section: what the FLEET has that this node doesn't.
+    /// A node can't know this alone — the expectation comes from the cluster-wide
+    /// report — so the names have to be passed in and rendered here.
+    #[test]
+    fn substrate_names_what_the_fleet_has_and_this_node_lacks() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        let d = build_node_detail(&world, "n1").expect("node detail");
+        let join = |m: &[String]| {
+            substrate_lines(&d, m)
+                .iter()
+                .map(|(t, _)| t.as_str())
+                .collect::<Vec<_>>()
+                .join("|")
+        };
+        let one = join(&["cilium".to_string()]);
+        assert!(one.contains("cilium"), "names the missing one: {one}");
+        assert!(one.contains("1 missing vs the fleet"), "counted: {one}");
+        // A bare node also says it has none stationed — the two halves coexist.
+        assert!(one.contains("no daemonsets stationed"), "{one}");
+
+        let two = join(&["cilium".to_string(), "fluent-bit".to_string()]);
+        assert!(
+            two.contains("cilium") && two.contains("fluent-bit"),
+            "{two}"
+        );
+        // Two gaps escalate to CRIT, one is a WARN.
+        let sev = |m: &[String]| {
+            substrate_lines(&d, m)
+                .into_iter()
+                .filter(|(t, _)| t.contains("missing") || t.contains("cilium"))
+                .map(|(_, c)| c)
+                .collect::<Vec<_>>()
+        };
+        assert!(sev(&["cilium".to_string()]).iter().all(|c| *c == WARN));
+        assert!(
+            sev(&["cilium".to_string(), "fluent-bit".to_string()])
+                .iter()
+                .all(|c| *c == CRIT)
         );
     }
 }

@@ -19,6 +19,7 @@ use kubernation_core::state::cost::{CostReport, IDLE_NOTABLE};
 use kubernation_core::state::model::{NodeHealth, WorkloadRef};
 use kubernation_core::state::netpol::Coverage;
 use kubernation_core::state::pair::PairSync;
+use kubernation_core::state::substrate::SubstrateReport;
 use kubernation_core::state::world::{
     City, CoastKind, CoastMarker, Continent, Island, Province, Region, WorldModel,
 };
@@ -61,10 +62,25 @@ pub enum Overlay {
     Saturation,
     /// Upkeep — per-node cost as a bronze "spend" choropleth (the cost cartography).
     Cost,
+    /// DaemonSet coverage — nodes missing infrastructure the rest of the fleet
+    /// has. Deliberately NOT kubelet pressure: `Saturation` already renders that.
+    Substrate,
 }
 
 impl Overlay {
-    /// Short label for the chrome / menu radio.
+    pub const ALL: [Overlay; 8] = [
+        Overlay::Terrain,
+        Overlay::Pressure,
+        Overlay::Replicas,
+        Overlay::Namespace,
+        Overlay::Coverage,
+        Overlay::Saturation,
+        Overlay::Cost,
+        Overlay::Substrate,
+    ];
+
+    /// Short label for the chrome / menu radio — the persisted / `--overlay`
+    /// spelling too.
     pub fn label(self) -> &'static str {
         match self {
             Overlay::Terrain => "terrain",
@@ -74,6 +90,7 @@ impl Overlay {
             Overlay::Coverage => "walls",
             Overlay::Saturation => "saturation",
             Overlay::Cost => "cost",
+            Overlay::Substrate => "substrate",
         }
     }
 }
@@ -138,13 +155,46 @@ impl MapStyle {
     }
 }
 
+/// Parse an `--overlay` / saved-pref string into an `Overlay` (the inverse of
+/// [`Overlay::label`]); an unknown value falls back to the default terrain view.
+///
+/// Derived from `ALL` + `label` rather than a hand-written match, so a new
+/// variant is parseable the moment it is labelled — the previous hand-written
+/// version could (and did) silently drop a variant, resetting a saved pref to
+/// terrain. Lives here beside the enum, not in main.rs, so it is testable
+/// (main.rs has no test module) — same reason as `map_style_from_str`.
+pub fn overlay_from_str(s: &str) -> Overlay {
+    Overlay::ALL
+        .into_iter()
+        .find(|o| o.label() == s)
+        .unwrap_or_default()
+}
+
 /// Parse a persisted / CLI map-style spelling; unknown values fall back to the
-/// default (mirrors `overlay_from_str`).
+/// default (mirrors [`overlay_from_str`]).
 pub fn map_style_from_str(s: &str) -> MapStyle {
     MapStyle::ALL
         .into_iter()
         .find(|m| m.label() == s)
         .unwrap_or_default()
+}
+
+/// The per-world reports the data overlays read, borrowed for one frame.
+///
+/// Bundled rather than threaded as a parameter each: they all arrive together
+/// (one set per world, from the same snapshot), only the active overlay reads
+/// any of them, and a separate parameter per overlay does not scale — the
+/// walls + cost + substrate trio had already pushed `draw_world` past clippy's
+/// argument limit. A new data overlay now adds a field, not a signature change
+/// at four call sites.
+///
+/// Every field is `Option` because the minimap (an overview) threads none of
+/// them, and each overlay falls back honestly when its own report is absent.
+#[derive(Clone, Copy, Default)]
+pub struct OverlayData<'a> {
+    pub walls: Option<&'a WallData<'a>>,
+    pub cost: Option<&'a CostReport>,
+    pub substrate: Option<&'a SubstrateReport>,
 }
 
 /// Per-workload NetworkPolicy coverage + exposure, for the walls overlay + the
@@ -262,14 +312,10 @@ fn dominant_namespace(cities: &[City]) -> Option<&str> {
 }
 
 /// The two-shade land pair a province's terrain is filled with, per overlay.
-/// `walls` is consulted only for the Coverage overlay (None elsewhere / on the
-/// minimap, where Coverage falls back to terrain).
-fn overlay_pair(
-    overlay: Overlay,
-    prov: &Province,
-    walls: Option<&WallData>,
-    cost: Option<&CostReport>,
-) -> (Color, Color) {
+/// Each data overlay reads only its own field of `data`, and falls back to
+/// terrain or idle land when that field is absent (as on the minimap, which
+/// threads none of them).
+fn overlay_pair(overlay: Overlay, prov: &Province, data: OverlayData) -> (Color, Color) {
     match overlay {
         Overlay::Terrain => iso_terrain_pair(prov.tile.health),
         Overlay::Pressure => pressure_pair(prov.tile.cpu_ratio.max(prov.tile.mem_ratio)),
@@ -277,19 +323,36 @@ fn overlay_pair(
         Overlay::Namespace => {
             dominant_namespace(&prov.cities).map_or_else(idle_land_pair, namespace_pair)
         }
-        Overlay::Coverage => walls
+        Overlay::Coverage => data
+            .walls
             .map(|w| coverage_pair(&prov.cities, w))
             .unwrap_or_else(|| iso_terrain_pair(prov.tile.health)),
         Overlay::Saturation => sat_pair(prov.tile.saturation.worst_level()),
         // Bronze choropleth: ramp position = node cost ÷ the world's max node cost.
         // An unpriced node (no cost) recedes to idle land so priced spend pops.
-        Overlay::Cost => cost
+        Overlay::Cost => data
+            .cost
             .and_then(|r| {
                 let nc = r.by_node.get(&prov.tile.name)?;
                 (nc.priced && r.max_node_cost > 0.0)
                     .then(|| cost_pair(nc.per_hour / r.max_node_cost))
             })
             .unwrap_or_else(idle_land_pair),
+        // Discrete, not a ramp: gaps are small integers where 0 is the
+        // overwhelming common case, so a ramp would wash a healthy fleet into
+        // near-identical tints. The clean case recedes to idle land (Cost's
+        // precedent) so the anomalies are the only thing that pops. No
+        // fleet-wide DaemonSets at all ⇒ nothing to be missing from, so fall
+        // back to terrain rather than paint an unearned all-clear.
+        Overlay::Substrate => data
+            .substrate
+            .filter(|r| r.has_data())
+            .map(|r| match r.missing(&prov.tile.name).len() {
+                0 => idle_land_pair(),
+                1 => heat_pair(1),
+                _ => heat_pair(2),
+            })
+            .unwrap_or_else(|| iso_terrain_pair(prov.tile.health)),
     }
 }
 
@@ -299,10 +362,12 @@ fn overlay_pair(
 /// falls back to terrain there.
 fn overlay_flat(overlay: Overlay, prov: &Province) -> Color {
     match overlay {
-        // Walls + Cost have no per-node data threaded to the minimap (an
-        // overview) — fall back to terrain there, like the breach marks.
-        Overlay::Terrain | Overlay::Coverage | Overlay::Cost => terrain(prov.tile.health),
-        _ => overlay_pair(overlay, prov, None, None).1,
+        // Walls + Cost + Substrate have no per-node data threaded to the minimap
+        // (an overview) — fall back to terrain there, like the breach marks.
+        Overlay::Terrain | Overlay::Coverage | Overlay::Cost | Overlay::Substrate => {
+            terrain(prov.tile.health)
+        }
+        _ => overlay_pair(overlay, prov, OverlayData::default()).1,
     }
 }
 
@@ -1031,8 +1096,7 @@ pub fn draw_world(
     banner: Option<(&str, ClusterId)>,
     pair: Option<&PairSync>,
     overlay: Overlay,
-    walls: Option<&WallData>,
-    cost: Option<&CostReport>,
+    data: OverlayData,
 ) {
     let mut detail = lod(cam.zoom);
     detail.name_all = world.cities().take(DENSE_CITIES + 1).count() <= DENSE_CITIES;
@@ -1080,7 +1144,7 @@ pub fn draw_world(
             draw_province_shallows(prov, cam, &coasts[ci]);
         }
         for prov in &cont.provinces {
-            draw_province_terrain(prov, cam, &coasts[ci], overlay, walls, cost);
+            draw_province_terrain(prov, cam, &coasts[ci], overlay, data);
         }
     }
     for &ii in &isl_order {
@@ -1119,7 +1183,7 @@ pub fn draw_world(
             // that means PVC/Service, which is also drawn here) so it's unambiguous.
             if overlay == Overlay::Cost
                 && detail.scale != Scale::World
-                && let Some(nc) = cost.and_then(|r| r.by_node.get(&prov.tile.name))
+                && let Some(nc) = data.cost.and_then(|r| r.by_node.get(&prov.tile.name))
                 && nc.priced
                 && (1.0 - nc.used_frac) >= IDLE_NOTABLE
             {
@@ -1142,7 +1206,7 @@ pub fn draw_world(
                 // (red when also exposed; the K07 finding). Walled cities stay
                 // visually quiet. Regional/Local only (this branch).
                 if overlay == Overlay::Coverage
-                    && let Some(w) = walls
+                    && let Some(w) = data.walls
                 {
                     let cov = w.coverage.get(&city.r).copied().unwrap_or_default();
                     if let WallMark::Breach | WallMark::BreachExposed =
@@ -1379,8 +1443,7 @@ fn draw_province_terrain(
     cam: &Camera,
     coast: &Coast,
     overlay: Overlay,
-    walls: Option<&WallData>,
-    cost: Option<&CostReport>,
+    data: OverlayData,
 ) {
     if province_offscreen(prov, cam) {
         return;
@@ -1388,8 +1451,9 @@ fn draw_province_terrain(
     let (hw, hh) = cam.cell_px();
     let lift = cam.lift_px();
     // The land pair depends on the active overlay (health / pressure / replicas
-    // / namespace / walls / cost); computed once per province, not per cell.
-    let pair = overlay_pair(overlay, prov, walls, cost);
+    // / namespace / walls / cost / substrate); computed once per province, not
+    // per cell.
+    let pair = overlay_pair(overlay, prov, data);
     let x0 = prov.x as i32;
     let w = prov.w as f32;
     let y1 = (prov.y + prov.h) as i32;
@@ -2485,13 +2549,108 @@ mod tests {
     }
 
     #[test]
-    fn overlay_default_is_terrain() {
+    fn overlay_default_is_terrain_and_every_variant_round_trips_its_label() {
         assert_eq!(Overlay::default(), Overlay::Terrain);
-        assert_eq!(Overlay::Pressure.label(), "pressure");
-        assert_eq!(Overlay::Replicas.label(), "replicas");
-        assert_eq!(Overlay::Namespace.label(), "namespace");
-        assert_eq!(Overlay::Coverage.label(), "walls");
-        assert_eq!(Overlay::Saturation.label(), "saturation");
+        assert_eq!(Overlay::Coverage.label(), "walls", "not 'coverage'");
+        assert_eq!(Overlay::Substrate.label(), "substrate");
+        // The labels ARE the persisted / `--overlay` spellings. Sweeping ALL is
+        // what stops a new variant from silently resetting a saved pref to
+        // terrain — the hand-written match this replaced had already dropped one.
+        for o in Overlay::ALL {
+            assert_eq!(
+                overlay_from_str(o.label()),
+                o,
+                "{} lost its label",
+                o.label()
+            );
+        }
+        // Unrecognised persisted or flag values fall back, never panic.
+        assert_eq!(overlay_from_str("elevation"), Overlay::Terrain);
+        assert_eq!(overlay_from_str(""), Overlay::Terrain);
+    }
+
+    /// The Substrate overlay's discrete buckets: the clean case must RECEDE (so
+    /// only anomalies pop), 1 gap warns, 2+ crits, and a cluster with nothing
+    /// fleet-wide falls back to terrain rather than painting an unearned
+    /// all-clear over every province.
+    #[test]
+    fn substrate_overlay_recedes_when_clean_and_escalates_by_gap_count() {
+        use kubernation_core::state::model::Models;
+        use kubernation_core::state::substrate::SubstrateReport;
+        use kubernation_core::state::{fixtures as fx, world::Province};
+        use std::collections::HashMap;
+
+        // Real provinces from a real world — three healthy nodes, so the only
+        // thing varying between them is their substrate coverage.
+        let (world, mut s) = fx::world();
+        for n in ["clean", "one", "two"] {
+            s.node(fx::node(n, Some("z-a")));
+        }
+        let models = Models::build(&world);
+        let provs: Vec<&Province> = models.world.continents[0].provinces.iter().collect();
+        let prov = |name: &str| {
+            *provs
+                .iter()
+                .find(|p| p.tile.name == name)
+                .expect("the fixture node")
+        };
+        let health = prov("clean").tile.health;
+
+        let report = |gaps: &[(&str, usize)]| SubstrateReport {
+            expected: vec!["cni".into(), "logs".into()],
+            missing_by_node: gaps
+                .iter()
+                .map(|(n, k)| {
+                    (
+                        (*n).to_string(),
+                        (0..*k).map(|i| format!("ds{i}")).collect::<Vec<_>>(),
+                    )
+                })
+                .collect(),
+            nodes_total: 3,
+            nodes_with_gaps: gaps.len(),
+        };
+        let r = report(&[("one", 1), ("two", 2)]);
+        fn data(rep: Option<&SubstrateReport>) -> OverlayData<'_> {
+            OverlayData {
+                substrate: rep,
+                ..Default::default()
+            }
+        }
+        let pair = |n: &str| overlay_pair(Overlay::Substrate, prov(n), data(Some(&r))).0;
+
+        assert_eq!(
+            pair("clean"),
+            idle_land_pair().0,
+            "0 gaps recedes to idle land"
+        );
+        assert_eq!(pair("one"), heat_pair(1).0, "1 gap warns");
+        assert_eq!(pair("two"), heat_pair(2).0, "2+ gaps crit");
+        // The three states are visibly distinct, not just nominally different.
+        assert_ne!(pair("clean"), pair("one"));
+        assert_ne!(pair("one"), pair("two"));
+
+        // Nothing fleet-wide ⇒ terrain, NOT the "clean" idle land.
+        let none = SubstrateReport {
+            expected: vec![],
+            missing_by_node: HashMap::new(),
+            nodes_total: 3,
+            nodes_with_gaps: 0,
+        };
+        let p = prov("clean");
+        assert_eq!(
+            overlay_pair(Overlay::Substrate, p, data(Some(&none))).0,
+            iso_terrain_pair(health).0,
+            "an empty expected set must not read as a clean bill of health"
+        );
+        // Same for an absent report entirely (the minimap / pre-sync path).
+        assert_eq!(
+            overlay_pair(Overlay::Substrate, p, data(None)).0,
+            iso_terrain_pair(health).0
+        );
+        // ...and terrain must be visibly different from the "clean" idle land,
+        // or the fallback would be indistinguishable from an all-clear anyway.
+        assert_ne!(iso_terrain_pair(health).0, idle_land_pair().0);
     }
 
     #[test]

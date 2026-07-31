@@ -393,13 +393,17 @@ pub fn draw_sidebar(
             ("cpu", &cpu, cpu_max, cpu_val.as_str()),
             ("mem", &mem, mem_max, mem_val.as_str()),
         ] {
-            text(lbl, x, y + 11.0, 11.0, STONE_INK_DIM);
+            // `y` is a text BASELINE throughout this section (glyphs sit above
+            // it), so the sparkline rect hangs above it too — drawing it at `y`
+            // put the row 11px low and the next line (the overlay label) landed
+            // on top of the mem trace.
+            text(lbl, x, y, 11.0, STONE_INK_DIM);
             let vw = crate::text::text_size(val, 11.0).width;
             let val_x = col.x + col.w - 10.0 - vw;
-            text(val, val_x, y + 11.0, 11.0, STONE_INK_DIM);
+            text(val, val_x, y, 11.0, STONE_INK_DIM);
             let sx = x + 30.0;
             let sw = (val_x - 6.0 - sx).max(20.0);
-            panels::draw_sparkline(Rect::new(sx, y, sw, 14.0), series, scale, STRUCT);
+            panels::draw_sparkline(Rect::new(sx, y - 11.0, sw, 14.0), series, scale, STRUCT);
             y += 18.0;
         }
     }
@@ -418,6 +422,17 @@ pub fn draw_sidebar(
                 "units"
             };
             format!("view: cost ({m})")
+        } else if overlay == Overlay::Substrate {
+            // The headline number, so the map is legible without hovering.
+            let r = &snap.hot.models.substrate;
+            if !r.has_data() {
+                "view: substrate (none fleet-wide)".to_string()
+            } else {
+                format!(
+                    "view: substrate ({}/{} nodes with gaps)",
+                    r.nodes_with_gaps, r.nodes_total
+                )
+            }
         } else {
             format!("view: {}", overlay.label())
         };

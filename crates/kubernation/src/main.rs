@@ -50,7 +50,7 @@ use charter::{CharterAction, CharterView};
 use clap::Parser;
 use draw::{
     Camera, Overlay, SceneWorld, draw_blast, draw_sea, draw_selection, draw_world, locate,
-    minimap_layout, scene, scene_size,
+    minimap_layout, overlay_from_str, scene, scene_size,
 };
 use inspect::Inspector;
 use kubernation_core::events::ClusterId;
@@ -225,8 +225,9 @@ struct Args {
     colorblind: bool,
     /// Start with a map overlay active: "terrain" (default), "pressure"
     /// (cpu/mem heat), "replicas" (workload health), "namespace" (territory),
-    /// "walls" (NetworkPolicy segmentation) or "saturation" (the 4th golden
-    /// signal — strain). Set from the View menu at runtime; flag is for shots.
+    /// "walls" (NetworkPolicy segmentation), "saturation" (the 4th golden
+    /// signal — strain), "cost" (upkeep) or "substrate" (DaemonSet coverage
+    /// gaps). Set from the View menu at runtime; flag is for shots.
     #[arg(long, value_name = "MODE")]
     overlay: Option<String>,
     /// Map rendering style: "plain" (default — the flat isometric chart) or
@@ -516,20 +517,6 @@ fn focus_concern(
                 Target::WorkloadList => None,
             };
         }
-    }
-}
-
-/// Parse an `--overlay` / saved-pref string into an `Overlay` (the inverse of
-/// `Overlay::label`); an unknown value falls back to the default terrain view.
-fn overlay_from_str(s: &str) -> Overlay {
-    match s {
-        "pressure" => Overlay::Pressure,
-        "replicas" => Overlay::Replicas,
-        "namespace" => Overlay::Namespace,
-        "walls" => Overlay::Coverage,
-        "saturation" => Overlay::Saturation,
-        "cost" => Overlay::Cost,
-        _ => Overlay::Terrain,
     }
 }
 
@@ -2207,15 +2194,13 @@ async fn main() {
                             None => &s.hot.cost,
                         },
                     };
-                    draw_world(
-                        sw.world,
-                        &wc,
-                        banner,
-                        s.pair.as_deref(),
-                        overlay,
-                        Some(&walls),
-                        Some(wcost),
-                    );
+                    let data = draw::OverlayData {
+                        walls: Some(&walls),
+                        cost: Some(wcost),
+                        // Already on the per-world `Models`, unlike cost.
+                        substrate: Some(&wmodels.substrate),
+                    };
+                    draw_world(sw.world, &wc, banner, s.pair.as_deref(), overlay, data);
                 }
                 if let Some(sel) = selected {
                     draw_selection(&cam, sel);

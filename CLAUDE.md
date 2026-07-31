@@ -2953,6 +2953,76 @@ what makes the interesting logic unit-testable without a cluster.
   The absence cases are stated explicitly ("no substrate pressure", "no
   daemonsets stationed") so the section never reads as not-yet-loaded. Verified
   live on kind: agent / kindnet / kube-proxy named on the worker.
+- **`Overlay::Substrate` — DaemonSet coverage gaps** (2026-07-30, v1.5.0, from
+  `docs/kubernation-substrate-overlay-guidance.md`): the eighth overlay, showing
+  which nodes lack infrastructure the rest of the fleet has. Scope is exactly
+  DaemonSet coverage — the doc's own correction of the original proposal, since
+  kubelet pressure is already `Overlay::Saturation`'s and a second path to one
+  fact is worse than none. **The correctness crux is what "expected" means.**
+  `union(all DaemonSets) − node.infra` over-reports badly (a GPU plugin absent
+  from CPU nodes is not a finding), so `state/substrate.rs` uses **prevalence**:
+  `FLEET_PREVALENCE`=0.8 of nodes ⇒ fleet-wide ⇒ its absence is a gap. A
+  heuristic *deliberately* — the report never reads a DaemonSet's spec, so
+  prevalence is the only evidence available that it was MEANT to be everywhere,
+  and the Almanac says so rather than implying certainty the data can't support.
+  **The trap the doc walked into, and the fix:** §3 said to compute it in
+  `build_world` and hang it on `WorldModel` — but `build_world`'s `infra`
+  derivation is gated on the *filtered* workload list (`row_of.contains_key`),
+  so prevalence over it would be computed against a namespace-scoped view and
+  report **phantom gaps** the moment a filter is active. Instead it follows the
+  `netpol::coverage_report` precedent exactly: a pure `coverage_report(&Observed
+  World) -> SubstrateReport` hung on **`Models`**, explicitly unfiltered (like
+  `Models.coverage`) — coverage is a physical fact about the fleet, not a view.
+  The doc's per-world-not-per-snapshot argument survives unharmed, since each
+  cluster has its own `ObservedWorld` → own `Models`; it also means the map, the
+  SELECTION line and the province window all read ONE report and cannot disagree,
+  and the draw call site got it for free (`wmodels` was already resolved there).
+  **Colour is discrete, not a ramp** (gaps are small integers where 0 dominates —
+  a ramp washes a healthy fleet into near-identical tints): 0 recedes to
+  `idle_land_pair` (Cost's precedent, so anomalies are the only thing that pops),
+  1 → `heat_pair(1)` amber, 2+ → `heat_pair(2)` red; those already route through
+  the colour-blind funnel, so no new palette work. **An empty `expected` falls
+  back to terrain**, never to the "clean" tint — an unearned all-clear is the one
+  unacceptable output, and the test that pins it was mutation-verified.
+  **A sharper limit than the doc's "small clusters under-report":** at n nodes a
+  DaemonSet is expected at `ceil(0.8n)` and a gap needs it on fewer than n, so
+  for **n ≤ 4 no gap is representable at all** — being fleet-wide and having a
+  gap are mutually exclusive. Five nodes is the smallest fleet that can report
+  one; the dev kind cluster (4 nodes, `agent` at 3/4) is therefore permanently
+  clean *by arithmetic*, which is stated in the Almanac and pinned by a test
+  sweeping every sub-5 configuration. **Refactor forced by the third data
+  overlay:** `walls`+`cost`+`substrate` pushed `draw_world` past clippy's
+  argument limit, so they are bundled into one borrowed `OverlayData<'a>` —
+  a new data overlay is now a field, not a signature change at four call sites.
+  `overlay_from_str` also **moved from main.rs into draw.rs beside the enum** and
+  is derived from a new `Overlay::ALL` + `label()` rather than a hand-written
+  match (which had already silently dropped `cost`, so a saved `cost` pref reset
+  to terrain); main.rs has no test module, so the round-trip is only assertable
+  here. **The panel half is the point** (§5): the overlay says *which node*, so
+  something must say *which DaemonSet* or the map raises a question it can't
+  answer and the operator leaves for `kubectl`. Both the SELECTION line (pure
+  `panels::substrate_gap_lines`, overlay-gated) and the province window's
+  SUBSTRATE section (extended `node::substrate_lines`, shown under **any**
+  overlay — once you have drilled in, the gap is a fact worth having) name them.
+  READ-ONLY; no new write verb, no attention concern (a coverage gap is a
+  standing fact, not an incident — matching right-sizing #5 and cost).
+  **Fixed in passing:** the STATUS map-view label overlapped the mem sparkline —
+  the sparkline rows hung *below* the layout cursor while every text line in the
+  section treats it as a baseline. Pre-existing, visible under any non-default
+  overlay on any metrics-reporting cluster.
+  **Verified live at fleet scale** on the 100-node kwok cluster (the only way —
+  see the n≤4 arithmetic): two DaemonSets at 98/100 and 99/100 with one node
+  missing both and another missing one → the map showed exactly **two coloured
+  bands among a hundred provinces**, `view: substrate (2/100 nodes with gaps)`,
+  and the province windows read `2 missing vs the fleet · log-agent ·
+  node-exporter` (red) and `1 daemonsets · node-exporter` + `1 missing vs the
+  fleet · log-agent` (amber) — both halves of the diagnosis in one section.
+  326 core + 83 GUI tests; gui-smoke 51. **Deferred:** an Advisors ▸ Substrate
+  tab (the report is shaped for it); reading `nodeSelector`/tolerations to
+  replace inference with intent (would need the DaemonSet spec, and a wrong
+  "expected" is worse than a stated heuristic); a minimap tint (no per-node data
+  threaded there, like walls + cost); warm-cluster parity in STATUS's headline
+  (the label reads hot; the map + panels are per-world).
 
 ## The pair (hot/warm)
 

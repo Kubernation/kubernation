@@ -9,6 +9,37 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Substrate map overlay — which nodes are missing infrastructure the rest of
+  the fleet has.** An eighth **View ▸ Substrate (daemonsets)** overlay. A node
+  quietly missing its log agent or CNI looks perfectly healthy — its own pods
+  are fine — while lacking something every other node runs. Fully-covered
+  provinces recede to plain land so only the gaps show: amber for one missing
+  DaemonSet, red for two or more, and STATUS carries the headline
+  (`N/M nodes with gaps`). "Expected" is inferred from **prevalence** — a
+  DaemonSet on ≥80% of nodes is treated as fleet-wide — because the map never
+  reads a DaemonSet's spec and so cannot distinguish "should be here and isn't"
+  from "correctly excluded by a `nodeSelector` you wrote deliberately"; the
+  Almanac states that plainly, along with the consequence that a cluster of four
+  nodes or fewer can report *nothing* (80% of 4 rounds to 4, so being fleet-wide
+  and having a gap are mutually exclusive). With no fleet-wide DaemonSet at all
+  the overlay falls back to terrain rather than paint an all-clear it hasn't
+  earned.
+- **The province window's SUBSTRATE section now names what a node LACKS**, not
+  just what it has — `2 missing vs the fleet · log-agent · node-exporter`. Shown
+  regardless of the active overlay: once you have drilled into a node, its
+  missing infrastructure is a fact worth having without turning on the right
+  view. The Substrate overlay's SELECTION line is the at-a-glance twin.
+
+### Fixed
+- **The map-view label in STATUS no longer overlaps the memory sparkline.** The
+  sparkline rows hung below the layout cursor while every text line in the
+  section treats it as a baseline, so the next line landed 11px into the mem
+  trace (visible under any non-default overlay, on any cluster reporting
+  metrics).
+
+## [1.4.0] — 2026-07-30
+
+### Added
 - **SUBSTRATE section in the province window.** A node's drill-down now names
   the **DaemonSets stationed on it** — the CNI, kube-proxy, log and metric
   agents that run *under* your workloads — alongside any kubelet

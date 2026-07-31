@@ -1639,6 +1639,10 @@ pub struct Models {
     /// Workloads fronted by a Service/Ingress (reachable) — drives the
     /// "unwalled AND exposed" breach. Reuses `build_exposure`.
     pub exposed: HashSet<WorkloadRef>,
+    /// Per-node DaemonSet coverage gaps — the Substrate overlay + the province
+    /// window read this. Unfiltered, like `coverage`: which nodes lack the
+    /// fleet's infrastructure is a physical fact, not a namespace view.
+    pub substrate: crate::state::substrate::SubstrateReport,
     /// The explorable world projection of all of the above.
     pub world: WorldModel,
 }
@@ -1706,6 +1710,10 @@ impl Models {
             .filter(|r| r.exposed)
             .map(|r| r.r.clone())
             .collect();
+        // DaemonSet coverage — cluster-wide for the same reason as `coverage`,
+        // and NOT reusing `Province.infra` (which is gated on the filtered
+        // workload list, so prevalence over it would report phantom gaps).
+        let substrate = crate::state::substrate::coverage_report(world);
         Models {
             map,
             workloads,
@@ -1713,6 +1721,7 @@ impl Models {
             workload_severity,
             coverage,
             exposed,
+            substrate,
             world: world_model,
         }
     }

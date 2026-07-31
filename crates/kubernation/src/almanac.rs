@@ -550,7 +550,7 @@ fn page_controls(cx: &mut Ctx) {
     cx.key("Q", "quit");
     cx.heading("Menu bar");
     cx.para(
-        "The top bar holds the menus: Game (context, fit, export after-action report, quit), View (the map overlay — terrain health, cpu/mem pressure, replica health, namespace territory, walls, saturation, or upkeep/cost; the map style; and the Annals), Orders (end of turn, discard), Game Day (chaos drills), Advisors (Health / Storage / Network / Right-sizing / Hardening / Posture / Cost summaries), World (namespace filter), Help (Charter — your RBAC access — and the field guide). Click a title to open it.",
+        "The top bar holds the menus: Game (context, fit, export after-action report, quit), View (the map overlay — terrain health, cpu/mem pressure, replica health, namespace territory, walls, saturation, upkeep/cost, or substrate; the map style; and the Annals), Orders (end of turn, discard), Game Day (chaos drills), Advisors (Health / Storage / Network / Right-sizing / Hardening / Posture / Cost summaries), World (namespace filter), Help (Charter — your RBAC access — and the field guide). Click a title to open it.",
     );
     cx.heading("Hover marker");
     cx.para(
@@ -563,6 +563,10 @@ fn page_controls(cx: &mut Ctx) {
     cx.heading("Saturation overlay (strain)");
     cx.para(
         "The 4th golden signal — how full a province is toward its hard limits: cpu/mem usage, scheduled pods vs the kubelet max-pods, and the kubelet Disk/PID/Mem-pressure conditions. Red = at/over a limit and refusing or evicting work; the province SELECTION names the binding dimension (e.g. 'pods 105/110', 'DiskPressure (pegged)'). Distinct from Pressure, which shows cpu/mem utilization only — Saturation also lights up a node at max-pods or under a kubelet condition while cpu/mem look calm (and needs no metrics-server for those axes).",
+    );
+    cx.heading("Substrate overlay (daemonsets)");
+    cx.para(
+        "Which nodes are missing infrastructure the rest of the fleet has — the CNI, kube-proxy, log and metric agents that run UNDER your workloads. A node quietly missing one looks healthy (its own pods are fine) while lacking something every other node has. Provinces recede to plain land when fully covered, so only the gaps show: amber for one missing daemonset, red for two or more. The province SELECTION names them, and the province window's SUBSTRATE section lists what IS stationed there. HONEST LIMIT: 'expected' is inferred from prevalence, not intent — a daemonset on at least 80% of nodes is treated as fleet-wide, because the map never reads its spec and so cannot tell 'should be here and isn't' from 'correctly excluded by a nodeSelector you wrote deliberately'. So: targeted daemonsets on most-but-not-all nodes will read as gaps; a newly added node shows gaps until its pods land; and a NotReady node may show them because its pods went Unknown. Small clusters under-report, and at four nodes or fewer the overlay can report NOTHING — 80% of 4 rounds up to 4, so being fleet-wide and having a gap are mutually exclusive. Five nodes is the smallest fleet where a gap exists to find; this view is for real clusters, not a laptop kind. When no daemonset is fleet-wide the overlay falls back to terrain rather than paint an all-clear it hasn't earned.",
     );
     cx.heading("Upkeep overlay + Cost advisor");
     cx.para(

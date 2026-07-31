@@ -164,6 +164,15 @@ pub fn region_lines(
         ClusterId::Hot => &snap.hot.cost,
         ClusterId::Warm => snap.warm.as_ref().map_or(&snap.hot.cost, |w| &w.cost),
     };
+    // Likewise this world's DaemonSet coverage (the Substrate-overlay line) —
+    // per-world, since a hot/warm pair runs different infrastructure.
+    let substrate = match sw.id {
+        ClusterId::Hot => &snap.hot.models.substrate,
+        ClusterId::Warm => snap
+            .warm
+            .as_ref()
+            .map_or(&snap.hot.models.substrate, |w| &w.models.substrate),
+    };
     // Route through the ONE resolver so the tooltip can never name something
     // different from what a click at the same pixel would open.
     match crate::draw::resolve_region(sw, local) {
@@ -239,6 +248,12 @@ pub fn region_lines(
                     {
                         lines.extend(cost_lines(nc));
                     }
+                    if overlay == Overlay::Substrate {
+                        lines.extend(substrate_gap_lines(
+                            substrate.missing(&p.tile.name),
+                            substrate.has_data(),
+                        ));
+                    }
                 }
                 Region::Province(p) => {
                     lines.push((p.tile.name.clone(), STONE_INK));
@@ -262,6 +277,14 @@ pub fn region_lines(
                         && let Some(nc) = cost.by_node.get(&p.tile.name)
                     {
                         lines.extend(cost_lines(nc));
+                    }
+                    // Under the Substrate overlay, name the missing DaemonSets —
+                    // the overlay says which node, this says which infrastructure.
+                    if overlay == Overlay::Substrate {
+                        lines.extend(substrate_gap_lines(
+                            substrate.missing(&p.tile.name),
+                            substrate.has_data(),
+                        ));
                     }
                 }
                 Region::Structure(_, s) => {
@@ -324,6 +347,32 @@ pub fn cost_lines(nc: &NodeCost) -> Vec<(String, Color)> {
             lines.push(("(est., not a cloud bill)".into(), STONE_INK_DIM));
         }
     }
+    lines
+}
+
+/// PURE draw-decision fn: SELECTION/tooltip lines naming the fleet-wide
+/// DaemonSets a node LACKS, shown under the Substrate overlay. Unit-tested.
+///
+/// Naming the specific DaemonSets is the point: the overlay says *which nodes*,
+/// and without this the map raises a question it can't answer and the operator
+/// goes to `kubectl`. (Distinct from `node::substrate_lines`, which shows what
+/// a node HAS — this is the complement, and only under this overlay.)
+pub fn substrate_gap_lines(missing: &[String], report_has_data: bool) -> Vec<(String, Color)> {
+    if !report_has_data {
+        // No fleet-wide DaemonSets ⇒ nothing to be missing from. Say so rather
+        // than imply a clean bill of health we didn't earn.
+        return vec![("substrate: no fleet-wide daemonsets".into(), STONE_INK_DIM)];
+    }
+    if missing.is_empty() {
+        return vec![("substrate: complete".into(), STONE_INK_DIM)];
+    }
+    let col = if missing.len() > 1 {
+        STONE_CRIT
+    } else {
+        STONE_WARN
+    };
+    let mut lines = vec![(format!("substrate: {} missing", missing.len()), col)];
+    lines.extend(missing.iter().map(|m| (format!("  {m}"), col)));
     lines
 }
 
@@ -1392,6 +1441,52 @@ mod tests {
         let cl = saturation_lines(&calm);
         assert_eq!(cl.len(), 1);
         assert!(cl[0].0.contains("calm"));
+    }
+
+    /// The overlay says WHICH NODE; these lines must say WHICH DAEMONSET —
+    /// without the names the map raises a question it can't answer and the
+    /// operator leaves for `kubectl`.
+    #[test]
+    fn substrate_gap_lines_name_the_missing_daemonsets() {
+        let join = |l: &[(String, Color)]| {
+            l.iter()
+                .map(|(s, _)| s.as_str())
+                .collect::<Vec<_>>()
+                .join("|")
+        };
+
+        let one = substrate_gap_lines(&["cilium".to_string()], true);
+        assert!(
+            join(&one).contains("cilium"),
+            "the specific daemonset is named: {}",
+            join(&one)
+        );
+        assert!(one.iter().all(|(_, c)| *c == STONE_WARN), "one gap warns");
+
+        let two = substrate_gap_lines(&["cilium".to_string(), "fluent-bit".to_string()], true);
+        let t = join(&two);
+        assert!(
+            t.contains("cilium") && t.contains("fluent-bit"),
+            "both: {t}"
+        );
+        assert!(t.contains('2'), "counted: {t}");
+        assert!(two.iter().all(|(_, c)| *c == STONE_CRIT), "2+ gaps crit");
+
+        // A covered node says so plainly, and calmly.
+        let none = substrate_gap_lines(&[], true);
+        assert_eq!(none.len(), 1);
+        assert!(none[0].0.contains("complete"));
+        assert_eq!(none[0].1, STONE_INK_DIM);
+
+        // Nothing fleet-wide is NOT a clean bill of health — it must not read
+        // "complete", which would imply a check that never ran.
+        let no_data = substrate_gap_lines(&[], false);
+        assert!(
+            !join(&no_data).contains("complete"),
+            "an unearned all-clear: {}",
+            join(&no_data)
+        );
+        assert!(join(&no_data).contains("no fleet-wide"));
     }
 
     #[test]

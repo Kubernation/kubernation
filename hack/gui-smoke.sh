@@ -48,6 +48,7 @@ STATES=(
   "overlay-walls|--overlay walls"
   "overlay-saturation|--overlay saturation"
   "overlay-cost|--overlay cost"
+  "overlay-substrate|--overlay substrate"
   "map-style-relief|--map-style relief"
   "hover-province|--hover 10,6"
   "hover-city-relief|--map-style relief --hover 6,3"
