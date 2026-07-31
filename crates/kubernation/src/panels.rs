@@ -140,99 +140,105 @@ pub fn region_lines(
         ClusterId::Hot => &snap.hot.cost,
         ClusterId::Warm => snap.warm.as_ref().map_or(&snap.hot.cost, |w| &w.cost),
     };
-    if let Some((_, m)) = sw.world.coast_at(local.0, local.1) {
-        // A coast marker (not a land region): the city's harbor / gate.
-        let (title, what) = match m.kind {
-            CoastKind::Harbor => ("harbor", format!("service {} . {}", m.name, m.detail)),
-            CoastKind::Gate => ("gate", format!("ingress {} . {}", m.name, m.detail)),
-        };
-        lines.push((title.into(), STONE_STRUCT));
-        lines.push((what, STONE_INK));
-        lines.push((format!("-> {}", m.workload.name), STONE_INK_DIM));
-    } else {
-        match sw.world.region_at(local.0, local.1) {
-            Region::City(p, c) => {
-                lines.push((c.r.name.clone(), STONE_INK));
-                let gap = if c.ready < c.desired {
-                    STONE_WARN
-                } else {
-                    STONE_INK_DIM
-                };
-                lines.push((
-                    format!(
-                        "{} {} . pop {}/{}",
-                        c.r.kind, c.r.namespace, c.ready, c.desired
-                    ),
-                    gap,
-                ));
-                if let Some(sev) = c.severity {
-                    lines.push(("needs attention".into(), severity_on_stone(sev)));
-                }
-                if let Some(store) = c.storage {
-                    let (txt, col) = if store.pending > 0 {
-                        (
-                            format!("{} PVCs . {} pending", store.claims, store.pending),
-                            STONE_WARN,
-                        )
+    // Route through the ONE resolver so the tooltip can never name something
+    // different from what a click at the same pixel would open.
+    match crate::draw::resolve_region(sw, local) {
+        crate::draw::Resolved::Ocean => return lines,
+        crate::draw::Resolved::Coast(m) => {
+            // A coast marker (not a land region): the city's harbor / gate.
+            let (title, what) = match m.kind {
+                CoastKind::Harbor => ("harbor", format!("service {} . {}", m.name, m.detail)),
+                CoastKind::Gate => ("gate", format!("ingress {} . {}", m.name, m.detail)),
+            };
+            lines.push((title.into(), STONE_STRUCT));
+            lines.push((what, STONE_INK));
+            lines.push((format!("-> {}", m.workload.name), STONE_INK_DIM));
+        }
+        crate::draw::Resolved::Region(region) => {
+            match region {
+                Region::City(p, c) => {
+                    lines.push((c.r.name.clone(), STONE_INK));
+                    let gap = if c.ready < c.desired {
+                        STONE_WARN
                     } else {
-                        (format!("{} PVCs", store.claims), STONE_STRUCT)
+                        STONE_INK_DIM
                     };
-                    lines.push((txt, col));
+                    lines.push((
+                        format!(
+                            "{} {} . pop {}/{}",
+                            c.r.kind, c.r.namespace, c.ready, c.desired
+                        ),
+                        gap,
+                    ));
+                    if let Some(sev) = c.severity {
+                        lines.push(("needs attention".into(), severity_on_stone(sev)));
+                    }
+                    if let Some(store) = c.storage {
+                        let (txt, col) = if store.pending > 0 {
+                            (
+                                format!("{} PVCs . {} pending", store.claims, store.pending),
+                                STONE_WARN,
+                            )
+                        } else {
+                            (format!("{} PVCs", store.claims), STONE_STRUCT)
+                        };
+                        lines.push((txt, col));
+                    }
+                    if let Some(pair) = &snap.pair
+                        && let Some(st) = pair.state(&c.r)
+                    {
+                        lines.push((st.describe(sw.id), sync_on_stone(st)));
+                    }
+                    // The city sits on the tinted province — show its host node's
+                    // strain / upkeep too, so the distinguisher isn't lost on the settlement.
+                    if overlay == Overlay::Saturation {
+                        lines.extend(saturation_lines(&p.tile.saturation));
+                    }
+                    if overlay == Overlay::Cost
+                        && let Some(nc) = cost.by_node.get(&p.tile.name)
+                    {
+                        lines.extend(cost_lines(nc));
+                    }
                 }
-                if let Some(pair) = &snap.pair
-                    && let Some(st) = pair.state(&c.r)
-                {
-                    lines.push((st.describe(sw.id), sync_on_stone(st)));
+                Region::Province(p) => {
+                    lines.push((p.tile.name.clone(), STONE_INK));
+                    let health = match p.tile.health {
+                        NodeHealth::Healthy => ("healthy", STONE_INK_DIM),
+                        NodeHealth::Cordoned => ("cordoned", STONE_WARN),
+                        NodeHealth::Pressure => ("under pressure", STONE_WARN),
+                        NodeHealth::NotReady => ("NotReady", STONE_CRIT),
+                    };
+                    lines.push((
+                        format!("{} . {} pods", health.0, p.tile.pods.len()),
+                        health.1,
+                    ));
+                    // Under the Saturation overlay, name the binding strain
+                    // dimension(s) — the distinguisher the Pressure overlay lacks.
+                    if overlay == Overlay::Saturation {
+                        lines.extend(saturation_lines(&p.tile.saturation));
+                    }
+                    // Under the Cost overlay, name the node's upkeep + idle drain.
+                    if overlay == Overlay::Cost
+                        && let Some(nc) = cost.by_node.get(&p.tile.name)
+                    {
+                        lines.extend(cost_lines(nc));
+                    }
                 }
-                // The city sits on the tinted province — show its host node's
-                // strain / upkeep too, so the distinguisher isn't lost on the settlement.
-                if overlay == Overlay::Saturation {
-                    lines.extend(saturation_lines(&p.tile.saturation));
+                Region::Structure(_, s) => {
+                    lines.push((format!("{}/{}", s.kind, s.name), STONE_INK));
+                    if s.workload.is_some() {
+                        lines.push(("encampment - no pods on any land".into(), STONE_WARN));
+                    }
                 }
-                if overlay == Overlay::Cost
-                    && let Some(nc) = cost.by_node.get(&p.tile.name)
-                {
-                    lines.extend(cost_lines(nc));
+                Region::Island(isl) => {
+                    lines.push((format!("isle of {}", isl.label), STONE_INK));
                 }
-            }
-            Region::Province(p) => {
-                lines.push((p.tile.name.clone(), STONE_INK));
-                let health = match p.tile.health {
-                    NodeHealth::Healthy => ("healthy", STONE_INK_DIM),
-                    NodeHealth::Cordoned => ("cordoned", STONE_WARN),
-                    NodeHealth::Pressure => ("under pressure", STONE_WARN),
-                    NodeHealth::NotReady => ("NotReady", STONE_CRIT),
-                };
-                lines.push((
-                    format!("{} . {} pods", health.0, p.tile.pods.len()),
-                    health.1,
-                ));
-                // Under the Saturation overlay, name the binding strain
-                // dimension(s) — the distinguisher the Pressure overlay lacks.
-                if overlay == Overlay::Saturation {
-                    lines.extend(saturation_lines(&p.tile.saturation));
+                Region::Ocean => {
+                    if !paired {
+                        return Vec::new();
+                    }
+                    lines.push(("open sea".into(), STONE_INK_DIM));
                 }
-                // Under the Cost overlay, name the node's upkeep + idle drain.
-                if overlay == Overlay::Cost
-                    && let Some(nc) = cost.by_node.get(&p.tile.name)
-                {
-                    lines.extend(cost_lines(nc));
-                }
-            }
-            Region::Structure(_, s) => {
-                lines.push((format!("{}/{}", s.kind, s.name), STONE_INK));
-                if s.workload.is_some() {
-                    lines.push(("encampment - no pods on any land".into(), STONE_WARN));
-                }
-            }
-            Region::Island(isl) => {
-                lines.push((format!("isle of {}", isl.label), STONE_INK));
-            }
-            Region::Ocean => {
-                if !paired {
-                    return Vec::new();
-                }
-                lines.push(("open sea".into(), STONE_INK_DIM));
             }
         }
     }
@@ -1186,6 +1192,105 @@ mod tests {
         assert!(
             lines.iter().any(|(t, _)| t.contains("web")),
             "the SELECTION/tooltip lines should name the workload: {lines:?}"
+        );
+    }
+
+    /// Build the fixture scene the resolver tests share.
+    fn probe_fixture() -> (Snapshot, (u16, u16)) {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.deployment(fx::deployment("demo", "a-long-workload-name", 1, 1));
+        s.replicaset(fx::replicaset("demo", "rs", "a-long-workload-name"));
+        s.pod(fx::pod_owned(
+            fx::pod("demo", "rs-1", Some("n1")),
+            "ReplicaSet",
+            "rs",
+        ));
+        let models = Arc::new(Models::build(&world));
+        let city = {
+            let c = models.world.cities().next().expect("a city was sited");
+            (c.x, c.y)
+        };
+        let posture = kubernation_core::state::posture::posture_report(&world);
+        let cost = kubernation_core::state::cost::cost_report(
+            &world,
+            &kubernation_core::state::cost::CostRates::default(),
+        );
+        let snap = Snapshot {
+            hot: WorldSnap {
+                models,
+                observed: world,
+                slo: Arc::new(std::collections::HashMap::new()),
+                posture,
+                cost,
+                opencost_note: None,
+            },
+            warm: None,
+            pair: None,
+            attention: Arc::new(Vec::new()),
+        };
+        (snap, city)
+    }
+
+    /// THE anti-drift test. The tooltip (`region_lines`) and the click
+    /// (`panel_for`, via the same `resolve_region`) must never name different
+    /// things at the same pixel. Before the resolver existed, each reimplemented
+    /// the `coast_at` → `region_at` probe order independently, so a fix to one
+    /// silently missed the other.
+    #[test]
+    fn tooltip_and_click_agree_at_every_probe_point() {
+        use crate::draw::{Resolved, resolve_region};
+        let (snap, (cx, cy)) = probe_fixture();
+        let worlds = scene(&snap);
+        let sw = &worlds[0];
+        // Sweep a band across the world covering city, province, sea-in-rect
+        // and open ocean.
+        for y in 0..12u16 {
+            for x in 0..24u16 {
+                let resolved = resolve_region(sw, (x, y));
+                let lines = region_lines(sw, (x, y), &snap, Overlay::Terrain);
+                // The one invariant that matters: whenever the resolver says
+                // there is nothing there, the tooltip must say nothing too —
+                // and whenever it names a region, the tooltip is non-empty.
+                match resolved {
+                    Resolved::Ocean => assert!(
+                        lines.is_empty(),
+                        "({x},{y}) resolves to open sea but the tooltip says {lines:?}"
+                    ),
+                    Resolved::Region(kubernation_core::state::world::Region::Ocean) => {
+                        assert!(lines.is_empty(), "({x},{y}) ocean but tooltip {lines:?}")
+                    }
+                    _ => assert!(
+                        !lines.is_empty(),
+                        "({x},{y}) resolves to a feature but the tooltip is silent"
+                    ),
+                }
+            }
+        }
+        // And the city itself still names its workload (the pre-existing
+        // guarantee, which probes the origin cell).
+        let lines = region_lines(sw, (cx, cy), &snap, Overlay::Terrain);
+        assert!(
+            lines
+                .iter()
+                .any(|(t, _)| t.contains("a-long-workload-name"))
+        );
+    }
+
+    /// A long workload name must no longer widen its clickable region — the
+    /// view-side half of `city_hit_region_matches_the_settlement_not_its_name`.
+    #[test]
+    fn a_long_name_does_not_steal_the_node_beside_it() {
+        use crate::draw::{Resolved, resolve_region};
+        let (snap, (cx, cy)) = probe_fixture();
+        let worlds = scene(&snap);
+        // 10 cells east of a 20-char name: the node, never the workload.
+        assert!(
+            !matches!(
+                resolve_region(&worlds[0], (cx + 10, cy)),
+                Resolved::Region(kubernation_core::state::world::Region::City(..))
+            ),
+            "a long name still steals terrain east of its settlement"
         );
     }
 

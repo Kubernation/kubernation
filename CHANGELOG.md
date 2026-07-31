@@ -8,6 +8,26 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **Map click targets now match what's drawn.** Two long-standing hit-test bugs,
+  both invisible until you went looking:
+  - **A city's clickable area was as wide as its name.** It was a leftover from
+    the original ASCII map, where a city literally *was* its label text — so a
+    workload called `a-very-long-workload-name` claimed ~22 cells of terrain,
+    and clicking well east of the settlement opened the workload instead of the
+    node it sits on. The size of the mistake scaled with how long you'd named
+    things. The region is now the settlement's own cell plus a one-cell
+    forgiveness ring, matching the drawing. **This is a real shrink** — the
+    target is smaller than it was, but it is now honest.
+  - **Visible water inside a province opened the node.** `region_at` tests a
+    province's bounding rectangle, and the coastline is generated in the
+    renderer, so the model had no way to know which cells are land. The view now
+    applies that test.
+- **The tooltip and the click can no longer disagree.** Both paths reimplemented
+  the same probe order independently, so either could be fixed while the other
+  silently kept the bug. They now route through one resolver, pinned by a test
+  that sweeps every cell in a fixture world and asserts the two agree.
+
 ### Added
 - **Contact shadows.** Trees and settlements now cast a soft ambient pool where
   they meet the ground, which sells the height the relief style already has.

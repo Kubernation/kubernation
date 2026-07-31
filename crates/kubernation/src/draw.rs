@@ -19,7 +19,9 @@ use kubernation_core::state::cost::{CostReport, IDLE_NOTABLE};
 use kubernation_core::state::model::{NodeHealth, WorkloadRef};
 use kubernation_core::state::netpol::Coverage;
 use kubernation_core::state::pair::PairSync;
-use kubernation_core::state::world::{City, CoastKind, Continent, Island, Province, WorldModel};
+use kubernation_core::state::world::{
+    City, CoastKind, CoastMarker, Continent, Island, Province, Region, WorldModel,
+};
 use macroquad::prelude::*;
 
 use crate::net::Snapshot;
@@ -347,6 +349,67 @@ pub fn locate<'a, 'b>(
         .rev()
         .find(|s| cell.0 >= s.off && cell.0 < s.off + s.world.width)
         .map(|s| (s, (cell.0 - s.off, cell.1)))
+}
+
+/// The continent owning `p` — needed to build its [`Coast`], which is what the
+/// land test (and the province outline) are generated from. Shared so the probe
+/// and any renderer resolve it identically.
+pub(crate) fn continent_of<'a>(w: &'a WorldModel, p: &Province) -> Option<&'a Continent> {
+    w.continents
+        .iter()
+        .find(|c| c.provinces.iter().any(|q| std::ptr::eq(q, p)))
+}
+
+/// What the pointer is over, once the view has applied the land test the pure
+/// model cannot do. See [`resolve_region`].
+pub enum Resolved<'a> {
+    /// A harbour or gate, moored in open water east of its continent.
+    Coast(&'a CoastMarker),
+    /// A land region from the model: province, city, island, structure.
+    Region(Region<'a>),
+    /// Open sea — including sea cells INSIDE a province's bounding rectangle,
+    /// which the model reports as `Province` because it has no coastline.
+    Ocean,
+}
+
+/// **The authoritative answer to "what is the pointer over".** Both the click
+/// path (`panel_for`) and the text path (`panels::region_lines`) must route
+/// through this, or the tooltip and the click can name different things at the
+/// same pixel.
+///
+/// The probe order is load-bearing and lives here ONCE:
+///
+/// 1. **Coast markers win.** They are moored in the sea east of the continent,
+///    so a land test would reject them — and clicking one opens the city it
+///    serves.
+/// 2. **Sea inside a province's rectangle is sea.** `WorldModel::region_at`
+///    tests the full rectangle and returns `Province`, because the coastline is
+///    generated from value noise in the VIEW (`Coast`) and `kubernation-core`
+///    genuinely does not know which cells are land. Moving `Coast` into core
+///    would push procedural noise into the world model — the split is right, so
+///    the fix belongs here.
+/// 3. Otherwise the model's region stands.
+pub fn resolve_region<'a>(sw: &'a SceneWorld<'_>, local: (u16, u16)) -> Resolved<'a> {
+    let w = sw.world;
+    if let Some((_, m)) = w.coast_at(local.0, local.1) {
+        return Resolved::Coast(m);
+    }
+    let region = w.region_at(local.0, local.1);
+    // Only a Province result can be a false positive: cities/structures sit on
+    // land by construction, and Island/Ocean need no test.
+    if let Region::Province(p) = region
+        && let Some(cont) = continent_of(w, p)
+    {
+        // `Coast::new` already runs per continent per frame inside `draw_world`;
+        // one more for a single probe is nothing.
+        let coast = Coast::new(cont);
+        let (li, span) = coast.land_span(local.1 as i32, cont.w as f32);
+        let rel = (local.0 - cont.x) as f32;
+        if rel < li || rel >= li + span {
+            return Resolved::Ocean; // visible water inside the province's rect
+        }
+    }
+    Resolved::Region(region)
 }
 
 /// Resolve a two-plane [`Hit`] to the world + local cell of whatever the pointer

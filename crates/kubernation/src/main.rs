@@ -3657,14 +3657,17 @@ fn export_to_file(text: &str, filename: &str) -> String {
 /// on land), so the probes below stay correct once land lifts under `Relief`.
 fn panel_for(worlds: &[SceneWorld], hit: draw::Hit) -> Option<Panel> {
     let (sw, local) = draw::locate_hit(worlds, hit)?;
-    // A coast marker opens the city it serves.
-    if let Some((_, m)) = sw.world.coast_at(local.0, local.1) {
-        return Some(Panel::City(sw.id, m.workload.clone()));
-    }
-    match sw.world.region_at(local.0, local.1) {
-        Region::City(_, c) => Some(Panel::City(sw.id, c.r.clone())),
-        Region::Province(p) => Some(Panel::Node(sw.id, p.tile.name.clone())),
-        Region::Structure(_, s) => s.workload.clone().map(|r| Panel::City(sw.id, r)),
-        _ => None,
+    // Route through the ONE resolver `panels::region_lines` also uses, so the
+    // window a click opens always matches what the tooltip just named.
+    match draw::resolve_region(sw, local) {
+        // A coast marker opens the city it serves.
+        draw::Resolved::Coast(m) => Some(Panel::City(sw.id, m.workload.clone())),
+        draw::Resolved::Ocean => None,
+        draw::Resolved::Region(region) => match region {
+            Region::City(_, c) => Some(Panel::City(sw.id, c.r.clone())),
+            Region::Province(p) => Some(Panel::Node(sw.id, p.tile.name.clone())),
+            Region::Structure(_, s) => s.workload.clone().map(|r| Panel::City(sw.id, r)),
+            _ => None,
+        },
     }
 }

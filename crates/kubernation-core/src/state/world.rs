@@ -206,6 +206,23 @@ pub enum Region<'a> {
 
 impl WorldModel {
     /// What stands at a world cell — the explorer's hit test.
+    /// Is `(x, y)` within a city's clickable region?
+    ///
+    /// The settlement is DRAWN centred on its own cell, so the region is that
+    /// cell plus a one-cell forgiveness ring — a 3x3 that matches the drawing
+    /// (roughly one cell, ~1.5 at the largest tier) and is easy to hit.
+    ///
+    /// It deliberately does NOT derive from the workload's name. It used to:
+    /// the region was 2 rows tall and `name.len() + 2` columns wide, an
+    /// ASCII-map leftover from when a city literally WAS its label text. That
+    /// made the target up to ~22 cells wide for a long name, so clicking empty
+    /// terrain well east of a settlement opened the workload instead of the
+    /// node — and the size of the mistake scaled with how long you'd named
+    /// things. Honest regression: the target is now much smaller.
+    fn city_hit_region(cx: u16, cy: u16, x: u16, y: u16) -> bool {
+        x + 1 >= cx && x <= cx + 1 && y + 1 >= cy && y <= cy + 1
+    }
+
     pub fn region_at(&self, x: u16, y: u16) -> Region<'_> {
         for cont in &self.continents {
             if x < cont.x || x >= cont.x + cont.w {
@@ -216,8 +233,7 @@ impl WorldModel {
                     continue;
                 }
                 for c in &p.cities {
-                    let label_w = (c.r.name.len() as u16 + 2).max(6);
-                    if (y == c.y || y == c.y + 1) && x >= c.x && x < c.x + label_w {
+                    if Self::city_hit_region(c.x, c.y, x, y) {
                         return Region::City(p, c);
                     }
                 }
@@ -643,6 +659,45 @@ mod tests {
         // Elsewhere on the patch is the province; far off is ocean.
         assert!(matches!(w.region_at(cont.x, cont.y), Region::Province(_)));
         assert!(matches!(w.region_at(w.width - 1, 0), Region::Ocean));
+    }
+
+    /// The city's clickable region must match what is DRAWN — its own cell plus
+    /// a one-cell forgiveness ring — and must NOT scale with the workload's
+    /// name. It used to be `name.len() + 2` cells wide, so a long name silently
+    /// stole terrain from the node underneath it.
+    #[test]
+    fn city_hit_region_matches_the_settlement_not_its_name() {
+        // A deliberately long name: under the old rule this reserved 22+ cells.
+        let long = "a-very-long-workload-name";
+        let m = world_with(|s| {
+            s.deployment(fx::deployment("demo", long, 1, 1));
+            s.replicaset(fx::replicaset("demo", "rs", long));
+            s.pod(fx::pod_owned(
+                fx::pod("demo", "rs-1", Some("n-alpha")),
+                "ReplicaSet",
+                "rs",
+            ));
+        });
+        let w = &m.world;
+        let city = w.cities().next().expect("a city").clone();
+        // The settlement's own cell resolves to the city…
+        assert!(matches!(w.region_at(city.x, city.y), Region::City(..)));
+        // …and so does the forgiveness ring around it.
+        assert!(matches!(w.region_at(city.x + 1, city.y), Region::City(..)));
+        assert!(matches!(w.region_at(city.x, city.y + 1), Region::City(..)));
+        // But a cell well east on the same row is the PROVINCE (the node), not
+        // the city — the whole point of the fix.
+        assert!(
+            matches!(w.region_at(city.x + 10, city.y), Region::Province(_)),
+            "10 cells east of a {}-char name must be the node, not the city",
+            long.len()
+        );
+        // And the name's length must not move that boundary: two cells out is
+        // already province, however long the name is.
+        assert!(matches!(
+            w.region_at(city.x + 2, city.y),
+            Region::Province(_)
+        ));
     }
 
     #[test]
