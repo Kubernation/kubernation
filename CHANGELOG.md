@@ -8,6 +8,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **Hovering water inside a province now reads the same as hovering open sea.**
+  In a paired hot/warm session the two took different paths — one showed a bare
+  cluster tag, the other added "open sea" — so the same "there's nothing here"
+  had two different appearances. Merged into one path rather than tested for
+  parity: one branch cannot drift from itself. (Single-cluster sessions were
+  never affected, which is why it went unnoticed.)
+
 ## [1.3.0] — 2026-07-30
 
 ### Added

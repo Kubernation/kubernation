@@ -1870,7 +1870,7 @@ async fn main() {
                 if is_key_pressed(KeyCode::Enter)
                     && let Some(sel) = selected
                 {
-                    panel = panel_for(&worlds, draw::Hit::at(sel));
+                    panel = panels::panel_for(&worlds, draw::Hit::at(sel));
                 }
 
                 // Minimap navigation: click or drag to recenter the main view
@@ -1905,7 +1905,7 @@ async fn main() {
                     let hit = cam.hit(mouse, bounds);
                     selected = hit.land;
                     if selected.is_some() {
-                        panel = panel_for(&worlds, hit);
+                        panel = panels::panel_for(&worlds, hit);
                         panel_just_opened = panel.is_some();
                     }
                 }
@@ -3672,25 +3672,5 @@ fn export_to_file(text: &str, filename: &str) -> String {
     match std::fs::write(&path, text) {
         Ok(()) => format!("exported → {}", path.display()),
         Err(e) => format!("export failed: {e}"),
-    }
-}
-
-/// The drill-down for a two-plane pointer hit. `locate_hit` picks the plane each
-/// feature is drawn on (coast markers float at sea level, everything else stands
-/// on land), so the probes below stay correct once land lifts under `Relief`.
-fn panel_for(worlds: &[SceneWorld], hit: draw::Hit) -> Option<Panel> {
-    let (sw, local) = draw::locate_hit(worlds, hit)?;
-    // Route through the ONE resolver `panels::region_lines` also uses, so the
-    // window a click opens always matches what the tooltip just named.
-    match draw::resolve_region(sw, local) {
-        // A coast marker opens the city it serves.
-        draw::Resolved::Coast(m) => Some(Panel::City(sw.id, m.workload.clone())),
-        draw::Resolved::Ocean => None,
-        draw::Resolved::Region(region) => match region {
-            Region::City(_, c) => Some(Panel::City(sw.id, c.r.clone())),
-            Region::Province(p) => Some(Panel::Node(sw.id, p.tile.name.clone())),
-            Region::Structure(_, s) => s.workload.clone().map(|r| Panel::City(sw.id, r)),
-            _ => None,
-        },
     }
 }

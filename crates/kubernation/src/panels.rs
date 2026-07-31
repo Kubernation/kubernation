@@ -118,6 +118,30 @@ fn cluster_tag(id: ClusterId) -> (&'static str, Color) {
     }
 }
 
+/// The drill-down a pointer hit opens. **Lives beside [`region_lines`] on
+/// purpose:** the two must agree — the window a click opens has to be the thing
+/// the tooltip just named — so they sit in one module where an edit to either
+/// has the other in view, and the drift test between them is a same-module test.
+///
+/// `locate_hit` picks the plane each feature is drawn on (coast markers float at
+/// sea level, everything else stands on land), then `resolve_region` applies the
+/// one authoritative probe order.
+pub fn panel_for(worlds: &[SceneWorld], hit: crate::draw::Hit) -> Option<Panel> {
+    use crate::draw::{Resolved, locate_hit, resolve_region};
+    let (sw, local) = locate_hit(worlds, hit)?;
+    match resolve_region(sw, local) {
+        // A coast marker opens the city it serves.
+        Resolved::Coast(m) => Some(Panel::City(sw.id, m.workload.clone())),
+        Resolved::Ocean => None,
+        Resolved::Region(region) => match region {
+            Region::City(_, c) => Some(Panel::City(sw.id, c.r.clone())),
+            Region::Province(p) => Some(Panel::Node(sw.id, p.tile.name.clone())),
+            Region::Structure(_, s) => s.workload.clone().map(|r| Panel::City(sw.id, r)),
+            _ => None,
+        },
+    }
+}
+
 // --- hover tooltip ------------------------------------------------------
 
 /// The text lines describing whatever is at `local` in `sw` — shared by the
@@ -143,7 +167,23 @@ pub fn region_lines(
     // Route through the ONE resolver so the tooltip can never name something
     // different from what a click at the same pixel would open.
     match crate::draw::resolve_region(sw, local) {
-        crate::draw::Resolved::Ocean => return lines,
+        // ONE ocean path. `Resolved::Ocean` (visible water inside a province's
+        // bounding rectangle — the model reports Province, the view knows
+        // better) and `Region::Ocean` (true open sea) mean the same thing to a
+        // reader: there is nothing here. They must therefore SAY the same
+        // thing. Two branches used to diverge in a paired session, where
+        // `lines` already holds the cluster tag: sea-inside-rect showed a bare
+        // "HOT <label>" panel while open sea showed "HOT <label> / open sea".
+        // Merged rather than parity-tested — one branch cannot drift from
+        // itself. (`draw::draw_hover` already had this shape.)
+        crate::draw::Resolved::Ocean
+        | crate::draw::Resolved::Region(kubernation_core::state::world::Region::Ocean) => {
+            if !paired {
+                return Vec::new();
+            }
+            lines.push(("open sea".into(), STONE_INK_DIM));
+            return lines;
+        }
         crate::draw::Resolved::Coast(m) => {
             // A coast marker (not a land region): the city's harbor / gate.
             let (title, what) = match m.kind {
@@ -233,12 +273,8 @@ pub fn region_lines(
                 Region::Island(isl) => {
                     lines.push((format!("isle of {}", isl.label), STONE_INK));
                 }
-                Region::Ocean => {
-                    if !paired {
-                        return Vec::new();
-                    }
-                    lines.push(("open sea".into(), STONE_INK_DIM));
-                }
+                // Handled by the single ocean arm above, before this match.
+                Region::Ocean => {}
             }
         }
     }
@@ -1198,7 +1234,12 @@ mod tests {
     /// Build the fixture scene the resolver tests share.
     fn probe_fixture() -> (Snapshot, (u16, u16)) {
         let (world, mut s) = fx::world();
-        s.node(fx::node("n1", Some("z-a")));
+        // Several nodes in one zone: `Coast::new` gives a SINGLE-node continent
+        // only a gentle wobble, so a one-node world may contain no sea-inside-
+        // the-rectangle cell at all and the interesting case would go untested.
+        for n in ["n1", "n2", "n3", "n4"] {
+            s.node(fx::node(n, Some("z-a")));
+        }
         s.deployment(fx::deployment("demo", "a-long-workload-name", 1, 1));
         s.replicaset(fx::replicaset("demo", "rs", "a-long-workload-name"));
         s.pod(fx::pod_owned(
@@ -1232,48 +1273,76 @@ mod tests {
         (snap, city)
     }
 
-    /// THE anti-drift test. The tooltip (`region_lines`) and the click
-    /// (`panel_for`, via the same `resolve_region`) must never name different
-    /// things at the same pixel. Before the resolver existed, each reimplemented
-    /// the `coast_at` → `region_at` probe order independently, so a fix to one
+    /// THE anti-drift test: the tooltip must never NAME something the click
+    /// won't open. Before `resolve_region`, the click path and the text path
+    /// each reimplemented the `coast_at` -> `region_at` order, so a fix to one
     /// silently missed the other.
+    ///
+    /// It guards *semantic* divergence, and the third arm is the one that
+    /// bites: when a click opens nothing, the tooltip must not describe a node
+    /// or workload as if it would. (It would NOT have caught the paired-session
+    /// ocean split — there both paths agreed nothing was selectable and differed
+    /// only in how much text they showed. That is fixed structurally instead,
+    /// by there being one ocean branch.)
     #[test]
-    fn tooltip_and_click_agree_at_every_probe_point() {
-        use crate::draw::{Resolved, resolve_region};
-        let (snap, (cx, cy)) = probe_fixture();
+    fn the_tooltip_and_the_click_never_disagree() {
+        use crate::draw::Hit;
+        let (snap, _) = probe_fixture();
         let worlds = scene(&snap);
-        let sw = &worlds[0];
-        // Sweep a band across the world covering city, province, sea-in-rect
-        // and open ocean.
-        for y in 0..12u16 {
-            for x in 0..24u16 {
-                let resolved = resolve_region(sw, (x, y));
-                let lines = region_lines(sw, (x, y), &snap, Overlay::Terrain);
-                // The one invariant that matters: whenever the resolver says
-                // there is nothing there, the tooltip must say nothing too —
-                // and whenever it names a region, the tooltip is non-empty.
-                match resolved {
-                    Resolved::Ocean => assert!(
-                        lines.is_empty(),
-                        "({x},{y}) resolves to open sea but the tooltip says {lines:?}"
+        // Every name the tooltip could utter that implies something openable.
+        let mut names: Vec<String> = snap
+            .hot
+            .models
+            .world
+            .cities()
+            .map(|c| c.r.name.clone())
+            .collect();
+        for cont in &snap.hot.models.world.continents {
+            for p in &cont.provinces {
+                names.push(p.tile.name.clone());
+            }
+        }
+        let (bw, bh) = (snap.hot.models.world.width, snap.hot.models.world.height);
+        let mut saw_sea_in_rect = false;
+        for y in 0..bh {
+            for x in 0..bw {
+                let panel = panel_for(&worlds, Hit::at((x, y)));
+                let lines = region_lines(&worlds[0], (x, y), &snap, Overlay::Terrain);
+                let text = lines
+                    .iter()
+                    .map(|(t, _)| t.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                // Track that the grid actually contains the interesting case,
+                // or this test is quietly vacuous.
+                if matches!(
+                    crate::draw::resolve_region(&worlds[0], (x, y)),
+                    crate::draw::Resolved::Ocean
+                ) {
+                    saw_sea_in_rect = true;
+                }
+                match panel {
+                    Some(Panel::City(_, r)) => assert!(
+                        text.contains(&r.name),
+                        "({x},{y}) click opens {} but the tooltip says {text:?}",
+                        r.name
                     ),
-                    Resolved::Region(kubernation_core::state::world::Region::Ocean) => {
-                        assert!(lines.is_empty(), "({x},{y}) ocean but tooltip {lines:?}")
-                    }
-                    _ => assert!(
-                        !lines.is_empty(),
-                        "({x},{y}) resolves to a feature but the tooltip is silent"
+                    Some(Panel::Node(_, n)) => assert!(
+                        text.contains(&n),
+                        "({x},{y}) click opens node {n} but the tooltip says {text:?}"
+                    ),
+                    None => assert!(
+                        !names.iter().any(|n| text.contains(n.as_str())),
+                        "({x},{y}) the tooltip names something the click opens \
+                         nothing for: {text:?}"
                     ),
                 }
             }
         }
-        // And the city itself still names its workload (the pre-existing
-        // guarantee, which probes the origin cell).
-        let lines = region_lines(sw, (cx, cy), &snap, Overlay::Terrain);
         assert!(
-            lines
-                .iter()
-                .any(|(t, _)| t.contains("a-long-workload-name"))
+            saw_sea_in_rect,
+            "the fixture produced no sea-inside-a-province-rect cell, so the \
+             most interesting divergence went unexercised"
         );
     }
 
