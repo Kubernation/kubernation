@@ -275,10 +275,29 @@ pub struct PodGlyph {
     /// is right for cost (it is what the scheduler holds) and wrong here, because
     /// this value is one half of a requests-versus-usage comparison and one input
     /// to over/under judgement. Substituting it would silently move both.
+    ///
+    /// **Do not sum these and expect `NodeTile::cpu_request_ratio × allocatable`.**
+    /// The glyph list is a *census* — it includes terminal (Succeeded/Failed)
+    /// pods, which is deliberate and long-standing (the map draws `◆` for a
+    /// completed pod) — while the node's request ratio is *scheduling load* and
+    /// excludes them via `pod_terminal`, because a terminal pod reserves nothing.
+    /// Both numbers are right; they answer different questions. Anything
+    /// aggregating occupancy from glyphs must filter with that same shared
+    /// authority rather than reimplement the test — note `PodState::Failing`
+    /// cannot stand in for it, since it covers both a terminal `Failed` pod and a
+    /// live CrashLoopBackOff one.
     pub requests: PodResources,
     /// The ceiling — filled by [`sum_pod_limits`]. Zero means *unset*, which is
     /// meaningful (no ceiling, so no throttle or OOM-kill boundary) rather than
     /// missing. This is the throttle/OOM input, not a request.
+    ///
+    /// **A nonzero total does not mean the POD is capped.** Limits are enforced
+    /// per container: an unset limit contributes 0 to this sum, so a pod whose
+    /// app container caps 1Gi beside an uncapped sidecar reports `mem: 1Gi` while
+    /// only the app container is actually bounded. A pod-level cgroup ceiling
+    /// exists solely when *every* container declares one. So this total is safe
+    /// to compare against [`Self::usage`] as "headroom against declared limits",
+    /// and unsafe to read as "the pod cannot exceed this".
     pub limits: PodResources,
     /// Live usage summed across containers, from metrics-server via
     /// `ObservedWorld::pod_usage`. `None` when metrics-server is absent or did
@@ -331,10 +350,16 @@ pub struct NodeTile {
     /// which sums the LITERAL request (see [`sum_pod_requests`]).
     pub cpu_request_ratio: f64,
     pub mem_request_ratio: f64,
-    /// Live usage ÷ allocatable. `None` without metrics-server — never
-    /// `Some(0.0)`, which would read as an idle node rather than an unmeasured
-    /// one. This is what determines OOM risk, which requests cannot show: a node
-    /// can be fully requested and idle, or barely requested and about to OOM.
+    /// Live usage ÷ allocatable. `None` when metrics-server did not report this
+    /// node, rather than `Some(0.0)` — an unmeasured node is unknown, not idle.
+    /// This is what determines OOM risk, which requests cannot show: a node can
+    /// be fully requested and idle, or barely requested and about to OOM.
+    ///
+    /// Precise about what `Some(0.0)` means: it is a genuine "used ~nothing"
+    /// EXCEPT on a node whose `allocatable` is missing, where `node_usage_ratios`
+    /// yields 0.0 rather than an error. That divide-guard predates this field and
+    /// is shared with `cpu_ratio`, so tightening it would change existing
+    /// behaviour; a real node always publishes allocatable cpu/memory.
     pub cpu_usage_ratio: Option<f64>,
     pub mem_usage_ratio: Option<f64>,
     pub pods: Vec<PodGlyph>,
