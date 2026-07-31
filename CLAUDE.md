@@ -3106,7 +3106,20 @@ what makes the interesting logic unit-testable without a cluster.
   branch nothing else reached. The two findings that CONVERGED across lenses were
   both refuted on evidence — the census-vs-load split predates this work
   (d84f41d) and is already pinned — so convergence indicated "confusing area",
-  not "defect"; both are now documented at the point of use. **Guidance defects found — see the A0 report:** §5's first
+  not "defect"; both are now documented at the point of use.
+  **METHOD FINDING, durable — the verify bar is wrong for a prerequisite phase.**
+  The verify pass refuted all 9, INCLUDING the four coverage holes, while
+  conceding every factual claim ("the coverage claim is factually accurate but
+  describes no defect"; one verifier reproduced the surviving mutation itself).
+  It refused them because no wrong number is produced *today* — which for a pure
+  model change with no consumers *by design* is unfalsifiable: the standing
+  instruction "refuted=true unless you can trace a path to a wrong result" cannot
+  be met by any finding about a phase that deliberately has no consumers yet. So
+  0-confirmed was an artifact of the harness, not evidence of correctness; the
+  four holes were real and were fixed over the verifier's objection, on mutations
+  re-run by hand. For a gated prerequisite the bar must be **"would this produce a
+  wrong number when the consumer arrives?"** Note this is the same error shape as
+  the guidance's §2: both aimed a threat model at a failure that cannot fire. **Guidance defects found — see the A0 report:** §5's first
   two prescribed tests are wrong (a live API server *defaults* `requests := limits`
   at admission, so "limits set, requests unset" cannot occur for a stored pod, and
   such a pod's QoS is **Guaranteed**, not the Burstable the doc asserts); §4.2's
