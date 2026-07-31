@@ -412,6 +412,87 @@ pub fn resolve_region<'a>(sw: &'a SceneWorld<'_>, local: (u16, u16)) -> Resolved
     Resolved::Region(region)
 }
 
+/// The hover marker: show what the pointer is over BEFORE the click commits.
+///
+/// Ambient, not an alert — a thin unpulsed `HOVER` stroke, deliberately unlike
+/// `draw_blast`'s pulsing CRIT/WARN diamonds, so the two are instantly
+/// distinguishable if both are on screen.
+///
+/// **Plane discipline:** the projection follows what [`resolve_region`] found,
+/// NOT a fresh `coast_at` probe — coast markers are moored in water
+/// (`to_screen`), everything else stands on land (`to_land`). Re-probing here
+/// would reintroduce exactly the duplicated probe order Part A unified, and
+/// under `Plain` a wrong choice looks fine — so it must ride the resolver.
+///
+/// Suppression is the CALLER's job: this is invoked under the same guard as the
+/// tooltip (no panel, no modal, pointer over the map). Open sea is dropped here.
+/// Deliberately NOT gated on zoom: a province outline is *more* useful zoomed
+/// out, not less.
+pub fn draw_hover(sw: &SceneWorld, local: (u16, u16), cam: &Camera) {
+    let (hw, hh) = cam.cell_px();
+    let cell_mark = |p: Vec2| stroke_diamond(p, hw * 1.04, hh * 1.04, 1.5, HOVER);
+    match resolve_region(sw, local) {
+        // Nothing to mark on open water — including sea inside a province's
+        // rectangle, which Part A taught the resolver to recognise.
+        Resolved::Ocean | Resolved::Region(Region::Ocean) => {}
+        // Moored in water: the one thing drawn on the sea plane.
+        Resolved::Coast(_) => cell_mark(cam.to_screen(local.0 as f32 + 0.5, local.1 as f32 + 0.5)),
+        Resolved::Region(Region::Province(p)) => {
+            // B2: the province's own ragged outline. Marking one cell cannot
+            // teach you where a province ENDS, and that boundary is the thing
+            // there is otherwise no way to see.
+            if let Some(cont) = continent_of(sw.world, p) {
+                let coast = Coast::new(cont);
+                let pts = province_outline(p, cont, &coast, cam);
+                for w in pts.windows(2) {
+                    draw_line(w[0].x, w[0].y, w[1].x, w[1].y, 1.5, HOVER);
+                }
+                if let (Some(a), Some(b)) = (pts.first(), pts.last()) {
+                    draw_line(a.x, a.y, b.x, b.y, 1.5, HOVER); // close the loop
+                }
+            }
+        }
+        // Cities, island structures, islands — all standing on land.
+        Resolved::Region(_) => cell_mark(cam.to_land(local.0 as f32 + 0.5, local.1 as f32 + 0.5)),
+    }
+}
+
+/// The closed ragged boundary of one province, following its coastline.
+///
+/// Provinces share `x`/`w` and stack in `y`, so this is a vertical strip whose
+/// sides are cut by `Coast::land_span` per row — the same insets the terrain is
+/// drawn with, so the outline traces the land actually painted. Points run down
+/// the west edge and back up the east; each row contributes both of its corners
+/// so the result is a staircase rather than a smoothed approximation.
+fn province_outline(prov: &Province, cont: &Continent, coast: &Coast, cam: &Camera) -> Vec<Vec2> {
+    province_ring(prov, cont, coast)
+        .into_iter()
+        .map(|(wx, wy)| cam.to_land(wx, wy))
+        .collect()
+}
+
+/// PURE: the province boundary in WORLD coordinates, ready to project. Split
+/// from the drawing so the geometry decision is unit-testable without a GL
+/// context (the testability policy) — the projection is the trivial half.
+fn province_ring(prov: &Province, cont: &Continent, coast: &Coast) -> Vec<(f32, f32)> {
+    let mut west: Vec<(f32, f32)> = Vec::new();
+    let mut east: Vec<(f32, f32)> = Vec::new();
+    for wy in prov.y..prov.y + prov.h {
+        let (li, span) = coast.land_span(wy as i32, cont.w as f32);
+        if span <= 0.0 {
+            continue; // a fully-inset row contributes no edge
+        }
+        let (w0, w1) = (cont.x as f32 + li, cont.x as f32 + li + span);
+        west.push((w0, wy as f32));
+        west.push((w0, (wy + 1) as f32));
+        east.push((w1, wy as f32));
+        east.push((w1, (wy + 1) as f32));
+    }
+    east.reverse();
+    west.extend(east);
+    west
+}
+
 /// Resolve a two-plane [`Hit`] to the world + local cell of whatever the pointer
 /// is actually over, choosing the plane each feature is DRAWN on:
 ///
@@ -2431,6 +2512,55 @@ mod tests {
         assert_eq!(map_style_from_str(""), MapStyle::Plain);
         // Plain is flat by definition.
         assert_eq!(MapStyle::Plain.land_lift(), 0.0);
+    }
+
+    /// The province outline must trace the SAME coastline the terrain is drawn
+    /// with (both read `Coast::land_span`), stay inside the continent, and come
+    /// back closed — otherwise it would teach a boundary that isn't there.
+    #[test]
+    fn province_ring_traces_the_drawn_coastline() {
+        use kubernation_core::state::model::Models;
+        use kubernation_core::state::{fixtures as fx, world::Region};
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        let models = Models::build(&world);
+        let cont = models.world.continents.first().expect("a continent");
+        let prov = cont.provinces.first().expect("a province");
+        let coast = Coast::new(cont);
+        let ring = province_ring(prov, cont, &coast);
+
+        assert!(
+            !ring.is_empty(),
+            "a province with land must yield an outline"
+        );
+        // Two corners per row per side → a multiple of 4, and closed by pairing.
+        assert_eq!(
+            ring.len() % 4,
+            0,
+            "each row contributes 2 west + 2 east corners"
+        );
+        // Every point sits within the continent's horizontal extent — an outline
+        // that wandered outside would be tracing something that isn't the land.
+        let (x0, x1) = (cont.x as f32, (cont.x + cont.w) as f32);
+        for &(wx, wy) in &ring {
+            assert!(
+                wx >= x0 && wx <= x1,
+                "ring point x={wx} escaped [{x0},{x1}]"
+            );
+            assert!(
+                wy >= prov.y as f32 && wy <= (prov.y + prov.h) as f32,
+                "ring point y={wy} escaped the province rows"
+            );
+        }
+        // The ring must agree with the resolver: its own interior cells are
+        // land, so they resolve to this province rather than to open sea.
+        let mid_y = prov.y + prov.h / 2;
+        let (li, span) = coast.land_span(mid_y as i32, cont.w as f32);
+        let inside = cont.x + (li + span * 0.5) as u16;
+        assert!(
+            matches!(models.world.region_at(inside, mid_y), Region::Province(_)),
+            "a cell inside the traced ring must be province land"
+        );
     }
 
     /// Contact shadows are a depth cue, so every current style carries one, and

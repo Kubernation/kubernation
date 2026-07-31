@@ -137,6 +137,12 @@ pub const WALL_DARK: Color = Color::new(0.40, 0.35, 0.27, 1.0);
 /// are what the colour-blind palette remaps; remapping a shadow would be
 /// noise. Do not add a variant.
 pub const CONTACT_SHADOW: Color = Color::new(0.06, 0.07, 0.10, 1.0);
+/// The hover marker — what the pointer is over, shown BEFORE you commit to a
+/// click. A neutral bright warm-white: deliberately NOT `CRIT`/`WARN`, which
+/// `draw_blast` owns and which mean danger. Hover is ambient, not an alert, so
+/// if the two are ever on screen together they must be instantly distinguishable
+/// (this is also why the marker never pulses).
+pub const HOVER: Color = Color::new(0.98, 0.97, 0.90, 0.80);
 pub const TILE_ROOF: Color = Color::new(0.68, 0.31, 0.21, 1.0);
 pub const TILE_ROOF_S: Color = Color::new(0.49, 0.21, 0.14, 1.0);
 pub const TOWER_CAP: Color = Color::new(0.34, 0.30, 0.24, 1.0);

@@ -2885,6 +2885,54 @@ what makes the interesting logic unit-testable without a cluster.
   `build_world` already stacks provinces back-to-front; per-CELL elevation is the
   version to avoid, it creates interior cliffs on arbitrary neighbours).
 
+- **Hit-test correctness + hover marker** (2026-07-30, v1.3.0, from
+  `docs/kubernation-hittest-hover-guidance.md`; Part A then B): two long-standing
+  hit-test bugs, the duplication that let them diverge, and the marker that makes
+  the corrected targets legible before you click. **Part A (pure, first — it is
+  what makes the marker an honest depiction rather than a careful drawing of a
+  wrong shape):** (1) a city's region was **text-shaped** — `region_at` matched 2
+  rows x `name.len()+2` columns, an ASCII-map leftover from when a city literally
+  WAS its label text, so a 20-char name claimed ~22 cells and clicking terrain
+  east of a settlement opened the workload instead of its node, with the error
+  scaling by name length; now the settlement's own cell + a one-cell forgiveness
+  ring, matching the drawing (honest regression: the target shrank). (2) visible
+  **water inside a province's rectangle** resolved to Province — `region_at`
+  tests the full rect and cannot consult `Coast`, which is value noise generated
+  in the VIEW; **deliberately did NOT move `Coast` into core** (that would push
+  procedural noise into the world model), so the land test lives in the view.
+  (3) The cause of both being able to drift: `panel_for` and `region_lines` each
+  reimplemented the `coast_at` → `region_at` order (Phase 0's `locate_hit` had
+  added a **third** `coast_at` site). New `draw::resolve_region` owns that order
+  ONCE — coast markers win (moored in water; clicking one opens the city it
+  serves), then the land test, then the model's region — with both consumers
+  routed through it and `continent_of` extracted so probe and renderer resolve a
+  province identically. Pinned by an **anti-drift test** sweeping every cell of a
+  fixture world asserting tooltip and resolver never disagree. *Why it went
+  unnoticed:* the existing `region_lines_name_the_workload_under_a_city` probes
+  exactly the city's ORIGIN cell, so it passes under both rules — it never probed
+  the `label_w` tail. **Part B:** `draw_hover` marks a cell diamond (city /
+  structure / coast) or, for a province, the full ragged boundary from
+  `province_ring` walking `Coast::land_span` per row — the boundary is the thing
+  there was otherwise no way to see. **Plane discipline rides `Resolved`, not a
+  fresh `coast_at`** (re-probing would reintroduce exactly what Part A unified,
+  and a wrong plane looks fine under `Plain`). Ambient `theme::HOVER` white,
+  thin, **never pulsing** — `CRIT`/`WARN` belong to `draw_blast` and mean danger.
+  **Load-bearing layering fix the doc got wrong:** §3.1 says the tooltip is
+  called "immediately after `draw_world`" (tied to a stale line number) and to put
+  the marker beside it — but the tooltip is drawn AFTER the docked column, so
+  following that literally painted the province outline **over the sidebar**
+  (there is no scissor to clip a stroke). The marker is map content and now draws
+  before the column; the guard is factored into one `hover_ok` so marker and
+  tooltip cannot drift. Dev flag `--hover X,Y` forces the marker onto a cell (a
+  headless `--screenshot` cannot place the pointer, so without it the feature sat
+  outside the crash gate) + gui-smoke `hover-province` / `hover-city-relief`. 79
+  GUI + 319 core tests; gui-smoke 50. **Deferred** (§2.1): a clickable name
+  banner — it cannot live in `region_at`, since `draw_name_banner` picks
+  below/left/right/above per frame via `place()` against the frame's `occupied`
+  rects; it would be a view pass over `occupied` tagged with what each rect
+  labels. Also deferred: dropping the outline's south/east silhouette down the
+  cliff faces under `Relief`.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

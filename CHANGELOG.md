@@ -8,6 +8,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Hover marker.** Pointing at the map now outlines what a click would open,
+  before you click it: a diamond on a city, harbour or gate, and — more useful —
+  the full ragged boundary of a **province**, which was otherwise invisible,
+  since a province is only implied by where its coastline happens to fall. It's
+  ambient white and never pulses, so it can't be mistaken for the red/amber
+  blast-radius marks that mean trouble, and it obeys the same rules as the
+  tooltip (map only, nothing while a window is open). Under the relief style the
+  marker sits on the raised land, and harbours stay at sea level with the water
+  they're moored in.
+
 ### Fixed
 - **Map click targets now match what's drawn.** Two long-standing hit-test bugs,
   both invisible until you went looking:

@@ -49,6 +49,8 @@ STATES=(
   "overlay-saturation|--overlay saturation"
   "overlay-cost|--overlay cost"
   "map-style-relief|--map-style relief"
+  "hover-province|--hover 10,6"
+  "hover-city-relief|--map-style relief --hover 6,3"
   "opencost-degrade|--opencost --overlay cost"
   "colorblind|--colorblind"
   "workloads|--workloads"

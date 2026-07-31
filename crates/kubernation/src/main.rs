@@ -313,6 +313,11 @@ struct Args {
     /// table (e.g. "configmaps") — development verification of the browser
     #[arg(long, value_name = "KIND", num_args = 0..=1, default_missing_value = "")]
     browse: Option<String>,
+    /// Force the hover marker onto scene cell "X,Y" (development verification:
+    /// the marker normally follows the pointer, which a headless --screenshot
+    /// has no way to place)
+    #[arg(long, value_name = "X,Y")]
+    hover: Option<String>,
     /// Drive the window through a resize/fullscreen storm (mid-splash resize,
     /// rapid ping-pong resizes, back-to-back fullscreen toggles, resize during
     /// the fullscreen animation, tiny window) then exit — the crash gate for
@@ -681,6 +686,11 @@ async fn main() {
         .or(saved.overlay.as_deref())
         .map(overlay_from_str)
         .unwrap_or(Overlay::Terrain);
+    // Dev: a forced hover cell for headless capture (the pointer can't be placed).
+    let hover_cell: Option<(u16, u16)> = args.hover.as_deref().and_then(|s| {
+        let (x, y) = s.split_once(',')?;
+        Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+    });
     // Map style, same precedence: --map-style flag > saved preference > default.
     cam.style = args
         .map_style
@@ -2303,9 +2313,39 @@ async fn main() {
                 // SELECTION box follows the clicked tile, else the hovered one.
                 let ml = minimap_layout(bounds);
                 let over_map = mouse.x < panels::map_width() && mouse.y > panels::CHROME_H;
-                let hovered = over_map
-                    .then(|| draw::locate_hit(&worlds, cam.hit(mouse, bounds)))
-                    .flatten();
+                let hovered = hover_cell
+                    .and_then(|c| draw::locate_hit(&worlds, draw::Hit::at(c)))
+                    .or_else(|| {
+                        over_map
+                            .then(|| draw::locate_hit(&worlds, cam.hit(mouse, bounds)))
+                            .flatten()
+                    });
+                // Shared suppression for the hover marker AND the tooltip — map
+                // only, nothing modal on top. Computed once so the two can never
+                // drift apart (the same anti-drift principle as `resolve_region`).
+                let hover_ok = !picker
+                    && almanac.is_none()
+                    && advisor.is_none()
+                    && charter.is_none()
+                    && about.is_none()
+                    && oracle_view.is_none()
+                    && annals.is_none()
+                    && workloads.is_none()
+                    && chaos.is_none()
+                    && browser.is_none()
+                    && !panel_modal
+                    && !plan_open
+                    && !log_open
+                    && open_menu.is_none()
+                    && drag_anchor.is_none()
+                    && !minimap_drag;
+                // The hover marker is MAP CONTENT, so it must be drawn before the
+                // docked column — the map renders full-width *under* the column,
+                // and there is no scissor to clip a stroke that runs past it.
+                // (The tooltip is a floating panel and correctly draws last.)
+                if hover_ok && let Some((sw, local)) = hovered {
+                    draw::draw_hover(sw, local, &cam.shifted(sw.off));
+                }
                 let sidebar_sel = selected.and_then(|cell| locate(&worlds, cell)).or(hovered);
                 // The FORWARDS section's stop buttons act only when no modal is
                 // up (the column is dimmed behind a scrim otherwise).
@@ -2394,24 +2434,7 @@ async fn main() {
 
                 // Hover tooltip over the map (not the column / chrome /
                 // an open overlay — incl. a panel-less concern-`L` log).
-                if !picker
-                    && almanac.is_none()
-                    && advisor.is_none()
-                    && charter.is_none()
-                    && about.is_none()
-                    && oracle_view.is_none()
-                    && annals.is_none()
-                    && workloads.is_none()
-                    && chaos.is_none()
-                    && browser.is_none()
-                    && !panel_modal
-                    && !plan_open
-                    && !log_open
-                    && open_menu.is_none()
-                    && drag_anchor.is_none()
-                    && !minimap_drag
-                    && let Some((sw, local)) = hovered
-                {
+                if hover_ok && let Some((sw, local)) = hovered {
                     draw_tooltip(sw, local, s, overlay, mouse);
                 }
 
