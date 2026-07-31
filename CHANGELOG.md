@@ -8,6 +8,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **SUBSTRATE section in the province window.** A node's drill-down now names
+  the **DaemonSets stationed on it** — the CNI, kube-proxy, log and metric
+  agents that run *under* your workloads — alongside any kubelet
+  Memory/Disk/PID pressure. That pairing is the point: kubelet pressure is the
+  node refusing or evicting work for reasons no workload's own pods can explain,
+  so it belongs beside the things running underneath. Previously this was only
+  an anonymous road count on the map.
+
 ### Fixed
 - **Hovering water inside a province now reads the same as hovering open sea.**
   In a paired hot/warm session the two took different paths — one showed a bare

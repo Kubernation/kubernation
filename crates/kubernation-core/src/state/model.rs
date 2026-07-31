@@ -1483,6 +1483,16 @@ pub struct NodeDetailModel {
     pub cpu_history: Vec<f32>,
     pub mem_history: Vec<f32>,
     pub pods: Vec<NodePodRow>,
+    /// The node's SUBSTRATE: distinct DaemonSets with pods stationed here, by
+    /// name, sorted. What actually runs *under* the workloads — CNI, kube-proxy,
+    /// log/metric agents — which is otherwise only visible as an anonymous road
+    /// count on the map.
+    ///
+    /// Deliberately derived here rather than shared with `world::build_world`'s
+    /// `Province.infra`: that one is gated on the *filtered* workload list
+    /// because it decides which roads to pave, while a node drill-down reports
+    /// what is on the node regardless of the active namespace view.
+    pub daemonsets: Vec<String>,
 }
 
 /// Turn a node's raw usage history into cpu/mem ratio series (usage ÷
@@ -1521,6 +1531,17 @@ pub fn build_node_detail(world: &ObservedWorld, name: &str) -> Option<NodeDetail
         .collect();
     let idx = OwnerIndex::build(world);
     let tile = build_node_tile(&node, &on_node, &idx, world.node_usage(name));
+
+    // Substrate: the DaemonSets stationed here, by name. BTreeSet for a stable
+    // sorted order (the window lists them verbatim).
+    let daemonsets: Vec<String> = on_node
+        .iter()
+        .filter_map(|p| idx.workload_of(p))
+        .filter(|o| o.kind == WorkloadKind::DaemonSet)
+        .map(|o| o.name.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
 
     let mut info = Vec::new();
     if let Some(ni) = node.status.as_ref().and_then(|s| s.node_info.as_ref()) {
@@ -1588,6 +1609,7 @@ pub fn build_node_detail(world: &ObservedWorld, name: &str) -> Option<NodeDetail
         usage_ratios_series(&world.node_usage_history(name), cpu_alloc, mem_alloc);
 
     Some(NodeDetailModel {
+        daemonsets,
         tile,
         info,
         conditions,

@@ -1578,7 +1578,7 @@ fn draw_forest_iso(prov: &Province, cam: &Camera, coast: &Coast, detail: &Lod) {
 /// Daemonset roads: short dashes along the +wx (down-right) iso edge on the
 /// province's widest land row.
 fn draw_road_iso(prov: &Province, cam: &Camera, coast: &Coast, detail: &Lod) {
-    if prov.infra == 0 || detail.scale == Scale::World {
+    if prov.infra.is_empty() || detail.scale == Scale::World {
         return;
     }
     let z = cam.zoom;
@@ -1591,7 +1591,7 @@ fn draw_road_iso(prov: &Province, cam: &Camera, coast: &Coast, detail: &Lod) {
         })
         .unwrap_or(prov.y);
     let (li, lw) = coast.land_span(row as i32, prov.w as f32);
-    let n = prov.infra.min(10).min(lw as usize);
+    let n = prov.infra.len().min(10).min(lw as usize);
     for i in 0..n {
         let cx = prov.x as f32 + li + 0.5 + i as f32;
         let a = cam.to_land(cx, row as f32 + 0.5);

@@ -12,7 +12,9 @@ use macroquad::prelude::*;
 
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::filter::NamespaceFilter;
-use kubernation_core::state::model::{MetricSource, NodeHealth, PodState, build_node_detail};
+use kubernation_core::state::model::{
+    MetricSource, NodeDetailModel, NodeHealth, PodState, build_node_detail,
+};
 use kubernation_core::state::planned::{Intervention, PlannedWorld};
 use kubernation_core::state::saturation::SatLevel;
 use kubernation_core::state::timeline::{
@@ -31,6 +33,39 @@ use crate::theme::*;
 use crate::window::{ForwardBtn, WinAction, draw_window};
 
 /// Draw the province (node) window and resolve this frame's clicks. `scroll_l` /
+/// PURE draw-decision fn: the SUBSTRATE section's lines — the node's DaemonSet
+/// inventory by name, and any kubelet pressure conditions flagged on the tile.
+///
+/// Substrate pressure is the point of pairing them: `MemoryPressure` /
+/// `DiskPressure` / `PIDPressure` are the kubelet refusing or evicting work for
+/// reasons that have nothing to do with any workload's own pods, so they belong
+/// beside the things that run underneath. Unit-tested (the testability policy).
+pub fn substrate_lines(detail: &NodeDetailModel) -> Vec<(String, Color)> {
+    let mut out: Vec<(String, Color)> = Vec::new();
+    // Pressure first — it is the actionable half when present.
+    if detail.tile.abnormal.is_empty() {
+        out.push(("no substrate pressure".into(), DIM));
+    } else {
+        for a in &detail.tile.abnormal {
+            out.push((format!("{a}Pressure"), WARN));
+        }
+    }
+    if detail.daemonsets.is_empty() {
+        // Honest: a node with no DaemonSets is unusual but legal (a tainted or
+        // freshly-joined node), and says something.
+        out.push(("no daemonsets stationed".into(), DIM));
+    } else {
+        out.push((
+            format!("{} daemonsets", detail.daemonsets.len()),
+            STONE_INK_DIM,
+        ));
+        for d in &detail.daemonsets {
+            out.push((format!("  {d}"), INK));
+        }
+    }
+    out
+}
+
 /// `scroll_r` are the per-column scroll offsets (GARRISON / TERRAIN+…); the
 /// caller adjusts them on the wheel and this clamps them to content height.
 #[allow(clippy::too_many_arguments)]
@@ -421,6 +456,22 @@ pub fn draw_node(
         }
     }
 
+    // SUBSTRATE — what runs UNDER the workloads: the DaemonSets stationed here
+    // (CNI, kube-proxy, log/metric agents) plus any kubelet pressure conditions.
+    // On the map this is only an anonymous road count; the names are what you
+    // actually need when a node misbehaves in a way its own pods don't explain.
+    ry += 10.0;
+    if visr(ry, 18.0) {
+        text_bold("SUBSTRATE", right_x, ry + 12.0, 15.0, PARCHMENT);
+    }
+    ry += 22.0;
+    for (line, col) in substrate_lines(&detail) {
+        if visr(ry, row_h) {
+            text(ascii(&line), right_x, ry + 12.0, 13.0, col);
+        }
+        ry += row_h;
+    }
+
     // ANNALS — recent changes touching this province: its node events, the pods
     // stationed on it, and this session's operator actions on it.
     ry += 10.0;
@@ -527,4 +578,35 @@ fn ratio_gauge(x: f32, y: f32, w: f32, label: &str, ratio: f64) {
     let n = format!("{:.0}%", ratio * 100.0);
     let m = text_size(&n, 12.0);
     text(&n, bx + bw - m.width - 4.0, y + 11.0, 12.0, INK);
+}
+
+#[cfg(test)]
+mod substrate_tests {
+    use super::*;
+    use kubernation_core::state::{fixtures as fx, model::build_node_detail};
+
+    #[test]
+    fn substrate_names_daemonsets_and_flags_pressure() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.daemonset(fx::daemonset("kube-system", "agent", 1, 1));
+        s.pod(fx::pod_owned(
+            fx::pod("kube-system", "agent-1", Some("n1")),
+            "DaemonSet",
+            "agent",
+        ));
+        let d = build_node_detail(&world, "n1").expect("node detail");
+        assert_eq!(d.daemonsets, vec!["agent"], "the NAME, not a count");
+        let joined: String = substrate_lines(&d)
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(joined.contains("agent"), "names the daemonset: {joined}");
+        assert!(joined.contains("1 daemonsets"), "counts them too: {joined}");
+        assert!(
+            joined.contains("no substrate pressure"),
+            "states the absence explicitly: {joined}"
+        );
+    }
 }

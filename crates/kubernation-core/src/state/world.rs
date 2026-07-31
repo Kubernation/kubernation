@@ -55,8 +55,14 @@ pub struct Province {
     pub w: u16,
     pub h: u16,
     pub cities: Vec<City>,
-    /// Distinct DaemonSets with pods here — rendered as roads, not cities.
-    pub infra: usize,
+    /// Distinct DaemonSets with pods here — the node's *infrastructure*,
+    /// rendered as roads rather than cities. Sorted, so the order is stable.
+    ///
+    /// Names, not a count: `build_world` computes them anyway, and a count
+    /// forces every consumer that wants to SAY what runs on a node to go back
+    /// to the store for it. `.len()` covers the render sites that only need a
+    /// quantity.
+    pub infra: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -464,7 +470,9 @@ pub fn build_world(
                 w: PATCH_W,
                 h,
                 cities,
-                infra: infra.get(tile.name.as_str()).map_or(0, |s| s.len()),
+                infra: infra
+                    .get(tile.name.as_str())
+                    .map_or_else(Vec::new, |s| s.iter().map(|n| (*n).to_string()).collect()),
             });
             y += h;
         }
@@ -737,7 +745,16 @@ mod tests {
         });
         assert_eq!(m.world.city_count, 0);
         let p = &m.world.continents[0].provinces[0];
-        assert_eq!(p.infra, 1, "daemonset should pave roads on the province");
+        assert_eq!(
+            p.infra.len(),
+            1,
+            "daemonset should pave roads on the province"
+        );
+        assert_eq!(
+            p.infra,
+            vec!["agent"],
+            "and it should be NAMED, not counted"
+        );
     }
 
     #[test]

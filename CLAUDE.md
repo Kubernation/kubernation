@@ -2933,6 +2933,27 @@ what makes the interesting logic unit-testable without a cluster.
   labels. Also deferred: dropping the outline's south/east silhouette down the
   cliff faces under `Relief`.
 
+- **Substrate — DaemonSet names + kubelet pressure** (2026-07-30, v1.4.0; the
+  PIVOT out of the cutaway fork's Gate 1, see `docs/cutaway-gate-1.md`): the
+  fork bet that excavating a node would beat the node panel. It didn't — but it
+  named the real gap precisely, and this is that gap closed without any of the
+  geometry. **(1) `Province.infra` is now `Vec<String>`, not `usize`.**
+  `build_world` was already computing the DaemonSet names
+  (`HashMap<&str, BTreeSet<&str>>`) and throwing them away with `.len()`; the
+  render sites that only want a quantity keep working via `.len()`. **(2)
+  `NodeDetailModel.daemonsets`** + a **SUBSTRATE** section in the province
+  window (pure `node::substrate_lines`, unit-tested per the testability policy):
+  the DaemonSets by name, paired with `tile.abnormal` (Mem/Disk/PID pressure).
+  The pairing is the substance — kubelet pressure is the node refusing or
+  evicting work for reasons a workload's own pods cannot explain, so it belongs
+  beside what runs underneath. **Deliberately NOT shared with `build_world`'s
+  derivation**: that one is gated on the *filtered* workload list because it
+  decides which roads to pave, while a node drill-down reports what is on the
+  node regardless of the active namespace view — same data, different question.
+  The absence cases are stated explicitly ("no substrate pressure", "no
+  daemonsets stationed") so the section never reads as not-yet-loaded. Verified
+  live on kind: agent / kindnet / kube-proxy named on the worker.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

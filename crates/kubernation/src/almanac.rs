@@ -90,7 +90,9 @@ fn locate(w: &WorldModel, loc: Locator) -> Option<(u16, u16)> {
         Locator::City => w.cities().next().map(|c| (c.x, c.y)),
         Locator::Granary => w.cities().find(|c| c.storage.is_some()).map(|c| (c.x, c.y)),
         Locator::Node => provinces().next().map(|p| (p.x + 2, p.y)),
-        Locator::Road => provinces().find(|p| p.infra > 0).map(|p| (p.x + 2, p.y)),
+        Locator::Road => provinces()
+            .find(|p| !p.infra.is_empty())
+            .map(|p| (p.x + 2, p.y)),
         Locator::Harbor => w
             .continents
             .iter()
