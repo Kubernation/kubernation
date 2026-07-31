@@ -8,6 +8,8 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-07-30
+
 ### Added
 - **Hover marker.** Pointing at the map now outlines what a click would open,
   before you click it: a diamond on a city, harbour or gate, and — more useful —
@@ -39,6 +41,8 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   silently kept the bug. They now route through one resolver, pinned by a test
   that sweeps every cell in a fixture world and asserts the two agree.
 
+## [1.2.0] — 2026-07-30
+
 ### Added
 - **Contact shadows.** Trees and settlements now cast a soft ambient pool where
   they meet the ground, which sells the height the relief style already has.
@@ -48,6 +52,8 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   west, matching the light the buildings and cliff faces were already lit by.
   Both styles carry them (Relief slightly stronger); the world-scale badges,
   glyph marks and water-moored harbours correctly get none.
+
+## [1.1.0] — 2026-07-30
 
 ### Added
 - **Map styles — a runtime-selectable relief map.** **View ▸ MAP STYLE** switches
