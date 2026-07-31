@@ -13,6 +13,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
 use super::attention::{self, Concern, Severity, Target};
 use super::filter::NamespaceFilter;
 use super::observed::ObservedWorld;
+use super::qos::QosClass;
 use super::saturation::{self, NodeSaturation};
 use super::world::{
     BatchEntry, BatchKind, CoastKind, ExposureEntry, StorageEntry, WorldModel, build_world,
@@ -252,6 +253,15 @@ pub enum NodeHealth {
     NotReady,
 }
 
+/// One pod's cpu (cores) / memory (bytes) figures. Same canonical units as
+/// [`crate::k8s::metrics::NodeUsage`], so a requests value and a usage value are
+/// directly comparable — which is the whole point of carrying both.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PodResources {
+    pub cpu: f64,
+    pub mem: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct PodGlyph {
     pub namespace: String,
@@ -259,6 +269,34 @@ pub struct PodGlyph {
     pub state: PodState,
     /// Controller workload (through the RS chain), for city placement.
     pub owner: Option<WorkloadRef>,
+
+    /// LITERAL declared requests — filled by [`sum_pod_requests`], **never**
+    /// [`sum_pod_reserved`]. The reserved variant defaults request:=limit, which
+    /// is right for cost (it is what the scheduler holds) and wrong here, because
+    /// this value is one half of a requests-versus-usage comparison and one input
+    /// to over/under judgement. Substituting it would silently move both.
+    pub requests: PodResources,
+    /// The ceiling — filled by [`sum_pod_limits`]. Zero means *unset*, which is
+    /// meaningful (no ceiling, so no throttle or OOM-kill boundary) rather than
+    /// missing. This is the throttle/OOM input, not a request.
+    pub limits: PodResources,
+    /// Live usage summed across containers, from metrics-server via
+    /// `ObservedWorld::pod_usage`. `None` when metrics-server is absent or did
+    /// not report this pod — deliberately NOT zero, which a reader would take as
+    /// idle. A pod without metrics is *unknown*, and the map has to be able to
+    /// say so rather than paint an unearned all-clear.
+    pub usage: Option<PodResources>,
+    /// The kubelet's eviction order, from the shared [`crate::state::qos`] —
+    /// [`crate::state::qos::pod_qos`], which prefers the API server's own
+    /// `status.qosClass` over any derivation. Not the advisor's totals-based
+    /// approximation; see that module for why they differ.
+    pub qos: QosClass,
+    /// How many containers this pod runs — regular plus native sidecars, the
+    /// same set the resource sums above cover, so a count and a total always
+    /// describe the same thing. A COUNT ONLY: per-container resource figures are
+    /// not available here, because `Metrics.pods` is summed across containers
+    /// (see the note on `usage`).
+    pub containers: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -273,9 +311,32 @@ pub struct NodeTile {
     /// CPU/mem gauge ratios. Live usage ÷ allocatable when metrics-server
     /// is present, else scheduling pressure (requests ÷ allocatable). The
     /// `metric_source` says which.
+    ///
+    /// **Derived** from the two pairs below, in `build_node_tile` and nowhere
+    /// else — usage when it exists, requests otherwise. Retained as a field
+    /// rather than an accessor purely so existing consumers keep compiling
+    /// (Rust has no property syntax, so a method would change every call site);
+    /// converting them is a separate mechanical sweep. Prefer the explicit pair
+    /// in new code: this one's *meaning* changes with `metric_source`, which is
+    /// exactly what makes a requests-versus-usage comparison inexpressible.
     pub cpu_ratio: f64,
     pub mem_ratio: f64,
+    /// Which of the two pairs below `cpu_ratio`/`mem_ratio` were derived from.
     pub metric_source: MetricSource,
+
+    /// Sum of pod requests ÷ allocatable. **Always present** — it is
+    /// scheduler-visible and needs no metrics-server, so it is never `Option`.
+    /// This is what determines schedulability: a node at 1.0 accepts nothing
+    /// more, whatever it is actually using. Filled from `node_request_ratios`,
+    /// which sums the LITERAL request (see [`sum_pod_requests`]).
+    pub cpu_request_ratio: f64,
+    pub mem_request_ratio: f64,
+    /// Live usage ÷ allocatable. `None` without metrics-server — never
+    /// `Some(0.0)`, which would read as an idle node rather than an unmeasured
+    /// one. This is what determines OOM risk, which requests cannot show: a node
+    /// can be fully requested and idle, or barely requested and about to OOM.
+    pub cpu_usage_ratio: Option<f64>,
+    pub mem_usage_ratio: Option<f64>,
     pub pods: Vec<PodGlyph>,
     /// Saturation rollup (the 4th golden signal) — worst of cpu/mem/pod-count +
     /// the kubelet Disk/Mem/PID-pressure conditions. Computed once here so it
@@ -459,11 +520,19 @@ fn node_usage_ratios(node: &Node, usage: NodeUsage) -> (f64, f64) {
     (ratio(usage.cpu, alloc_cpu), ratio(usage.mem, alloc_mem))
 }
 
+/// PURE: one node's map tile.
+///
+/// `usage` is the NODE's live usage; `pod_usage` looks up one POD's, keyed
+/// `(namespace, name)`. The lookup is a closure rather than an `&ObservedWorld`
+/// so this stays a pure function of its arguments and remains testable with
+/// hand-built objects (callers pass `&|ns, n| world.pod_usage(ns, n)`; tests
+/// pass `&|_, _| None`).
 pub fn build_node_tile(
     node: &Node,
     pods_on_node: &[&Pod],
     idx: &OwnerIndex,
     usage: Option<NodeUsage>,
+    pod_usage: &dyn Fn(&str, &str) -> Option<NodeUsage>,
 ) -> NodeTile {
     let ready = node_ready(node);
     let cordoned = node
@@ -482,15 +551,27 @@ pub fn build_node_tile(
             abnormal.push(short);
         }
     }
-    let (cpu_ratio, mem_ratio, metric_source) = match usage {
+    // BOTH pairs, always. Requests are computed even when metrics-server is up:
+    // they are a different fact (what is claimed, hence schedulable) from usage
+    // (what is consumed, hence at risk), and the interesting finding is in their
+    // divergence. Previously only one branch ran, which is what made a
+    // requests-versus-usage comparison inexpressible.
+    let (cpu_request_ratio, mem_request_ratio) = node_request_ratios(node, pods_on_node);
+    let (cpu_usage_ratio, mem_usage_ratio) = match usage {
         Some(u) => {
             let (c, m) = node_usage_ratios(node, u);
-            (c, m, MetricSource::Usage)
+            (Some(c), Some(m))
         }
-        None => {
-            let (c, m) = node_request_ratios(node, pods_on_node);
-            (c, m, MetricSource::Requests)
-        }
+        // None, not Some(0.0) — an unmeasured node is unknown, not idle.
+        None => (None, None),
+    };
+    // The legacy polymorphic pair, derived HERE and only here so it cannot drift
+    // from the explicit ratios above. Semantics preserved exactly: usage when
+    // metrics-server reported, requests otherwise, with `metric_source` saying
+    // which — so every existing consumer reads what it read before.
+    let (cpu_ratio, mem_ratio, metric_source) = match (cpu_usage_ratio, mem_usage_ratio) {
+        (Some(c), Some(m)) => (c, m, MetricSource::Usage),
+        _ => (cpu_request_ratio, mem_request_ratio, MetricSource::Requests),
     };
 
     let health = if !ready {
@@ -514,11 +595,38 @@ pub fn build_node_tile(
 
     let mut pods: Vec<PodGlyph> = pods_on_node
         .iter()
-        .map(|p| PodGlyph {
-            namespace: p.metadata.namespace.clone().unwrap_or_default(),
-            name: p.metadata.name.clone().unwrap_or_default(),
-            state: pod_state(p).0,
-            owner: idx.workload_of(p),
+        .map(|p| {
+            let namespace = p.metadata.namespace.clone().unwrap_or_default();
+            let name = p.metadata.name.clone().unwrap_or_default();
+            // LITERAL request + the ceiling. Deliberately not `sum_pod_reserved`
+            // — see the field docs; that one is cost's and would move both the
+            // over/under comparison and QoS.
+            let (rc, rm) = sum_pod_requests(p);
+            let (lc, lm) = sum_pod_limits(p);
+            let usage = pod_usage(&namespace, &name).map(|u| PodResources {
+                cpu: u.cpu,
+                mem: u.mem,
+            });
+            // Same container set the sums above cover, so count and total agree.
+            let containers = p.spec.as_ref().map_or(0, |sp| {
+                sp.containers.len()
+                    + sp.init_containers
+                        .iter()
+                        .flatten()
+                        .filter(|c| c.restart_policy.as_deref() == Some("Always"))
+                        .count()
+            });
+            PodGlyph {
+                namespace,
+                name,
+                state: pod_state(p).0,
+                owner: idx.workload_of(p),
+                requests: PodResources { cpu: rc, mem: rm },
+                limits: PodResources { cpu: lc, mem: lm },
+                usage,
+                qos: crate::state::qos::pod_qos(p),
+                containers,
+            }
         })
         .collect();
     pods.sort_by(|a, b| (&a.namespace, &a.name).cmp(&(&b.namespace, &b.name)));
@@ -533,6 +641,10 @@ pub fn build_node_tile(
         cpu_ratio,
         mem_ratio,
         metric_source,
+        cpu_request_ratio,
+        mem_request_ratio,
+        cpu_usage_ratio,
+        mem_usage_ratio,
         pods,
         saturation,
     }
@@ -555,7 +667,9 @@ pub fn build_map(world: &ObservedWorld) -> MapModel {
     for node in &nodes {
         let name = node.metadata.name.clone().unwrap_or_default();
         let on_node = by_node.get(&name).map(Vec::as_slice).unwrap_or(&[]);
-        let tile = build_node_tile(node, on_node, &idx, world.node_usage(&name));
+        let tile = build_node_tile(node, on_node, &idx, world.node_usage(&name), &|ns, n| {
+            world.pod_usage(ns, n)
+        });
         zones.entry(tile.zone.clone()).or_default().push(tile);
     }
     let mut zones: Vec<ZoneColumn> = zones
@@ -1535,7 +1649,9 @@ pub fn build_node_detail(world: &ObservedWorld, name: &str) -> Option<NodeDetail
         .filter(|p| p.spec.as_ref().and_then(|s| s.node_name.as_deref()) == Some(name))
         .collect();
     let idx = OwnerIndex::build(world);
-    let tile = build_node_tile(&node, &on_node, &idx, world.node_usage(name));
+    let tile = build_node_tile(&node, &on_node, &idx, world.node_usage(name), &|ns, n| {
+        world.pod_usage(ns, n)
+    });
 
     // Substrate: the DaemonSets stationed here, `namespace/name`. BTreeSet for a
     // stable sorted order (the window lists them verbatim).
@@ -1816,7 +1932,13 @@ mod tests {
             fx::pod_requests(fx::pod("d", "p3", Some("n1")), "4", "8Gi"),
             "Succeeded",
         );
-        let tile = build_node_tile(&n, &[&p1, &p2, &done], &OwnerIndex::default(), None);
+        let tile = build_node_tile(
+            &n,
+            &[&p1, &p2, &done],
+            &OwnerIndex::default(),
+            None,
+            &|_, _| None,
+        );
         assert!(
             (tile.cpu_ratio - 0.5).abs() < 1e-9,
             "cpu {}",
@@ -1840,7 +1962,7 @@ mod tests {
             cpu: 1.0,                            // 1 of 4 cores
             mem: 2.0 * 1024.0 * 1024.0 * 1024.0, // 2 of 8 GiB
         };
-        let tile = build_node_tile(&n, &[], &OwnerIndex::default(), Some(usage));
+        let tile = build_node_tile(&n, &[], &OwnerIndex::default(), Some(usage), &|_, _| None);
         assert_eq!(tile.metric_source, MetricSource::Usage);
         assert!(
             (tile.cpu_ratio - 0.25).abs() < 1e-9,
@@ -1853,7 +1975,7 @@ mod tests {
             tile.mem_ratio
         );
         // No usage → request-based pressure and source Requests.
-        let bare = build_node_tile(&n, &[], &OwnerIndex::default(), None);
+        let bare = build_node_tile(&n, &[], &OwnerIndex::default(), None, &|_, _| None);
         assert_eq!(bare.metric_source, MetricSource::Requests);
     }
 
@@ -1937,6 +2059,279 @@ mod tests {
         assert!(build_city(&world, &r).unwrap().pods[0].usage.is_none());
     }
 
+    // --- A0: per-pod resources + the two-ratio split -----------------------
+
+    /// Seed one node, one pod, and optionally metrics for it.
+    fn a0_world(pod: Pod, usage: Option<NodeUsage>) -> ObservedWorld {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        let (ns, name) = (
+            pod.metadata.namespace.clone().unwrap_or_default(),
+            pod.metadata.name.clone().unwrap_or_default(),
+        );
+        s.pod(pod);
+        if let Some(u) = usage {
+            let mut g = world.metrics.lock().unwrap();
+            g.available = true;
+            g.pods.insert((ns, name), u);
+        }
+        world
+    }
+
+    fn a0_tile(world: &ObservedWorld) -> NodeTile {
+        build_map(world)
+            .zones
+            .into_iter()
+            .flat_map(|z| z.nodes)
+            .find(|t| t.name == "n1")
+            .expect("the node tile")
+    }
+
+    /// §2's distinction, and the one place a plausible-but-wrong number could
+    /// enter: `PodGlyph.requests` must be the LITERAL declared request, never
+    /// cost's reserved view (which defaults request:=limit).
+    ///
+    /// NOTE the realism caveat: a live API server *defaults* requests to limits
+    /// at admission, so a stored pod with limits and no requests does not occur
+    /// on a real cluster — verified against one. This fixture is therefore
+    /// pinning the two summing primitives apart, not reproducing a cluster
+    /// state. It still matters: the two functions must not be interchanged.
+    #[test]
+    fn pod_requests_are_literal_not_cost_reserved() {
+        let pod = fx::pod_requests_limits(
+            fx::pod("demo", "only-limits", Some("n1")),
+            "",
+            "",
+            "250m",
+            "64Mi",
+        );
+        // The two primitives disagree, which is the whole point of having both.
+        assert_eq!(
+            sum_pod_requests(&pod),
+            (0.0, 0.0),
+            "literal request is unset"
+        );
+        let (rc, rm) = sum_pod_reserved(&pod);
+        assert!(
+            rc > 0.0 && rm > 0.0,
+            "cost still sees the limit as reserved"
+        );
+
+        let glyph = a0_tile(&a0_world(pod, None)).pods.remove(0);
+        assert_eq!(
+            glyph.requests,
+            PodResources { cpu: 0.0, mem: 0.0 },
+            "the map must carry the literal request, not the reservation"
+        );
+        assert!(glyph.limits.cpu > 0.0 && glyph.limits.mem > 0.0);
+    }
+
+    /// A pod with no metrics is UNKNOWN, not idle. `Some(0.0)` would read as an
+    /// idle pod and paint an unearned all-clear.
+    #[test]
+    fn usage_is_none_without_metrics_never_zero() {
+        let world = a0_world(fx::pod("demo", "p", Some("n1")), None);
+        let tile = a0_tile(&world);
+        assert!(tile.pods[0].usage.is_none(), "no metrics ⇒ unknown");
+        assert!(tile.cpu_usage_ratio.is_none() && tile.mem_usage_ratio.is_none());
+        // ...while the request ratio is always available (scheduler-visible).
+        assert_eq!(tile.metric_source, MetricSource::Requests);
+    }
+
+    /// metrics-server present but omitting one pod: that pod alone is unknown.
+    #[test]
+    fn a_pod_omitted_by_metrics_is_none_while_its_neighbour_is_some() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.pod(fx::pod("demo", "measured", Some("n1")));
+        s.pod(fx::pod("demo", "omitted", Some("n1")));
+        {
+            let mut g = world.metrics.lock().unwrap();
+            g.available = true;
+            g.pods.insert(
+                ("demo".into(), "measured".into()),
+                NodeUsage {
+                    cpu: 0.25,
+                    mem: 128.0 * 1024.0 * 1024.0,
+                },
+            );
+        }
+        let tile = a0_tile(&world);
+        let get = |n: &str| tile.pods.iter().find(|p| p.name == n).expect("pod").clone();
+        assert_eq!(
+            get("measured").usage.expect("measured").cpu,
+            0.25,
+            "the reported pod carries its usage"
+        );
+        assert!(
+            get("omitted").usage.is_none(),
+            "its neighbour is unknown, not zero"
+        );
+    }
+
+    /// Both ratios present together — the thing that was previously
+    /// inexpressible. A node can be lightly requested and heavily used (OOM
+    /// risk) or the reverse (waste); one polymorphic number can show neither.
+    #[test]
+    fn node_carries_request_and_usage_ratios_at_the_same_time() {
+        // 4 cpu / 8Gi allocatable; request 1 cpu, use 2.
+        let pod = fx::pod_requests(fx::pod("demo", "p", Some("n1")), "1", "1Gi");
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.pod(pod);
+        {
+            let mut g = world.metrics.lock().unwrap();
+            g.available = true;
+            g.nodes.insert(
+                "n1".into(),
+                NodeUsage {
+                    cpu: 2.0,
+                    mem: 2.0 * 1024.0 * 1024.0 * 1024.0,
+                },
+            );
+        }
+        let tile = a0_tile(&world);
+        assert!(
+            (tile.cpu_request_ratio - 0.25).abs() < 1e-9,
+            "1 of 4 cores requested, computed even though metrics are up: {}",
+            tile.cpu_request_ratio
+        );
+        assert!(
+            (tile.cpu_usage_ratio.expect("usage") - 0.5).abs() < 1e-9,
+            "2 of 4 cores used"
+        );
+        // The 2×2 is now expressible: usage exceeds requests on this node.
+        assert!(tile.cpu_usage_ratio.unwrap() > tile.cpu_request_ratio);
+    }
+
+    /// MIGRATION SAFETY: the retained polymorphic pair must return exactly what
+    /// it did before under BOTH metric_source values.
+    #[test]
+    fn legacy_ratios_still_derive_the_old_way() {
+        // Usage present ⇒ cpu_ratio IS the usage ratio.
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.pod(fx::pod_requests(
+            fx::pod("demo", "p", Some("n1")),
+            "1",
+            "1Gi",
+        ));
+        {
+            let mut g = world.metrics.lock().unwrap();
+            g.available = true;
+            g.nodes.insert(
+                "n1".into(),
+                NodeUsage {
+                    cpu: 2.0,
+                    mem: 4.0 * 1024.0 * 1024.0 * 1024.0,
+                },
+            );
+        }
+        let t = a0_tile(&world);
+        assert_eq!(t.metric_source, MetricSource::Usage);
+        assert_eq!(t.cpu_ratio, t.cpu_usage_ratio.unwrap());
+        assert_eq!(t.mem_ratio, t.mem_usage_ratio.unwrap());
+
+        // Usage absent ⇒ cpu_ratio IS the request ratio.
+        let bare = a0_tile(&a0_world(
+            fx::pod_requests(fx::pod("demo", "p", Some("n1")), "1", "1Gi"),
+            None,
+        ));
+        assert_eq!(bare.metric_source, MetricSource::Requests);
+        assert_eq!(bare.cpu_ratio, bare.cpu_request_ratio);
+        assert_eq!(bare.mem_ratio, bare.mem_request_ratio);
+    }
+
+    /// Native sidecars are counted (they hold a reservation for the pod's life);
+    /// run-to-completion init containers are not. Guards behaviour
+    /// `sum_pod_requests` already gets right against a reimplementation losing it.
+    #[test]
+    fn sidecars_count_toward_requests_and_container_count() {
+        let mut plain_init = fx::pod_requests(fx::pod("demo", "p", Some("n1")), "100m", "64Mi");
+        plain_init.spec.as_mut().unwrap().init_containers = Some(vec![Container {
+            name: "migrate".into(), // no restartPolicy ⇒ run-to-completion
+            resources: Some(k8s_openapi::api::core::v1::ResourceRequirements {
+                requests: Some(fx::quantities(&[("cpu", "900m"), ("memory", "1Gi")])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]);
+        let g = a0_tile(&a0_world(plain_init, None)).pods.remove(0);
+        assert!(
+            (g.requests.cpu - 0.1).abs() < 1e-9,
+            "a run-to-completion init container is excluded: {}",
+            g.requests.cpu
+        );
+        assert_eq!(g.containers, 1, "and not counted");
+
+        let side = fx::pod_native_sidecar(
+            fx::pod_requests(fx::pod("demo", "p2", Some("n1")), "100m", "64Mi"),
+            "50m",
+            "32Mi",
+        );
+        let g = a0_tile(&a0_world(side, None)).pods.remove(0);
+        assert!(
+            (g.requests.cpu - 0.15).abs() < 1e-9,
+            "a native sidecar IS included: {}",
+            g.requests.cpu
+        );
+        assert_eq!(g.containers, 2, "and counted");
+    }
+
+    /// The map must carry the AUTHORITATIVE per-pod class, not the advisor's
+    /// totals-based approximation. A fully-specified container beside an
+    /// unspecified sidecar is Burstable (verified against a live API server);
+    /// summing first would call it Guaranteed and misstate eviction order —
+    /// which the plan renders as building material, so it would be visibly wrong.
+    #[test]
+    fn pod_glyph_qos_is_per_container_not_summed() {
+        let mut pod = fx::pod_requests_limits(
+            fx::pod("demo", "uneven", Some("n1")),
+            "100m",
+            "64Mi",
+            "100m",
+            "64Mi",
+        );
+        pod.spec.as_mut().unwrap().containers.push(Container {
+            name: "sidecar".into(), // specifies nothing
+            ..Default::default()
+        });
+        // The totals look Guaranteed...
+        let (rc, rm) = sum_pod_requests(&pod);
+        let (lc, lm) = sum_pod_limits(&pod);
+        assert_eq!(
+            crate::state::qos::qos_from_totals(rc, lc, rm, lm),
+            QosClass::Guaranteed,
+            "the approximation's blind spot"
+        );
+        // ...but the pod is Burstable, and that is what the map must show.
+        assert_eq!(
+            a0_tile(&a0_world(pod, None)).pods.remove(0).qos,
+            QosClass::Burstable
+        );
+    }
+
+    /// ANTI-DRIFT: the map and the advisor must classify the same pod the same
+    /// way where they are asking the same question — a single-container pod, the
+    /// only granularity at which the advisor's totals-based view is exact.
+    /// (`state::qos` pins the case where they legitimately differ.)
+    #[test]
+    fn map_and_advisor_agree_on_qos_for_the_same_pod() {
+        for (cr, mr, cl, ml, expect) in [
+            ("100m", "64Mi", "100m", "64Mi", QosClass::Guaranteed),
+            ("100m", "64Mi", "", "", QosClass::Burstable),
+            ("", "", "", "", QosClass::BestEffort),
+        ] {
+            let pod = fx::pod_requests_limits(fx::pod("demo", "p", Some("n1")), cr, mr, cl, ml);
+            let (rc, rm) = sum_pod_requests(&pod);
+            let (lc, lm) = sum_pod_limits(&pod);
+            let advisor = crate::state::qos::qos_from_totals(rc, lc, rm, lm);
+            let map = a0_tile(&a0_world(pod, None)).pods.remove(0).qos;
+            assert_eq!(map, expect);
+            assert_eq!(map, advisor, "map and advisor must not disagree");
+        }
+    }
+
     #[test]
     fn node_allocatable_parses_pods() {
         let n = fx::node("n", None); // fixture has cpu/memory, no "pods"
@@ -1967,7 +2362,7 @@ mod tests {
         pods.push(fx::pod_phase(fx::pod("d", "ok", Some("n")), "Succeeded"));
         pods.push(fx::pod_phase(fx::pod("d", "bad", Some("n")), "Failed"));
         let refs: Vec<&Pod> = pods.iter().collect();
-        let tile = build_node_tile(&n, &refs, &OwnerIndex::default(), None);
+        let tile = build_node_tile(&n, &refs, &OwnerIndex::default(), None, &|_, _| None);
         assert_eq!(
             tile.saturation.pod_ratio(),
             Some(1.0),
@@ -1977,7 +2372,13 @@ mod tests {
         assert_eq!(tile.saturation.worst_dim().unwrap().0, SatDimKind::Pods);
 
         // A node without allocatable["pods"] omits the pod dimension entirely.
-        let bare = build_node_tile(&fx::node("b", None), &refs, &OwnerIndex::default(), None);
+        let bare = build_node_tile(
+            &fx::node("b", None),
+            &refs,
+            &OwnerIndex::default(),
+            None,
+            &|_, _| None,
+        );
         assert_eq!(bare.saturation.pod_ratio(), None);
     }
 
@@ -1985,7 +2386,7 @@ mod tests {
     fn node_health_precedence() {
         let not_ready = fx::node_with_condition(fx::node("n1", None), "Ready", "False");
         assert_eq!(
-            build_node_tile(&not_ready, &[], &OwnerIndex::default(), None).health,
+            build_node_tile(&not_ready, &[], &OwnerIndex::default(), None, &|_, _| None).health,
             NodeHealth::NotReady
         );
 
@@ -1996,17 +2397,17 @@ mod tests {
             "False",
         ));
         assert_eq!(
-            build_node_tile(&both, &[], &OwnerIndex::default(), None).health,
+            build_node_tile(&both, &[], &OwnerIndex::default(), None, &|_, _| None).health,
             NodeHealth::NotReady
         );
 
         let cordoned = fx::cordoned(fx::node("n3", None));
-        let t = build_node_tile(&cordoned, &[], &OwnerIndex::default(), None);
+        let t = build_node_tile(&cordoned, &[], &OwnerIndex::default(), None, &|_, _| None);
         assert_eq!(t.health, NodeHealth::Cordoned);
         assert!(t.cordoned);
 
         let pressured = fx::node_with_condition(fx::node("n4", None), "MemoryPressure", "True");
-        let t = build_node_tile(&pressured, &[], &OwnerIndex::default(), None);
+        let t = build_node_tile(&pressured, &[], &OwnerIndex::default(), None, &|_, _| None);
         assert_eq!(t.health, NodeHealth::Pressure);
         assert_eq!(t.abnormal, vec!["Mem"]);
     }

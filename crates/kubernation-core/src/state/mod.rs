@@ -24,6 +24,7 @@ pub mod pair;
 pub mod planned;
 pub mod postmortem;
 pub mod posture;
+pub mod qos;
 pub mod rollout;
 pub mod saturation;
 pub mod slo;

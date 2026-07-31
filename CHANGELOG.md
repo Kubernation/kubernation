@@ -9,6 +9,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Per-pod resource facts in the map model (enabling change, no user-visible
+  behaviour).** `PodGlyph` now carries literal requests, limits, optional live
+  usage, QoS class and a container count; `NodeTile` carries request-ratio and
+  usage-ratio *separately* rather than one number whose meaning changed with
+  `metric_source`. That polymorphism made a requests-versus-usage comparison —
+  waste on one diagonal, OOM risk on the other — literally inexpressible. The
+  existing `cpu_ratio` / `mem_ratio` are unchanged and still derived the same
+  way, so nothing that reads them today behaves differently. QoS moved to a
+  shared `state::qos` so the map and the right-sizing advisor cannot drift.
 - **Substrate map overlay — which nodes are missing infrastructure the rest of
   the fleet has.** An eighth **View ▸ Substrate (daemonsets)** overlay. A node
   quietly missing its log agent or CNI looks perfectly healthy — its own pods

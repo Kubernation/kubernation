@@ -267,23 +267,11 @@ impl RsVerdict {
 }
 
 /// QoS class (informational — never changes the verdict bucket).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RsQos {
-    #[default]
-    Burstable,
-    Guaranteed,
-    BestEffort,
-}
-
-impl RsQos {
-    pub fn label(self) -> &'static str {
-        match self {
-            RsQos::Guaranteed => "guaranteed",
-            RsQos::Burstable => "burstable",
-            RsQos::BestEffort => "besteffort",
-        }
-    }
-}
+///
+/// An alias for the shared [`crate::state::qos::QosClass`], not a second enum:
+/// the map hangs the same classes on every pod, and one type is what stops the
+/// two from drifting. The `Rs` name is kept so advisor consumers are untouched.
+pub type RsQos = crate::state::qos::QosClass;
 
 /// One resource (cpu or mem) assessment for a workload (per-replica values;
 /// cpu in cores, mem in bytes).
@@ -373,18 +361,6 @@ fn suggest_mem(u_mean: f64, u_peak: f64) -> f64 {
     )
 }
 
-fn derive_qos(req_cpu: f64, lim_cpu: f64, req_mem: f64, lim_mem: f64) -> RsQos {
-    if req_cpu == 0.0 && req_mem == 0.0 && lim_cpu == 0.0 && lim_mem == 0.0 {
-        return RsQos::BestEffort;
-    }
-    // Relative tolerance — absolute EPSILON is meaningless for byte-scale values.
-    let eq = |a: f64, b: f64| (a - b).abs() <= 1e-6 * a.max(b).max(1.0);
-    if req_cpu > 0.0 && req_mem > 0.0 && eq(req_cpu, lim_cpu) && eq(req_mem, lim_mem) {
-        return RsQos::Guaranteed;
-    }
-    RsQos::Burstable
-}
-
 /// Classify one resource. `over_usage`/`under_usage` are per-replica usage:
 /// over-provisioning is judged on the MEAN (waste is aggregate), but
 /// under-provisioning on a per-resource signal — CPU on the mean (compressible,
@@ -416,7 +392,10 @@ fn resource_verdict(
 }
 
 fn assess(acc: &Acc) -> RsRow {
-    let qos = derive_qos(acc.req_cpu, acc.lim_cpu, acc.req_mem, acc.lim_mem);
+    // Workload granularity: no pod object here, so the documented
+    // totals-based approximation is the only available answer.
+    let qos =
+        crate::state::qos::qos_from_totals(acc.req_cpu, acc.lim_cpu, acc.req_mem, acc.lim_mem);
     let has_usage = acc.measured > 0;
     let n = acc.measured.max(1) as f64;
     let (u_cpu, u_mem) = (acc.usum_cpu / n, acc.usum_mem / n);
@@ -945,11 +924,17 @@ mod tests {
     #[test]
     fn rightsizing_qos_and_worst() {
         assert_eq!(
-            derive_qos(0.1, 0.1, 64.0 * MI, 64.0 * MI),
+            crate::state::qos::qos_from_totals(0.1, 0.1, 64.0 * MI, 64.0 * MI),
             RsQos::Guaranteed
         );
-        assert_eq!(derive_qos(0.1, 0.0, 64.0 * MI, 0.0), RsQos::Burstable);
-        assert_eq!(derive_qos(0.0, 0.0, 0.0, 0.0), RsQos::BestEffort);
+        assert_eq!(
+            crate::state::qos::qos_from_totals(0.1, 0.0, 64.0 * MI, 0.0),
+            RsQos::Burstable
+        );
+        assert_eq!(
+            crate::state::qos::qos_from_totals(0.0, 0.0, 0.0, 0.0),
+            RsQos::BestEffort
+        );
 
         // cpu Over (idle) + mem Under (peak) → worst Under → lands in `under`.
         let (world, mut s) = fx::world();

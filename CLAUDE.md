@@ -3051,6 +3051,55 @@ what makes the interesting logic unit-testable without a cluster.
   threaded there, like walls + cost); warm-cluster parity in STATUS's headline
   (the label reads hot; the map + panels are per-world).
 
+- **A0 — per-pod resource data in the map model** (2026-07-31, unversioned; from
+  `docs/kubernation-a0-resource-data-guidance.md`, gated out of the enabling
+  plan's §3.4 occupation model): a pure model change carrying resource facts the
+  observation path already derives into the model the map reads. **No rendering**
+  — deliberately gated separately so the gap isn't discovered mid-session and
+  improvised around. **Unversioned**, following the map-style Phase 0 precedent:
+  no user-visible surface changed. **(1) `PodGlyph`** gains `requests` / `limits`
+  / `usage: Option<PodResources>` / `qos` / `containers`. `usage` is `Option`
+  and never zero-for-missing — a pod without metrics is *unknown*, not idle
+  (the `SubstrateReport` discipline). **(2) `NodeTile`** gains
+  `cpu_request_ratio` / `mem_request_ratio` (always present, scheduler-visible,
+  determines schedulability) and `cpu_usage_ratio` / `mem_usage_ratio`
+  (`Option`, determines OOM risk). `build_node_tile` now computes request ratios
+  **unconditionally** — previously the `match usage` ran only one branch, which
+  is precisely what made the requests-vs-usage 2×2 inexpressible. No measurable
+  perf cost (500N/5000P rebuild unchanged at ~5.6ms). **(3) `cpu_ratio` /
+  `mem_ratio` retained as FIELDS**, derived in `build_node_tile` and nowhere
+  else. The guidance called for "derived accessors … keeps every current
+  consumer working unchanged" — **which is false in Rust**: field and method
+  access differ syntactically, so accessors would have touched every call site.
+  Retaining them as construction-derived fields achieves the stated *purpose*
+  (zero consumer changes — the GUI crate compiles untouched) with one derivation
+  point, so they cannot drift. **(4) `state/qos.rs`** promotes the advisor's
+  `derive_qos`; `RsQos` becomes a `pub type` alias so advisor + GUI consumers are
+  untouched. **The load-bearing finding:** promoting it verbatim would have hung
+  a WRONG QoS on every pod. Real QoS is **per-container** — a container missing
+  either a cpu or memory limit disqualifies the pod from Guaranteed — while the
+  advisor's function sums first and compares after. Verified against a live API
+  server: one fully-specified container beside an unspecified sidecar is
+  **Burstable**, but the totals-based view says **Guaranteed**. Since the plan
+  renders QoS as building material (eviction order), that would have drawn stone
+  where the kubelet will evict as timber. So `qos::pod_qos(pod)` is the
+  authoritative path — preferring the API server's own `status.qosClass`,
+  falling back to upstream's per-container rule — while `qos_from_totals` is
+  retained, renamed and documented as an approximation *only* for the advisor's
+  workload-granularity question, where no pod object exists. Both are tested,
+  including the case where they legitimately differ. Making the advisor
+  per-container-exact needs its pod template rather than its totals, changes
+  advisor output, and is deferred. **(5) Pod granularity is a hard limit**
+  (`Metrics.pods` is summed across containers): request-vs-usage works per POD,
+  per-container efficiency does not, and `containers` is a count only — stated on
+  the fields. 341 core + 83 GUI tests; the four §2/usage/ratio/QoS invariants are
+  mutation-verified. **Guidance defects found — see the A0 report:** §5's first
+  two prescribed tests are wrong (a live API server *defaults* `requests := limits`
+  at admission, so "limits set, requests unset" cannot occur for a stored pod, and
+  such a pod's QoS is **Guaranteed**, not the Burstable the doc asserts); §4.2's
+  accessor mechanism doesn't hold in Rust. All seven §0 claims verified TRUE,
+  including claim 7 (the one justifying the phase).
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form
