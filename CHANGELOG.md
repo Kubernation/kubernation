@@ -9,6 +9,16 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Contact shadows.** Trees and settlements now cast a soft ambient pool where
+  they meet the ground, which sells the height the relief style already has.
+  One pool per settlement sized to its cluster — never one per building, which
+  would compound into a dark blob at the centre of a walled keep — and an
+  ellipse squashed to the isometric plane rather than a circle. Shadows fall
+  west, matching the light the buildings and cliff faces were already lit by.
+  Both styles carry them (Relief slightly stronger); the world-scale badges,
+  glyph marks and water-moored harbours correctly get none.
+
+### Added
 - **Map styles — a runtime-selectable relief map.** **View ▸ MAP STYLE** switches
   the world between **Plain** (the flat isometric chart) and **Relief**, which
   raises the land off the sea so coastlines read as cliffs — the same data drawn

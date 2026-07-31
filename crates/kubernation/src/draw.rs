@@ -119,6 +119,21 @@ impl MapStyle {
             MapStyle::Relief => 7.0,
         }
     }
+
+    /// Contact-shadow opacity: the ambient pool a standing object casts where it
+    /// meets the ground. Relief carries slightly more — taller-reading objects
+    /// need more grounding — and a future schematic style would return 0.0 to
+    /// suppress them entirely.
+    ///
+    /// This is the first knob on `MapStyle` that is NOT geometry, which is the
+    /// point: it shows the enum generalises on both axes rather than being a
+    /// lift-shaped special case.
+    pub fn shadow_alpha(self) -> f32 {
+        match self {
+            MapStyle::Plain => 0.13,
+            MapStyle::Relief => 0.20,
+        }
+    }
 }
 
 /// Parse a persisted / CLI map-style spelling; unknown values fall back to the
@@ -552,6 +567,35 @@ fn fill_diamond(c: Vec2, hw: f32, hh: f32, fill: Color) {
     let p = diamond_pts(c, hw, hh);
     draw_triangle(p[0], p[1], p[2], fill);
     draw_triangle(p[0], p[2], p[3], fill);
+}
+
+/// A contact shadow: the ambient pool a standing object casts where it meets the
+/// ground. An ELLIPSE, not a circle — a ground circle projects to the iso plane
+/// squashed by `hh/hw`, so the ratio is derived from `cell_px` rather than
+/// hardcoded, keeping it honest if the geometry ever changes.
+///
+/// Offset WEST (screen −x), matching the light `iso_block` and `fill_prism`
+/// already commit to (front-right / E→S sunlit ⇒ light from the east). Small on
+/// purpose: this is an ambient grounding pool, not a cast shadow. `r` is an
+/// UNZOOMED radius; zoom is applied here.
+fn contact_shadow(base: Vec2, r: f32, cam: &Camera) {
+    let a = cam.style.shadow_alpha();
+    if a <= 0.0 {
+        return;
+    }
+    let (hw, hh) = cam.cell_px();
+    let rx = r * cam.zoom;
+    draw_ellipse(
+        base.x - 1.5 * cam.zoom,
+        base.y,
+        rx,
+        rx * (hh / hw),
+        0.0,
+        Color {
+            a,
+            ..CONTACT_SHADOW
+        },
+    );
 }
 
 /// A land tile as a raised prism (`MapStyle::Relief`): the top diamond at `c`
@@ -1340,7 +1384,10 @@ fn draw_province_features(
 }
 
 /// A small procedural tree, base at the tile's lower area.
-fn draw_tree(base: Vec2, z: f32) {
+fn draw_tree(base: Vec2, z: f32, cam: &Camera) {
+    // Trees are sparse and non-overlapping, so unlike settlements a per-object
+    // pool is correct here (and simpler).
+    contact_shadow(base, 3.0, cam);
     let s = 6.0 * z;
     draw_rectangle(
         base.x - 0.8 * z,
@@ -1380,7 +1427,7 @@ fn draw_forest_iso(prov: &Province, cam: &Camera, coast: &Coast, detail: &Lod) {
         }
         let cx = prov.x as f32 + li + 1.0 + ((hx >> 8) % (lw as u64).max(1)) as f32;
         let c = cam.to_land(cx + 0.5, cy as f32 + 0.5);
-        draw_tree(vec2(c.x, c.y + hh * 0.35), z);
+        draw_tree(vec2(c.x, c.y + hh * 0.35), z, cam);
     }
 }
 
@@ -1434,7 +1481,8 @@ fn draw_province_aggregate(prov: &Province, cam: &Camera, coast: &Coast) {
         2..=3 => 2,
         _ => 3,
     };
-    draw_settlement(center, z, tier);
+    // World-scale badge: map furniture, not a building on terrain — no pool.
+    draw_settlement(center, z, tier, None);
 
     // Count chip riding the upper-left, colored by the worst concern.
     let (fill, ink) = match worst {
@@ -1532,7 +1580,27 @@ fn draw_breach(cam: &Camera, city: &City, exposed: bool) {
 /// The procedural settlement: a cluster of iso blocks that grows from a lone
 /// hut (tier 0) to a walled keep (tier 3), drawn back-to-front. `c` is the
 /// diamond center on screen; `z` the zoom. Original geometry — no sprites.
-fn draw_settlement(c: Vec2, z: f32, tier: u8) {
+/// `ground`: `Some(cam)` draws the settlement's single contact pool first.
+/// `None` suppresses it — used by `draw_province_aggregate`, whose world-scale
+/// badge is map furniture rather than a building standing on terrain (and where
+/// shadows are explicitly unwanted). Passing the camera rather than a bool keeps
+/// the pool's geometry derivable here, beside the block offsets it is sized from.
+fn draw_settlement(c: Vec2, z: f32, tier: u8, ground: Option<&Camera>) {
+    // ONE pool for the whole cluster, never one per block: the tiers stack up to
+    // six `iso_block`s at overlapping offsets, so per-block pools would compound
+    // alpha into a dark blob at the centre. Radii are sized from the actual `blk`
+    // offsets below (tier 3 matches `draw_city_wall`'s hw exactly) and kept tight
+    // — a pool wider than its own prop is what makes a dense city column smudge.
+    if let Some(cam) = ground {
+        let r = match tier {
+            0 => 9.0,  // one block, w 13
+            1 => 14.0, // dx spans -6..=6, extent ±12.5
+            2 => 18.0, // dx spans -8..=10, w up to 15
+            _ => 22.0, // == draw_city_wall's hw
+        };
+        // The blocks skew south (dy runs to +8), so the pool follows them.
+        contact_shadow(vec2(c.x, c.y + 4.0 * z), r, cam);
+    }
     let blk = |dx: f32, dy: f32, w: f32, d: f32, h: f32, roof: bool| {
         iso_block(vec2(c.x + dx * z, c.y + dy * z), w * z, d * z, h * z, roof)
     };
@@ -1627,7 +1695,7 @@ fn draw_city(
     }
 
     // The town itself.
-    draw_settlement(c, z, tier);
+    draw_settlement(c, z, tier, Some(cam));
 
     // Attention flag: a waving pennant on a pole above the tallest building.
     if let Some(sev) = city.severity {
@@ -2300,6 +2368,33 @@ mod tests {
         assert_eq!(map_style_from_str(""), MapStyle::Plain);
         // Plain is flat by definition.
         assert_eq!(MapStyle::Plain.land_lift(), 0.0);
+    }
+
+    /// Contact shadows are a depth cue, so every current style carries one, and
+    /// the raised style carries more (taller-reading objects need more
+    /// grounding). Mirrors the shape of `only_relief_lifts_the_land`; the
+    /// non-zero guard is what stops a future style being added with the knob
+    /// left at its `Default`.
+    #[test]
+    fn every_style_grounds_its_props() {
+        for m in MapStyle::ALL {
+            assert!(
+                m.shadow_alpha() > 0.0,
+                "{} would leave props ungrounded — a schematic style may set 0.0 \
+                 deliberately, but it must be a decision, not an oversight",
+                m.label()
+            );
+            // Subtle by construction: this is an ambient pool, not a cast shadow.
+            assert!(
+                m.shadow_alpha() < 0.5,
+                "{} shadow would read as mud",
+                m.label()
+            );
+        }
+        assert!(
+            MapStyle::Relief.shadow_alpha() > MapStyle::Plain.shadow_alpha(),
+            "the raised style should ground its props harder than the flat one"
+        );
     }
 
     /// `Plain` must stay flat — it is the fallback every unknown persisted or

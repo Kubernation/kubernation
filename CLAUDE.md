@@ -2853,6 +2853,38 @@ what makes the interesting logic unit-testable without a cluster.
   `fit`/`fly_to` framing still centres on the sea-level point (off by the lift,
   ≤21px at max zoom); the minimap stays flat by design.
 
+- **Contact shadows** (2026-07-30, v1.2.0, guidance doc §11 "Phase 4"; the first
+  of the "sell the height you already have" track): trees + settlements cast an
+  ambient grounding pool. `theme::CONTACT_SHADOW` (a neutral dark, deliberately
+  **outside** the `cb_*` colour-blind funnel — shadow is a DEPTH cue, not a
+  meaning channel) + `MapStyle::shadow_alpha()` — the first NON-geometry knob on
+  the enum, which is the point: it shows `MapStyle` generalises on both axes
+  rather than being lift-shaped. `draw::contact_shadow` draws an **ellipse**
+  squashed by `hh/hw` derived from `cell_px` (a ground circle projects squashed;
+  hardcoding 0.5 would rot if the geometry changed), offset **west** — matching
+  the light `iso_block` ("front-right sunlit") and `fill_prism` (E→S sunlit)
+  already commit to. **ONE pool per settlement, not one per block** (the tiers
+  stack up to six `iso_block`s at overlapping offsets — per-block pools compound
+  alpha into a centre blob); radii sized from the actual `blk` offsets, tier 3
+  == `draw_city_wall`'s `hw` exactly. Trees are the opposite case (sparse,
+  non-overlapping) so per-tree is correct there. **Two conflicts in §11 resolved
+  against its own stated rule** ("architecture standing on terrain gets one;
+  marks and glyphs do not"): (1) §11.4 says `draw_province_aggregate` gets NO
+  shadow, but it *calls* `draw_settlement` — so the pool is caller-gated
+  (`ground: Option<&Camera>`), keeping the world-scale badge clean; (2) §11.4
+  lists island structures as YES and `draw_job`/`draw_cronjob` as NO, but they
+  are the same pixels (`draw_struct_mark` dispatches to them) — resolved NO,
+  since they are flat glyph marks. `draw_granary`'s existing 0.5 scrim is left
+  alone (a legibility disc, not a contact shadow — stacking would read as mud).
+  Verified live at tier 3 by temporarily scaling `web` to 11 replicas: the
+  walled keep sits on exactly one pool aligned to the wall footprint, and the
+  world-scale badges carry none. 76 GUI + 318 core tests; gui-smoke 48 (the
+  existing `map-style-relief` state exercises the shadow path). **Deferred** (the
+  doc's §11.10 track): surf line at the cliff base, cliff strata, sea-depth
+  gradation, and per-PROVINCE elevation from `Province.tile.saturation` (cheap —
+  `build_world` already stacks provinces back-to-front; per-CELL elevation is the
+  version to avoid, it creates interior cliffs on arbitrary neighbours).
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

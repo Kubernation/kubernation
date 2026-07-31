@@ -129,6 +129,14 @@ pub const STONE_STRUCT: Color = Color::new(0.06, 0.34, 0.38, 1.0);
 pub const WALL: Color = Color::new(0.82, 0.76, 0.63, 1.0);
 pub const WALL_SHADE: Color = Color::new(0.60, 0.54, 0.43, 1.0);
 pub const WALL_DARK: Color = Color::new(0.40, 0.35, 0.27, 1.0);
+/// The ambient pool a standing object casts where it meets the ground — a
+/// neutral dark, alpha supplied per style by `MapStyle::shadow_alpha`.
+///
+/// Deliberately NOT in the `cb_*` colour-blind funnel: a contact shadow is a
+/// DEPTH cue, not a meaning channel. Meaning colours (health, severity, sync)
+/// are what the colour-blind palette remaps; remapping a shadow would be
+/// noise. Do not add a variant.
+pub const CONTACT_SHADOW: Color = Color::new(0.06, 0.07, 0.10, 1.0);
 pub const TILE_ROOF: Color = Color::new(0.68, 0.31, 0.21, 1.0);
 pub const TILE_ROOF_S: Color = Color::new(0.49, 0.21, 0.14, 1.0);
 pub const TOWER_CAP: Color = Color::new(0.34, 0.30, 0.24, 1.0);
