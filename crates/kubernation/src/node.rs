@@ -47,7 +47,16 @@ use crate::window::{ForwardBtn, WinAction, draw_window};
 /// active map overlay: once you have drilled into a node, what it is missing is
 /// a fact worth having, not something you should need the right view turned on
 /// to see. The Substrate overlay's SELECTION line is the at-a-glance twin.
-pub fn substrate_lines(detail: &NodeDetailModel, missing: &[String]) -> Vec<(String, Color)> {
+///
+/// `fleet_known` is that report's `has_data()` — false when NO daemonset reaches
+/// the fleet-wide bar, so there is no expectation to measure this node against.
+/// That is NOT the same as "covered", and rendering both as silence would be an
+/// unearned all-clear; the SELECTION line already distinguishes them.
+pub fn substrate_lines(
+    detail: &NodeDetailModel,
+    missing: &[String],
+    fleet_known: bool,
+) -> Vec<(String, Color)> {
     let mut out: Vec<(String, Color)> = Vec::new();
     // Pressure first — it is the actionable half when present.
     if detail.tile.abnormal.is_empty() {
@@ -70,9 +79,11 @@ pub fn substrate_lines(detail: &NodeDetailModel, missing: &[String]) -> Vec<(Str
             out.push((format!("  {d}"), INK));
         }
     }
-    // The gap: what the fleet runs and this node doesn't. Silent when there is
-    // none — an absent line is the common case and shouldn't cost a row.
-    if !missing.is_empty() {
+    // The gap: what the fleet runs and this node doesn't.
+    if !fleet_known {
+        // Nothing is fleet-wide, so "no gaps" would claim a check that never ran.
+        out.push(("no fleet-wide daemonsets to compare".into(), DIM));
+    } else if !missing.is_empty() {
         out.push((
             format!("{} missing vs the fleet", missing.len()),
             if missing.len() > 1 { CRIT } else { WARN },
@@ -84,6 +95,7 @@ pub fn substrate_lines(detail: &NodeDetailModel, missing: &[String]) -> Vec<(Str
             ));
         }
     }
+    // A covered node spends no row on the gap — absence is the common case.
     out
 }
 
@@ -495,7 +507,7 @@ pub fn draw_node(
             .as_ref()
             .map_or(&snap.hot.models.substrate, |w| &w.models.substrate),
     };
-    for (line, col) in substrate_lines(&detail, substrate.missing(name)) {
+    for (line, col) in substrate_lines(&detail, substrate.missing(name), substrate.has_data()) {
         if visr(ry, row_h) {
             text(ascii(&line), right_x, ry + 12.0, 13.0, col);
         }
@@ -626,16 +638,23 @@ mod substrate_tests {
             "agent",
         ));
         let d = build_node_detail(&world, "n1").expect("node detail");
-        assert_eq!(d.daemonsets, vec!["agent"], "the NAME, not a count");
+        assert_eq!(
+            d.daemonsets,
+            vec!["kube-system/agent"],
+            "the qualified NAME, not a count"
+        );
         let join = |m: &[String]| {
-            substrate_lines(&d, m)
+            substrate_lines(&d, m, true)
                 .iter()
                 .map(|(t, _)| t.as_str())
                 .collect::<Vec<_>>()
                 .join("|")
         };
         let joined = join(&[]);
-        assert!(joined.contains("agent"), "names the daemonset: {joined}");
+        assert!(
+            joined.contains("kube-system/agent"),
+            "names the daemonset, namespace-qualified: {joined}"
+        );
         assert!(joined.contains("1 daemonsets"), "counts them too: {joined}");
         assert!(
             joined.contains("no substrate pressure"),
@@ -643,6 +662,19 @@ mod substrate_tests {
         );
         // A fully-covered node spends no row on the gap — absence is the norm.
         assert!(!joined.contains("missing"), "silent when covered: {joined}");
+
+        // But "nothing is fleet-wide" must NOT render the same as "covered" —
+        // that would claim a check the report could not run.
+        let unknown: String = substrate_lines(&d, &[], false)
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(
+            unknown.contains("no fleet-wide daemonsets to compare"),
+            "an unearned all-clear: {unknown}"
+        );
+        assert_ne!(unknown, joined, "the two states must be distinguishable");
     }
 
     /// The other half of the section: what the FLEET has that this node doesn't.
@@ -654,7 +686,7 @@ mod substrate_tests {
         s.node(fx::node("n1", Some("z-a")));
         let d = build_node_detail(&world, "n1").expect("node detail");
         let join = |m: &[String]| {
-            substrate_lines(&d, m)
+            substrate_lines(&d, m, true)
                 .iter()
                 .map(|(t, _)| t.as_str())
                 .collect::<Vec<_>>()
@@ -673,7 +705,7 @@ mod substrate_tests {
         );
         // Two gaps escalate to CRIT, one is a WARN.
         let sev = |m: &[String]| {
-            substrate_lines(&d, m)
+            substrate_lines(&d, m, true)
                 .into_iter()
                 .filter(|(t, _)| t.contains("missing") || t.contains("cilium"))
                 .map(|(_, c)| c)

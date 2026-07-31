@@ -159,10 +159,11 @@ impl MapStyle {
 /// [`Overlay::label`]); an unknown value falls back to the default terrain view.
 ///
 /// Derived from `ALL` + `label` rather than a hand-written match, so a new
-/// variant is parseable the moment it is labelled — the previous hand-written
-/// version could (and did) silently drop a variant, resetting a saved pref to
-/// terrain. Lives here beside the enum, not in main.rs, so it is testable
-/// (main.rs has no test module) — same reason as `map_style_from_str`.
+/// variant is parseable the moment it is labelled; the hand-written version it
+/// replaced was correct but had to be kept in sync by hand, and a missed arm
+/// silently resets a saved pref to terrain rather than failing. Lives here
+/// beside the enum, not in main.rs, so the round-trip is testable (main.rs has
+/// no test module) — same reason as `map_style_from_str`.
 pub fn overlay_from_str(s: &str) -> Overlay {
     Overlay::ALL
         .into_iter()
@@ -2555,7 +2556,8 @@ mod tests {
         assert_eq!(Overlay::Substrate.label(), "substrate");
         // The labels ARE the persisted / `--overlay` spellings. Sweeping ALL is
         // what stops a new variant from silently resetting a saved pref to
-        // terrain — the hand-written match this replaced had already dropped one.
+        // terrain; the hand-written match this replaced had no such guard (its
+        // test listed labels by hand and had already fallen a variant behind).
         for o in Overlay::ALL {
             assert_eq!(
                 overlay_from_str(o.label()),

@@ -1483,10 +1483,15 @@ pub struct NodeDetailModel {
     pub cpu_history: Vec<f32>,
     pub mem_history: Vec<f32>,
     pub pods: Vec<NodePodRow>,
-    /// The node's SUBSTRATE: distinct DaemonSets with pods stationed here, by
-    /// name, sorted. What actually runs *under* the workloads — CNI, kube-proxy,
-    /// log/metric agents — which is otherwise only visible as an anonymous road
-    /// count on the map.
+    /// The node's SUBSTRATE: distinct DaemonSets with pods stationed here, as
+    /// `namespace/name`, sorted. What actually runs *under* the workloads — CNI,
+    /// kube-proxy, log/metric agents — which is otherwise only visible as an
+    /// anonymous road count on the map.
+    ///
+    /// Namespace-qualified to match `substrate::SubstrateReport`, whose gap list
+    /// is rendered directly beneath this one in the same window: two DaemonSets
+    /// in different namespaces may share a name, so a bare name can't tell the
+    /// operator which one is meant (and there it would merge two identities).
     ///
     /// Deliberately derived here rather than shared with `world::build_world`'s
     /// `Province.infra`: that one is gated on the *filtered* workload list
@@ -1532,13 +1537,13 @@ pub fn build_node_detail(world: &ObservedWorld, name: &str) -> Option<NodeDetail
     let idx = OwnerIndex::build(world);
     let tile = build_node_tile(&node, &on_node, &idx, world.node_usage(name));
 
-    // Substrate: the DaemonSets stationed here, by name. BTreeSet for a stable
-    // sorted order (the window lists them verbatim).
+    // Substrate: the DaemonSets stationed here, `namespace/name`. BTreeSet for a
+    // stable sorted order (the window lists them verbatim).
     let daemonsets: Vec<String> = on_node
         .iter()
         .filter_map(|p| idx.workload_of(p))
         .filter(|o| o.kind == WorkloadKind::DaemonSet)
-        .map(|o| o.name.clone())
+        .map(|o| format!("{}/{}", o.namespace, o.name))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();

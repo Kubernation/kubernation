@@ -2996,9 +2996,11 @@ what makes the interesting logic unit-testable without a cluster.
   a new data overlay is now a field, not a signature change at four call sites.
   `overlay_from_str` also **moved from main.rs into draw.rs beside the enum** and
   is derived from a new `Overlay::ALL` + `label()` rather than a hand-written
-  match (which had already silently dropped `cost`, so a saved `cost` pref reset
-  to terrain); main.rs has no test module, so the round-trip is only assertable
-  here. **The panel half is the point** (§5): the overlay says *which node*, so
+  match; main.rs has no test module, so the round-trip is only assertable here.
+  (The commit message's claim that the old match "had already dropped `cost`" is
+  **wrong** — the match was correct; it was the *test* that listed labels by hand
+  and had fallen a variant behind. The refactor's real value is that drift becomes
+  structurally impossible, not that it repaired a live bug.) **The panel half is the point** (§5): the overlay says *which node*, so
   something must say *which DaemonSet* or the map raises a question it can't
   answer and the operator leaves for `kubectl`. Both the SELECTION line (pure
   `panels::substrate_gap_lines`, overlay-gated) and the province window's
@@ -3017,7 +3019,32 @@ what makes the interesting logic unit-testable without a cluster.
   and the province windows read `2 missing vs the fleet · log-agent ·
   node-exporter` (red) and `1 daemonsets · node-exporter` + `1 missing vs the
   fleet · log-agent` (amber) — both halves of the diagnosis in one section.
-  326 core + 83 GUI tests; gui-smoke 51. **Deferred:** an Advisors ▸ Substrate
+  **Adversarial review (13 raised → 4 confirmed → 2 distinct defects, both
+  empirically reproduced and then mutation-verified):** (1) **identity collapse** —
+  prevalence keyed on the bare DaemonSet name, so two same-named DaemonSets in
+  different namespaces merged into one identity, breaking BOTH ways: it *hid* a
+  real gap (`monitoring/agent` fleet-wide and absent from a node while an
+  unrelated `tenant-a/agent` ran only there → that node read "complete", the exact
+  unearned all-clear the module refuses) and *manufactured* one (two 4-of-10 sets
+  union to 8/10 ≥ 80% → an expectation neither earned, flagging the nodes running
+  neither — precisely the nodeSelector false positive `FLEET_PREVALENCE` exists to
+  prevent). Now keyed on `namespace/name`, which is also what the operator needs to
+  go act on it; `NodeDetailModel.daemonsets` was qualified to match, since the two
+  lists render adjacently. (2) **ghost-node inflation** — the prevalence NUMERATOR
+  ranged over pod `spec.nodeName` while the DENOMINATOR was `nodes.len()`, so a pod
+  outliving its Node object (autoscaler scale-down; PodGC runs on a delay) could
+  push a DaemonSet over the threshold on the strength of a node that no longer
+  exists, fabricating gaps on live nodes; the numerator is now bounded to nodes in
+  the store. Also folded: the province window distinguishes "covered" from "no
+  fleet-wide daemonsets to compare" (the SELECTION twin already did — rendering
+  both as silence was an all-clear the report hadn't earned), and the Almanac's
+  claim that a NotReady node shows gaps "because its pods went Unknown" was
+  **wrong** (an Unknown pod keeps its `nodeName` and still counts) — replaced with
+  the limit the code actually has: **coverage is PRESENCE, not health** (a
+  crash-looping DaemonSet pod counts as covered; pod phase is deliberately not
+  consulted, since a restart blip would otherwise flap a node into a false gap —
+  mirroring netpol's "isolation presence, not allow-rules").
+  328 core + 83 GUI tests; gui-smoke 51. **Deferred:** an Advisors ▸ Substrate
   tab (the report is shaped for it); reading `nodeSelector`/tolerations to
   replace inference with intent (would need the DaemonSet spec, and a wrong
   "expected" is worse than a stated heuristic); a minimap tint (no per-node data

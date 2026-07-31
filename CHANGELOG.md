@@ -31,6 +31,20 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   view. The Substrate overlay's SELECTION line is the at-a-glance twin.
 
 ### Fixed
+- **Same-named DaemonSets in different namespaces are no longer merged.**
+  Coverage keyed on the bare name, so `monitoring/agent` and `tenant-a/agent`
+  counted as one — which both *hid* real gaps (a node lacking the fleet's agent
+  read "complete" because an unrelated tenant DaemonSet of the same name ran
+  there) and *invented* them (two half-covered sets summing past the 80% bar).
+  Identity is now `namespace/name`, which is also what you need to go act on it;
+  the province window's DaemonSet inventory is qualified to match.
+- **A pod outliving its node no longer inflates coverage.** The prevalence
+  numerator counted pods by `spec.nodeName` while the denominator was the node
+  store, so a pod left behind by a scaled-down node (pod GC runs on a delay)
+  could push a DaemonSet over the fleet-wide bar and fabricate gaps on live
+  nodes.
+- **The province window distinguishes "covered" from "nothing fleet-wide to
+  compare against".** Rendering both as silence claimed a check that never ran.
 - **The map-view label in STATUS no longer overlaps the memory sparkline.** The
   sparkline rows hung below the layout cursor while every text line in the
   section treats it as a baseline, so the next line landed 11px into the mem
