@@ -8,6 +8,12 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-08-02
+
+Includes the work previously versioned 1.2.0, 1.3.1, 1.4.0 and 1.5.0, none of
+which was ever tagged for release — so all of it reaches users for the first time
+here.
+
 ### Fixed
 - **A node that does not report its capacity no longer reads as an idle node.**
   `node_request_ratios` and `node_usage_ratios` fabricated a `0.0` ratio when
