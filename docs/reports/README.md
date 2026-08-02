@@ -8,6 +8,7 @@ are diffable, greppable, and survive alongside the code they describe.
 
 | Report | Date | Outcome |
 |---|---|---|
+| [A-pre — the churn harness](a-pre-churn-harness.md) | 2026-08-02 | Shipped, unversioned (test asset) |
 | [A0 — pod resource data in the map model](a0-pod-resource-data.md) | 2026-07-31 | Shipped, unversioned (gated prerequisite) |
 | [Substrate overlay — DaemonSet coverage gaps](substrate-overlay.md) | 2026-07-30 | Shipped as v1.5.0 |
 | [The cutaway fork](cutaway-fork.md) | 2026-07-30 | Stopped at gate 2; the finding transfers |
