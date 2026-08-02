@@ -380,12 +380,12 @@ pub fn saturation_lines(sat: &NodeSaturation) -> Vec<(String, Color)> {
     // No dimensions at all ⇒ the node reports no allocatable, so nothing about
     // its strain is computable. "calm" would be a claim we cannot make; this is
     // the SELECTION twin of the map's hatching.
-    if sat.dims.is_empty() {
+    let Some(worst) = sat.worst_level() else {
         return vec![(
             "strain: unknown - node reports no capacity".into(),
             STONE_WARN,
         )];
-    }
+    };
     let ink = |l: SatLevel| match l {
         SatLevel::Calm => STONE_INK_DIM,
         SatLevel::Elevated => STONE_WARN,
@@ -400,7 +400,7 @@ pub fn saturation_lines(sat: &NodeSaturation) -> Vec<(String, Color)> {
     if strained.is_empty() {
         return vec![("strain: calm".into(), STONE_INK_DIM)];
     }
-    let mut lines = vec![("strain:".into(), ink(sat.worst_level()))];
+    let mut lines = vec![("strain:".into(), ink(worst))];
     for d in strained {
         lines.push((format!("  {}", d.label), ink(d.level)));
     }
@@ -1450,6 +1450,24 @@ mod tests {
         let cl = saturation_lines(&calm);
         assert_eq!(cl.len(), 1);
         assert!(cl[0].0.contains("calm"));
+    }
+
+    /// The unknown branch: a node with no dimensions must NOT read "calm".
+    /// Without this the branch could be reverted undetected — which is exactly
+    /// how the defect existed in the first place.
+    #[test]
+    fn saturation_lines_say_unknown_for_a_node_that_reports_no_capacity() {
+        use kubernation_core::state::saturation::{NodeSaturation, saturate_node};
+        for sat in [
+            NodeSaturation::default(),
+            saturate_node(None, None, 0, None, &[]),
+        ] {
+            let lines = saturation_lines(&sat);
+            assert_eq!(lines.len(), 1);
+            assert!(lines[0].0.contains("unknown"), "got {:?}", lines[0].0);
+            assert!(!lines[0].0.contains("calm"), "an unearned all-clear");
+            assert_eq!(lines[0].1, STONE_WARN, "worth seeing, not dim");
+        }
     }
 
     /// The overlay says WHICH NODE; these lines must say WHICH DAEMONSET —

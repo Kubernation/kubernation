@@ -16,7 +16,7 @@ use kubernation_core::state::model::{
     MetricSource, NodeDetailModel, NodeHealth, PodState, build_node_detail,
 };
 use kubernation_core::state::planned::{Intervention, PlannedWorld};
-use kubernation_core::state::saturation::SatLevel;
+use kubernation_core::state::saturation::{NodeSaturation, SatLevel};
 use kubernation_core::state::timeline::{
     SUBJECT_CAP, TIMELINE_WINDOW_MIN, TimelineOpts, TimelineScope, build_timeline,
 };
@@ -214,23 +214,7 @@ pub fn draw_node(
         // is not computable. "calm" would be a claim we cannot support — the
         // same reason the map hatches this province and the SELECTION box says
         // unknown. All three read from `dims`, so they cannot disagree.
-        let mut txt;
-        let col;
-        if sat.dims.is_empty() {
-            txt = "strain: unknown - node reports no capacity".to_string();
-            col = WARN;
-        } else {
-            let (word, c) = match sat.worst_level() {
-                SatLevel::Calm => ("calm", DIM),
-                SatLevel::Elevated => ("elevated", WARN),
-                SatLevel::High => ("high", CRIT),
-            };
-            txt = format!("strain: {word}");
-            col = c;
-            if let Some(lbl) = sat.pod_label() {
-                txt.push_str(&format!(" · {lbl}"));
-            }
-        }
+        let (txt, col) = strain_line(sat);
         text(txt.as_str(), b.x, y + 12.0, 13.0, col);
         y += 18.0;
     }
@@ -645,6 +629,34 @@ fn ratio_gauge(x: f32, y: f32, w: f32, label: &str, ratio: Option<f64>) {
     text(&n, bx + bw - m.width - 4.0, y + 11.0, 12.0, col);
 }
 
+/// PURE draw-decision fn: the province window's strain line.
+///
+/// Reads `worst_level()`, the same authority the SELECTION box
+/// (`panels::saturation_lines`) and the map's hatch gate use — so the three
+/// surfaces cannot disagree about whether a node's strain is knowable.
+pub fn strain_line(sat: &NodeSaturation) -> (String, Color) {
+    match sat.worst_level() {
+        // No dimensions ⇒ nothing measured ⇒ "calm" would be a claim we cannot
+        // support.
+        None => (
+            "strain: unknown - node reports no capacity".to_string(),
+            WARN,
+        ),
+        Some(level) => {
+            let (word, col) = match level {
+                SatLevel::Calm => ("calm", DIM),
+                SatLevel::Elevated => ("elevated", WARN),
+                SatLevel::High => ("high", CRIT),
+            };
+            let mut txt = format!("strain: {word}");
+            if let Some(lbl) = sat.pod_label() {
+                txt.push_str(&format!(" · {lbl}"));
+            }
+            (txt, col)
+        }
+    }
+}
+
 /// Diagonal hatching — the cartographic idiom for NO DATA. Texture rather than
 /// hue, so it composes with whatever colour the thing would otherwise be and
 /// cannot be mistaken for a value on a ramp.
@@ -667,6 +679,23 @@ fn hatch_rect(x: f32, y: f32, w: f32, h: f32, col: Color) {
 mod substrate_tests {
     use super::*;
     use kubernation_core::state::{fixtures as fx, model::build_node_detail};
+
+    /// The province window's strain line must agree with the SELECTION box's
+    /// (`panels::saturation_lines`) about whether strain is knowable — both read
+    /// `worst_level()`, and this pins the unknown branch that had no test.
+    #[test]
+    fn strain_line_says_unknown_rather_than_calm_without_capacity() {
+        use kubernation_core::state::saturation::saturate_node;
+        let (txt, col) = strain_line(&saturate_node(None, None, 0, None, &[]));
+        assert!(txt.contains("unknown"), "got {txt}");
+        assert!(!txt.contains("calm"), "an unearned all-clear");
+        assert_eq!(col, WARN);
+
+        // A measured, genuinely calm node still reads calm.
+        let (txt, col) = strain_line(&saturate_node(Some(0.1), Some(0.1), 1, Some(110.0), &[]));
+        assert!(txt.contains("calm"), "got {txt}");
+        assert_eq!(col, DIM);
+    }
 
     #[test]
     fn substrate_names_daemonsets_and_flags_pressure() {

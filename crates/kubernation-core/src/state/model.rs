@@ -1909,6 +1909,7 @@ impl Models {
 mod tests {
     use super::*;
     use crate::state::fixtures as fx;
+    use crate::state::saturation::SatLevel;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
     use k8s_openapi::jiff;
 
@@ -2506,6 +2507,42 @@ mod tests {
         assert!(t.saturation.pod_ratio().is_none());
     }
 
+    /// A node reporting `cpu: "0"` is collapsed into the same `None` as one
+    /// reporting nothing. Deliberate — the guard is also what stops a division by
+    /// zero — but it IS a conflation, so it is pinned rather than left implicit.
+    #[test]
+    fn a_zero_allocatable_is_treated_as_unmeasurable_not_as_infinite_load() {
+        let n = node_alloc("zero", &[("cpu", "0"), ("memory", "0")]);
+        let pod = fx::pod_requests(fx::pod("demo", "p", Some("zero")), "1", "1Gi");
+        // Not NaN, not inf, not a divide-by-zero panic — just unknown.
+        assert_eq!(node_request_ratios(&n, &[&pod]), (None, None));
+        let t = build_node_tile(&n, &[&pod], &OwnerIndex::default(), None, &|_, _| None);
+        assert_eq!(t.cpu_ratio, None);
+        assert!(t.saturation.worst_level().is_none());
+    }
+
+    /// The per-resource case END TO END, not just at the helper: a node with cpu
+    /// allocatable and no memory must carry the asymmetry through the tile, the
+    /// saturation dims and the health verdict.
+    #[test]
+    fn a_half_reporting_node_carries_the_asymmetry_through_the_tile() {
+        let n = node_alloc("half", &[("cpu", "4")]);
+        let pod = fx::pod_requests(fx::pod("demo", "p", Some("half")), "3.8", "1Gi");
+        let t = build_node_tile(&n, &[&pod], &OwnerIndex::default(), None, &|_, _| None);
+
+        assert_eq!(t.cpu_request_ratio, Some(0.95));
+        assert_eq!(t.mem_request_ratio, None);
+        assert_eq!(t.cpu_ratio, Some(0.95));
+        assert_eq!(t.mem_ratio, None, "memory is unknown, not 0%");
+
+        // The cpu axis IS measurable and IS over the bar, so the node is under
+        // pressure — a half-reported node is not written off entirely.
+        assert_eq!(t.health, NodeHealth::Pressure);
+        // Saturation carries exactly the one dim it can compute.
+        assert_eq!(t.saturation.dims.len(), 1);
+        assert_eq!(t.saturation.worst_level(), Some(SatLevel::High));
+    }
+
     /// Nodes that DO report allocatable must behave exactly as before.
     #[test]
     fn measurable_nodes_are_unchanged() {
@@ -2577,7 +2614,7 @@ mod tests {
             Some(1.0),
             "terminal pods excluded"
         );
-        assert_eq!(tile.saturation.worst, SatLevel::High);
+        assert_eq!(tile.saturation.worst, Some(SatLevel::High));
         assert_eq!(tile.saturation.worst_dim().unwrap().0, SatDimKind::Pods);
 
         // A node without allocatable["pods"] omits the pod dimension entirely.

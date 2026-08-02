@@ -781,15 +781,19 @@ fn node_sections(world: &ObservedWorld, name: &str) -> Vec<BundleSection> {
     };
     let t = &detail.tile;
     let mut body = format!(
-        "node {}\nzone {} · health {}\ncpu {} · mem {}\nsaturation: {:?}",
+        "node {}\nzone {} · health {}\ncpu {} · mem {}\nsaturation: {}",
         t.name,
         t.zone,
         node_health_word(t.health),
-        // "unknown", never 0% — the model must not tell the Oracle a node with
-        // no reported capacity is idle.
+        // "unknown", never 0% — the model must not be told a node with no
+        // reported capacity is idle.
         ratio_pct(t.cpu_ratio),
         ratio_pct(t.mem_ratio),
-        t.saturation.worst_level()
+        // ...and the same for the strain verdict, one line down. This clause
+        // used to print `Calm` from an empty dimension set, contradicting the
+        // "unknown" immediately above it — and on an armed remote endpoint that
+        // fabricated all-clear was published off the laptop.
+        sat_word(&t.saturation)
     );
     for d in t
         .saturation
@@ -804,6 +808,15 @@ fn node_sections(world: &ObservedWorld, name: &str) -> Vec<BundleSection> {
     }
     body.push_str(&format!("\n{} pods stationed", detail.pods.len()));
     vec![sec(SectionTag::Node, format!("node {}", t.name), body, 9)]
+}
+
+/// The node's strain verdict for the bundle. `None` dims ⇒ "unknown": a node
+/// with zero measurements has not earned "calm".
+fn sat_word(sat: &crate::state::saturation::NodeSaturation) -> String {
+    match sat.worst_level() {
+        Some(l) => format!("{l:?}"),
+        None => "unknown (node reports no capacity)".to_string(),
+    }
 }
 
 /// A node ratio for the bundle: a percentage, or "unknown" when the node
@@ -1776,6 +1789,41 @@ mod tests {
         let body = &b.sections[0].body;
         assert!(body.contains("saturation"));
         assert!(body.contains("pods stationed"));
+    }
+
+    /// The bundle must not publish a fabricated all-clear about a node it just
+    /// called unmeasurable — least of all on an armed remote endpoint, where the
+    /// claim leaves the laptop. `saturation: Calm` from zero dimensions was
+    /// exactly that, one line below the "cpu unknown" this change added.
+    #[test]
+    fn node_bundle_never_claims_calm_for_a_node_reporting_no_capacity() {
+        let (world, mut s) = fx::world();
+        let mut bare = fx::node("bare", Some("z-a"));
+        bare.status.as_mut().unwrap().allocatable = None;
+        s.node(bare);
+        let models = Models::build(&world);
+        let (b, _) = build_bundle(
+            &models,
+            &world,
+            &Scope::Node("bare".into()),
+            &ctx(),
+            &Caps::default(),
+        );
+        let body = b
+            .sections
+            .iter()
+            .map(|s| s.body.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains("cpu unknown"), "ratios unknown: {body}");
+        assert!(
+            !body.contains("Calm"),
+            "an unearned all-clear reached the model: {body}"
+        );
+        assert!(
+            body.contains("saturation: unknown"),
+            "and it says so: {body}"
+        );
     }
 
     #[test]

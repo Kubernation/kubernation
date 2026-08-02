@@ -107,7 +107,8 @@ impl SatDim {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NodeSaturation {
     pub dims: Vec<SatDim>,
-    pub worst: SatLevel,
+    /// `None` when `dims` is empty — see [`NodeSaturation::worst_level`].
+    pub worst: Option<SatLevel>,
 }
 
 impl NodeSaturation {
@@ -122,7 +123,7 @@ impl NodeSaturation {
     pub fn worst_dim(&self) -> Option<(SatDimKind, f64)> {
         self.dims
             .iter()
-            .filter(|d| d.level == self.worst)
+            .filter(|d| Some(d.level) == self.worst)
             .max_by(|a, b| {
                 a.effective()
                     .partial_cmp(&b.effective())
@@ -131,8 +132,17 @@ impl NodeSaturation {
             .map(|d| (d.kind, d.effective()))
     }
 
-    /// The worst level — what the overlay tints on.
-    pub fn worst_level(&self) -> SatLevel {
+    /// The worst level — what the overlay tints on. **`None` when there are no
+    /// dimensions at all**, i.e. the node reports no allocatable and no pressure
+    /// condition, so its strain is not computable.
+    ///
+    /// Optional rather than defaulting to `Calm`, because `Calm` is a MEASUREMENT
+    /// and a node with zero measurements has not earned it. The old
+    /// `unwrap_or(SatLevel::Calm)` was the same fabrication this module's inputs
+    /// were fixed to refuse — one level up, on the output — and it leaked an
+    /// unearned all-clear into every consumer that did not happen to guard on
+    /// `dims.is_empty()` itself. The type is the guard now.
+    pub fn worst_level(&self) -> Option<SatLevel> {
         self.worst
     }
 
@@ -219,7 +229,9 @@ pub fn saturate_node(
         });
     }
 
-    let worst = dims.iter().map(|d| d.level).max().unwrap_or(SatLevel::Calm);
+    // No `unwrap_or(Calm)`: zero dimensions means we measured nothing, and
+    // "calm" is a measurement.
+    let worst = dims.iter().map(|d| d.level).max();
     NodeSaturation { dims, worst }
 }
 
@@ -235,7 +247,7 @@ mod tests {
     #[test]
     fn cpu_bound_node_is_high_via_cpu() {
         let s = saturate_node(Some(0.95), Some(0.30), 10, Some(110.0), &[]);
-        assert_eq!(s.worst, SatLevel::High);
+        assert_eq!(s.worst, Some(SatLevel::High));
         assert_eq!(s.worst_dim().unwrap().0, SatDimKind::Cpu);
         // pod-count present but calm.
         assert_eq!(s.pod_ratio(), Some(10.0 / 110.0));
@@ -244,7 +256,11 @@ mod tests {
     #[test]
     fn pod_bound_node_surfaces_pods_with_calm_cpu_mem() {
         let s = saturate_node(Some(0.20), Some(0.30), 108, Some(110.0), &[]);
-        assert_eq!(s.worst, SatLevel::High, "108/110 is past SAT_PODS_HIGH");
+        assert_eq!(
+            s.worst,
+            Some(SatLevel::High),
+            "108/110 is past SAT_PODS_HIGH"
+        );
         assert_eq!(s.worst_dim().unwrap().0, SatDimKind::Pods);
         let pods = s.dims.iter().find(|d| d.kind == SatDimKind::Pods).unwrap();
         assert_eq!(pods.label, "pods 108/110");
@@ -256,13 +272,17 @@ mod tests {
         let s = saturate_node(Some(0.10), Some(0.10), 95, Some(110.0), &[]);
         let pods = s.dims.iter().find(|d| d.kind == SatDimKind::Pods).unwrap();
         assert_eq!(pods.level, SatLevel::Elevated);
-        assert_eq!(s.worst, SatLevel::Elevated);
+        assert_eq!(s.worst, Some(SatLevel::Elevated));
     }
 
     #[test]
     fn disk_pressure_forces_high_with_no_ratio() {
         let s = saturate_node(Some(0.10), Some(0.10), 5, Some(110.0), &["Disk"]);
-        assert_eq!(s.worst, SatLevel::High, "the kubelet's own verdict pegs it");
+        assert_eq!(
+            s.worst,
+            Some(SatLevel::High),
+            "the kubelet's own verdict pegs it"
+        );
         let d = s
             .dims
             .iter()
@@ -284,7 +304,7 @@ mod tests {
         assert_eq!(s.pod_ratio(), None);
         // cpu/mem still tint.
         assert_eq!(s.dims.len(), 2);
-        assert_eq!(s.worst, SatLevel::Calm);
+        assert_eq!(s.worst, Some(SatLevel::Calm));
     }
 
     #[test]
@@ -297,14 +317,14 @@ mod tests {
     fn net_condition_is_not_a_saturation_signal() {
         let s = saturate_node(Some(0.1), Some(0.1), 3, Some(110.0), &["Net"]);
         assert!(s.dims.iter().all(|d| !d.kind.is_condition()));
-        assert_eq!(s.worst, SatLevel::Calm);
+        assert_eq!(s.worst, Some(SatLevel::Calm));
     }
 
     #[test]
     fn all_calm_node_reads_calm() {
         let s = saturate_node(Some(0.2), Some(0.3), 12, Some(110.0), &[]);
-        assert_eq!(s.worst, SatLevel::Calm);
-        assert_eq!(s.worst_level(), SatLevel::Calm);
+        assert_eq!(s.worst, Some(SatLevel::Calm));
+        assert_eq!(s.worst_level(), Some(SatLevel::Calm));
     }
 
     #[test]
@@ -313,19 +333,27 @@ mod tests {
         // a HIGHER raw ratio. worst_dim must name the High dim (cpu), not pods,
         // so it can never disagree with the overlay tint / worst_level.
         let s = saturate_node(Some(0.92), Some(0.30), 102, Some(110.0), &[]);
-        assert_eq!(s.worst, SatLevel::High);
+        assert_eq!(s.worst, Some(SatLevel::High));
         let (kind, _) = s.worst_dim().unwrap();
         assert_eq!(kind, SatDimKind::Cpu);
         // Invariant: the named dim's level == worst across any inputs here.
         let named = s.dims.iter().find(|d| d.kind == kind).unwrap();
-        assert_eq!(named.level, s.worst);
+        assert_eq!(Some(named.level), s.worst);
     }
 
     #[test]
-    fn default_is_calm_empty() {
+    fn a_saturation_with_no_dimensions_has_no_verdict() {
+        // The default / bare case is NOT calm: calm is a measurement, and there
+        // are no measurements here. Pinned because `unwrap_or(SatLevel::Calm)`
+        // is exactly the fabrication this type refuses.
         let s = NodeSaturation::default();
-        assert_eq!(s.worst, SatLevel::Calm);
         assert!(s.dims.is_empty());
+        assert_eq!(s.worst_level(), None, "no dims ⇒ no verdict, not Calm");
         assert_eq!(s.worst_dim(), None);
+        assert_eq!(s.pod_ratio(), None);
+
+        // ...and a node reporting nothing at all goes through the same path.
+        let bare = saturate_node(None, None, 0, None, &[]);
+        assert_eq!(bare.worst_level(), None);
     }
 }

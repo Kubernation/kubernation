@@ -332,7 +332,7 @@ fn worst_known(a: Option<f64>, b: Option<f64>) -> Option<f64> {
 pub(crate) fn province_unmeasured(overlay: Overlay, prov: &Province) -> bool {
     match overlay {
         Overlay::Pressure => worst_known(prov.tile.cpu_ratio, prov.tile.mem_ratio).is_none(),
-        Overlay::Saturation => prov.tile.saturation.dims.is_empty(),
+        Overlay::Saturation => prov.tile.saturation.worst_level().is_none(),
         _ => false,
     }
 }
@@ -360,7 +360,15 @@ fn overlay_pair(overlay: Overlay, prov: &Province, data: OverlayData) -> (Color,
             .walls
             .map(|w| coverage_pair(&prov.cities, w))
             .unwrap_or_else(|| iso_terrain_pair(prov.tile.health)),
-        Overlay::Saturation => sat_pair(prov.tile.saturation.worst_level()),
+        // `map_or`: a node with no dimensions has no verdict, and must not be
+        // painted the calm colour. This is also the MINIMAP's path (via
+        // `overlay_flat`), which draws no hatch — so the fill has to carry the
+        // distinction there on its own.
+        Overlay::Saturation => prov
+            .tile
+            .saturation
+            .worst_level()
+            .map_or_else(unmeasured_pair, sat_pair),
         // Bronze choropleth: ramp position = node cost ÷ the world's max node cost.
         // An unpriced node (no cost) recedes to idle land so priced spend pops.
         Overlay::Cost => data
@@ -1550,7 +1558,7 @@ fn draw_province_terrain(
                     c, hw, hh, pair, wx as u16, wy as u16, lift, right_sea, dn_sea,
                 );
                 if hatched {
-                    hatch_diamond(c, hw, hh, lift);
+                    hatch_diamond(c, hw, hh);
                 }
             }
         }
@@ -1563,8 +1571,11 @@ fn draw_province_terrain(
 /// plane rather than screen-space lines lying over it: one stroke parallel to
 /// each of the tile's edges, meeting the cartographic convention for an
 /// unsurveyed area.
-fn hatch_diamond(c: Vec2, hw: f32, hh: f32, lift: f32) {
-    let cy = c.y - lift;
+fn hatch_diamond(c: Vec2, hw: f32, hh: f32) {
+    // `c` is ALREADY the lifted top-face centre — it comes from `cam.to_land`,
+    // and `fill_prism` fills the top with `fill_diamond(c, ..)`. Subtracting the
+    // lift again floated the hatch off the tile it marks under `Relief`.
+    let cy = c.y;
     // The diamond's four vertices (N, E, S, W) on the lifted top face.
     let n = vec2(c.x, cy - hh);
     let e = vec2(c.x + hw, cy);
@@ -2637,6 +2648,25 @@ mod tests {
     /// only anomalies pop), 1 gap warns, 2+ crits, and a cluster with nothing
     /// fleet-wide falls back to terrain rather than painting an unearned
     /// all-clear over every province.
+    /// `worst_known` decides whether a half-reporting node still has a Pressure
+    /// reading. Both arms pinned: one known resource IS a reading (the node can
+    /// still be over the bar on cpu), and only both-unknown is unmeasurable.
+    #[test]
+    fn one_known_resource_is_still_a_pressure_reading() {
+        assert_eq!(worst_known(Some(0.2), Some(0.9)), Some(0.9), "worst of two");
+        assert_eq!(
+            worst_known(Some(0.9), None),
+            Some(0.9),
+            "cpu alone still reads"
+        );
+        assert_eq!(worst_known(None, Some(0.4)), Some(0.4), "memory alone too");
+        assert_eq!(
+            worst_known(None, None),
+            None,
+            "only both-unknown is unmeasurable"
+        );
+    }
+
     /// A province whose node reports no allocatable must be HATCHED under the
     /// ratio-derived overlays and tinted normally under the rest — Terrain still
     /// knows the node's health, and Cost/Namespace/Replicas/Walls/Substrate

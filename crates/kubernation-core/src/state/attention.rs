@@ -1277,4 +1277,50 @@ mod tests {
         assert_eq!(counts.get(&Severity::Critical), Some(&1));
         assert_eq!(counts.get(&Severity::Info), Some(&1));
     }
+    /// A node that reports no capacity raises its own Info concern, and every
+    /// ratio it prints reads "unknown" — never "0%", which is the whole point.
+    #[test]
+    fn a_node_reporting_no_capacity_is_surfaced_and_never_says_zero_percent() {
+        let (world, mut s) = fx::world();
+        let mut bare = fx::node("bare", Some("z-a"));
+        bare.status.as_mut().unwrap().allocatable = None;
+        s.node(bare);
+        let models = crate::state::model::Models::build(&world);
+        let c = models
+            .attention
+            .iter()
+            .find(|c| c.key == "n:bare")
+            .expect("the unmeasurable node raises a concern");
+        assert_eq!(
+            c.severity,
+            Severity::Info,
+            "not a failure, but worth seeing"
+        );
+        assert!(
+            c.title.contains("capacity not reported"),
+            "says why: {}",
+            c.title
+        );
+        assert!(
+            c.detail.contains("cpu unknown") && c.detail.contains("mem unknown"),
+            "unknown, never 0%: {}",
+            c.detail
+        );
+        assert!(
+            !c.detail.contains("0%"),
+            "a fabricated zero leaked: {}",
+            c.detail
+        );
+    }
+
+    #[test]
+    fn pct_or_unknown_never_renders_a_missing_ratio_as_zero() {
+        assert_eq!(
+            pct_or_unknown(Some(0.0)),
+            "0%",
+            "a real zero is a real zero"
+        );
+        assert_eq!(pct_or_unknown(Some(0.955)), "96%");
+        assert_eq!(pct_or_unknown(None), "unknown");
+    }
 }

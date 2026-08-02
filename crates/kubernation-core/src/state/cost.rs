@@ -281,14 +281,25 @@ pub fn cost_report(world: &ObservedWorld, rates: &CostRates) -> CostReport {
         let name = node.metadata.name.clone().unwrap_or_default();
         report.nodes_total += 1;
 
-        // A LEGITIMATE default, unlike the ratio helpers' former one: these zeros
-        // are not a result, they feed the `cap_w <= 0.0` guard immediately below,
-        // which is the branch that records an honest all-idle node. Nothing here
-        // ever divides by them or shows them. Keep it that way — if this ever
-        // grows into a ratio, it needs the Option treatment
-        // `node_request_ratios` got.
-        let alloc_cpu = node_allocatable(node, "cpu").unwrap_or(0.0);
-        let alloc_mem = node_allocatable(node, "memory").unwrap_or(0.0);
+        // Capacity needs BOTH keys: the weight is cpu + mem/weight, so a node
+        // reporting only one cannot be weighed. Defaulting the missing one to
+        // zero would price it as though it genuinely had none of that resource —
+        // an under-count that then skews every pod share and the idle fraction.
+        // Taking them as `Option` and requiring both routes a half-reporting node
+        // into the same honest all-idle branch as a fully-unreporting one.
+        //
+        // (These are the only remaining `node_allocatable` defaults in the
+        // codebase, and they are legitimate precisely because they feed this
+        // guard rather than a result. If this ever grows into a ratio, it needs
+        // the `Option` treatment `node_request_ratios` got.)
+        let (alloc_cpu, alloc_mem) = match (
+            node_allocatable(node, "cpu"),
+            node_allocatable(node, "memory"),
+        ) {
+            (Some(c), Some(m)) => (c, m),
+            // Half-reported is as unweighable as unreported; fall into the guard.
+            _ => (0.0, 0.0),
+        };
         let cap_w = alloc_cpu + (alloc_mem / GIB) / weight;
         if cap_w <= 0.0 {
             // No allocatable → can't ALLOCATE to pods. But an operator-priced node
@@ -798,6 +809,36 @@ mod tests {
         approx(r.total_per_hour, 0.5);
         approx(r.idle_per_hour, 0.5);
         assert!(r.by_node["n1"].priced);
+    }
+
+    /// A node reporting only ONE allocatable key is as unweighable as one
+    /// reporting none: the weight is cpu + mem/weight, so defaulting the missing
+    /// key to zero would price the node as if it genuinely had none of that
+    /// resource, skewing every pod share and the idle fraction.
+    #[test]
+    fn a_half_reporting_node_is_all_idle_not_priced_as_if_it_had_no_memory() {
+        let (world, mut s) = fx::world();
+        let mut half = fx::node("n1", Some("z"));
+        half.status.as_mut().unwrap().allocatable = Some(fx::quantities(&[("cpu", "8")])); // memory absent
+        s.node(half);
+        s.pod(fx::pod_requests(
+            fx::pod("demo", "p", Some("n1")),
+            "1",
+            "1Gi",
+        ));
+        let mut over = HashMap::new();
+        over.insert("n1".to_string(), 1.0);
+        let r = cost_report(
+            &world,
+            &CostRates {
+                node_overrides: over,
+                ..Default::default()
+            },
+        );
+        // Same honest branch as the no-allocatable node: counted, all idle,
+        // nothing allocated to the pod on a half-known capacity.
+        approx(r.idle_per_hour, 1.0);
+        approx(r.by_node["n1"].used_frac, 0.0);
     }
 
     #[test]
