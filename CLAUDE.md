@@ -3210,6 +3210,36 @@ what makes the interesting logic unit-testable without a cluster.
   allocatable-less node after first confirming the fixture really produces the
   case (§0 claim 8): the province renders as slate cross-hatching among green
   measured land, unmistakably "no data" rather than another point on the ramp.
+  **Adversarial review (5 lenses, 19 raised, 14 confirmed → ~4 distinct defects
+  plus a test-gap cluster, all fixed):** (1) THE ROOT, converged on by three
+  lenses — `NodeSaturation::worst_level()` returned `SatLevel::Calm` from an
+  `unwrap_or` on an EMPTY dimension set. The fix above corrected `saturate_node`'s
+  *inputs* and left its *output* fabricating, one level up. Three of its four
+  consumers happened to guard on `dims.is_empty()`; the two that did not were the
+  **Oracle bundle** — printing `saturation: Calm` one line below its own "cpu
+  unknown", answering the node scope's default question ("what is straining node
+  X?") with a fabrication, and publishing it off-laptop on an armed remote
+  endpoint — and the **minimap**, where an unmeasurable province was
+  byte-identical to a calm one because `overlay_flat` draws no hatch and the fill
+  was `idle_land_pair` either way. Fixed at the type
+  (`worst_level() -> Option<SatLevel>`), which forced all four; the minimap now
+  carries the distinction in its FILL, since a hatch is unavailable there.
+  (2) `hatch_diamond` applied the relief lift a SECOND time — `c` is already the
+  lifted top-face centre (`fill_prism` fills the top at `c`) — so the hatch
+  floated off the tile under `Relief`. (3) The sanctioned-exception comment on
+  `cost.rs` was FALSE for the per-resource case: `cap_w <= 0.0` fires only when
+  BOTH keys are absent, so a node reporting cpu but not memory was priced as
+  though it genuinely had none — skewing every pod share and the idle fraction.
+  Both keys are now required, which makes the comment true. (4) A test-gap
+  cluster: the `saturation_lines` unknown branch, the new attention concern and
+  `pct_or_unknown`, `worst_known`'s two arms, the `> 0.0` denominator guard, and
+  the province-window strain line, which had no pure fn at all — now
+  `node::strain_line`, reading the same `worst_level()` authority as its SELECTION
+  twin so the two cannot drift. Six mutations are caught where three were before;
+  the oracle and cost fixes were themselves untested until a second mutation pass
+  caught that. Also pinned: a node reporting `cpu: "0"` collapses into the same
+  `None` as one reporting nothing — deliberate (the guard also prevents a division
+  by zero) but a conflation, so it is a test rather than an implicit.
 
 ## The pair (hot/warm)
 
