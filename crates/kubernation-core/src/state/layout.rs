@@ -104,6 +104,15 @@ pub struct SlotState {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Layout {
     slots: BTreeMap<SlotKey, SlotState>,
+    /// zone → continent ordinal. Durable for the same reason slots are.
+    ///
+    /// Continent x was `zone_index * stride`, so a zone that sorts before an
+    /// existing one shifted EVERY continent east — verified: adding `z-a` moved
+    /// `z-b` from x=0 to x=30. Sorting by name fixes only the "reorders" third of
+    /// instability source 4; "appears" and "vanishes" need a durable ordinal, the
+    /// same principle the slots apply one level down. A departed zone keeps its
+    /// ordinal reserved, so its neighbours do not slide over to fill the gap.
+    zone_ordinals: BTreeMap<String, u16>,
 }
 
 /// One slot's transition between two layouts — A5's raw material.
@@ -119,6 +128,15 @@ pub struct SlotChange {
 impl Layout {
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
+    }
+    /// This zone's continent ordinal, if it has one.
+    pub fn zone_ordinal(&self, zone: &str) -> Option<u16> {
+        self.zone_ordinals.get(zone).copied()
+    }
+    /// Every zone ordinal, including zones whose nodes have all departed —
+    /// their ground stays reserved.
+    pub fn zone_ordinals(&self) -> impl Iterator<Item = (&str, u16)> {
+        self.zone_ordinals.iter().map(|(z, o)| (z.as_str(), *o))
     }
     /// Every slot, ghosts included, in deterministic order.
     pub fn slots(&self) -> impl Iterator<Item = (&SlotKey, Option<&Occupancy>)> {
@@ -217,6 +235,23 @@ pub fn assign_layout(prior: &Layout, observed: &[ObservedNode]) -> Layout {
         })
         .collect();
 
+    // Zone ordinals first: carried where the zone is already known, appended in
+    // a deterministic order otherwise, and NEVER reassigned — a zone keeps its
+    // continent position for the life of the layout even after its last node
+    // leaves, so neighbours do not slide over.
+    let mut zone_ordinals = prior.zone_ordinals.clone();
+    let mut fresh_zones: Vec<&str> = observed
+        .iter()
+        .map(|n| n.zone.as_str())
+        .filter(|z| !zone_ordinals.contains_key(*z))
+        .collect();
+    fresh_zones.sort_unstable();
+    fresh_zones.dedup();
+    for z in fresh_zones {
+        let next = zone_ordinals.values().copied().max().map_or(0, |m| m + 1);
+        zone_ordinals.insert(z.to_string(), next);
+    }
+
     // 1. CARRY. A node keeps its slot only while it still belongs to that
     //    (zone, pool): a node that MOVES zone or pool vacates the old slot and
     //    takes a new one, rather than dragging coordinates across a continent.
@@ -283,7 +318,10 @@ pub fn assign_layout(prior: &Layout, observed: &[ObservedNode]) -> Layout {
         place(&mut slots, key, n);
     }
 
-    Layout { slots }
+    Layout {
+        slots,
+        zone_ordinals,
+    }
 }
 
 /// Seat a node, recording it as the slot's most recent occupant so it can
@@ -579,6 +617,81 @@ mod tests {
              a live node holds"
         );
         assert_eq!(l.occupied().count(), 1);
+    }
+
+    /// INSTABILITY SOURCE 4, the "appears" half. Continent x was
+    /// `zone_index * stride`, so a zone sorting before an existing one shifted
+    /// every continent east. Sorting by name only fixes "reorders".
+    #[test]
+    fn a_new_zone_appends_and_moves_no_existing_continent() {
+        let l0 = assign_layout(
+            &Layout::default(),
+            &[node("a", "z-b", "p"), node("b", "z-c", "p")],
+        );
+        let (b0, c0) = (l0.zone_ordinal("z-b"), l0.zone_ordinal("z-c"));
+        assert_eq!((b0, c0), (Some(0), Some(1)));
+
+        // z-a sorts FIRST alphabetically — the case that used to shift everything.
+        let l1 = assign_layout(
+            &l0,
+            &[
+                node("a", "z-b", "p"),
+                node("b", "z-c", "p"),
+                node("c", "z-a", "p"),
+            ],
+        );
+        assert_eq!(l1.zone_ordinal("z-b"), b0, "z-b's continent moved");
+        assert_eq!(l1.zone_ordinal("z-c"), c0, "z-c's continent moved");
+        assert_eq!(l1.zone_ordinal("z-a"), Some(2), "the newcomer appends");
+    }
+
+    /// The "vanishes" half: a zone losing every node keeps its ground reserved,
+    /// so its neighbours do not slide over to close the gap.
+    #[test]
+    fn a_departed_zone_keeps_its_continent_ordinal_reserved() {
+        let l0 = assign_layout(
+            &Layout::default(),
+            &[
+                node("a", "z-a", "p"),
+                node("b", "z-b", "p"),
+                node("c", "z-c", "p"),
+            ],
+        );
+        let c0 = l0.zone_ordinal("z-c");
+        // z-b loses every node (a zone outage).
+        let l1 = assign_layout(&l0, &[node("a", "z-a", "p"), node("c", "z-c", "p")]);
+        assert_eq!(
+            l1.zone_ordinal("z-c"),
+            c0,
+            "z-c slid over z-b's empty ground"
+        );
+        assert_eq!(
+            l1.zone_ordinal("z-b"),
+            Some(1),
+            "z-b's ground stays reserved"
+        );
+
+        // And it reclaims that ground when it comes back.
+        let l2 = assign_layout(&l1, &[node("b2", "z-b", "p")]);
+        assert_eq!(l2.zone_ordinal("z-b"), Some(1));
+    }
+
+    /// Zone ordinals must not depend on the order nodes are observed in.
+    #[test]
+    fn zone_ordinals_are_independent_of_observation_order() {
+        let mut obs = vec![
+            node("a", "z-c", "p"),
+            node("b", "z-a", "p"),
+            node("c", "z-b", "p"),
+        ];
+        let base = assign_layout(&Layout::default(), &obs);
+        for _ in 0..3 {
+            obs.rotate_left(1);
+            let l = assign_layout(&Layout::default(), &obs);
+            for z in ["z-a", "z-b", "z-c"] {
+                assert_eq!(l.zone_ordinal(z), base.zone_ordinal(z), "{z} moved");
+            }
+        }
     }
 
     // --- Determinism -------------------------------------------------------

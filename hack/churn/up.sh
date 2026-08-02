@@ -30,6 +30,17 @@ log "applying the fleet fixture (generation ${GEN})"
 log "waiting for pods to schedule"
 wait_pods_settled 240
 
+# VERIFY, don't assume. A namespace still terminating from a reset makes the
+# workload apply a no-op, and `wait_pods_settled` swallows the timeout — which
+# silently yields a 100-node fleet with ZERO pods. That state renders as a
+# perfectly plausible map, so it invalidated two gate runs before being noticed.
+running=$(kc get pods -n churn --no-headers 2>/dev/null | grep -c Running || true)
+if [ "${running:-0}" -lt 1 ]; then
+  echo "  !! fleet came up with NO pods — the workload apply did not take." >&2
+  echo "     (usually ns/churn still terminating from a reset; re-run up.sh)" >&2
+  exit 1
+fi
+
 total=$(kc get nodes --no-headers | wc -l | tr -d ' ')
 log "fleet up: ${total} nodes, $(kc get pods -n churn --no-headers 2>/dev/null | grep -c Running) pods running"
 kc get nodes -L topology.kubernetes.io/zone -L churn.kubernation.io/pool --no-headers \

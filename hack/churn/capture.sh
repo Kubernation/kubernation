@@ -25,7 +25,11 @@ LABEL="${1:?usage: capture.sh <label> [n]}"
 SEQ="${2:-}"
 
 OUT="${OUT:-out}"
-CENTER="${CENTER:-churn-sys-g1-000}"
+# Anchor on a pool the scenarios do NOT refresh. Scenario 1 refreshes `sys` by
+# default, and an anchor inside the pool under test vanishes mid-run — the camera
+# then reframes and the resulting "movement" is the camera, not the map, which is
+# the precise trap a stability flipbook exists to avoid.
+CENTER="${CENTER:-churn-mem-g1-000}"
 ZOOM="${ZOOM:-0.55}"
 OVERLAY="${OVERLAY:-terrain}"
 STYLE="${STYLE:-plain}"
@@ -43,6 +47,10 @@ path="${OUT}/${name}.png"
 # fall back to a fit-the-world view if the anchor is gone.
 anchor=("--center" "$CENTER")
 if ! kc get node "$CENTER" >/dev/null 2>&1; then
+  # LOUD, not silent: a reframed capture is not comparable with its neighbours,
+  # and a flipbook that quietly changes framing mid-sequence reads as movement.
+  echo "  !! anchor '$CENTER' is gone — this frame is NOT comparable." >&2
+  echo "     Set CENTER to a node outside the pool under test." >&2
   anchor=()
 fi
 

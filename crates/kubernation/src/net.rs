@@ -1257,6 +1257,11 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
             let mut log_target: Option<(ClusterId, String, String)> = None;
             let mut evict_set: Option<u64> = None;
             let mut last_filter = NamespaceFilter::All;
+            // Per-world slot assignments, carried across ticks. A context switch
+            // replaces the handle and these reset with it — a different cluster
+            // has no claim on this one's ground.
+            let mut prior_hot = kubernation_core::state::layout::Layout::default();
+            let mut prior_warm = kubernation_core::state::layout::Layout::default();
             let mut last_browse: Option<String> = None;
             // Live port-forwards: the private handles (dropping one aborts its
             // accept loop + in-flight tunnels). `net.forwards` mirrors these for
@@ -1306,6 +1311,11 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             ready_hot.store(false, Ordering::Relaxed);
                             hot_client = c.client.clone();
                             hot_handle = watch::spawn(&c, ClusterId::Hot, sink.clone(), &proj);
+                            // A different cluster has no claim on this one's
+                            // ground: drop the slot assignments with the handle,
+                            // or the new cluster inherits ordinals earned by
+                            // nodes it has never heard of.
+                            prior_hot = kubernation_core::state::layout::Layout::default();
                             // Restart the liveness probe against the new cluster.
                             // Bump the gen FIRST so the old probe (which may be past
                             // its await) can't write the old cluster's state.
@@ -2259,7 +2269,17 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     continue;
                 }
                 last_filter = filter.clone();
-                let hot_models = Arc::new(Models::build_filtered(&hot_handle.world, &filter));
+                // THE MECHANISM the whole workstream rests on: last tick's layout
+                // is fed back as `prior`, so a node replaced by a differently-named
+                // successor inherits its ground and the map holds still. Held here,
+                // per world, rather than on `ObservedWorld` (which must not carry
+                // derived state) or in a global.
+                let hot_models = Arc::new(Models::build_with(
+                    &hot_handle.world,
+                    &filter,
+                    &prior_hot,
+                ));
+                prior_hot = hot_models.layout.clone();
                 // MTTD: note the first tick the attention queue flags the drill's
                 // subject (the fresh hot concerns are right here).
                 if let Some(sess) = net.chaos_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
@@ -2288,7 +2308,11 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     .as_ref()
                     .filter(|_| ready_warm.load(Ordering::Relaxed))
                     .map(|h| WorldSnap {
-                        models: Arc::new(Models::build_filtered(&h.world, &filter)),
+                        models: {
+                            let m = Arc::new(Models::build_with(&h.world, &filter, &prior_warm));
+                            prior_warm = m.layout.clone();
+                            m
+                        },
                         observed: h.world.clone(),
                         slo: Arc::new(
                             slo_warm

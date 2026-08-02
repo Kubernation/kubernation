@@ -55,6 +55,9 @@ pub struct Province {
     pub w: u16,
     pub h: u16,
     pub cities: Vec<City>,
+    /// Where this province's SIZE came from — see [`province_extent`]. A
+    /// `Default` province is sized but unmeasured, and must not read as small.
+    pub extent_source: crate::state::model::ExtentSource,
     /// Distinct DaemonSets with pods here — the node's *infrastructure*,
     /// rendered as roads rather than cities. Sorted, so the order is stable.
     ///
@@ -361,15 +364,85 @@ fn city_dx(name: &str) -> u16 {
 /// the narrow ocean strip east of the continent).
 const COAST_CAP: usize = 3;
 
+/// Province extent height by SIZE CLASS, smallest first.
+///
+/// Quantised rather than mapped linearly from capacity: continuous sizing means
+/// a node-type refresh nudges every province by a row or two, while classes are
+/// stable across small variation and easier to read at a glance. Odd heights so
+/// a city row sits clear of both edges; the smallest matches the old floor of 3.
+const EXTENT_CLASSES: [u16; 4] = [3, 5, 7, 9];
+
+/// Memory thresholds (bytes) for the classes above — a node at or above the Nth
+/// bound gets the (N+1)th height.
+const EXTENT_BOUNDS_GIB: [f64; 3] = [32.0, 128.0, 512.0];
+
+const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+/// The extent a province gets, and which rung of the fallback chain produced it.
+///
+/// PURE. Capacity (memory — incompressible) → instance type → a DECLARED
+/// default. The default is not a silent zero: an unmeasurable node gets a
+/// middle-of-the-road extent and `ExtentSource::Default`, because a node that
+/// cannot be measured must not render as a genuinely tiny one (v1.6.0).
+pub fn province_extent(
+    input: &crate::state::model::ExtentInput,
+) -> (u16, crate::state::model::ExtentSource) {
+    use crate::state::model::{ExtentInput, ExtentSource};
+    match input {
+        ExtentInput::Capacity(mem) => {
+            let gib = mem / GIB;
+            let class = EXTENT_BOUNDS_GIB.iter().filter(|b| gib >= **b).count();
+            (EXTENT_CLASSES[class], ExtentSource::Capacity)
+        }
+        // No capacity, but a declared machine size. Coarse — the type string is
+        // not parsed into a size — so every instance type shares one class until
+        // a table earns its keep. Still better than the default: it is at least
+        // evidence the node exists as a real machine.
+        ExtentInput::InstanceType(_) => (EXTENT_CLASSES[1], ExtentSource::InstanceType),
+        // DECLARED default, and marked. Deliberately not the smallest class.
+        ExtentInput::Unknown => (EXTENT_CLASSES[1], ExtentSource::Default),
+    }
+}
+
+/// A province's y, from its slot ORDINAL rather than from enumerating live
+/// provinces.
+///
+/// Ordinal is multiplied by the LARGEST extent class, so a slot's ground never
+/// depends on how big its neighbours are: a node replaced by a bigger one grows
+/// into reserved space instead of pushing everything below it down. That costs
+/// vertical density and buys the property the whole workstream exists for.
+/// Ghost ordinals simply leave their stride empty.
+fn province_y(layout: &crate::state::layout::Layout, zone: &str, tile: &NodeTile) -> u16 {
+    let ordinal = layout
+        .slot_of(&tile.name)
+        .filter(|k| k.zone == zone)
+        .map_or(0, |k| k.ordinal);
+    1 + ordinal * EXTENT_CLASSES[EXTENT_CLASSES.len() - 1]
+}
+
+/// The non-node things placed on the map, bundled because they arrive together
+/// from the same build and adding a fifth should not be a signature change at
+/// every call site (the `OverlayData` precedent).
+pub struct Placements<'a> {
+    pub customs: &'a [CustomEntry],
+    pub exposure: &'a [ExposureEntry],
+    pub storage: &'a [StorageEntry],
+    pub batch: &'a [BatchEntry],
+}
+
 pub fn build_world(
+    layout: &crate::state::layout::Layout,
     map: &MapModel,
     workloads: &[WorkloadRow],
     severity: &HashMap<WorkloadRef, Severity>,
-    customs: &[CustomEntry],
-    exposure: &[ExposureEntry],
-    storage: &[StorageEntry],
-    batch: &[BatchEntry],
+    p: Placements<'_>,
 ) -> WorldModel {
+    let Placements {
+        customs,
+        exposure,
+        storage,
+        batch,
+    } = p;
     // Connectivity grouped by the city it exposes.
     let mut exp_by: HashMap<&WorkloadRef, Vec<&ExposureEntry>> = HashMap::new();
     for e in exposure {
@@ -432,8 +505,12 @@ pub fn build_world(
     let mut city_count = 0usize;
     let mut max_bottom = 1u16;
     for (zi, zone) in map.zones.iter().enumerate() {
-        let cx = zi as u16 * (PATCH_W + OCEAN_GAP);
-        let mut y = 1u16;
+        // Continent x from the zone's DURABLE ordinal, not its index in this
+        // build's zone list. Enumeration order meant a zone appearing earlier in
+        // the sort shifted every continent east of it (instability source 4);
+        // the ordinal is assigned once and carried, so a new zone appends into
+        // fresh ocean and a departed one leaves its ground reserved.
+        let cx = layout.zone_ordinal(&zone.name).unwrap_or(zi as u16) * (PATCH_W + OCEAN_GAP);
         let mut provinces = Vec::new();
         for tile in &zone.nodes {
             // Cities on this province, stable order.
@@ -457,10 +534,21 @@ pub fn build_world(
                 });
             }
             cities.sort_by(|a, b| a.r.cmp(&b.r));
-            let h = (2 + 2 * cities.len() as u16).max(3);
+            // EXTENT FROM CAPACITY, not from workload count. `h` used to be
+            // `(2 + 2*cities.len()).max(3)`, so any workload landing on or
+            // leaving a node resized its terrain and shifted every province
+            // below it — instability source 1.
+            let (h, extent_source) = province_extent(&tile.extent);
+            // Province y from the slot's ORDINAL, so ghosts leave gaps rather
+            // than letting the provinces below slide up. Enumerating live
+            // provinces would reintroduce exactly the reshuffle this removes.
+            let y = province_y(layout, &zone.name, tile);
             for (i, c) in cities.iter_mut().enumerate() {
                 c.x = cx + city_dx(&c.r.name);
-                c.y = y + 1 + 2 * i as u16;
+                // Cities keep their A2 row placement, clamped into the province
+                // now that `h` no longer grows to fit them. Real slots for
+                // cities are A3's job; until then the last rows can share.
+                c.y = (y + 1 + 2 * i as u16).min(y + h.saturating_sub(1));
             }
             city_count += cities.len();
             provinces.push(Province {
@@ -470,13 +558,13 @@ pub fn build_world(
                 w: PATCH_W,
                 h,
                 cities,
+                extent_source,
                 infra: infra
                     .get(tile.name.as_str())
                     .map_or_else(Vec::new, |s| s.iter().map(|n| (*n).to_string()).collect()),
             });
-            y += h;
+            max_bottom = max_bottom.max(y + h);
         }
-        max_bottom = max_bottom.max(y);
 
         // Moor connectivity markers in the ocean strip east of this
         // continent, each on its city's row. Gates sort ahead of harbors so
@@ -865,13 +953,16 @@ mod tests {
             name: "frobnicator".into(),
         }];
         let w = build_world(
+            &m.layout,
             &m.map,
             &m.workloads,
             &m.workload_severity,
-            &customs,
-            &[],
-            &[],
-            &[],
+            Placements {
+                customs: &customs,
+                exposure: &[],
+                storage: &[],
+                batch: &[],
+            },
         );
         let island = w
             .islands
@@ -892,5 +983,192 @@ mod tests {
             w.region_at(island.x + 1, ghost.y),
             Region::Structure(..)
         ));
+    }
+    use crate::state::filter::NamespaceFilter;
+    use crate::state::observed::ObservedWorld;
+
+    // --- A2: positions come from the layout --------------------------------
+
+    fn a2_world(nodes: &[(&str, &str)], cities: &[(&str, &str)]) -> ObservedWorld {
+        let (world, mut s) = fx::world();
+        for (n, z) in nodes {
+            s.node(fx::node(n, Some(z)));
+        }
+        for (ns, name) in cities {
+            s.deployment(fx::deployment(ns, name, 1, 1));
+            s.replicaset(fx::replicaset(ns, &format!("{name}-rs"), name));
+            s.pod(fx::pod_owned(
+                fx::pod(ns, &format!("{name}-rs-1"), Some(nodes[0].0)),
+                "ReplicaSet",
+                &format!("{name}-rs"),
+            ));
+        }
+        world
+    }
+
+    fn pos(w: &WorldModel, node: &str) -> Option<(u16, u16, u16, u16)> {
+        w.continents
+            .iter()
+            .flat_map(|c| &c.provinces)
+            .find(|p| p.tile.name == node)
+            .map(|p| (p.x, p.y, p.w, p.h))
+    }
+
+    /// THE EXTENT CLAIM: adding a workload to a node must not resize its terrain
+    /// or move anything. `h` used to be `(2 + 2*cities.len()).max(3)`, so every
+    /// workload landing on a node shifted every province below it.
+    #[test]
+    fn adding_a_workload_moves_no_province_and_resizes_none() {
+        let before = Models::build(&a2_world(
+            &[("n1", "z-a"), ("n2", "z-a"), ("n3", "z-b")],
+            &[("demo", "one")],
+        ));
+        let after = Models::build(&a2_world(
+            &[("n1", "z-a"), ("n2", "z-a"), ("n3", "z-b")],
+            &[("demo", "one"), ("demo", "two"), ("demo", "three")],
+        ));
+        for n in ["n1", "n2", "n3"] {
+            assert_eq!(
+                pos(&before.world, n),
+                pos(&after.world, n),
+                "{n} moved or resized when a workload was added"
+            );
+        }
+    }
+
+    /// Byte-for-byte determinism: the same observation twice is the same world.
+    #[test]
+    fn the_same_observation_builds_the_same_world_twice() {
+        let w = a2_world(&[("n1", "z-a"), ("n2", "z-b")], &[("demo", "app")]);
+        let a = Models::build(&w).world;
+        let b = Models::build(&w).world;
+        for n in ["n1", "n2"] {
+            assert_eq!(pos(&a, n), pos(&b, n));
+        }
+        assert_eq!(a.continents.len(), b.continents.len());
+    }
+
+    /// A GHOST LEAVES A GAP. The province below a departed node must not slide
+    /// up — that is the reshuffle this phase removes, and §9's question 3 warns
+    /// this is exactly where "ordinals map to position" and "ghosts render" can
+    /// diverge. Two ADJACENT ghosts is the fixture that separates them.
+    #[test]
+    fn adjacent_ghosts_leave_their_ground_empty() {
+        let all = a2_world(
+            &[("n1", "z-a"), ("n2", "z-a"), ("n3", "z-a"), ("n4", "z-a")],
+            &[],
+        );
+        let m0 = Models::build(&all);
+        let survivors: Vec<(u16, u16)> = ["n1", "n4"]
+            .iter()
+            .map(|n| {
+                let p = pos(&m0.world, n).expect("placed");
+                (p.0, p.1)
+            })
+            .collect();
+
+        // n2 and n3 depart together — two adjacent ghosts.
+        let fewer = a2_world(&[("n1", "z-a"), ("n4", "z-a")], &[]);
+        let m1 = Models::build_with(&fewer, &NamespaceFilter::All, &m0.layout);
+
+        for (i, n) in ["n1", "n4"].iter().enumerate() {
+            let p = pos(&m1.world, n).expect("still placed");
+            assert_eq!((p.0, p.1), survivors[i], "{n} slid over the ghosts' ground");
+        }
+        assert_eq!(m1.layout.ghosts().count(), 2, "two ghosts retained");
+    }
+
+    /// A surging refresh through the FULL builder: every surviving province keeps
+    /// its coordinates, which is A2's reason to exist.
+    #[test]
+    fn a_surging_refresh_keeps_every_surviving_province_in_place() {
+        let old = a2_world(&[("old-1", "z-a"), ("old-2", "z-a")], &[]);
+        let m0 = Models::build(&old);
+
+        // SURGE: replacements Ready before the predecessors drain.
+        let both = a2_world(
+            &[
+                ("old-1", "z-a"),
+                ("old-2", "z-a"),
+                ("new-1", "z-a"),
+                ("new-2", "z-a"),
+            ],
+            &[],
+        );
+        let m1 = Models::build_with(&both, &NamespaceFilter::All, &m0.layout);
+        for n in ["old-1", "old-2"] {
+            assert_eq!(
+                pos(&m0.world, n),
+                pos(&m1.world, n),
+                "{n} moved during surge"
+            );
+        }
+        let newly: Vec<_> = ["new-1", "new-2"]
+            .iter()
+            .map(|n| pos(&m1.world, n))
+            .collect();
+
+        // DRAIN.
+        let after = a2_world(&[("new-1", "z-a"), ("new-2", "z-a")], &[]);
+        let m2 = Models::build_with(&after, &NamespaceFilter::All, &m1.layout);
+        for (i, n) in ["new-1", "new-2"].iter().enumerate() {
+            assert_eq!(
+                pos(&m2.world, n),
+                newly[i],
+                "{n} moved when its predecessor drained"
+            );
+        }
+    }
+
+    /// A new zone appends into fresh ocean instead of shifting every continent
+    /// east — instability source 4's "appears" half, end to end.
+    #[test]
+    fn a_new_zone_moves_no_existing_continent() {
+        let a = a2_world(&[("n1", "z-b"), ("n2", "z-c")], &[]);
+        let m0 = Models::build(&a);
+        let xs: Vec<u16> = ["n1", "n2"]
+            .iter()
+            .map(|n| pos(&m0.world, n).unwrap().0)
+            .collect();
+
+        // z-a sorts FIRST — the case that used to move everything.
+        let b = a2_world(&[("n1", "z-b"), ("n2", "z-c"), ("n3", "z-a")], &[]);
+        let m1 = Models::build_with(&b, &NamespaceFilter::All, &m0.layout);
+        for (i, n) in ["n1", "n2"].iter().enumerate() {
+            assert_eq!(
+                pos(&m1.world, n).unwrap().0,
+                xs[i],
+                "{n}'s continent moved when a new zone appeared"
+            );
+        }
+    }
+
+    /// Extent comes from capacity, in classes, with a marked fallback.
+    #[test]
+    fn extent_is_capacity_derived_quantised_and_marked() {
+        use crate::state::model::{ExtentInput, ExtentSource};
+        let gib = |g: f64| ExtentInput::Capacity(g * 1024.0 * 1024.0 * 1024.0);
+
+        // Same class → same extent; a much larger node → more.
+        assert_eq!(province_extent(&gib(8.0)).0, province_extent(&gib(16.0)).0);
+        assert!(province_extent(&gib(256.0)).0 > province_extent(&gib(8.0)).0);
+        // Small variation inside a class does not resize anything.
+        assert_eq!(
+            province_extent(&gib(33.0)).0,
+            province_extent(&gib(120.0)).0
+        );
+
+        // The fallbacks are DECLARED, and neither is the smallest class — an
+        // unmeasurable node must not read as a genuinely tiny one.
+        let (h_it, s_it) = province_extent(&ExtentInput::InstanceType("m5.large".into()));
+        assert_eq!(s_it, ExtentSource::InstanceType);
+        let (h_un, s_un) = province_extent(&ExtentInput::Unknown);
+        assert_eq!(s_un, ExtentSource::Default);
+        assert!(
+            h_un > province_extent(&gib(1.0)).0,
+            "unmeasured is not the smallest"
+        );
+        assert_eq!(h_it, h_un);
+        assert_eq!(province_extent(&gib(8.0)).1, ExtentSource::Capacity);
     }
 }

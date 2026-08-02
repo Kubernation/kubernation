@@ -8,11 +8,13 @@ cd "$(dirname "$0")"
 require_cluster
 
 log "resetting fleet to the baseline fixture"
+# Delete the WORKLOAD OBJECTS, not the namespace. Terminating a namespace holding
+# ~400 kwok pods takes minutes, and re-applying into one that is still Terminating
+# silently applies nothing — which yields a 100-node fleet with zero pods that
+# renders as a perfectly plausible map. That invalidated two gate runs.
+kc delete deploy,sts,ds --all -n churn --wait=false >/dev/null 2>&1 || true
 kc delete nodes -l type=kwok --wait=false >/dev/null 2>&1 || true
-kc delete ns churn --wait=false >/dev/null 2>&1 || true
-# Wait for the namespace to actually go, or the re-apply races its termination.
-for _ in $(seq 1 40); do
-  kc get ns churn >/dev/null 2>&1 || break
-  sleep 2
-done
+# Let the controllers observe the deletions before re-applying, so the new
+# objects are not immediately reconciled against stale replica sets.
+sleep 5
 GEN="${GEN:-g1}" ./up.sh

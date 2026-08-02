@@ -17,7 +17,8 @@ use super::observed::ObservedWorld;
 use super::qos::QosClass;
 use super::saturation::{self, NodeSaturation};
 use super::world::{
-    BatchEntry, BatchKind, CoastKind, ExposureEntry, StorageEntry, WorldModel, build_world,
+    BatchEntry, BatchKind, CoastKind, ExposureEntry, Placements, StorageEntry, WorldModel,
+    build_world,
 };
 use crate::k8s::metrics::NodeUsage;
 use crate::k8s::quantity;
@@ -331,6 +332,12 @@ pub struct NodeTile {
     /// type, and a consumer that cannot tell them apart will overstate.
     pub pool: String,
     pub pool_source: PoolSource,
+    /// What the province's SIZE is derived from — capacity where the node
+    /// reports it, else its instance type, else a declared default. `NodeTile`
+    /// carried only ratios before A2; extent needs the absolute, and a node that
+    /// reports none must get the default extent AND be marked, never a silent
+    /// zero that reads as a genuinely tiny node (the v1.6.0 discipline).
+    pub extent: ExtentInput,
     pub health: NodeHealth,
     pub ready: bool,
     pub cordoned: bool,
@@ -415,6 +422,51 @@ pub struct MapModel {
 }
 
 impl MapModel {}
+
+/// What a province's extent can be derived from, in preference order.
+///
+/// Memory is preferred over cpu because it is **incompressible** — cpu throttles,
+/// memory OOM-kills — so it is the constraint that actually bounds what a node
+/// can hold (plan §3.4.1).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExtentInput {
+    /// The node reports `allocatable.memory`, in bytes.
+    Capacity(f64),
+    /// No allocatable, but the node declares an instance type.
+    InstanceType(String),
+    /// Neither. The province gets the default extent and is MARKED — an
+    /// unmeasurable node must not read as a small one.
+    Unknown,
+}
+
+/// Where a province's size came from. Travels with the province so a reader can
+/// tell a measured size from a fallback, exactly as `metric_source` and
+/// `pool_source` do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtentSource {
+    Capacity,
+    InstanceType,
+    /// The declared default — the province is sized but **not measured**.
+    Default,
+}
+
+/// Read the extent input for a node: allocatable memory, else instance type,
+/// else nothing.
+pub fn node_extent_input(node: &Node) -> ExtentInput {
+    if let Some(mem) = node_allocatable(node, "memory").filter(|m| *m > 0.0) {
+        return ExtentInput::Capacity(mem);
+    }
+    match node
+        .metadata
+        .labels
+        .as_ref()
+        .and_then(|l| l.get(INSTANCE_TYPE_LABEL))
+        .filter(|v| !v.is_empty())
+    {
+        Some(t) => ExtentInput::InstanceType(t.clone()),
+        None => ExtentInput::Unknown,
+    }
+}
 
 /// Provider nodepool label keys, tried in order.
 ///
@@ -803,11 +855,13 @@ pub fn build_node_tile(
 
     // `None`: nothing sets a pool-label override yet. See `node_pool`.
     let (pool, pool_source) = node_pool(node, None);
+    let extent = node_extent_input(node);
     NodeTile {
         name: node.metadata.name.clone().unwrap_or_default(),
         zone: node_zone(node),
         pool,
         pool_source,
+        extent,
         health,
         ready,
         cordoned,
@@ -1940,10 +1994,19 @@ pub struct Models {
     pub substrate: crate::state::substrate::SubstrateReport,
     /// The explorable world projection of all of the above.
     pub world: WorldModel,
+    /// The slot assignment this build produced. The caller holds it and feeds it
+    /// back as `prior` next tick — that is the entire mechanism by which the map
+    /// holds still. Kept on `Models` rather than on `ObservedWorld`, which must
+    /// not hold derived state, and never in a global.
+    pub layout: crate::state::layout::Layout,
 }
 
 impl Models {
-    /// Build the full model set across every namespace.
+    /// Build the full model set across every namespace, with no prior layout.
+    ///
+    /// A fresh layout is the correct default for a single-shot caller (a test, a
+    /// one-off render): with no previous frame there is nothing to hold still.
+    /// Live callers use [`Models::build_with`] and keep the layout between ticks.
     pub fn build(world: &ObservedWorld) -> Self {
         Self::build_filtered(world, &NamespaceFilter::All)
     }
@@ -1953,7 +2016,29 @@ impl Models {
     /// and island structures all narrow together. Filtering is applied to the
     /// *derived* layer only — the observed stores are untouched.
     pub fn build_filtered(world: &ObservedWorld, filter: &NamespaceFilter) -> Self {
+        Self::build_with(world, filter, &crate::state::layout::Layout::default())
+    }
+
+    /// Build the model set, assigning slots against `prior`.
+    ///
+    /// The one entry point that keeps the map still: positions come from the
+    /// returned `Models::layout`, which carries `prior`'s assignments forward.
+    pub fn build_with(
+        world: &ObservedWorld,
+        filter: &NamespaceFilter,
+        prior: &crate::state::layout::Layout,
+    ) -> Self {
         let map = build_map(world);
+        // Slot assignment happens on the FULL node set: terrain is physical, so a
+        // namespace filter must never change where a node sits (the same reason
+        // `coverage` and `substrate` are unfiltered).
+        let observed: Vec<crate::state::layout::ObservedNode> = map
+            .zones
+            .iter()
+            .flat_map(|z| &z.nodes)
+            .map(|t| t.observed())
+            .collect();
+        let layout = crate::state::layout::assign_layout(prior, &observed);
         let mut workloads = build_workloads(world);
         workloads.retain(|w| filter.matches(&w.r.namespace));
         let attention = attention::build(world, &map, &workloads, filter);
@@ -1986,13 +2071,16 @@ impl Models {
             .filter(|b| filter.matches(&b.namespace))
             .collect();
         let world_model = build_world(
+            &layout,
             &map,
             &workloads,
             &workload_severity,
-            &customs,
-            &exposure,
-            &storage,
-            &batch,
+            Placements {
+                customs: &customs,
+                exposure: &exposure,
+                storage: &storage,
+                batch: &batch,
+            },
         );
         // NetworkPolicy "walls" coverage — cluster-wide (the map shows a city's
         // true wall state regardless of the active namespace filter).
@@ -2018,6 +2106,7 @@ impl Models {
             exposed,
             substrate,
             world: world_model,
+            layout,
         }
     }
 }
