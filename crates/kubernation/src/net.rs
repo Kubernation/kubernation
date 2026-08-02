@@ -1140,6 +1140,25 @@ fn conn_reason(e: &str) -> String {
     }
 }
 
+/// ONE TICK OF THE LAYOUT CARRY — the mechanism the whole workstream rests on.
+///
+/// Build against last tick's layout, then hand that build's layout forward as
+/// the next tick's prior. Without the feed-forward every tick assigns from
+/// scratch, which is deterministic in the node set and so *looks* fine on a
+/// static cluster — a replaced node simply inherits the departed one's ordinal.
+/// The difference only shows across churn, in a long-lived session, which is
+/// exactly the regime a screenshot harness cannot observe. So it is named and
+/// tested here rather than left inline in the world loop.
+fn build_carrying(
+    world: &ObservedWorld,
+    filter: &NamespaceFilter,
+    prior: &mut kubernation_core::state::layout::Layout,
+) -> Arc<Models> {
+    let m = Arc::new(Models::build_with(world, filter, prior));
+    *prior = m.layout.clone();
+    m
+}
+
 /// The net thread's name — the panic hook watches for it to set [`NET_PANICKED`]
 /// so a crashed world loop surfaces a banner instead of a silently frozen world.
 pub const NET_THREAD: &str = "kn-net";
@@ -2274,12 +2293,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // successor inherits its ground and the map holds still. Held here,
                 // per world, rather than on `ObservedWorld` (which must not carry
                 // derived state) or in a global.
-                let hot_models = Arc::new(Models::build_with(
-                    &hot_handle.world,
-                    &filter,
-                    &prior_hot,
-                ));
-                prior_hot = hot_models.layout.clone();
+                let hot_models = build_carrying(&hot_handle.world, &filter, &mut prior_hot);
                 // MTTD: note the first tick the attention queue flags the drill's
                 // subject (the fresh hot concerns are right here).
                 if let Some(sess) = net.chaos_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
@@ -2308,11 +2322,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     .as_ref()
                     .filter(|_| ready_warm.load(Ordering::Relaxed))
                     .map(|h| WorldSnap {
-                        models: {
-                            let m = Arc::new(Models::build_with(&h.world, &filter, &prior_warm));
-                            prior_warm = m.layout.clone();
-                            m
-                        },
+                        models: build_carrying(&h.world, &filter, &mut prior_warm),
                         observed: h.world.clone(),
                         slo: Arc::new(
                             slo_warm
@@ -2516,7 +2526,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
 
 #[cfg(test)]
 mod tests {
-    use super::chaos_outcome_summary;
+    use super::{Models, build_carrying, chaos_outcome_summary};
 
     #[test]
     fn chaos_outcome_summary_classifies_the_drill() {
@@ -2527,5 +2537,57 @@ mod tests {
         assert_eq!(chaos_outcome_summary(true, true, None), "self-healed");
         assert_eq!(chaos_outcome_summary(false, true, None), "degraded");
         assert_eq!(chaos_outcome_summary(false, false, None), "stayed up");
+    }
+
+    /// THE CARRY ACTUALLY FEEDS FORWARD.
+    ///
+    /// A2's whole claim is that a node replacement does not move the map, and
+    /// the only thing making that true in the running product is that each tick
+    /// builds against the previous tick's layout. Core pins what
+    /// `Models::build_with` does GIVEN a prior; nothing pinned that the world
+    /// loop supplies one. Deleting the feed-forward left every test green, and
+    /// the screenshot gate could not see it either — each capture is its own
+    /// process, so its prior is always empty.
+    #[test]
+    fn the_layout_carry_feeds_last_ticks_layout_forward() {
+        use kubernation_core::state::layout::Layout;
+        use kubernation_core::state::{filter::NamespaceFilter, fixtures as fx};
+
+        let fleet = |names: &[&str]| {
+            let (world, mut s) = fx::world();
+            for n in names {
+                s.node(fx::node(n, Some("z-a")));
+            }
+            world
+        };
+        let pos = |m: &Models, node: &str| {
+            m.world
+                .continents
+                .iter()
+                .flat_map(|c| &c.provinces)
+                .find(|p| p.tile.name == node)
+                .map(|p| (p.x, p.y))
+        };
+
+        let mut prior = Layout::default();
+        let t0 = fleet(&["a", "b", "c"]);
+        let m0 = build_carrying(&t0, &NamespaceFilter::All, &mut prior);
+        let a0 = pos(&m0, "a").expect("placed");
+
+        // `b` and `c` are replaced, surging: successors Ready before they drain.
+        let t1 = fleet(&["a", "b", "c", "b2", "c2"]);
+        let m1 = build_carrying(&t1, &NamespaceFilter::All, &mut prior);
+        let b2 = pos(&m1, "b2").expect("placed");
+        let t2 = fleet(&["a", "b2", "c2"]);
+        let m2 = build_carrying(&t2, &NamespaceFilter::All, &mut prior);
+
+        assert_eq!(pos(&m2, "a"), Some(a0), "a survivor moved");
+        assert_eq!(
+            pos(&m2, "b2"),
+            Some(b2),
+            "the successor moved once its predecessor drained"
+        );
+        // The departed nodes' ground is RESERVED, not reoccupied.
+        assert_eq!(prior.ghosts().count(), 2, "two ghosts held");
     }
 }

@@ -179,6 +179,20 @@ pub fn node(name: &str, zone: Option<&str>) -> Node {
     }
 }
 
+/// Put a node in a named provider nodepool.
+///
+/// Worth having as a fixture rather than an inline label insert: every layout
+/// and world fixture before this one was implicitly single-pool, so the whole
+/// class of multi-pool defects was untestable — and one of them (provinces of
+/// different pools drawn on the same ground) shipped because of it.
+pub fn node_in_pool(mut n: Node, pool: &str) -> Node {
+    n.metadata.labels.get_or_insert_with(BTreeMap::new).insert(
+        "cloud.google.com/gke-nodepool".to_string(),
+        pool.to_string(),
+    );
+    n
+}
+
 pub fn node_with_condition(mut n: Node, type_: &str, status: &str) -> Node {
     let conds = n
         .status

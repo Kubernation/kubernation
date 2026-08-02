@@ -94,6 +94,22 @@ struct Args {
     /// Render until synced, save a PNG, exit (development verification)
     #[arg(long)]
     screenshot: Option<PathBuf>,
+
+    /// Take N screenshots from ONE session, numbered `-00`, `-01`, … instead of
+    /// one and exit.
+    ///
+    /// This is what makes a stability flipbook honest. A frame per process
+    /// starts every capture from an empty layout, so the layout carry — a
+    /// build against the PREVIOUS tick's layout — is structurally invisible:
+    /// remove the carry entirely and a process-per-frame flipbook is unchanged,
+    /// because assignment from scratch is deterministic in the node set. Only a
+    /// long-lived session shows what the operator actually sees.
+    #[arg(long = "shot-seq", value_name = "N", default_value_t = 1)]
+    shot_seq: u32,
+
+    /// Seconds between the frames of a `--shot-seq` run.
+    #[arg(long = "shot-interval", value_name = "SECS", default_value_t = 10.0)]
+    shot_interval: f64,
     /// On sync, select the first city whose name contains this and open
     /// its panel (development verification)
     #[arg(long)]
@@ -649,6 +665,10 @@ async fn main() {
     )> = None;
     let mut blast_cache_snap: usize = 0;
     let mut frames_synced: u32 = 0;
+    // `--shot-seq` state: how many frames of the sequence are on disk, and the
+    // earliest wall-clock time the next one may be taken.
+    let mut shots_taken: u32 = 0;
+    let mut next_shot_at: f64 = 0.0;
     let mut prev_had_snap = false;
     let mut inspected = false;
     // Fire the --forward dev verification once.
@@ -3464,9 +3484,23 @@ async fn main() {
         };
         if let Some(path) = &shot
             && take_shot
+            && get_time() >= next_shot_at
         {
-            get_screen_data().export_png(&path.to_string_lossy());
-            break;
+            // A single shot keeps the exact path it was given (every existing
+            // dev flag and gui-smoke state depends on that); a sequence numbers
+            // its frames so they read as a flipbook.
+            let out = if args.shot_seq > 1 {
+                let stem = path.with_extension("");
+                PathBuf::from(format!("{}-{:02}.png", stem.to_string_lossy(), shots_taken))
+            } else {
+                path.clone()
+            };
+            get_screen_data().export_png(&out.to_string_lossy());
+            shots_taken += 1;
+            if shots_taken >= args.shot_seq.max(1) {
+                break;
+            }
+            next_shot_at = get_time() + args.shot_interval;
         }
 
         // Restore-on-exit dance: on a quit request, if a live hot drill still has

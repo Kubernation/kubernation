@@ -8,15 +8,46 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-08-02
+
 ### Added
-- **The layout engine (enabling change, no user-visible behaviour).** A pure
-  `assign_layout` that gives each node a durable map slot, so replacing a node
-  does not move the world: a slot persists across its occupants, and a departed
-  node leaves a *ghost* rather than letting the ordinals close up behind it.
-  Nothing renders from it yet — that is A2. Nodes also now carry their **pool**
-  and how it was inferred (a provider's own label, an instance type, or the
-  default), because there is no standard nodepool key and a guess should not be
-  mistaken for an answer.
+- **The map holds still when nodes are replaced.** Each node now has a durable
+  place on the map, so a rolling node refresh no longer rearranges the world:
+  provinces keep their ground across a replacement, and a zone keeps its
+  continent position even as zones come and go. Measured across a full 30-node
+  refresh on a 100-node fleet, the land and sea change shape by 0.4%.
+- **A province's size comes from the node's capacity**, not from how many
+  workloads happen to be running on it — so deploying something no longer
+  resizes terrain. A node that reports no capacity gets a declared default size
+  and is marked as unmeasured rather than drawn as a small one.
+- **Ground held by a departed node stays on the map**, painted plain. The slot
+  is reserved for a successor; without this a node replacement read as the
+  continent losing a piece of itself.
+- Nodes carry their **pool** and how it was inferred (a provider's own label, an
+  instance type, or the default), because there is no standard nodepool key and
+  a guess should not be mistaken for an answer.
+
+### Fixed
+- **Nodes in different pools within one zone were drawn on top of each other**,
+  so on a cluster with several nodepools in a zone a large share of nodes were
+  invisible and unclickable, and clicking one province could open another node's
+  detail. Introduced with the map layout change above and fixed before release.
+- Long-named workloads sharing a node could be stacked on the same cell, leaving
+  one of them with no clickable position anywhere on the map. A settlement's own
+  cell now always resolves to that settlement.
+- Settlements could be drawn in open water, and stretches of a continent could
+  hit-test as ocean, on any continent past the first few provinces.
+- The zone label and coastline could drift away from the land they belong to,
+  and land could fall outside the navigable world — painted, but impossible to
+  hover, click or frame with `F`.
+- A node departing no longer re-shapes the coastline of every other province in
+  its zone.
+
+### Development
+- `--shot-seq N` / `--shot-interval S` capture a numbered sequence of
+  screenshots from one session. A screenshot per process starts each frame from
+  an empty layout, which makes the layout carry structurally invisible — the
+  first stability flipbook could not have detected its own absence.
 
 ## [1.6.0] — 2026-08-02
 

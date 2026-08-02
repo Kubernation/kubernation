@@ -21,7 +21,7 @@ use kubernation_core::state::netpol::Coverage;
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::substrate::SubstrateReport;
 use kubernation_core::state::world::{
-    City, CoastKind, CoastMarker, Continent, Island, Province, Region, WorldModel,
+    City, CoastKind, CoastMarker, Continent, GhostGround, Island, Province, Region, WorldModel,
 };
 use macroquad::prelude::*;
 
@@ -1025,11 +1025,21 @@ const CITY_MARGIN: i32 = 4;
 
 impl Coast {
     pub fn new(cont: &Continent) -> Self {
+        // The continent's row SPAN, not the sum of its provinces' heights.
+        // Those agreed while `build_world` stacked provinces with `y += h`;
+        // now y comes from the slot ordinal and the bands are sparse, so the
+        // sum falls far short of the real bottom. Every row past it was clamped
+        // into the southern cape taper — four provinces rendering as the same
+        // 6-cell sliver — and, worse, the per-city keep-out below was silently
+        // skipped for those rows, leaving settlements drawn in open water.
+        let y0 = cont.y as i32;
         let h = cont
             .provinces
             .iter()
-            .map(|p| p.h as i32)
-            .sum::<i32>()
+            .map(|p| (p.y + p.h) as i32 - y0)
+            .chain(cont.ghosts.iter().map(|g| (g.y + g.h) as i32 - y0))
+            .max()
+            .unwrap_or(1)
             .max(1);
         let w = cont.w as i32;
         let big = MAX_INSET + 100.0;
@@ -1040,7 +1050,7 @@ impl Coast {
         for p in &cont.provinces {
             for c in &p.cities {
                 let lx = c.x as i32 - cont.x as i32;
-                let ly = c.y as i32 - cont.y as i32;
+                let ly = c.y as i32 - y0;
                 let l_cap = (lx - CITY_MARGIN).max(0) as f32;
                 let r_cap = (w - 1 - (lx + CITY_MARGIN)).max(0) as f32;
                 for ry in (ly - 1)..=(ly + 2) {
@@ -1055,7 +1065,7 @@ impl Coast {
         Coast {
             seed_l: fnv1a64(&format!("{}~west", cont.zone)),
             seed_r: fnv1a64(&format!("{}~east", cont.zone)),
-            y0: cont.y as i32,
+            y0,
             h,
             max_l,
             max_r,
@@ -1065,8 +1075,15 @@ impl Coast {
     /// (left_inset, right_inset) in cells for `abs_row`.
     fn insets(&self, abs_row: i32) -> (f32, f32) {
         let ry = (abs_row - self.y0).clamp(0, self.h - 1);
-        let mut l = vnoise(self.seed_l, ry as f32, COAST_PERIOD) * MAX_INSET;
-        let mut r = vnoise(self.seed_r, ry as f32, COAST_PERIOD) * MAX_INSET;
+        // Noise keyed on the ABSOLUTE world row, never on the offset from the
+        // continent's current north edge. `y0` is the topmost LIVE province, so
+        // it moves when the northernmost node departs — and an offset-keyed
+        // noise would then re-roll the shoreline of every province in the zone,
+        // making a single node's departure ripple across a whole continent.
+        // Keying on the world row makes a given row's coast a fixed fact.
+        let arow = abs_row.clamp(self.y0, self.y0 + self.h - 1);
+        let mut l = vnoise(self.seed_l, arow as f32, COAST_PERIOD) * MAX_INSET;
+        let mut r = vnoise(self.seed_r, arow as f32, COAST_PERIOD) * MAX_INSET;
         // Round the north/south ends into capes (only for tall continents;
         // a single-node island just gets the gentle wobble).
         let cap = (self.h / 4).clamp(0, 3);
@@ -1183,6 +1200,9 @@ pub fn draw_world(
         let cont = &world.continents[ci];
         for prov in &cont.provinces {
             draw_province_shallows(prov, cam, &coasts[ci]);
+        }
+        for g in &cont.ghosts {
+            draw_ghost_ground(g, cam, &coasts[ci]);
         }
         for prov in &cont.provinces {
             draw_province_terrain(prov, cam, &coasts[ci], overlay, data);
@@ -1397,6 +1417,44 @@ pub fn draw_blast(cam: &Camera, sw: &SceneWorld, blast: &BlastRadius) -> Option<
 }
 
 /// Cheap 4-corner screen-AABB cull for a province footprint; true = offscreen.
+/// Ground a departed node still holds: the land, and nothing else.
+///
+/// No terrain health, no overlay tint, no hatching, no trees, no settlement —
+/// a ghost has no node, so it has none of those facts and must not appear to.
+/// It is drawn plain and slightly recessive, so a reader sees reserved ground
+/// rather than either a live province or open sea.
+///
+/// Without it a rolling refresh reads as the continent losing chunks of itself:
+/// on the churn fleet, ~7% of the map turned to ocean across one 30-node
+/// refresh, which was the single largest reason the map did not look still even
+/// though not one province had moved.
+fn draw_ghost_ground(g: &GhostGround, cam: &Camera, coast: &Coast) {
+    let (hw, hh) = cam.cell_px();
+    let lift = cam.lift_px();
+    let pair = ghost_land_pair();
+    let x0 = g.x as i32;
+    let w = g.w as f32;
+    for wy in g.y as i32..(g.y + g.h) as i32 {
+        let (li, ri) = coast.insets(wy);
+        for wx in x0..(g.x + g.w) as i32 {
+            let rel = (wx - x0) as f32;
+            if rel < li || rel >= w - ri {
+                continue; // sea cell — ocean shows through
+            }
+            let c = cam.to_land(wx as f32 + 0.5, wy as f32 + 0.5);
+            let m = TILE_H + lift;
+            if c.x < -TILE_W
+                || c.x > screen_width() + TILE_W
+                || c.y < -m
+                || c.y > screen_height() + m
+            {
+                continue;
+            }
+            land_diamond(c, hw, hh, pair, wx as u16, wy as u16, lift, false, false);
+        }
+    }
+}
+
 fn province_offscreen(prov: &Province, cam: &Camera) -> bool {
     let corners = [
         cam.to_screen(prov.x as f32, prov.y as f32),
@@ -2436,6 +2494,19 @@ pub fn draw_minimap(worlds: &[SceneWorld], cam: &Camera, ml: &MinimapLayout, ove
     for sw in worlds {
         let off = sw.off as f32;
         for cont in &sw.world.continents {
+            // Reserved ground first, so a live province drawn at the same rows
+            // wins. The overview has to agree with the map about where land
+            // IS — a minimap that drops ghosts shows the realm losing pieces
+            // of itself on every node replacement while the map does not.
+            for g in &cont.ghosts {
+                quad(
+                    off + g.x as f32,
+                    g.y as f32,
+                    g.w as f32,
+                    g.h as f32,
+                    ghost_land_pair().0,
+                );
+            }
             for p in &cont.provinces {
                 quad(
                     off + p.x as f32,
@@ -2499,6 +2570,161 @@ mod tests {
             y: 0,
         }
     }
+    /// THE COASTLINE SPANS EVERY PROVINCE.
+    ///
+    /// `Coast::new` used to take the continent's height as the SUM of its
+    /// provinces' heights, which was exact while `build_world` stacked them with
+    /// `y += h`. A2 made y ordinal-strided and sparse, so the sum stopped
+    /// reaching the southern provinces: `insets` clamped their rows into the
+    /// cape taper (several provinces rendering as the same narrow sliver, and
+    /// `resolve_region` calling their land ocean), and the per-city keep-out
+    /// below silently skipped them, drawing settlements in open water.
+    #[test]
+    fn the_coast_covers_every_province_not_just_the_summed_height() {
+        use kubernation_core::state::model::Models;
+        use kubernation_core::state::{fixtures as fx, world::Region};
+
+        let (world, mut s) = fx::world();
+        for n in ["a", "b", "c", "d"] {
+            s.node(fx::node(n, Some("z-a")));
+        }
+        let models = Models::build(&world);
+        let cont = &models.world.continents[0];
+        let coast = Coast::new(cont);
+
+        let bottom = cont
+            .provinces
+            .iter()
+            .map(|p| p.y + p.h)
+            .max()
+            .expect("provinces");
+        assert!(
+            coast.h >= (bottom - cont.y) as i32,
+            "coast spans {} rows but the continent runs to row {}",
+            coast.h,
+            bottom
+        );
+
+        // Each province's shore is shaped by ITS OWN row. Under the bug every
+        // row past the window clamped to the same one, so the southern
+        // provinces all received an identical, cape-tapered sliver.
+        let w = cont.w as f32;
+        let spans: Vec<f32> = cont
+            .provinces
+            .iter()
+            .map(|p| coast.land_span(p.y as i32, w).1)
+            .collect();
+        assert!(
+            spans.windows(2).any(|s| (s[0] - s[1]).abs() > 0.001),
+            "every province got the same shore — rows are being clamped: {spans:?}"
+        );
+
+        // And the land the view draws is the land the model hit-tests, which is
+        // the pair that used to disagree: a click west of the clamped inset
+        // resolved to Ocean on a province that was plainly painted as land.
+        for p in &cont.provinces {
+            let (li, span) = coast.land_span(p.y as i32, w);
+            assert!(span > 1.0, "province at y={} kept no land", p.y);
+            let mid = (li + span / 2.0) as u16;
+            assert!(
+                matches!(
+                    models.world.region_at(cont.x + mid, p.y),
+                    Region::Province(_)
+                ),
+                "the middle of the land at y={} does not hit-test as province",
+                p.y
+            );
+        }
+    }
+
+    /// A DEPARTURE DOES NOT RE-SHAPE THE WHOLE CONTINENT'S SHORE.
+    ///
+    /// The coast noise used to be keyed on the offset from the continent's
+    /// north edge. That edge is the topmost LIVE province, so when the
+    /// northernmost node departs it moves — and every remaining province's
+    /// shoreline re-rolls, which the churn flipbook picked up as a change
+    /// rippling across provinces that had not moved at all.
+    #[test]
+    fn a_departure_leaves_the_surviving_shoreline_untouched() {
+        use kubernation_core::state::filter::NamespaceFilter;
+        use kubernation_core::state::model::Models;
+        use kubernation_core::state::{fixtures as fx, world::WorldModel};
+
+        let fleet = |names: &[&str]| {
+            let (world, mut s) = fx::world();
+            for n in names {
+                s.node(fx::node(n, Some("z-a")));
+            }
+            world
+        };
+        let shores = |w: &WorldModel| {
+            let cont = &w.continents[0];
+            let coast = Coast::new(cont);
+            cont.provinces
+                .iter()
+                .map(|p| {
+                    (
+                        p.tile.name.clone(),
+                        coast.land_span(p.y as i32, cont.w as f32),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let m0 = Models::build(&fleet(&["a", "b", "c", "d"]));
+        let before = shores(&m0.world);
+
+        // The NORTHMOST province's node departs, moving the continent's edge.
+        let north = m0.world.continents[0]
+            .provinces
+            .iter()
+            .min_by_key(|p| p.y)
+            .expect("a province")
+            .tile
+            .name
+            .clone();
+        let rest: Vec<&str> = ["a", "b", "c", "d"]
+            .into_iter()
+            .filter(|n| *n != north)
+            .collect();
+        let m1 = Models::build_with(&fleet(&rest), &NamespaceFilter::All, &m0.layout);
+        let after = shores(&m1.world);
+        assert!(
+            after.len() < before.len(),
+            "the fixture must lose a province"
+        );
+
+        let moved: Vec<&str> = after
+            .iter()
+            .filter(|(name, span)| {
+                let was = before
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, s)| *s)
+                    .expect("survivor was present before");
+                (span.0 - was.0).abs() >= 0.001 || (span.1 - was.1).abs() >= 0.001
+            })
+            .map(|(n, _)| n.as_str())
+            .collect();
+
+        // The province that INHERITS the north edge legitimately gains the cape
+        // taper the departed one used to carry — a continent's cape is at its
+        // end, and the end moved. Everything else must be untouched; before the
+        // noise was re-keyed, all of them changed.
+        let new_north = m1.world.continents[0]
+            .provinces
+            .iter()
+            .min_by_key(|p| p.y)
+            .expect("a province")
+            .tile
+            .name
+            .clone();
+        assert!(
+            moved.iter().all(|n| *n == new_north),
+            "a departure re-shaped provinces that did not inherit the edge: {moved:?}"
+        );
+    }
+
     fn walled() -> Coverage {
         Coverage {
             ingress: true,

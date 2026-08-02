@@ -65,6 +65,21 @@ pub struct ObservedNode {
 ///
 /// Ordered by (zone, pool, ordinal) so iteration is deterministic — the engine
 /// must never depend on `HashMap` order.
+///
+/// **`ordinal` is unique within the ZONE, not within the (zone, pool).** The
+/// pool is slot *identity* — it decides which vacancies a node may reclaim or
+/// reuse — but it is deliberately NOT a private numbering space, because a
+/// consumer that renders position from the ordinal alone would then draw the
+/// Nth node of every pool on the same ground. That is not hypothetical: A2's
+/// `province_y` did exactly this, and on a four-pool fleet it hid 42 of 100
+/// nodes underneath each other. Per-pool numbering makes the collision
+/// *representable* and pushes the burden onto every consumer to remember the
+/// pool; zone-wide numbering makes it unrepresentable.
+///
+/// The cost is that pools interleave positionally as they grow rather than
+/// occupying contiguous bands. Grouping pools into visual regions (the plan's
+/// `region ← pool ∩ zone`) is a later phase's job and wants durable band
+/// ordinals of its own; it must not be smuggled in as a numbering convention.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SlotKey {
     pub zone: String,
@@ -298,15 +313,15 @@ pub fn assign_layout(prior: &Layout, observed: &[ObservedNode]) -> Layout {
                 })
         }) {
             Some(k) => k,
-            // 3. APPEND at the next ordinal.
-            None => match next_ordinal(&slots, &n.zone, &n.pool) {
+            // 3. APPEND at the next ordinal free anywhere in the zone.
+            None => match next_ordinal(&slots, &n.zone) {
                 Some(ordinal) => SlotKey {
                     zone: n.zone.clone(),
                     pool: n.pool.clone(),
                     ordinal,
                 },
-                // The (zone, pool) has used every ordinal AND every slot is
-                // occupied — 65_536 live nodes in one pool of one zone. There is
+                // The zone has used every ordinal AND every slot is
+                // occupied — 65_536 live nodes in one zone. There is
                 // no honest coordinate to give, so the node is reported unplaced
                 // rather than handed one a live node already holds. The previous
                 // `saturating_add` did exactly that: it returned u16::MAX again
@@ -350,10 +365,14 @@ fn occupancy(n: &ObservedNode) -> Occupancy {
 /// `max().unwrap_or(0)` on an empty set would hand back 0 — an ordinal a real
 /// slot may already hold. Empty means *no ordinals yet*, which is a different
 /// statement from *the highest ordinal is zero*.
-fn next_ordinal(slots: &BTreeMap<SlotKey, SlotState>, zone: &str, pool: &str) -> Option<u16> {
+/// The next free ordinal in a ZONE — across every pool in it, not within one.
+///
+/// See `SlotKey`: the ordinal is a zone-wide row index, so a fresh pool appends
+/// below whatever is already there instead of restarting at 0 on top of it.
+fn next_ordinal(slots: &BTreeMap<SlotKey, SlotState>, zone: &str) -> Option<u16> {
     match slots
         .keys()
-        .filter(|k| k.zone == zone && k.pool == pool)
+        .filter(|k| k.zone == zone)
         .map(|k| k.ordinal)
         .max()
     {

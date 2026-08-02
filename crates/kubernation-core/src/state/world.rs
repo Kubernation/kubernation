@@ -12,7 +12,7 @@
 //! Everything here is pure geometry derived from the observed world, so
 //! placement stability is unit-testable.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::attention::Severity;
 use super::model::{MapModel, NodeTile, WorkloadKind, WorkloadRef, WorkloadRow};
@@ -68,6 +68,22 @@ pub struct Province {
     pub infra: Vec<String>,
 }
 
+/// Ground a departed node still holds. The land is there; nothing is on it.
+///
+/// Deliberately not a `Province`: there is no node, so there is no terrain
+/// health, no pressure, no cities and nothing to inspect — and inventing a
+/// `NodeTile` to stand in would fabricate exactly the facts the slot no longer
+/// has. It carries position only, and the renderer paints it plain. Ageing,
+/// ruins and succession are a later phase's vocabulary; a placeholder that
+/// looks deliberate is harder to replace than one that looks blank.
+#[derive(Debug, Clone)]
+pub struct GhostGround {
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
+}
+
 #[derive(Debug, Clone)]
 pub struct Continent {
     pub zone: String,
@@ -75,6 +91,11 @@ pub struct Continent {
     pub y: u16,
     pub w: u16,
     pub provinces: Vec<Province>,
+    /// Slots in this zone whose occupant has departed, still holding their
+    /// ground. Without these the reserved ordinal renders as open sea, so a
+    /// rolling refresh reads as the continent losing chunks of itself — which
+    /// is what the churn flipbook measured before they were drawn.
+    pub ghosts: Vec<GhostGround>,
     /// Connectivity markers moored on the east coast: Service harbors and
     /// Ingress gates, each on the row of the city it serves.
     pub coast: Vec<CoastMarker>,
@@ -241,6 +262,17 @@ impl WorldModel {
                 if y < p.y || y >= p.y + p.h {
                     continue;
                 }
+                // A settlement's OWN cell outranks a neighbour's forgiveness
+                // ring. Without this pass, two cities a cell apart make the
+                // second unreachable: the click lands inside the first's ring
+                // and the first match wins, so the workload has no cell
+                // anywhere on the map that opens it. The ring is a convenience
+                // for empty ground, never a claim over occupied ground.
+                for c in &p.cities {
+                    if c.x == x && c.y == y {
+                        return Region::City(p, c);
+                    }
+                }
                 for c in &p.cities {
                     if Self::city_hit_region(c.x, c.y, x, y) {
                         return Region::City(p, c);
@@ -357,7 +389,55 @@ impl WorldModel {
 /// City label column inside a province, jittered by a stable hash so the
 /// land feels settled rather than gridded.
 fn city_dx(name: &str) -> u16 {
-    2 + (fnv1a64(name) % (PATCH_W as u64 - 16)) as u16
+    CITY_COL0 + (fnv1a64(name) % CITY_COLS as u64) as u16
+}
+
+/// Westmost column a settlement may occupy, and how many the preferred band
+/// spans. The overflow band is wider but still short of the east shore, where
+/// the coast markers moor.
+const CITY_COL0: u16 = 2;
+const CITY_COLS: u16 = PATCH_W - 16;
+const CITY_COLS_WIDE: u16 = PATCH_W - 7;
+
+/// The cell a settlement occupies, guaranteed not to be one already taken.
+///
+/// The province no longer grows to fit its cities (that was instability source
+/// 1 — workload churn resizing terrain), so placement has to FIND a free cell
+/// rather than clamp onto the last row. Clamping collided them exactly: two
+/// settlements on one cell means the second is painted underneath the first and
+/// `region_at`, which returns the first match, can never resolve it — a
+/// workload with no clickable cell anywhere on the map. That was the common
+/// case, not an edge one: a ~32 GiB node gets the smallest extent, leaving two
+/// interior rows for every city on it.
+///
+/// The preferred cell is tried first, so ordinary provinces look exactly as
+/// they did; probing walks the rows of the hash-derived column before moving
+/// east, keeping the column as the stable per-name cue. Real city slots are
+/// A3's job — this only removes the collision.
+fn city_cell(
+    cx: u16,
+    y: u16,
+    rows: u16,
+    col0: u16,
+    row0: u16,
+    taken: &BTreeSet<(u16, u16)>,
+) -> (u16, u16) {
+    for span in [CITY_COLS, CITY_COLS_WIDE] {
+        for dc in 0..span {
+            for dr in 0..rows {
+                let col = CITY_COL0 + (col0 - CITY_COL0 + dc) % span;
+                let cell = (cx + col, y + 1 + (row0 + dr) % rows);
+                if !taken.contains(&cell) {
+                    return cell;
+                }
+            }
+        }
+    }
+    // Every cell in the province interior is occupied — more settlements than
+    // the smallest extent class can seat (40 on a 32 GiB node). Returning the
+    // preferred cell collides, which is why this is documented rather than
+    // silent; seating them honestly needs A3's city slots.
+    (cx + col0, y + 1 + row0)
 }
 
 /// Connectivity markers shown per city before the rest spill (they share
@@ -412,12 +492,19 @@ pub fn province_extent(
 /// into reserved space instead of pushing everything below it down. That costs
 /// vertical density and buys the property the whole workstream exists for.
 /// Ghost ordinals simply leave their stride empty.
-fn province_y(layout: &crate::state::layout::Layout, zone: &str, tile: &NodeTile) -> u16 {
+///
+/// `None` when the layout holds no slot for this node in this zone. That is not
+/// a default to paper over: `assign_layout` deliberately leaves a node UNPLACED
+/// when a zone has exhausted its ordinal space, rather than handing it ground a
+/// live node already holds — so fabricating an ordinal here (this returned 0,
+/// which is a real province's row) would re-introduce one level up exactly the
+/// collision the layout engine refused to create.
+fn province_y(layout: &crate::state::layout::Layout, zone: &str, tile: &NodeTile) -> Option<u16> {
     let ordinal = layout
         .slot_of(&tile.name)
-        .filter(|k| k.zone == zone)
-        .map_or(0, |k| k.ordinal);
-    1 + ordinal * EXTENT_CLASSES[EXTENT_CLASSES.len() - 1]
+        .filter(|k| k.zone == zone)?
+        .ordinal;
+    Some(1 + ordinal * EXTENT_CLASSES[EXTENT_CLASSES.len() - 1])
 }
 
 /// The non-node things placed on the map, bundled because they arrive together
@@ -542,13 +629,24 @@ pub fn build_world(
             // Province y from the slot's ORDINAL, so ghosts leave gaps rather
             // than letting the provinces below slide up. Enumerating live
             // provinces would reintroduce exactly the reshuffle this removes.
-            let y = province_y(layout, &zone.name, tile);
+            // A node the layout could not seat gets no ground rather than a
+            // fabricated row. It stays reachable through the attention queue,
+            // the workload table and the advisors — all keyed by name, not by
+            // position — which is the honest degrade for a map that has run out
+            // of coordinates.
+            let Some(y) = province_y(layout, &zone.name, tile) else {
+                continue;
+            };
+            // Cities keep their A2 hash-derived column and index-derived row,
+            // but the province no longer grows to fit them, so each one takes a
+            // cell no other city holds. See `city_cell`.
+            let rows = h.saturating_sub(1).max(1);
+            let mut taken: BTreeSet<(u16, u16)> = BTreeSet::new();
             for (i, c) in cities.iter_mut().enumerate() {
-                c.x = cx + city_dx(&c.r.name);
-                // Cities keep their A2 row placement, clamped into the province
-                // now that `h` no longer grows to fit them. Real slots for
-                // cities are A3's job; until then the last rows can share.
-                c.y = (y + 1 + 2 * i as u16).min(y + h.saturating_sub(1));
+                let cell = city_cell(cx, y, rows, city_dx(&c.r.name), (i as u16) % rows, &taken);
+                taken.insert(cell);
+                c.x = cell.0;
+                c.y = cell.1;
             }
             city_count += cities.len();
             provinces.push(Province {
@@ -564,6 +662,23 @@ pub fn build_world(
                     .map_or_else(Vec::new, |s| s.iter().map(|n| (*n).to_string()).collect()),
             });
             max_bottom = max_bottom.max(y + h);
+        }
+
+        // Ground held by this zone's departed nodes. Sized at the DECLARED
+        // default extent: the slot remembers who held it, not how big they
+        // were, so painting a measured-looking size would be a fabrication —
+        // the same reason an unmeasurable node is not drawn as a small one.
+        let mut ghosts = Vec::new();
+        for k in layout.ghosts().filter(|k| k.zone == zone.name) {
+            let gy = 1 + k.ordinal * EXTENT_CLASSES[EXTENT_CLASSES.len() - 1];
+            let gh = EXTENT_CLASSES[1];
+            ghosts.push(GhostGround {
+                x: cx,
+                y: gy,
+                w: PATCH_W,
+                h: gh,
+            });
+            max_bottom = max_bottom.max(gy + gh);
         }
 
         // Moor connectivity markers in the ocean strip east of this
@@ -598,12 +713,25 @@ pub fn build_world(
             }
         }
 
+        // The continent's northern edge is its TOPMOST PROVINCE, not row 1.
+        // While `y` accumulated from 1 those were the same number; now that y
+        // comes from the slot ordinal, a zone whose low ordinals are all ghosts
+        // has no land anywhere near row 1 — and `Continent.y` is the anchor for
+        // the zone label and for the coastline's row zero, so a stale 1 paints
+        // the label over open ocean and shapes the shore against the wrong rows.
+        let y = provinces
+            .iter()
+            .map(|p| p.y)
+            .chain(ghosts.iter().map(|g| g.y))
+            .min()
+            .unwrap_or(1);
         continents.push(Continent {
             zone: zone.name.clone(),
             x: cx,
-            y: 1,
+            y,
             w: PATCH_W,
             provinces,
+            ghosts,
             coast,
         });
     }
@@ -686,9 +814,16 @@ pub fn build_world(
         .map(|m| m.x + 1)
         .max()
         .unwrap_or(0);
+    // The widest continent, not the LAST one. `continents` is pushed in
+    // name-sorted zone order (with UNZONED sunk to the end) while `x` now comes
+    // from the durable zone ordinal, assigned in first-observed order — so the
+    // vector's last entry is no longer the eastmost. A short width puts real
+    // land outside `bounds`, where it is painted but cannot be hovered,
+    // clicked or framed by `F`.
     let width = continents
-        .last()
+        .iter()
         .map(|c| c.x + c.w)
+        .max()
         .unwrap_or(PATCH_W)
         .max(islands.last().map(|i| i.x + i.w).unwrap_or(0))
         .max(coast_right)
@@ -1036,16 +1171,233 @@ mod tests {
         }
     }
 
+    /// NO TWO PROVINCES SHARE GROUND — the multi-pool case.
+    ///
+    /// The ordinal is a ZONE-wide row index precisely so this holds. When it was
+    /// per-(zone, pool), each pool restarted at 0 and `province_y` — which reads
+    /// the ordinal alone — drew the Nth node of every pool on the same cell. On
+    /// a four-pool 100-node fleet that hid 42 nodes underneath each other:
+    /// invisible, unclickable, and silent, because the map still looked like a
+    /// map. Every fixture before this one was single-pool, so both behaviours
+    /// were identical under test and the mutation floor could not reach it.
+    #[test]
+    fn provinces_of_different_pools_in_one_zone_never_share_ground() {
+        let (world, mut s) = fx::world();
+        for (n, pool) in [
+            ("sys-a", "sys"),
+            ("sys-b", "sys"),
+            ("app-a", "app"),
+            ("app-b", "app"),
+            ("edge-a", "edge"),
+        ] {
+            s.node(fx::node_in_pool(fx::node(n, Some("z-a")), pool));
+        }
+        let m = Models::build(&world);
+
+        let mut seen: BTreeMap<(u16, u16), &str> = BTreeMap::new();
+        for p in m.world.continents.iter().flat_map(|c| &c.provinces) {
+            if let Some(other) = seen.insert((p.x, p.y), p.tile.name.as_str()) {
+                panic!(
+                    "{} and {} are drawn on the same ground at ({}, {})",
+                    other, p.tile.name, p.x, p.y
+                );
+            }
+        }
+        assert_eq!(seen.len(), 5, "every node got its own ground");
+
+        // And the ground is genuinely reachable, not merely distinct: the y
+        // stride must exceed each province's own height or they overlap.
+        for p in m.world.continents.iter().flat_map(|c| &c.provinces) {
+            let overlaps = m
+                .world
+                .continents
+                .iter()
+                .flat_map(|c| &c.provinces)
+                .any(|q| {
+                    q.tile.name != p.tile.name && q.x == p.x && q.y < p.y + p.h && p.y < q.y + q.h
+                });
+            assert!(!overlaps, "{} overlaps a neighbour vertically", p.tile.name);
+        }
+    }
+
+    /// A NODE WITH NO SLOT GETS NO GROUND — it does not get row 1.
+    ///
+    /// `assign_layout` deliberately leaves a node unplaced when a zone has
+    /// exhausted its ordinals, rather than handing it ground a live node holds.
+    /// `province_y` used to answer that with `map_or(0, ..)`, fabricating one
+    /// level up the very coordinate the layout engine had refused to invent —
+    /// and ordinal 0 is a real province's row, so the two would be stacked.
+    #[test]
+    fn a_node_the_layout_never_seated_is_not_stacked_on_ordinal_zero() {
+        let observed = a2_world(&[("a", "z-a"), ("b", "z-a"), ("c", "z-a")], &[]);
+        let m = Models::build(&observed);
+
+        // An EMPTY layout stands in for the exhausted one: every node is
+        // unplaced, which is the same question asked of every tile at once.
+        let empty = crate::state::layout::Layout::default();
+        let w = build_world(
+            &empty,
+            &m.map,
+            &[],
+            &HashMap::new(),
+            Placements {
+                customs: &[],
+                exposure: &[],
+                storage: &[],
+                batch: &[],
+            },
+        );
+        let placed: Vec<&str> = w
+            .continents
+            .iter()
+            .flat_map(|c| &c.provinces)
+            .map(|p| p.tile.name.as_str())
+            .collect();
+        assert!(
+            placed.is_empty(),
+            "unseated nodes were given ground anyway: {placed:?}"
+        );
+    }
+
+    /// NO TWO CITIES SHARE A CELL.
+    ///
+    /// `h` used to grow as `2 + 2*cities.len()`, so the rows could never run
+    /// out; A2 fixed it from capacity and clamped the overflow onto the last
+    /// row, which stacked settlements exactly. A stacked city is painted
+    /// underneath its neighbour and `region_at` returns the first match, so it
+    /// has no clickable cell anywhere on the map — and its coast markers moor on
+    /// the shared row too. A ~32 GiB node takes the smallest extent, so this is
+    /// the ordinary case rather than an edge one.
+    #[test]
+    fn cities_on_one_small_province_never_share_a_cell() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("only", Some("z-a"))); // 8Gi fixture → smallest extent
+        for name in ["a-app", "b-app", "c-app", "d-app", "e-app", "f-app"] {
+            s.deployment(fx::deployment("demo", name, 1, 1));
+            s.replicaset(fx::replicaset("demo", &format!("{name}-rs"), name));
+            s.pod(fx::pod_owned(
+                fx::pod("demo", &format!("{name}-rs-1"), Some("only")),
+                "ReplicaSet",
+                &format!("{name}-rs"),
+            ));
+        }
+        let m = Models::build(&world);
+        let prov = &m.world.continents[0].provinces[0];
+        assert_eq!(prov.cities.len(), 6, "all six settled");
+
+        let mut seen: BTreeMap<(u16, u16), &str> = BTreeMap::new();
+        for c in &prov.cities {
+            if let Some(other) = seen.insert((c.x, c.y), c.r.name.as_str()) {
+                panic!("{} and {} share cell ({}, {})", other, c.r.name, c.x, c.y);
+            }
+        }
+        // Every one is reachable through the model's own hit-test.
+        for c in &prov.cities {
+            match m.world.region_at(c.x, c.y) {
+                Region::City(_, hit) => assert_eq!(
+                    hit.r.name, c.r.name,
+                    "clicking {}'s cell resolves to {}",
+                    c.r.name, hit.r.name
+                ),
+                other => panic!("{} does not hit-test as a city: {other:?}", c.r.name),
+            }
+        }
+    }
+
+    /// EVERY CONTINENT IS INSIDE THE DECLARED WIDTH.
+    ///
+    /// `continents` is name-sorted with UNZONED sunk last, while `x` comes from
+    /// the durable zone ordinal in first-observed order — so the vector's last
+    /// entry is not the eastmost. Land outside `width` is painted but sits
+    /// outside `bounds`, so it cannot be hovered, clicked or framed by `F`.
+    #[test]
+    fn the_world_is_wide_enough_for_its_eastmost_continent() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.node(fx::node("n0", None)); // sorts LAST as a zone, but takes a low ordinal
+        let m = Models::build(&world);
+
+        assert!(m.world.continents.len() >= 2, "need two continents");
+        for c in &m.world.continents {
+            assert!(
+                c.x + c.w <= m.world.width,
+                "continent {} spans to {} but width is {}",
+                c.zone,
+                c.x + c.w,
+                m.world.width
+            );
+        }
+    }
+
+    /// A CONTINENT'S NORTH EDGE COUNTS ITS RESERVED GROUND.
+    ///
+    /// `Continent.y` anchors the zone label and the coastline's row zero, so it
+    /// has to be the northmost thing the continent actually holds — and once a
+    /// vacated slot keeps its ground, that can be a GHOST sitting above every
+    /// live province. Deriving the edge from `provinces` alone puts the coast's
+    /// row window below the reserved land, which clamps the ghost's shoreline
+    /// into the cape taper and paints the label south of the continent's tip.
+    ///
+    /// (`y` was previously hardcoded to 1, which was true only while provinces
+    /// accumulated from row 1. It happens to be 1 again in today's pipeline,
+    /// because ordinal 0's slot is never released — but that is a consequence
+    /// to be derived, not an assumption to be baked in, and a later declared
+    /// compaction is exactly what would break it.)
+    #[test]
+    fn a_continents_north_edge_counts_ghost_ground_not_just_provinces() {
+        let all = a2_world(&[("a", "z-a"), ("b", "z-a"), ("c", "z-a")], &[]);
+        let m0 = Models::build(&all);
+
+        // The two lowest-ordinal nodes depart; only the southernmost survives.
+        let survivor = m0.world.continents[0]
+            .provinces
+            .iter()
+            .max_by_key(|p| p.y)
+            .expect("a province")
+            .tile
+            .name
+            .clone();
+        let fewer = a2_world(&[(survivor.as_str(), "z-a")], &[]);
+        let m1 = Models::build_with(&fewer, &NamespaceFilter::All, &m0.layout);
+
+        let cont = &m1.world.continents[0];
+        let live = cont
+            .provinces
+            .iter()
+            .map(|p| p.y)
+            .min()
+            .expect("a province");
+        let ghost = cont.ghosts.iter().map(|g| g.y).min().expect("ghosts");
+        assert!(
+            ghost < live,
+            "fixture must leave reserved ground NORTH of the survivor"
+        );
+        assert_eq!(cont.y, ghost, "the north edge ignores its reserved ground");
+    }
+
     /// Byte-for-byte determinism: the same observation twice is the same world.
+    ///
+    /// Compared through `Debug`, which walks the WHOLE structure — continents,
+    /// provinces, tiles, cities, coast markers, islands, extents and sources.
+    /// This test previously compared four numbers for two nodes while claiming
+    /// "byte for byte", so most of the world could have varied between builds
+    /// and it would still have passed.
     #[test]
     fn the_same_observation_builds_the_same_world_twice() {
-        let w = a2_world(&[("n1", "z-a"), ("n2", "z-b")], &[("demo", "app")]);
+        let w = a2_world(
+            &[("n1", "z-a"), ("n2", "z-b"), ("n3", "z-a")],
+            &[("demo", "app"), ("demo", "other"), ("infra", "thing")],
+        );
         let a = Models::build(&w).world;
         let b = Models::build(&w).world;
-        for n in ["n1", "n2"] {
-            assert_eq!(pos(&a, n), pos(&b, n));
-        }
-        assert_eq!(a.continents.len(), b.continents.len());
+        assert_eq!(
+            format!("{a:?}"),
+            format!("{b:?}"),
+            "the same observation built two different worlds"
+        );
+        // Guard the guard: an empty world would make the comparison vacuous.
+        assert!(a.continents.iter().any(|c| !c.provinces.is_empty()));
+        assert!(a.cities().count() >= 3);
     }
 
     /// A GHOST LEAVES A GAP. The province below a departed node must not slide
@@ -1076,6 +1428,23 @@ mod tests {
             assert_eq!((p.0, p.1), survivors[i], "{n} slid over the ghosts' ground");
         }
         assert_eq!(m1.layout.ghosts().count(), 2, "two ghosts retained");
+
+        // The reserved ground REACHES THE MAP. A retained slot that emits no
+        // geometry renders as open sea, so a departure reads as the continent
+        // losing a piece of itself rather than as land standing empty — the
+        // dominant visual effect measured on the churn fleet, and an acceptance
+        // criterion this previously claimed to meet while emitting nothing.
+        let cont = &m1.world.continents[0];
+        assert_eq!(cont.ghosts.len(), 2, "the vacated ground was not emitted");
+        for g in &cont.ghosts {
+            assert_eq!(g.x, cont.x, "ghost ground drifted off its continent");
+            assert!(
+                cont.provinces
+                    .iter()
+                    .all(|p| g.y >= p.y + p.h || p.y >= g.y + g.h),
+                "ghost ground overlaps a live province"
+            );
+        }
     }
 
     /// A surging refresh through the FULL builder: every surviving province keeps

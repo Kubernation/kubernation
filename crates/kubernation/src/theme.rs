@@ -284,6 +284,19 @@ pub fn unmeasured_pair() -> (Color, Color) {
 /// unmeasured fill at any zoom.
 pub const HATCH: Color = Color::new(0.62, 0.64, 0.70, 0.85);
 
+/// Ground a departed node still holds — reserved, not lost, not occupied.
+///
+/// Deliberately OUTSIDE the colour-blind funnel and outside the meaning
+/// palette: a ghost carries no severity, no pressure and no coverage, so it
+/// must not borrow a colour that does. A desaturated earth reads as bare land
+/// under every overlay, which is exactly what it is.
+pub fn ghost_land_pair() -> (Color, Color) {
+    (
+        Color::new(0.30, 0.30, 0.27, 1.0),
+        Color::new(0.34, 0.34, 0.31, 1.0),
+    )
+}
+
 pub fn idle_land_pair() -> (Color, Color) {
     (
         Color::new(0.34, 0.37, 0.34, 1.0),

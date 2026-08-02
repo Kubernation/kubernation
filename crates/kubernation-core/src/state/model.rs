@@ -2832,6 +2832,46 @@ mod tests {
         assert_eq!(src, PoolSource::Provider("cloud.google.com/gke-nodepool"));
     }
 
+    /// THE EXTENT CASCADE, off a real `Node`.
+    ///
+    /// `province_extent` (input → size class) was tested; this is the rung
+    /// SELECTOR that decides which input the province gets, and it was not —
+    /// so a node that reports capacity could have silently been sized as an
+    /// unmeasurable one, or the reverse, with every test still green.
+    #[test]
+    fn extent_input_prefers_capacity_then_instance_type_then_nothing() {
+        // Rung 1: the node reports its own memory.
+        let n = fx::node("measured", Some("z-a")); // 8Gi in the fixture
+        match node_extent_input(&n) {
+            ExtentInput::Capacity(b) => assert!(
+                (b - 8.0 * 1024.0 * 1024.0 * 1024.0).abs() < 1.0,
+                "expected 8Gi, got {b}"
+            ),
+            other => panic!("allocatable must win: {other:?}"),
+        }
+
+        // Rung 2: no allocatable, but the machine declares its type.
+        let mut typed = labelled("typed", &[(INSTANCE_TYPE_LABEL, "m5.xlarge")]);
+        typed.status.as_mut().unwrap().allocatable = None;
+        assert!(matches!(
+            node_extent_input(&typed),
+            ExtentInput::InstanceType(t) if t == "m5.xlarge"
+        ));
+
+        // Rung 3: neither. Unknown, so the province is MARKED rather than
+        // silently sized as though it had been measured.
+        let mut bare = fx::node("bare", Some("z-a"));
+        bare.status.as_mut().unwrap().allocatable = None;
+        assert!(matches!(node_extent_input(&bare), ExtentInput::Unknown));
+
+        // A node reporting ZERO memory is unmeasurable, not infinitely small —
+        // the same conflation v1.6.0 pinned for the ratio helpers.
+        let mut zero = fx::node("zero", Some("z-a"));
+        zero.status.as_mut().unwrap().allocatable =
+            Some(fx::quantities(&[("cpu", "4"), ("memory", "0")]));
+        assert!(matches!(node_extent_input(&zero), ExtentInput::Unknown));
+    }
+
     #[test]
     fn instance_type_is_the_portable_fallback_and_says_so() {
         let n = labelled("n", &[(INSTANCE_TYPE_LABEL, "m5.xlarge")]);

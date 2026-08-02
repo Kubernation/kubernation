@@ -3311,6 +3311,85 @@ what makes the interesting logic unit-testable without a cluster.
   `node_pool` itself warns about. Kept (it only fires where the alternative is one
   undifferentiated pool per zone) and flagged for the room rather than treated as
   agreed. 384 core + 87 GUI tests.
+- **A2 — wire the layout in** (2026-08-02, **v1.7.0**; from
+  `docs/kubernation-a2-wire-layout-guidance.md`, decomposition §4; report in
+  `docs/reports/a2-wire-layout.md`): `build_world` computes **no positions of its
+  own**. Province **y** comes from the slot ordinal × the largest extent class
+  (so a slot's ground never depends on its neighbours' size, and a ghost leaves
+  its stride empty); continent **x** from a **durable zone ordinal** carried with
+  the same carry/append/reserve discipline as slots (§2 said only "sort the
+  zones", which addresses just the *reorders* third of instability source 4 —
+  verified before touching anything that adding an alphabetically-first zone
+  moved every continent east of it); and **extent from node capacity**, quantised
+  into four classes with a declared, marked fallback chain (capacity → instance
+  type → default, `ExtentSource` on the province; the default is deliberately NOT
+  the smallest class, per the v1.6.0 unmeasurable discipline). §1's own suggested
+  wrapper absorbed 32 of 34 call sites — only `net.rs` changed, feeding last
+  tick's layout forward per world (`build_carrying`), dropped on a context switch.
+  **THE GATE — the phase that could kill Workstream A — is answered: the
+  provinces hold still, the cities do not, and cities are A3's charter.** One
+  long-lived session across a surging 30-node rolling refresh on the 100-node
+  churn fleet: **92.7% of the map pixel-identical, land/sea silhouette change
+  0.41%** (0.03% vacated + 0.38% taken); nearly all the rest is reserved ground
+  greying, not movement. **The first answer was wrong and is superseded**: that
+  flipbook took a frame per PROCESS, so every frame started from
+  `Layout::default()` and the carry — the mechanism the gate exists to judge —
+  was structurally invisible (delete it and the evidence is unchanged); the
+  before/after framings were not comparable (A2 tripled the stride, so the after
+  view contained no settlements, excluding the one axis A2 does not fix); and
+  "pixel-identical" was false. Hence the `--shot-seq`/`--shot-interval` dev flags
+  and `hack/churn/gate.sh`. **Adversarial review: 23 confirmed, ~6 distinct, one
+  CRITICAL.** (1) THE ROOT — `SlotKey` is `(zone, pool, ordinal)` and A1
+  allocates ordinals **per (zone, pool)**, but `province_y` read the ordinal
+  alone, so the Nth node of every pool in a zone landed on ONE cell: **42 of 100
+  churn-fleet nodes drawn underneath another** — invisible, unclickable,
+  `region_at` naming the wrong node, blast radius cascading the wrong node — on
+  any cluster with two nodepools in a zone (kind is single-pool, so the dev loop
+  could never surface it). Every A2 fixture was single-pool by construction
+  (`fx::node` sets no pool label), so the mutation floor could not reach it; hence
+  `fx::node_in_pool`. Fixed by making the **ordinal zone-wide**, so the collision
+  is unrepresentable rather than managed — the pool stays in the key as slot
+  identity (which vacancies a node may reclaim), not as a private numbering
+  space; pools therefore interleave positionally rather than banding, and visual
+  `region ← pool ∩ zone` grouping wants durable band ordinals of its own.
+  (2) THE PATTERN — **four consumers still encoded the old meaning of `y`**
+  (dense, accumulated, origin-at-row-1): `Coast::new`'s `h = Σ province heights`
+  (southern provinces clamped into the cape taper, their land hit-testing as
+  ocean); the CITY_MARGIN keep-out indexed into that stale window (settlements
+  drawn in open water while still tooltipping as a workload); `Continent.y = 1`;
+  and `WorldModel.width` from `continents.last()` (real land outside `bounds` —
+  painted but un-hoverable, un-clickable, never framed by `F`). Not one defect
+  was in the new code's own logic. (3) The city clamp `(y+1+2i).min(y+h-1)`
+  stacked cities onto one cell once `h` stopped growing to fit them — the
+  ordinary case on a ~32 GiB node — leaving a workload with no clickable cell
+  anywhere; placement now FINDS a free cell (`city_cell`), and an **exact cell
+  match outranks a neighbour's forgiveness ring** (the ring is a convenience for
+  empty ground, never a claim over occupied ground). (4) `province_y`'s
+  `map_or(0, …)` fabricated a coordinate for a node `assign_layout` had
+  deliberately left unplaced — standing question 2, third round running — and now
+  expresses unknown. (5) **Ghosts did not render**, though §4/§7 require it and
+  the first report claimed it: `ghosts()` had no consumer outside tests and a
+  vacated slot rendered as OPEN SEA. The gate made this material — 7% of the map
+  turned to ocean across one refresh, the single largest reason it did not look
+  still — so `Continent.ghosts` (a `GhostGround` carrying position only,
+  deliberately NOT a `Province`: a ghost has no node, so no health/pressure/
+  cities, and a stand-in `NodeTile` would fabricate exactly the facts the slot no
+  longer has) is painted plain in `theme::ghost_land_pair`, outside the meaning
+  palette and outside the colour-blind funnel. `land → ocean` fell 7.1% → 0.03%.
+  Ageing/ruins/succession stay A5's. (6) **Self-inflicted**: deriving
+  `Continent.y` from the topmost LIVE province made the coast noise — keyed on
+  the offset from that edge — re-roll every shoreline in the zone when the
+  northernmost node departed; the noise is now keyed on the **absolute world
+  row**, so only the province inheriting the north edge gains the cape taper.
+  Three test gaps closed: `node_extent_input` (the whole selector was untested —
+  `province_extent` being tested disguised it), the layout carry itself (now
+  `net::build_carrying`, named so it can be asserted), and the "byte for byte"
+  purity test (compared four numbers for two nodes; now the whole structure via
+  `Debug`). 399 core + 90 GUI tests; gui-smoke 51. **Deferred:** A3's city slots
+  (cities still move — measured, declared, out of scope); declared compaction to
+  reclaim ghost ground, which otherwise accumulates for the life of a session
+  (A4) and is a lot of grey after a refresh; instance-type-as-pool-fallback still
+  open from A1.
 
 ## The pair (hot/warm)
 
