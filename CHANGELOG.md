@@ -8,6 +8,20 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **A node that does not report its capacity no longer reads as an idle node.**
+  `node_request_ratios` and `node_usage_ratios` fabricated a `0.0` ratio when
+  `status.allocatable` was absent, so a node whose load is *unknown* rendered
+  identically to one that is genuinely empty — cpu 0% / mem 0% gauges, calm
+  terrain, no concern. Both helpers now return `Option` **per resource** (cpu
+  and memory are separate keys; one can be present without the other), and the
+  absence is carried through to the map: such a province is **hatched** — the
+  cartographic idiom for *no data* — rather than tinted somewhere on the
+  pressure ramp, its gauges read "unknown" instead of 0%, its strain reads
+  "unknown" instead of "calm", and it raises an Info concern saying its capacity
+  was not reported. The one caller that legitimately defaults (cost allocation,
+  which feeds an immediate no-capacity guard) now says so inline.
+
 ### Added
 - **Churn harness (`hack/churn/`) — a reproducible 100-node fleet that can be
   made to churn on command.** Test asset only; no production code, no

@@ -3168,6 +3168,49 @@ what makes the interesting logic unit-testable without a cluster.
   at all**, so those fixture requirements are checkable only structurally until
   A1 lands. §6's baseline met: all six scenarios run and **zero panics**.
 
+- **Unmeasurable capacity must not read as idle** (2026-08-02, unversioned-pending;
+  from `docs/kubernation-unmeasurable-capacity-guidance.md`, written against the
+  A-pre finding): `node_allocatable` returns `Option` and its doc said callers
+  must NOT fabricate a default — but `node_request_ratios` and
+  `node_usage_ratios` both did (`unwrap_or(0.0)`), and the former's own doc
+  *documented* the fabrication ("Missing allocatable yields 0"). **Two doc
+  comments in one file contradicted each other**, and the observable result,
+  reproduced on the churn fleet, was that a node reporting no capacity rendered
+  **cpu 0% / mem 0%** — pixel-identical to an idle node. The unearned all-clear
+  this codebase refuses everywhere else (`SubstrateReport`'s terrain fallback,
+  A0's `usage: Option`, `CostBasis` degrading to Requests). **The correct pattern
+  already existed**: `cost_report` branches on `cap_w <= 0.0` and records an
+  honest all-idle node "so it isn't silently dropped" — so this propagates a
+  design rather than inventing one. **Fix:** both helpers return
+  `(Option<f64>, Option<f64>)` **per resource** (cpu and memory are separate
+  allocatable keys; one can be present without the other), `NodeTile`'s request
+  pair and the derived `cpu_ratio`/`mem_ratio` become `Option`, and the
+  type-checker then forced every consumer to confront unknown — which is the
+  point, and is why no sentinel (`-1.0`, NaN) was used. **The two `None`s mean
+  different things and both are documented at the fields:** a `None` *usage*
+  ratio is missing telemetry (no metrics-server), a `None` *request* ratio is a
+  node not reporting its own capacity — rarer and more serious, since a healthy
+  node always publishes it. `saturate_node` now OMITS the cpu/mem dims when
+  unknown, exactly as it already omitted pod-count without `allocatable["pods"]`;
+  health no longer counts an unknown ratio as pressure (`is_some_and`), and a
+  node with no ratio at all raises an **Info** concern ("capacity not reported —
+  load unknown"). **Render (§3's decision):** hatching, not a colour — texture
+  says *no data* where any hue is read as a value on the ramp, and it is
+  register-independent. `draw::province_unmeasured` gates it to the
+  **ratio-derived overlays only** (Pressure, Saturation): Terrain still knows the
+  node's health, Cost has its own unpriced path, and Namespace/Replicas/Walls/
+  Substrate never touch allocatable. The province window's gauges hatch and read
+  "unknown"; the SELECTION box and the window's strain line both read from
+  `saturation.dims` so the map, the tooltip and the panel cannot disagree.
+  **A0 correction:** `cpu_request_ratio`'s doc claimed "always present … never
+  `Option`" — true of every healthy node, false for the case the churn fleet
+  reproduces on demand. **All eight §0 claims verified TRUE** (third round
+  running), including claim 5's "the correct pattern already exists". The three
+  fabrication paths are mutation-verified. Verified live on the churn fleet's
+  allocatable-less node after first confirming the fixture really produces the
+  case (§0 claim 8): the province renders as slate cross-hatching among green
+  measured land, unmistakably "no data" rather than another point on the ramp.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

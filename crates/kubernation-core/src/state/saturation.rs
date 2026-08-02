@@ -155,32 +155,42 @@ impl NodeSaturation {
 }
 
 /// PURE constructor. `cpu_ratio`/`mem_ratio` are the already-computed node ratios
-/// (live-usage or requests — the caller knows which); `nonterminal_pods` is the
+/// (live-usage or requests — the caller knows which), each `None` when the node
+/// reports no allocatable for that resource, in which case that dimension is
+/// OMITTED rather than assumed calm; `nonterminal_pods` is the
 /// count of scheduled non-terminal pods on the node; `alloc_pods` is
 /// `allocatable["pods"]` (None ⇒ the pod-count dimension is OMITTED, never
 /// assumed); `abnormal` is the node's pressure-condition short names ("Disk",
 /// "Mem", "PID"; "Net" is ignored — not a saturation signal).
 pub fn saturate_node(
-    cpu_ratio: f64,
-    mem_ratio: f64,
+    cpu_ratio: Option<f64>,
+    mem_ratio: Option<f64>,
     nonterminal_pods: u32,
     alloc_pods: Option<f64>,
     abnormal: &[&str],
 ) -> NodeSaturation {
     let mut dims = Vec::new();
 
-    dims.push(SatDim {
-        kind: SatDimKind::Cpu,
-        ratio: Some(cpu_ratio),
-        level: SatLevel::from_ratio(cpu_ratio),
-        label: format!("cpu {}%", pct(cpu_ratio)),
-    });
-    dims.push(SatDim {
-        kind: SatDimKind::Mem,
-        ratio: Some(mem_ratio),
-        level: SatLevel::from_ratio(mem_ratio),
-        label: format!("mem {}%", pct(mem_ratio)),
-    });
+    // cpu/mem — OMITTED when the node reports no allocatable for that resource,
+    // exactly as pod-count already is below. A fabricated 0% would make an
+    // unmeasurable node read `strain: calm`, which is the one thing this
+    // dimension must never say about a node it cannot measure.
+    if let Some(r) = cpu_ratio {
+        dims.push(SatDim {
+            kind: SatDimKind::Cpu,
+            ratio: Some(r),
+            level: SatLevel::from_ratio(r),
+            label: format!("cpu {}%", pct(r)),
+        });
+    }
+    if let Some(r) = mem_ratio {
+        dims.push(SatDim {
+            kind: SatDimKind::Mem,
+            ratio: Some(r),
+            level: SatLevel::from_ratio(r),
+            label: format!("mem {}%", pct(r)),
+        });
+    }
 
     // Pod-count — omitted entirely when we can't honestly compute it.
     if let Some(cap) = alloc_pods.filter(|c| *c > 0.0) {
@@ -224,7 +234,7 @@ mod tests {
 
     #[test]
     fn cpu_bound_node_is_high_via_cpu() {
-        let s = saturate_node(0.95, 0.30, 10, Some(110.0), &[]);
+        let s = saturate_node(Some(0.95), Some(0.30), 10, Some(110.0), &[]);
         assert_eq!(s.worst, SatLevel::High);
         assert_eq!(s.worst_dim().unwrap().0, SatDimKind::Cpu);
         // pod-count present but calm.
@@ -233,7 +243,7 @@ mod tests {
 
     #[test]
     fn pod_bound_node_surfaces_pods_with_calm_cpu_mem() {
-        let s = saturate_node(0.20, 0.30, 108, Some(110.0), &[]);
+        let s = saturate_node(Some(0.20), Some(0.30), 108, Some(110.0), &[]);
         assert_eq!(s.worst, SatLevel::High, "108/110 is past SAT_PODS_HIGH");
         assert_eq!(s.worst_dim().unwrap().0, SatDimKind::Pods);
         let pods = s.dims.iter().find(|d| d.kind == SatDimKind::Pods).unwrap();
@@ -243,7 +253,7 @@ mod tests {
     #[test]
     fn pod_dim_elevated_band() {
         // 95/110 = 0.863 → Elevated (>=0.85, <0.95).
-        let s = saturate_node(0.10, 0.10, 95, Some(110.0), &[]);
+        let s = saturate_node(Some(0.10), Some(0.10), 95, Some(110.0), &[]);
         let pods = s.dims.iter().find(|d| d.kind == SatDimKind::Pods).unwrap();
         assert_eq!(pods.level, SatLevel::Elevated);
         assert_eq!(s.worst, SatLevel::Elevated);
@@ -251,7 +261,7 @@ mod tests {
 
     #[test]
     fn disk_pressure_forces_high_with_no_ratio() {
-        let s = saturate_node(0.10, 0.10, 5, Some(110.0), &["Disk"]);
+        let s = saturate_node(Some(0.10), Some(0.10), 5, Some(110.0), &["Disk"]);
         assert_eq!(s.worst, SatLevel::High, "the kubelet's own verdict pegs it");
         let d = s
             .dims
@@ -269,7 +279,7 @@ mod tests {
 
     #[test]
     fn alloc_pods_absent_omits_the_pod_dimension() {
-        let s = saturate_node(0.50, 0.50, 200, None, &[]);
+        let s = saturate_node(Some(0.50), Some(0.50), 200, None, &[]);
         assert!(s.dims.iter().all(|d| d.kind != SatDimKind::Pods));
         assert_eq!(s.pod_ratio(), None);
         // cpu/mem still tint.
@@ -279,20 +289,20 @@ mod tests {
 
     #[test]
     fn alloc_pods_zero_is_treated_as_absent() {
-        let s = saturate_node(0.1, 0.1, 3, Some(0.0), &[]);
+        let s = saturate_node(Some(0.1), Some(0.1), 3, Some(0.0), &[]);
         assert!(s.dims.iter().all(|d| d.kind != SatDimKind::Pods));
     }
 
     #[test]
     fn net_condition_is_not_a_saturation_signal() {
-        let s = saturate_node(0.1, 0.1, 3, Some(110.0), &["Net"]);
+        let s = saturate_node(Some(0.1), Some(0.1), 3, Some(110.0), &["Net"]);
         assert!(s.dims.iter().all(|d| !d.kind.is_condition()));
         assert_eq!(s.worst, SatLevel::Calm);
     }
 
     #[test]
     fn all_calm_node_reads_calm() {
-        let s = saturate_node(0.2, 0.3, 12, Some(110.0), &[]);
+        let s = saturate_node(Some(0.2), Some(0.3), 12, Some(110.0), &[]);
         assert_eq!(s.worst, SatLevel::Calm);
         assert_eq!(s.worst_level(), SatLevel::Calm);
     }
@@ -302,7 +312,7 @@ mod tests {
         // cpu 0.92 → High; pods 102/110 = 0.927 → Elevated (tighter buckets) yet
         // a HIGHER raw ratio. worst_dim must name the High dim (cpu), not pods,
         // so it can never disagree with the overlay tint / worst_level.
-        let s = saturate_node(0.92, 0.30, 102, Some(110.0), &[]);
+        let s = saturate_node(Some(0.92), Some(0.30), 102, Some(110.0), &[]);
         assert_eq!(s.worst, SatLevel::High);
         let (kind, _) = s.worst_dim().unwrap();
         assert_eq!(kind, SatDimKind::Cpu);

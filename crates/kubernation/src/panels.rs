@@ -377,6 +377,15 @@ pub fn substrate_gap_lines(missing: &[String], report_has_data: bool) -> Vec<(St
 }
 
 pub fn saturation_lines(sat: &NodeSaturation) -> Vec<(String, Color)> {
+    // No dimensions at all ⇒ the node reports no allocatable, so nothing about
+    // its strain is computable. "calm" would be a claim we cannot make; this is
+    // the SELECTION twin of the map's hatching.
+    if sat.dims.is_empty() {
+        return vec![(
+            "strain: unknown - node reports no capacity".into(),
+            STONE_WARN,
+        )];
+    }
     let ink = |l: SatLevel| match l {
         SatLevel::Calm => STONE_INK_DIM,
         SatLevel::Elevated => STONE_WARN,
@@ -1417,7 +1426,7 @@ mod tests {
         use kubernation_core::state::saturation::saturate_node;
         // A pod-bound + DiskPressure node: the binding dims are named, the
         // condition is "(pegged)", and calm cpu/mem are omitted.
-        let sat = saturate_node(0.20, 0.30, 108, Some(110.0), &["Disk"]);
+        let sat = saturate_node(Some(0.20), Some(0.30), 108, Some(110.0), &["Disk"]);
         let lines = saturation_lines(&sat);
         let joined: String = lines
             .iter()
@@ -1437,7 +1446,7 @@ mod tests {
         assert!(lines.iter().any(|(_, c)| *c == STONE_CRIT));
 
         // A fully-calm node yields one calm line.
-        let calm = saturate_node(0.2, 0.3, 10, Some(110.0), &[]);
+        let calm = saturate_node(Some(0.2), Some(0.3), 10, Some(110.0), &[]);
         let cl = saturation_lines(&calm);
         assert_eq!(cl.len(), 1);
         assert!(cl[0].0.contains("calm"));

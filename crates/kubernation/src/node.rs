@@ -194,13 +194,13 @@ pub fn draw_node(
             Rect::new(b.x + 40.0, y, bw, sh),
             &detail.cpu_history,
             1.0,
-            bucket_color(t.cpu_ratio),
+            bucket_color(t.cpu_ratio.unwrap_or(0.0)),
         );
         draw_sparkline(
             Rect::new(b.x + 380.0, y, bw, sh),
             &detail.mem_history,
             1.0,
-            bucket_color(t.mem_ratio),
+            bucket_color(t.mem_ratio.unwrap_or(0.0)),
         );
         y += sh + 4.0;
     }
@@ -210,14 +210,26 @@ pub fn draw_node(
     // the kubelet conditions the "pressure" flags). Calm reads dim.
     {
         let sat = &t.saturation;
-        let (word, col) = match sat.worst_level() {
-            SatLevel::Calm => ("calm", DIM),
-            SatLevel::Elevated => ("elevated", WARN),
-            SatLevel::High => ("high", CRIT),
-        };
-        let mut txt = format!("strain: {word}");
-        if let Some(lbl) = sat.pod_label() {
-            txt.push_str(&format!(" · {lbl}"));
+        // No dimensions at all ⇒ the node reports no allocatable, so its strain
+        // is not computable. "calm" would be a claim we cannot support — the
+        // same reason the map hatches this province and the SELECTION box says
+        // unknown. All three read from `dims`, so they cannot disagree.
+        let mut txt;
+        let col;
+        if sat.dims.is_empty() {
+            txt = "strain: unknown - node reports no capacity".to_string();
+            col = WARN;
+        } else {
+            let (word, c) = match sat.worst_level() {
+                SatLevel::Calm => ("calm", DIM),
+                SatLevel::Elevated => ("elevated", WARN),
+                SatLevel::High => ("high", CRIT),
+            };
+            txt = format!("strain: {word}");
+            col = c;
+            if let Some(lbl) = sat.pod_label() {
+                txt.push_str(&format!(" · {lbl}"));
+            }
         }
         text(txt.as_str(), b.x, y + 12.0, 13.0, col);
         y += 18.0;
@@ -607,19 +619,48 @@ fn bucket_color(ratio: f64) -> Color {
     }
 }
 
-fn ratio_gauge(x: f32, y: f32, w: f32, label: &str, ratio: f64) {
+/// A capacity gauge. `None` means the node reports no allocatable for that
+/// resource, so there is no ratio to draw: the bar renders EMPTY-AND-HATCHED
+/// with the readout "unknown", never `0%`. A 0% bar is indistinguishable from an
+/// idle node, which is the whole defect this fixes.
+fn ratio_gauge(x: f32, y: f32, w: f32, label: &str, ratio: Option<f64>) {
     text(label, x, y + 11.0, 13.0, DIM);
     let bx = x + 40.0;
     let bw = w - 40.0;
     let bh = 12.0;
     let by = y + 1.0;
-    let col = bucket_color(ratio);
     draw_rectangle(bx, by, bw, bh, darker(PANEL, 0.6));
-    draw_rectangle(bx, by, bw * (ratio.clamp(0.0, 1.0) as f32), bh, col);
+    match ratio {
+        Some(r) => {
+            draw_rectangle(bx, by, bw * (r.clamp(0.0, 1.0) as f32), bh, bucket_color(r));
+        }
+        None => hatch_rect(bx, by, bw, bh, DIM),
+    }
     draw_rectangle_lines(bx, by, bw, bh, 1.0, darker(PARCHMENT, 0.6));
-    let n = format!("{:.0}%", ratio * 100.0);
+    let (n, col) = match ratio {
+        Some(r) => (format!("{:.0}%", r * 100.0), INK),
+        None => ("unknown".to_string(), WARN),
+    };
     let m = text_size(&n, 12.0);
-    text(&n, bx + bw - m.width - 4.0, y + 11.0, 12.0, INK);
+    text(&n, bx + bw - m.width - 4.0, y + 11.0, 12.0, col);
+}
+
+/// Diagonal hatching — the cartographic idiom for NO DATA. Texture rather than
+/// hue, so it composes with whatever colour the thing would otherwise be and
+/// cannot be mistaken for a value on a ramp.
+fn hatch_rect(x: f32, y: f32, w: f32, h: f32, col: Color) {
+    // Lines of constant (px-x)+(py-y) = o, clipped to the rect: a 45-degree
+    // hatch running top-right to bottom-left.
+    let step = 6.0;
+    let mut o = step;
+    while o < w + h {
+        let x0 = x + o.min(w);
+        let y0 = y + (o - o.min(w));
+        let x1 = x + (o - o.min(h));
+        let y1 = y + o.min(h);
+        draw_line(x0, y0, x1, y1, 1.0, col);
+        o += step;
+    }
 }
 
 #[cfg(test)]

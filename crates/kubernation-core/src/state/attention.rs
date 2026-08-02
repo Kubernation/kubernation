@@ -186,6 +186,15 @@ impl Agg {
     }
 }
 
+/// Render a possibly-unknown ratio as a percentage. `None` is "unknown", never
+/// `0%` — the whole point of the ratios being optional.
+fn pct_or_unknown(r: Option<f64>) -> String {
+    match r {
+        Some(v) => format!("{:.0}%", v * 100.0),
+        None => "unknown".to_string(),
+    }
+}
+
 pub fn build(
     world: &ObservedWorld,
     map: &MapModel,
@@ -421,13 +430,18 @@ pub fn build(
                     Severity::Warning,
                     format!("{} pressure", tile.abnormal.join("/")),
                 )
-            } else if tile.cpu_ratio >= PRESSURE_HIGH || tile.mem_ratio >= PRESSURE_HIGH {
+            // An UNKNOWN ratio is not pressure: a node reporting no allocatable
+            // gives `None`, and the old fabricated 0.0 made it silently pass
+            // this test as if it were idle.
+            } else if tile.cpu_ratio.is_some_and(|r| r >= PRESSURE_HIGH)
+                || tile.mem_ratio.is_some_and(|r| r >= PRESSURE_HIGH)
+            {
                 (
                     Severity::Warning,
                     format!(
-                        "requests cpu {:.0}% mem {:.0}%",
-                        tile.cpu_ratio * 100.0,
-                        tile.mem_ratio * 100.0
+                        "requests cpu {} mem {}",
+                        pct_or_unknown(tile.cpu_ratio),
+                        pct_or_unknown(tile.mem_ratio)
                     ),
                 )
             } else if tile
@@ -444,6 +458,14 @@ pub fn build(
                         tile.saturation.pod_label().unwrap_or("pods")
                     ),
                 )
+            } else if tile.cpu_ratio.is_none() && tile.mem_ratio.is_none() {
+                // The node publishes no allocatable, so nothing ratio-derived
+                // can be said about it. Info, not Warning: it is usually a node
+                // mid-registration, and the map already hatches it.
+                (
+                    Severity::Info,
+                    "capacity not reported — load unknown".to_string(),
+                )
             } else if tile.cordoned {
                 (Severity::Info, "cordoned".to_string())
             } else {
@@ -455,11 +477,11 @@ pub fn build(
                 severity,
                 title: format!("node {} — {headline}", tile.name),
                 detail: format!(
-                    "zone {} · {} pods · cpu {:.0}% mem {:.0}%",
+                    "zone {} · {} pods · cpu {} mem {}",
                     tile.zone,
                     tile.pods.len(),
-                    tile.cpu_ratio * 100.0,
-                    tile.mem_ratio * 100.0
+                    pct_or_unknown(tile.cpu_ratio),
+                    pct_or_unknown(tile.mem_ratio)
                 ),
                 target: Target::Node(tile.name.clone()),
                 probe: None,

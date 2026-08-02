@@ -332,34 +332,45 @@ pub struct NodeTile {
     /// `metric_source` says which.
     ///
     /// **Derived** from the two pairs below, in `build_node_tile` and nowhere
-    /// else — usage when it exists, requests otherwise. Retained as a field
+    /// else — usage when it exists, requests otherwise, and `None` when the node
+    /// reports no allocatable at all (see those fields). Retained as a field
     /// rather than an accessor purely so existing consumers keep compiling
     /// (Rust has no property syntax, so a method would change every call site);
     /// converting them is a separate mechanical sweep. Prefer the explicit pair
     /// in new code: this one's *meaning* changes with `metric_source`, which is
     /// exactly what makes a requests-versus-usage comparison inexpressible.
-    pub cpu_ratio: f64,
-    pub mem_ratio: f64,
+    pub cpu_ratio: Option<f64>,
+    pub mem_ratio: Option<f64>,
     /// Which of the two pairs below `cpu_ratio`/`mem_ratio` were derived from.
+    /// Meaningful only where that ratio is `Some`; a node reporting no
+    /// allocatable has no source because it has no ratio.
     pub metric_source: MetricSource,
 
-    /// Sum of pod requests ÷ allocatable. **Always present** — it is
-    /// scheduler-visible and needs no metrics-server, so it is never `Option`.
-    /// This is what determines schedulability: a node at 1.0 accepts nothing
-    /// more, whatever it is actually using. Filled from `node_request_ratios`,
-    /// which sums the LITERAL request (see [`sum_pod_requests`]).
-    pub cpu_request_ratio: f64,
-    pub mem_request_ratio: f64,
+    /// Sum of pod requests ÷ allocatable. This is what determines
+    /// schedulability: a node at 1.0 accepts nothing more, whatever it is
+    /// actually using. Filled from `node_request_ratios`, which sums the LITERAL
+    /// request (see [`sum_pod_requests`]).
+    ///
+    /// `None` means **the node does not report that allocatable key** — and note
+    /// this is a DIFFERENT and more serious `None` than the usage pair's below.
+    /// Usage is best-effort telemetry that a cluster without metrics-server
+    /// simply lacks; capacity is something a healthy node always publishes, so a
+    /// node missing it is malfunctioning or mid-registration, and that is worth
+    /// seeing rather than rendering as an empty node.
+    ///
+    /// (A0 documented this field as "always present … never `Option`". That was
+    /// wrong: it holds for every healthy node, but not for the case the churn
+    /// fleet reproduces on demand.)
+    pub cpu_request_ratio: Option<f64>,
+    pub mem_request_ratio: Option<f64>,
     /// Live usage ÷ allocatable. `None` when metrics-server did not report this
     /// node, rather than `Some(0.0)` — an unmeasured node is unknown, not idle.
     /// This is what determines OOM risk, which requests cannot show: a node can
     /// be fully requested and idle, or barely requested and about to OOM.
     ///
-    /// Precise about what `Some(0.0)` means: it is a genuine "used ~nothing"
-    /// EXCEPT on a node whose `allocatable` is missing, where `node_usage_ratios`
-    /// yields 0.0 rather than an error. That divide-guard predates this field and
-    /// is shared with `cpu_ratio`, so tightening it would change existing
-    /// behaviour; a real node always publishes allocatable cpu/memory.
+    /// `Some(0.0)` now means a genuine "used ~nothing": a node whose
+    /// `allocatable` is missing yields `None` here too, so zero is never a
+    /// stand-in for unknown.
     pub cpu_usage_ratio: Option<f64>,
     pub mem_usage_ratio: Option<f64>,
     pub pods: Vec<PodGlyph>,
@@ -500,7 +511,11 @@ fn sum_pod_resources(pod: &Pod, limits: bool) -> (f64, f64) {
 
 /// A node `status.allocatable` quantity by key (e.g. "cpu", "memory", "pods",
 /// "ephemeral-storage") in canonical units (cores / bytes / plain count).
-/// `None` when the key is absent — callers must NOT fabricate a default.
+/// `None` when the key is absent — callers must NOT fabricate a default. A
+/// fabricated zero makes an unmeasurable node indistinguishable from an idle
+/// one; see [`node_request_ratios`]. The single sanctioned exception is
+/// `cost::cost_report`, which defaults only to feed an immediate
+/// "no capacity" guard and says so inline.
 pub fn node_allocatable(node: &Node, key: &str) -> Option<f64> {
     node.status
         .as_ref()
@@ -518,11 +533,20 @@ pub(crate) fn pod_terminal(pod: &Pod) -> bool {
     )
 }
 
-/// Sum of CPU/memory *requests* of non-terminal pods on this node, divided
-/// by allocatable. Missing allocatable yields 0 (gauge renders empty).
-pub fn node_request_ratios(node: &Node, pods: &[&Pod]) -> (f64, f64) {
-    let alloc_cpu = node_allocatable(node, "cpu").unwrap_or(0.0);
-    let alloc_mem = node_allocatable(node, "memory").unwrap_or(0.0);
+/// Sum of CPU/memory *requests* of non-terminal pods on this node, divided by
+/// allocatable — **`None` per resource when the node does not report that
+/// allocatable key**.
+///
+/// The ratio is UNKNOWN, not zero. A zero is indistinguishable from an idle
+/// node, which is the unearned all-clear `cost_report` already refuses at its
+/// `cap_w <= 0.0` branch. This helper used to fabricate one (`unwrap_or(0.0)`),
+/// and its own doc comment used to document the fabrication while
+/// `node_allocatable`'s said callers must not — two contradicting comments in
+/// one file. Per-resource because cpu and memory are separate keys and one can
+/// be present without the other.
+pub fn node_request_ratios(node: &Node, pods: &[&Pod]) -> (Option<f64>, Option<f64>) {
+    let alloc_cpu = node_allocatable(node, "cpu");
+    let alloc_mem = node_allocatable(node, "memory");
 
     let (mut cpu, mut mem) = (0.0, 0.0);
     for pod in pods {
@@ -533,15 +557,18 @@ pub fn node_request_ratios(node: &Node, pods: &[&Pod]) -> (f64, f64) {
         cpu += c;
         mem += m;
     }
-    let ratio = |used: f64, alloc: f64| if alloc > 0.0 { used / alloc } else { 0.0 };
+    // A zero/absent denominator yields None, never 0.0.
+    let ratio = |used: f64, alloc: Option<f64>| alloc.filter(|a| *a > 0.0).map(|a| used / a);
     (ratio(cpu, alloc_cpu), ratio(mem, alloc_mem))
 }
 
 /// Live usage ÷ allocatable for a node (cores and bytes already canonical).
-fn node_usage_ratios(node: &Node, usage: NodeUsage) -> (f64, f64) {
-    let alloc_cpu = node_allocatable(node, "cpu").unwrap_or(0.0);
-    let alloc_mem = node_allocatable(node, "memory").unwrap_or(0.0);
-    let ratio = |used: f64, alloc: f64| if alloc > 0.0 { used / alloc } else { 0.0 };
+/// `None` per resource when that allocatable key is absent — see
+/// [`node_request_ratios`] for why this is not zero.
+fn node_usage_ratios(node: &Node, usage: NodeUsage) -> (Option<f64>, Option<f64>) {
+    let alloc_cpu = node_allocatable(node, "cpu");
+    let alloc_mem = node_allocatable(node, "memory");
+    let ratio = |used: f64, alloc: Option<f64>| alloc.filter(|a| *a > 0.0).map(|a| used / a);
     (ratio(usage.cpu, alloc_cpu), ratio(usage.mem, alloc_mem))
 }
 
@@ -583,11 +610,10 @@ pub fn build_node_tile(
     // requests-versus-usage comparison inexpressible.
     let (cpu_request_ratio, mem_request_ratio) = node_request_ratios(node, pods_on_node);
     let (cpu_usage_ratio, mem_usage_ratio) = match usage {
-        Some(u) => {
-            let (c, m) = node_usage_ratios(node, u);
-            (Some(c), Some(m))
-        }
-        // None, not Some(0.0) — an unmeasured node is unknown, not idle.
+        // The helper is per-resource optional now, so a node WITH a usage sample
+        // but no allocatable still yields None — unknown, not idle.
+        Some(u) => node_usage_ratios(node, u),
+        // No metrics sample for this node at all.
         None => (None, None),
     };
     // The legacy polymorphic pair, derived HERE and only here so it cannot drift
@@ -595,7 +621,7 @@ pub fn build_node_tile(
     // metrics-server reported, requests otherwise, with `metric_source` saying
     // which — so every existing consumer reads what it read before.
     let (cpu_ratio, mem_ratio, metric_source) = match (cpu_usage_ratio, mem_usage_ratio) {
-        (Some(c), Some(m)) => (c, m, MetricSource::Usage),
+        (Some(c), Some(m)) => (Some(c), Some(m), MetricSource::Usage),
         _ => (cpu_request_ratio, mem_request_ratio, MetricSource::Requests),
     };
 
@@ -603,7 +629,13 @@ pub fn build_node_tile(
         NodeHealth::NotReady
     } else if cordoned {
         NodeHealth::Cordoned
-    } else if !abnormal.is_empty() || cpu_ratio >= PRESSURE_HIGH || mem_ratio >= PRESSURE_HIGH {
+    // `is_some_and`: an unknown ratio is not pressure. We do not know the node is
+    // loaded — and equally do not know it is idle, which the fabricated 0.0
+    // quietly asserted.
+    } else if !abnormal.is_empty()
+        || cpu_ratio.is_some_and(|r| r >= PRESSURE_HIGH)
+        || mem_ratio.is_some_and(|r| r >= PRESSURE_HIGH)
+    {
         NodeHealth::Pressure
     } else {
         NodeHealth::Healthy
@@ -1965,14 +1997,14 @@ mod tests {
             &|_, _| None,
         );
         assert!(
-            (tile.cpu_ratio - 0.5).abs() < 1e-9,
+            (tile.cpu_ratio.expect("cpu ratio") - 0.5).abs() < 1e-9,
             "cpu {}",
-            tile.cpu_ratio
+            tile.cpu_ratio.unwrap_or(f64::NAN)
         );
         assert!(
-            (tile.mem_ratio - 0.5).abs() < 1e-9,
+            (tile.mem_ratio.expect("mem ratio") - 0.5).abs() < 1e-9,
             "mem {}",
-            tile.mem_ratio
+            tile.mem_ratio.unwrap_or(f64::NAN)
         );
         assert_eq!(tile.pods.len(), 3); // glyphs still show all pods
         assert_eq!(tile.health, NodeHealth::Healthy);
@@ -1990,14 +2022,14 @@ mod tests {
         let tile = build_node_tile(&n, &[], &OwnerIndex::default(), Some(usage), &|_, _| None);
         assert_eq!(tile.metric_source, MetricSource::Usage);
         assert!(
-            (tile.cpu_ratio - 0.25).abs() < 1e-9,
+            (tile.cpu_ratio.expect("cpu ratio") - 0.25).abs() < 1e-9,
             "cpu {}",
-            tile.cpu_ratio
+            tile.cpu_ratio.unwrap_or(f64::NAN)
         );
         assert!(
-            (tile.mem_ratio - 0.25).abs() < 1e-9,
+            (tile.mem_ratio.expect("mem ratio") - 0.25).abs() < 1e-9,
             "mem {}",
-            tile.mem_ratio
+            tile.mem_ratio.unwrap_or(f64::NAN)
         );
         // No usage → request-based pressure and source Requests.
         let bare = build_node_tile(&n, &[], &OwnerIndex::default(), None, &|_, _| None);
@@ -2217,16 +2249,16 @@ mod tests {
         }
         let tile = a0_tile(&world);
         assert!(
-            (tile.cpu_request_ratio - 0.25).abs() < 1e-9,
+            (tile.cpu_request_ratio.expect("cpu request ratio") - 0.25).abs() < 1e-9,
             "1 of 4 cores requested, computed even though metrics are up: {}",
-            tile.cpu_request_ratio
+            tile.cpu_request_ratio.unwrap_or(f64::NAN)
         );
         assert!(
             (tile.cpu_usage_ratio.expect("usage") - 0.5).abs() < 1e-9,
             "2 of 4 cores used"
         );
         // The 2×2 is now expressible: usage exceeds requests on this node.
-        assert!(tile.cpu_usage_ratio.unwrap() > tile.cpu_request_ratio);
+        assert!(tile.cpu_usage_ratio.unwrap() > tile.cpu_request_ratio.unwrap());
     }
 
     /// MIGRATION SAFETY: the retained polymorphic pair must return exactly what
@@ -2254,8 +2286,8 @@ mod tests {
         }
         let t = a0_tile(&world);
         assert_eq!(t.metric_source, MetricSource::Usage);
-        assert_eq!(t.cpu_ratio, t.cpu_usage_ratio.unwrap());
-        assert_eq!(t.mem_ratio, t.mem_usage_ratio.unwrap());
+        assert_eq!(t.cpu_ratio, t.cpu_usage_ratio);
+        assert_eq!(t.mem_ratio, t.mem_usage_ratio);
 
         // Usage absent ⇒ cpu_ratio IS the request ratio.
         let bare = a0_tile(&a0_world(
@@ -2357,9 +2389,9 @@ mod tests {
         ));
         let tile = a0_tile(&world);
         assert!(
-            (tile.cpu_request_ratio - 0.25).abs() < 1e-9,
+            (tile.cpu_request_ratio.expect("cpu request ratio") - 0.25).abs() < 1e-9,
             "load excludes the terminal pod: {}",
-            tile.cpu_request_ratio
+            tile.cpu_request_ratio.unwrap_or(f64::NAN)
         );
         let census: f64 = tile.pods.iter().map(|g| g.requests.cpu).sum();
         assert!(
@@ -2395,6 +2427,97 @@ mod tests {
             .usage
             .expect("the tile's glyph must carry usage, not just NodePodRow");
         assert!((u.cpu - 0.25).abs() < 1e-9);
+    }
+
+    // --- Unmeasurable capacity must not read as idle -----------------------
+
+    /// Build a node with only the allocatable keys named in `keys`.
+    fn node_alloc(name: &str, keys: &[(&str, &str)]) -> Node {
+        let mut n = fx::node(name, Some("z-a"));
+        if keys.is_empty() {
+            n.status.as_mut().unwrap().allocatable = None;
+        } else {
+            n.status.as_mut().unwrap().allocatable = Some(fx::quantities(keys));
+        }
+        n
+    }
+
+    /// THE DISCRIMINATION TEST, and the point of the whole change: a node that
+    /// cannot be measured and a node that is genuinely empty must not produce
+    /// the same number.
+    #[test]
+    fn an_unmeasurable_node_is_distinguishable_from_an_idle_one() {
+        let idle = node_alloc("idle", &[("cpu", "4"), ("memory", "8Gi")]);
+        let unknown = node_alloc("unknown", &[]);
+
+        // Idle: allocatable present, nothing requested ⇒ a real zero.
+        assert_eq!(node_request_ratios(&idle, &[]), (Some(0.0), Some(0.0)));
+        // Unmeasurable: no denominator ⇒ no ratio at all.
+        assert_eq!(node_request_ratios(&unknown, &[]), (None, None));
+        assert_ne!(
+            node_request_ratios(&idle, &[]),
+            node_request_ratios(&unknown, &[]),
+            "these are the two states the old 0.0 collapsed into one"
+        );
+
+        // Same through the usage helper, and same through the tile.
+        let u = NodeUsage { cpu: 0.0, mem: 0.0 };
+        assert_eq!(node_usage_ratios(&idle, u), (Some(0.0), Some(0.0)));
+        assert_eq!(node_usage_ratios(&unknown, u), (None, None));
+
+        let t_idle = build_node_tile(&idle, &[], &OwnerIndex::default(), None, &|_, _| None);
+        let t_unk = build_node_tile(&unknown, &[], &OwnerIndex::default(), None, &|_, _| None);
+        assert_eq!(t_idle.cpu_ratio, Some(0.0));
+        assert_eq!(t_unk.cpu_ratio, None);
+    }
+
+    /// Per-resource, not per-node: cpu and memory are separate allocatable keys
+    /// and one can be present without the other.
+    #[test]
+    fn allocatable_is_optional_per_resource() {
+        let n = node_alloc("half", &[("cpu", "4")]); // memory absent
+        let (c, m) = node_request_ratios(&n, &[]);
+        assert_eq!((c, m), (Some(0.0), None));
+
+        let t = build_node_tile(&n, &[], &OwnerIndex::default(), None, &|_, _| None);
+        assert_eq!(t.cpu_request_ratio, Some(0.0));
+        assert_eq!(t.mem_request_ratio, None);
+    }
+
+    /// An unknown ratio is not pressure — and equally not a guarantee of health.
+    /// The fabricated 0.0 quietly asserted the latter.
+    #[test]
+    fn an_unmeasurable_node_is_not_reported_as_pressured() {
+        let t = build_node_tile(
+            &node_alloc("unknown", &[]),
+            &[],
+            &OwnerIndex::default(),
+            None,
+            &|_, _| None,
+        );
+        assert_eq!(t.health, NodeHealth::Healthy, "not Pressure on a guess");
+        // ...and saturation OMITS the dims it cannot compute, rather than
+        // reporting a calm 0% — same discipline it already applies to pod-count.
+        assert!(
+            t.saturation.dims.is_empty(),
+            "an unmeasurable node has no strain dimensions: {:?}",
+            t.saturation.dims
+        );
+        assert!(t.saturation.pod_ratio().is_none());
+    }
+
+    /// Nodes that DO report allocatable must behave exactly as before.
+    #[test]
+    fn measurable_nodes_are_unchanged() {
+        let n = node_alloc("n", &[("cpu", "4"), ("memory", "8Gi")]);
+        let pod = fx::pod_requests(fx::pod("demo", "p", Some("n")), "1", "2Gi");
+        let (c, m) = node_request_ratios(&n, &[&pod]);
+        assert_eq!(c, Some(0.25));
+        assert_eq!(m, Some(0.25));
+        let t = build_node_tile(&n, &[&pod], &OwnerIndex::default(), None, &|_, _| None);
+        assert_eq!(t.cpu_ratio, Some(0.25));
+        assert_eq!(t.metric_source, MetricSource::Requests);
+        assert_eq!(t.saturation.dims.len(), 2, "cpu + mem, no pods key");
     }
 
     /// ANTI-DRIFT: the map and the advisor must classify the same pod the same

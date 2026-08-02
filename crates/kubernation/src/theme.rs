@@ -267,6 +267,23 @@ pub fn cost_pair(pos: f64) -> (Color, Color) {
 /// Desaturated grey-green land for a province with nothing to encode under the
 /// current overlay (no cities for Replicas / Namespace) — it recedes so the
 /// flagged provinces pop.
+/// The land pair for a province whose node reports NO allocatable, so no
+/// ratio-derived reading exists for it. Deliberately OUTSIDE every overlay ramp
+/// — a cold neutral that belongs to none of them — and always drawn with
+/// diagonal hatching on top, because texture says "no data" while any hue would
+/// be read as a data value. Not routed through the colour-blind funnel: it
+/// carries no meaning on the good/bad axis, and the hatch is the real signal.
+pub fn unmeasured_pair() -> (Color, Color) {
+    (
+        Color::new(0.30, 0.31, 0.35, 1.0),
+        Color::new(0.35, 0.36, 0.40, 1.0),
+    )
+}
+
+/// Ink for the "no data" hatch strokes — light enough to read over the
+/// unmeasured fill at any zoom.
+pub const HATCH: Color = Color::new(0.62, 0.64, 0.70, 0.85);
+
 pub fn idle_land_pair() -> (Color, Color) {
     (
         Color::new(0.34, 0.37, 0.34, 1.0),

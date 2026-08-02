@@ -781,12 +781,14 @@ fn node_sections(world: &ObservedWorld, name: &str) -> Vec<BundleSection> {
     };
     let t = &detail.tile;
     let mut body = format!(
-        "node {}\nzone {} · health {}\ncpu {:.0}% · mem {:.0}%\nsaturation: {:?}",
+        "node {}\nzone {} · health {}\ncpu {} · mem {}\nsaturation: {:?}",
         t.name,
         t.zone,
         node_health_word(t.health),
-        t.cpu_ratio * 100.0,
-        t.mem_ratio * 100.0,
+        // "unknown", never 0% — the model must not tell the Oracle a node with
+        // no reported capacity is idle.
+        ratio_pct(t.cpu_ratio),
+        ratio_pct(t.mem_ratio),
         t.saturation.worst_level()
     );
     for d in t
@@ -802,6 +804,15 @@ fn node_sections(world: &ObservedWorld, name: &str) -> Vec<BundleSection> {
     }
     body.push_str(&format!("\n{} pods stationed", detail.pods.len()));
     vec![sec(SectionTag::Node, format!("node {}", t.name), body, 9)]
+}
+
+/// A node ratio for the bundle: a percentage, or "unknown" when the node
+/// reports no allocatable for that resource.
+fn ratio_pct(r: Option<f64>) -> String {
+    match r {
+        Some(v) => format!("{:.0}%", v * 100.0),
+        None => "unknown".to_string(),
+    }
 }
 
 fn node_health_word(h: NodeHealth) -> &'static str {

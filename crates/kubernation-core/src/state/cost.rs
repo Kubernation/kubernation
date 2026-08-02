@@ -281,6 +281,12 @@ pub fn cost_report(world: &ObservedWorld, rates: &CostRates) -> CostReport {
         let name = node.metadata.name.clone().unwrap_or_default();
         report.nodes_total += 1;
 
+        // A LEGITIMATE default, unlike the ratio helpers' former one: these zeros
+        // are not a result, they feed the `cap_w <= 0.0` guard immediately below,
+        // which is the branch that records an honest all-idle node. Nothing here
+        // ever divides by them or shows them. Keep it that way — if this ever
+        // grows into a ratio, it needs the Option treatment
+        // `node_request_ratios` got.
         let alloc_cpu = node_allocatable(node, "cpu").unwrap_or(0.0);
         let alloc_mem = node_allocatable(node, "memory").unwrap_or(0.0);
         let cap_w = alloc_cpu + (alloc_mem / GIB) / weight;

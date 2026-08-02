@@ -312,6 +312,31 @@ fn dominant_namespace(cities: &[City]) -> Option<&str> {
         .map(|(ns, _)| ns)
 }
 
+/// The worse of two possibly-unknown ratios; `None` only when BOTH are unknown.
+/// One known resource is still a reading — a node can report cpu allocatable and
+/// not memory.
+fn worst_known(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        (None, None) => None,
+    }
+}
+
+/// True when the active overlay's reading is derived from a denominator this
+/// node does not report, so the province must be hatched rather than tinted.
+///
+/// Only the ratio-derived overlays: Terrain reads node HEALTH (still known),
+/// Cost already has its own unpriced path, and Namespace/Replicas/Walls/
+/// Substrate never touch allocatable.
+pub(crate) fn province_unmeasured(overlay: Overlay, prov: &Province) -> bool {
+    match overlay {
+        Overlay::Pressure => worst_known(prov.tile.cpu_ratio, prov.tile.mem_ratio).is_none(),
+        Overlay::Saturation => prov.tile.saturation.dims.is_empty(),
+        _ => false,
+    }
+}
+
 /// The two-shade land pair a province's terrain is filled with, per overlay.
 /// Each data overlay reads only its own field of `data`, and falls back to
 /// terrain or idle land when that field is absent (as on the minimap, which
@@ -319,7 +344,14 @@ fn dominant_namespace(cities: &[City]) -> Option<&str> {
 fn overlay_pair(overlay: Overlay, prov: &Province, data: OverlayData) -> (Color, Color) {
     match overlay {
         Overlay::Terrain => iso_terrain_pair(prov.tile.health),
-        Overlay::Pressure => pressure_pair(prov.tile.cpu_ratio.max(prov.tile.mem_ratio)),
+        // Worst of cpu/mem, where either is known. A province whose node
+        // reports no allocatable has NEITHER, and gets the unmeasured fill —
+        // which `draw_province_terrain` then hatches, so it cannot be read as a
+        // value on the pressure ramp.
+        Overlay::Pressure => match worst_known(prov.tile.cpu_ratio, prov.tile.mem_ratio) {
+            Some(r) => pressure_pair(r),
+            None => unmeasured_pair(),
+        },
         Overlay::Replicas => replica_level(&prov.cities).map_or_else(idle_land_pair, heat_pair),
         Overlay::Namespace => {
             dominant_namespace(&prov.cities).map_or_else(idle_land_pair, namespace_pair)
@@ -1455,6 +1487,11 @@ fn draw_province_terrain(
     // / namespace / walls / cost / substrate); computed once per province, not
     // per cell.
     let pair = overlay_pair(overlay, prov, data);
+    // A province the active overlay cannot measure is HATCHED, not tinted:
+    // texture reads as "no data" where any hue would be read as a value on the
+    // ramp. Computed once per province — this is rare (a node that fails to
+    // report its own capacity), so the per-cell stroke costs nothing in practice.
+    let hatched = province_unmeasured(overlay, prov);
     let x0 = prov.x as i32;
     let w = prov.w as f32;
     let y1 = (prov.y + prov.h) as i32;
@@ -1512,9 +1549,34 @@ fn draw_province_terrain(
                 land_diamond(
                     c, hw, hh, pair, wx as u16, wy as u16, lift, right_sea, dn_sea,
                 );
+                if hatched {
+                    hatch_diamond(c, hw, hh, lift);
+                }
             }
         }
     }
+}
+
+/// Two diagonal strokes across a land diamond's top face — the "no data" hatch.
+///
+/// Drawn in the diamond's own axes so it reads as hatching on the isometric
+/// plane rather than screen-space lines lying over it: one stroke parallel to
+/// each of the tile's edges, meeting the cartographic convention for an
+/// unsurveyed area.
+fn hatch_diamond(c: Vec2, hw: f32, hh: f32, lift: f32) {
+    let cy = c.y - lift;
+    // The diamond's four vertices (N, E, S, W) on the lifted top face.
+    let n = vec2(c.x, cy - hh);
+    let e = vec2(c.x + hw, cy);
+    let s = vec2(c.x, cy + hh);
+    let w = vec2(c.x - hw, cy);
+    // Midpoints of opposite edges give two strokes crossing the face.
+    let ne = (n + e) * 0.5;
+    let sw = (s + w) * 0.5;
+    let nw = (n + w) * 0.5;
+    let se = (s + e) * 0.5;
+    draw_line(ne.x, ne.y, sw.x, sw.y, 1.0, HATCH);
+    draw_line(nw.x, nw.y, se.x, se.y, 1.0, HATCH);
 }
 
 /// A single health-tinted land diamond with a 2-shade grassland checker plus a
@@ -2575,6 +2637,61 @@ mod tests {
     /// only anomalies pop), 1 gap warns, 2+ crits, and a cluster with nothing
     /// fleet-wide falls back to terrain rather than painting an unearned
     /// all-clear over every province.
+    /// A province whose node reports no allocatable must be HATCHED under the
+    /// ratio-derived overlays and tinted normally under the rest — Terrain still
+    /// knows the node's health, and Cost/Namespace/Replicas/Walls/Substrate
+    /// never touch allocatable.
+    #[test]
+    fn an_unmeasurable_province_is_hatched_only_where_the_reading_needs_capacity() {
+        use kubernation_core::state::model::Models;
+        use kubernation_core::state::{fixtures as fx, world::Province};
+
+        let (world, mut s) = fx::world();
+        let mut bare = fx::node("bare", Some("z-a"));
+        bare.status.as_mut().unwrap().allocatable = None;
+        s.node(bare);
+        s.node(fx::node("ok", Some("z-a")));
+        let models = Models::build(&world);
+        let provs: Vec<&Province> = models.world.continents[0].provinces.iter().collect();
+        let get = |n: &str| *provs.iter().find(|p| p.tile.name == n).expect("province");
+
+        for ov in [Overlay::Pressure, Overlay::Saturation] {
+            assert!(
+                province_unmeasured(ov, get("bare")),
+                "{ov:?} needs capacity"
+            );
+            assert!(
+                !province_unmeasured(ov, get("ok")),
+                "{ov:?} on a normal node"
+            );
+        }
+        for ov in [
+            Overlay::Terrain,
+            Overlay::Cost,
+            Overlay::Namespace,
+            Overlay::Replicas,
+            Overlay::Coverage,
+            Overlay::Substrate,
+        ] {
+            assert!(
+                !province_unmeasured(ov, get("bare")),
+                "{ov:?} does not read allocatable, so it is not unmeasurable"
+            );
+        }
+
+        // ...and the Pressure fill for it is outside the pressure ramp entirely.
+        let d = OverlayData::default();
+        assert_eq!(
+            overlay_pair(Overlay::Pressure, get("bare"), d).0,
+            unmeasured_pair().0
+        );
+        assert_ne!(
+            overlay_pair(Overlay::Pressure, get("bare"), d).0,
+            pressure_pair(0.0).0,
+            "an unmeasurable province must not look like a calm one"
+        );
+    }
+
     #[test]
     fn substrate_overlay_recedes_when_clean_and_escalates_by_gap_count() {
         use kubernation_core::state::model::Models;
