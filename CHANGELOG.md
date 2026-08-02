@@ -8,6 +8,16 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **The layout engine (enabling change, no user-visible behaviour).** A pure
+  `assign_layout` that gives each node a durable map slot, so replacing a node
+  does not move the world: a slot persists across its occupants, and a departed
+  node leaves a *ghost* rather than letting the ordinals close up behind it.
+  Nothing renders from it yet — that is A2. Nodes also now carry their **pool**
+  and how it was inferred (a provider's own label, an instance type, or the
+  default), because there is no standard nodepool key and a guess should not be
+  mistaken for an answer.
+
 ## [1.6.0] — 2026-08-02
 
 Includes the work previously versioned 1.2.0, 1.3.1, 1.4.0 and 1.5.0, none of

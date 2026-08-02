@@ -3241,6 +3241,45 @@ what makes the interesting logic unit-testable without a cluster.
   `None` as one reporting nothing — deliberate (the guard also prevents a division
   by zero) but a conflation, so it is a test rather than an implicit.
 
+- **A1 — the layout engine** (2026-08-02, unversioned; from
+  `docs/kubernation-a1-layout-engine-guidance.md`, the enabling plan's §3.2):
+  `state/layout.rs` — a PURE `assign_layout(prior, observed) -> Layout` giving
+  each node a durable map **slot**, so replacing a node does not move the world.
+  **Consumer-less by design** (nothing renders from it; that is A2), therefore
+  **unversioned**, following the A0/A-pre precedent. **The terrain belongs to the
+  SLOT**: CARRY (a prior slot whose occupant is still observed keeps it) → REUSE
+  (lowest-ordinal vacancy in the node's own `(zone, pool)`) → APPEND → GHOST (a
+  departed occupant's slot is RETAINED vacant). **Sparseness is the decision:**
+  under surge the replacement is Ready before its predecessor drains (measured on
+  the churn fleet, 100→115→100), so there is no vacancy and it appends;
+  compacting the resulting gap would move existing slots, which is exactly what
+  the engine prevents — reclamation is A4's *declared* event. Headline test: a
+  100-node surging refresh yields 200 slots / 100 occupied / 100 ghosts with
+  **zero occupied slots moved**. Determinism comes from sorting contenders on
+  `(fnv1a64(name), name)` — matching `city_home`'s tie-break — never on iteration
+  order; idempotence and input-order independence are both tested. A node that
+  changes **zone or pool vacates its old slot** rather than dragging coordinates
+  across a continent. **§7's warned shape avoided:** `next_ordinal` is
+  `max().map_or(0, m+1)`, NOT `max().unwrap_or(0)+1` — an empty pool has *no
+  ordinals yet*, which is a different statement from *the highest ordinal is
+  zero*, and the latter hands back an ordinal a real slot may hold (mutation-
+  verified). **Pool cascade** (`model::node_pool`, beside `node_zone` because it
+  is the analogous concern): override → 8 provider keys → instance-type →
+  `DEFAULT_POOL`, recording `PoolSource` the way `metric_source` records which
+  gauge you are reading; an empty label VALUE is not a pool name (it would
+  otherwise create a nameless pool every such node silently shares).
+  **Deliberately no clustering** — an inferred pool re-splits when attributes
+  shift, which is the instability A exists to remove. `NodeTile` gains
+  `pool`/`pool_source` (§2.1's preferred option) and `NodeTile::observed()` is
+  the ONE seam into the engine, so A2 does not build its own bridge.
+  **Guidance gaps:** the cited governing doc
+  `kubernation-workstream-a-decomposition.md` **does not exist**; and §2.2 makes
+  a `--pool-label` override precedence 1 without noting that wiring it reaches
+  `Models::build`'s ~33 call sites — so `node_pool` takes it as a parameter
+  (complete and tested) and the only caller passes `None` until a phase needs it.
+  All ten §0 claims verified TRUE (fourth round running). 8 mutations verified;
+  377 core + 87 GUI tests; GUI crate diff empty; no measurable perf change.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

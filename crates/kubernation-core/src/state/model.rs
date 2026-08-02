@@ -12,6 +12,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
 
 use super::attention::{self, Concern, Severity, Target};
 use super::filter::NamespaceFilter;
+use super::layout::PoolSource;
 use super::observed::ObservedWorld;
 use super::qos::QosClass;
 use super::saturation::{self, NodeSaturation};
@@ -322,6 +323,14 @@ pub struct PodGlyph {
 pub struct NodeTile {
     pub name: String,
     pub zone: String,
+    /// The node's pool, and which rule inferred it — see [`node_pool`]. Sits
+    /// beside `zone` because it is the analogous concern: together they are the
+    /// two axes of a layout slot. `pool_source` travels with it for the same
+    /// reason `metric_source` travels with the gauges — a pool read from a
+    /// provider's own key is a stronger statement than one guessed from instance
+    /// type, and a consumer that cannot tell them apart will overstate.
+    pub pool: String,
+    pub pool_source: PoolSource,
     pub health: NodeHealth,
     pub ready: bool,
     pub cordoned: bool,
@@ -406,6 +415,88 @@ pub struct MapModel {
 }
 
 impl MapModel {}
+
+/// Provider nodepool label keys, tried in order.
+///
+/// There is NO standard key — every provider invented its own — so this list is
+/// a heuristic, and [`PoolSource`] records which entry fired so the reading can
+/// be judged. Ordered most-specific first; the legacy spellings sit beside their
+/// modern replacements the way `ZONE_LABEL_LEGACY` does.
+pub const POOL_LABELS: &[&str] = &[
+    "cloud.google.com/gke-nodepool",
+    "eks.amazonaws.com/nodegroup",
+    "kubernetes.azure.com/agentpool",
+    "agentpool", // legacy AKS
+    "karpenter.sh/nodepool",
+    "karpenter.sh/provisioner-name", // legacy Karpenter
+    "cluster.x-k8s.io/deployment-name",
+    "machine.openshift.io/cluster-api-machineset",
+];
+
+pub const INSTANCE_TYPE_LABEL: &str = "node.kubernetes.io/instance-type";
+
+/// The pool a node with no recognisable pool label belongs to. A real name, not
+/// an empty string, so it reads as a place rather than a gap — the `UNZONED`
+/// convention.
+pub const DEFAULT_POOL: &str = "default";
+
+/// Which node pool this node belongs to, and **how that was determined**.
+///
+/// Mirrors [`node_zone`]'s label-then-legacy-then-sentinel shape, and mirrors
+/// `MetricSource` in returning the rule alongside the value: a pool inferred
+/// from instance type is a coarser statement than one read from a provider's own
+/// key, and a consumer that cannot tell them apart will overstate what it knows.
+///
+/// `override_key` is an operator-supplied label key (a future `--pool-label`).
+/// It is a parameter rather than a global so this stays pure and testable; the
+/// only current caller passes `None`, because nothing sets it yet — wiring the
+/// flag reaches `Models::build`'s 30-odd call sites and belongs with the phase
+/// that needs it.
+///
+/// **Deliberately no clustering.** Pools are never inferred by grouping nodes on
+/// shared attributes: an inferred pool re-splits when a node's attributes shift,
+/// which is exactly the instability this workstream exists to remove.
+pub fn node_pool(node: &Node, override_key: Option<&str>) -> (String, PoolSource) {
+    let labels = node.metadata.labels.as_ref();
+    let get = |k: &str| {
+        labels
+            .and_then(|l| l.get(k))
+            .map(String::as_str)
+            .filter(|v| !v.is_empty())
+    };
+
+    if let Some(k) = override_key
+        && let Some(v) = get(k)
+    {
+        return (v.to_string(), PoolSource::Override);
+    }
+    for key in POOL_LABELS {
+        if let Some(v) = get(key) {
+            return (v.to_string(), PoolSource::Provider(key));
+        }
+    }
+    if let Some(v) = get(INSTANCE_TYPE_LABEL) {
+        return (v.to_string(), PoolSource::InstanceType);
+    }
+    (DEFAULT_POOL.to_string(), PoolSource::Default)
+}
+
+impl NodeTile {
+    /// The layout engine's view of this node.
+    ///
+    /// Lives here rather than in `state::layout` on purpose: the engine takes
+    /// plain data and must not depend on the model, which is what keeps its
+    /// fixtures cheap and its tests cluster-free. This is the one seam, so every
+    /// consumer crosses it the same way instead of each building its own bridge.
+    pub fn observed(&self) -> crate::state::layout::ObservedNode {
+        crate::state::layout::ObservedNode {
+            name: self.name.clone(),
+            zone: self.zone.clone(),
+            pool: self.pool.clone(),
+            pool_source: self.pool_source,
+        }
+    }
+}
 
 pub fn node_zone(node: &Node) -> String {
     node.metadata
@@ -688,9 +779,13 @@ pub fn build_node_tile(
         .collect();
     pods.sort_by(|a, b| (&a.namespace, &a.name).cmp(&(&b.namespace, &b.name)));
 
+    // `None`: nothing sets a pool-label override yet. See `node_pool`.
+    let (pool, pool_source) = node_pool(node, None);
     NodeTile {
         name: node.metadata.name.clone().unwrap_or_default(),
         zone: node_zone(node),
+        pool,
+        pool_source,
         health,
         ready,
         cordoned,
@@ -2576,6 +2671,128 @@ mod tests {
             assert_eq!(map, expect);
             assert_eq!(map, advisor, "map and advisor must not disagree");
         }
+    }
+
+    // --- A1: the pool cascade ---------------------------------------------
+
+    fn labelled(name: &str, pairs: &[(&str, &str)]) -> Node {
+        let mut n = fx::node(name, Some("z-a"));
+        let labels = n.metadata.labels.get_or_insert_with(Default::default);
+        for (k, v) in pairs {
+            labels.insert((*k).to_string(), (*v).to_string());
+        }
+        n
+    }
+
+    /// Every provider key resolves, and `PoolSource` names the one that fired —
+    /// so a reader can tell a provider's own answer from our guess.
+    #[test]
+    fn each_provider_key_resolves_and_names_itself() {
+        for key in POOL_LABELS {
+            let n = labelled("n", &[(key, "team-a")]);
+            let (pool, src) = node_pool(&n, None);
+            assert_eq!(pool, "team-a", "{key} did not resolve");
+            assert_eq!(
+                src,
+                PoolSource::Provider(key),
+                "{key} misreported its source"
+            );
+            assert_eq!(src.label(), *key);
+        }
+    }
+
+    #[test]
+    fn an_operator_override_beats_every_provider_key() {
+        let n = labelled(
+            "n",
+            &[
+                ("cloud.google.com/gke-nodepool", "provider-says"),
+                ("my.org/pool", "operator-says"),
+            ],
+        );
+        let (pool, src) = node_pool(&n, Some("my.org/pool"));
+        assert_eq!(pool, "operator-says");
+        assert_eq!(src, PoolSource::Override);
+
+        // An override naming a key the node does not carry falls through rather
+        // than yielding an empty pool.
+        let (pool, src) = node_pool(&n, Some("my.org/absent"));
+        assert_eq!(pool, "provider-says");
+        assert_eq!(src, PoolSource::Provider("cloud.google.com/gke-nodepool"));
+    }
+
+    #[test]
+    fn instance_type_is_the_portable_fallback_and_says_so() {
+        let n = labelled("n", &[(INSTANCE_TYPE_LABEL, "m5.xlarge")]);
+        let (pool, src) = node_pool(&n, None);
+        assert_eq!(pool, "m5.xlarge");
+        assert_eq!(
+            src,
+            PoolSource::InstanceType,
+            "must not masquerade as a provider answer"
+        );
+    }
+
+    /// A node with nothing to go on lands in the default pool HONESTLY — named,
+    /// and flagged as a fallback — rather than silently joining a real pool.
+    #[test]
+    fn a_node_with_no_labels_lands_in_the_default_pool_honestly() {
+        let mut bare = fx::node("bare", None);
+        bare.metadata.labels = None;
+        let (pool, src) = node_pool(&bare, None);
+        assert_eq!(pool, DEFAULT_POOL);
+        assert_eq!(src, PoolSource::Default);
+
+        // An EMPTY label value is not a pool name either — it would otherwise
+        // produce a nameless pool that every such node silently shares.
+        let empty = labelled("e", &[("cloud.google.com/gke-nodepool", "")]);
+        assert_eq!(node_pool(&empty, None).1, PoolSource::Default);
+    }
+
+    /// Precedence is a cascade, not a set: a node carrying BOTH a provider key
+    /// and an instance type takes the provider's answer.
+    #[test]
+    fn a_provider_key_beats_instance_type() {
+        let n = labelled(
+            "n",
+            &[
+                (INSTANCE_TYPE_LABEL, "m5.xlarge"),
+                ("karpenter.sh/nodepool", "spot"),
+            ],
+        );
+        assert_eq!(
+            node_pool(&n, None),
+            (
+                "spot".to_string(),
+                PoolSource::Provider("karpenter.sh/nodepool")
+            )
+        );
+    }
+
+    /// The tile carries both, so A2 needs no parallel plumbing path.
+    #[test]
+    fn the_tile_carries_pool_and_its_source() {
+        let n = labelled("n", &[("eks.amazonaws.com/nodegroup", "ng-1")]);
+        let t = build_node_tile(&n, &[], &OwnerIndex::default(), None, &|_, _| None);
+        assert_eq!(t.pool, "ng-1");
+        assert_eq!(
+            t.pool_source,
+            PoolSource::Provider("eks.amazonaws.com/nodegroup")
+        );
+        assert_eq!(t.zone, "z-a", "zone is unaffected");
+    }
+
+    /// The seam A2 will cross. Pinned so the bridge cannot drift from the
+    /// fields it bridges.
+    #[test]
+    fn a_tile_converts_to_the_layout_engines_view() {
+        let n = labelled("n", &[("karpenter.sh/nodepool", "spot")]);
+        let t = build_node_tile(&n, &[], &OwnerIndex::default(), None, &|_, _| None);
+        let o = t.observed();
+        assert_eq!(o.name, t.name);
+        assert_eq!(o.zone, t.zone);
+        assert_eq!(o.pool, "spot");
+        assert_eq!(o.pool_source, PoolSource::Provider("karpenter.sh/nodepool"));
     }
 
     #[test]

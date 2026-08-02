@@ -8,6 +8,7 @@ pub mod diagnose;
 pub mod filter;
 pub mod harden;
 pub mod inspect;
+pub mod layout;
 pub mod logline;
 pub mod model;
 pub mod netpol;
