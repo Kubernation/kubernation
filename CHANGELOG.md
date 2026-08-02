@@ -9,6 +9,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Churn harness (`hack/churn/`) — a reproducible 100-node fleet that can be
+  made to churn on command.** Test asset only; no production code, no
+  user-visible change. Six scenarios (rolling refresh, scale up/down, nodepool
+  add/remove, zone loss) plus a capture helper, so the map's behaviour under
+  fleet-scale churn can actually be evaluated — the 4-node dev cluster cannot
+  exercise it. The rolling refresh *surges*: replacements come up Ready before
+  their predecessors drain, verified at a peak of 115 nodes during a 15-node
+  wave. `make churn-up` / `churn-capture` / `churn-refresh` / `churn-reset` /
+  `churn-down`.
 - **Per-pod resource facts in the map model (enabling change, no user-visible
   behaviour).** `PodGlyph` now carries literal requests, limits, optional live
   usage, QoS class and a container count; `NodeTile` carries request-ratio and

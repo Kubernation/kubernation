@@ -88,6 +88,26 @@ perf-test:
 perf-down:
 	kwokctl delete cluster --name $(PERF_CLUSTER)
 
+## churn-up: reproducible ~100-node churn fleet (kwok) for Workstream A gates
+churn-up:
+	hack/churn/up.sh
+
+## churn-capture: one consistently-framed screenshot of the churn fleet
+churn-capture:
+	hack/churn/capture.sh baseline
+
+## churn-refresh: the A2 kill-gate scenario — surging rolling refresh
+churn-refresh:
+	hack/churn/scenarios/1-rolling-refresh.sh
+
+## churn-reset: return the fleet to its pristine fixture (between scenarios)
+churn-reset:
+	hack/churn/reset.sh
+
+## churn-down: delete the churn cluster
+churn-down:
+	hack/churn/down.sh
+
 ## lint: formatting + clippy, the same gate as CI
 lint:
 	cargo fmt --all --check

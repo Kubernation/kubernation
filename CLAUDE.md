@@ -3126,6 +3126,48 @@ what makes the interesting logic unit-testable without a cluster.
   accessor mechanism doesn't hold in Rust. All seven §0 claims verified TRUE,
   including claim 7 (the one justifying the phase).
 
+- **A-pre — the churn harness** (2026-08-02, unversioned; from
+  `docs/kubernation-a-pre-churn-harness-guidance.md`, the first phase of the
+  enabling plan's Workstream A): `hack/churn/` — a reproducible 100-node kwok
+  fleet that can be made to churn on command, plus six scenarios and a capture
+  helper. **Test asset, no production code**, so unversioned like A0. Exists
+  because the substrate round established that the 4-node dev cluster is
+  *arithmetically* incapable of exercising fleet-shaped features, and A's whole
+  claim is behaviour under churn at scale. **All six §0 claims verified TRUE**
+  (kwokctl, the exact CLI flag names, no instance-type label, allocatable
+  present, no metrics-server). **Four things verified that could have blocked
+  it:** kwokctl runs a REAL kube-scheduler + controller-manager (so pods
+  genuinely reschedule — scenario 1's hardest requirement); a node CAN omit
+  `allocatable`; the app survives such a node; and capture costs only ~5.5s, so
+  the flipbook is cheap. **Scenario 1 surges** — replacement Ready before the
+  predecessor drains, verified by watching node count peak at **115** during a
+  15-node wave; a delete-then-create script would test a strictly easier problem
+  because there would never be more nodes than slots. **Three kwok facts found
+  the hard way, all now documented:** (1) kwok's node-initialize stage
+  **backfills a default 1k-cpu/1Ti/1M-pod capacity** on a node that omits
+  `allocatable` AND ships no Ready condition — supplying the condition ourselves
+  opts out of that stage and is what makes the missing-allocatable fixture
+  actually missing; (2) kwok **cannot hold a node NotReady** — its heartbeat
+  rewrites the Ready condition within ~1s regardless of the
+  `kwok.x-k8s.io/node` annotation, so scenario 6 deletes and **refuses
+  `MODE=notready` with exit 2** rather than running and silently changing
+  nothing; (3) deleting a node strands its pods for ~30-60s (PodGC quarantine) —
+  the same ghost-pod window the substrate round's prevalence maths hit, so the
+  destructive scenarios call `wait_no_orphan_pods` before their final capture.
+  **Guidance defects (§0 clean, as with A0 — the defects were elsewhere):**
+  §4 asserts `node_allocatable` "explicitly forbids fabricating a default", but
+  while its doc comment does say that, **6 of its 7 callers `unwrap_or(0.0)`**,
+  so the fixture's allocatable-less node renders **cpu 0% / mem 0%** — identical
+  to an idle node, not flagged as unmeasured (verified on the live fleet;
+  recorded in the README, left unfixed as pre-existing and out of scope). §5
+  pins `--center`/`--zoom` for reproducible framing but omits **`--overlay` and
+  `--map-style`, which persist in `prefs.json`** and are restored at launch — a
+  capture came back tinted by the Namespace overlay in Relief for exactly that
+  reason, so `capture.sh` pins all four. §4 also cites `pool_source` and a
+  "fallback cascade" as if they exist; **no pool concept exists in the codebase
+  at all**, so those fixture requirements are checkable only structurally until
+  A1 lands. §6's baseline met: all six scenarios run and **zero panics**.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form
