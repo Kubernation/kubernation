@@ -437,8 +437,15 @@ pub const INSTANCE_TYPE_LABEL: &str = "node.kubernetes.io/instance-type";
 
 /// The pool a node with no recognisable pool label belongs to. A real name, not
 /// an empty string, so it reads as a place rather than a gap — the `UNZONED`
-/// convention.
-pub const DEFAULT_POOL: &str = "default";
+/// convention, and deliberately the same SHAPE as that sentinel.
+///
+/// **Not the literal string `"default"`.** Providers really do ship pools by
+/// that name (GKE's first pool, among others), and an unresolvable node landing
+/// in a same-named real pool is exactly the "silently join a real pool" failure
+/// this cascade exists to avoid — it would share a slot space, and therefore
+/// map ground, with nodes it has nothing to do with. `unpooled` cannot collide
+/// with a provider's answer because a provider never emits it.
+pub const DEFAULT_POOL: &str = "unpooled";
 
 /// Which node pool this node belongs to, and **how that was determined**.
 ///
@@ -456,6 +463,21 @@ pub const DEFAULT_POOL: &str = "default";
 /// **Deliberately no clustering.** Pools are never inferred by grouping nodes on
 /// shared attributes: an inferred pool re-splits when a node's attributes shift,
 /// which is exactly the instability this workstream exists to remove.
+///
+/// **The instance-type step is a MILDER FORM OF THAT SAME HAZARD, and it is a
+/// deliberate trade.** Because the pool name is then an attribute, a node whose
+/// instance type changes — a pool resized from `m5.large` to `m5.xlarge` —
+/// changes pool, and the layout engine treats a pool change as a move: the node
+/// vacates its slot and leaves a ghost. Pinned by
+/// `an_instance_type_change_moves_the_node_because_the_pool_is_its_attribute`.
+///
+/// The trade is accepted because the step only fires on clusters carrying NO
+/// provider pool label at all (bare metal, kind, kwok), where the alternative is
+/// one undifferentiated default pool per zone — real structure lost for every
+/// such cluster to protect a rarer event. `PoolSource::InstanceType` is what
+/// makes the weaker footing legible; the decomposition doc's settled
+/// pool-detection row does not name this step, so it is flagged for the room
+/// rather than treated as agreed.
 pub fn node_pool(node: &Node, override_key: Option<&str>) -> (String, PoolSource) {
     let labels = node.metadata.labels.as_ref();
     let get = |k: &str| {
@@ -2780,6 +2802,100 @@ mod tests {
             PoolSource::Provider("eks.amazonaws.com/nodegroup")
         );
         assert_eq!(t.zone, "z-a", "zone is unaffected");
+    }
+
+    /// The consequence of instance-type being a pool FALLBACK: the pool name is
+    /// then an attribute, so changing the attribute changes the pool, and the
+    /// engine treats a pool change as a move.
+    ///
+    /// Recorded as a test rather than left implicit because it is the milder form
+    /// of the "inferred pools re-split" hazard `node_pool` warns about, and it
+    /// only bites clusters with no provider label at all. If the room decides
+    /// stability wins over structure there, deleting the instance-type step is
+    /// the whole change and this test is what will fail.
+    #[test]
+    fn an_instance_type_change_moves_the_node_because_the_pool_is_its_attribute() {
+        use crate::state::layout::{Layout, assign_layout};
+        let mk = |ty: &str| {
+            let n = labelled("n", &[(INSTANCE_TYPE_LABEL, ty)]);
+            build_node_tile(&n, &[], &OwnerIndex::default(), None, &|_, _| None).observed()
+        };
+        let l0 = assign_layout(&Layout::default(), &[mk("m5.large")]);
+        let l1 = assign_layout(&l0, &[mk("m5.xlarge")]);
+
+        assert_eq!(l0.slot_of("n").map(|k| k.pool.as_str()), Some("m5.large"));
+        assert_eq!(l1.slot_of("n").map(|k| k.pool.as_str()), Some("m5.xlarge"));
+        assert_eq!(l1.ghosts().count(), 1, "the old slot is left behind");
+
+        // A node carrying a PROVIDER key is immune: its pool is a declared
+        // identity, not a hardware attribute, so a resize does not move it.
+        let mk2 = |ty: &str| {
+            let n = labelled(
+                "p",
+                &[
+                    ("karpenter.sh/nodepool", "steady"),
+                    (INSTANCE_TYPE_LABEL, ty),
+                ],
+            );
+            build_node_tile(&n, &[], &OwnerIndex::default(), None, &|_, _| None).observed()
+        };
+        let p0 = assign_layout(&Layout::default(), &[mk2("m5.large")]);
+        let p1 = assign_layout(&p0, &[mk2("m5.xlarge")]);
+        assert_eq!(
+            p1.slot_of("p"),
+            p0.slot_of("p"),
+            "a declared pool holds still"
+        );
+        assert_eq!(p1.ghosts().count(), 0);
+    }
+
+    /// The cascade's ORDER decides the slot key, so a reordering silently moves
+    /// every node that carries two of these keys. Reversing `POOL_LABELS` left
+    /// every other test green, so the precedence is pinned explicitly.
+    #[test]
+    fn pool_label_precedence_is_pinned_in_order() {
+        // Most-specific first: each key must beat every key after it.
+        for (i, first) in POOL_LABELS.iter().enumerate() {
+            for second in &POOL_LABELS[i + 1..] {
+                let n = labelled("n", &[(first, "wins"), (second, "loses")]);
+                assert_eq!(
+                    node_pool(&n, None),
+                    ("wins".to_string(), PoolSource::Provider(first)),
+                    "{first} should outrank {second}"
+                );
+            }
+        }
+        // And the modern spellings outrank their legacy twins specifically.
+        let aks = labelled(
+            "n",
+            &[
+                ("agentpool", "legacy"),
+                ("kubernetes.azure.com/agentpool", "modern"),
+            ],
+        );
+        assert_eq!(node_pool(&aks, None).0, "modern");
+    }
+
+    /// An unresolvable node must NOT be able to land in a real pool. Providers
+    /// ship pools named "default"; the sentinel deliberately is not that.
+    #[test]
+    fn the_default_pool_sentinel_cannot_collide_with_a_real_pool() {
+        let real = labelled("real", &[("cloud.google.com/gke-nodepool", "default")]);
+        let mut bare = fx::node("bare", Some("z-a"));
+        bare.metadata.labels = None;
+
+        let (real_pool, real_src) = node_pool(&real, None);
+        let (bare_pool, bare_src) = node_pool(&bare, None);
+        assert_eq!(real_pool, "default");
+        assert_eq!(
+            real_src,
+            PoolSource::Provider("cloud.google.com/gke-nodepool")
+        );
+        assert_eq!(bare_src, PoolSource::Default);
+        assert_ne!(
+            bare_pool, real_pool,
+            "an unresolvable node joined a real pool named 'default'"
+        );
     }
 
     /// The seam A2 will cross. Pinned so the bridge cannot drift from the

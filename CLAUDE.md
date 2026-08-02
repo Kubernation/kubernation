@@ -3277,8 +3277,40 @@ what makes the interesting logic unit-testable without a cluster.
   a `--pool-label` override precedence 1 without noting that wiring it reaches
   `Models::build`'s ~33 call sites — so `node_pool` takes it as a parameter
   (complete and tested) and the only caller passes `None` until a phase needs it.
-  All ten §0 claims verified TRUE (fourth round running). 8 mutations verified;
-  377 core + 87 GUI tests; GUI crate diff empty; no measurable perf change.
+  All ten §0 claims verified TRUE (fourth round running). GUI crate diff empty;
+  no measurable perf change. **Adversarial review (5 lenses, 18 raised, 10
+  confirmed → ~4 distinct defects, all fixed):** (1) THE ROOT, converged on by
+  three lenses — **ghosting discarded the departed occupant's identity**
+  (`insert(k, None)`), so REUSE could only choose positionally and the
+  decomposition §4 acceptance item "a node returning after departure claims its
+  own slot back" was *unimplementable from stored state*. Two nodes that drained
+  and returned together SWAPPED coordinates; a node returning after a blip landed
+  on a stranger's ground and left a permanent ghost at its own. Worse, the test
+  named for that property could not discriminate it — its fixture had exactly one
+  vacancy, so "lowest" and "own" were the same slot, and inverting REUSE to
+  `.max()` left all 15 tests green. Slots now carry `last_occupant`, RECLAIM
+  precedes lowest-ordinal REUSE, and a two-vacancy test kills the inversion.
+  (2) The **ordinal ceiling evicted a live node**: `saturating_add` returned
+  `u16::MAX` a second time, making the newcomer's key equal the incumbent's, and
+  `insert` overwrote it — two nodes in, one slot out, one node gone from the
+  layout (reproduced directly). Now `checked_add`, and a node with no honest
+  coordinate is left unplaced rather than given one a live node holds.
+  (3) `DEFAULT_POOL` was the literal `"default"`, which **collides with real
+  provider pools of that name** — the "silently join a real pool" failure the
+  cascade exists to prevent; it is now the `unpooled` sentinel, which no provider
+  emits. (4) Unpinned contracts: `changes_from`'s departure direction, the
+  lowest-ordinal rule (documented in three places, pinned by none), and
+  `POOL_LABELS` precedence — reversing the list left every test green, and the
+  order decides the slot key. Six previously-surviving mutations now fail.
+  **Checked against the decomposition doc** (added mid-round; A1's deliverable,
+  signature and gate all match §4) — which surfaced a further tension: §6's
+  settled pool row is "override → standard labels → single default" with no
+  instance-type, while the A1 guidance adds it as step 3. Consequence, now pinned
+  by test: a node whose INSTANCE TYPE changes vacates its slot, because the pool
+  is then an attribute — the milder form of the "inferred pools re-split" hazard
+  `node_pool` itself warns about. Kept (it only fires where the alternative is one
+  undifferentiated pool per zone) and flagged for the room rather than treated as
+  agreed. 384 core + 87 GUI tests.
 
 ## The pair (hot/warm)
 

@@ -80,8 +80,22 @@ pub struct Occupancy {
     pub pool_source: PoolSource,
 }
 
-/// The assignment for one frame. A slot with `None` is a **ghost** — its
-/// occupant departed and the position is retained, vacant.
+/// One position's state. `occupant` is `None` for a **ghost**.
+///
+/// `last_occupant` is what makes reclaim possible: a vacated slot remembers who
+/// held it, so a node returning after a drain gets ITS OWN ground back rather
+/// than whichever vacancy happens to sort lowest. Without it the guidance's
+/// "a node returning after departure claims its own slot back" is unimplementable
+/// from stored state — two nodes that drain and return together simply swap
+/// coordinates, which is the move this engine exists to prevent.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SlotState {
+    pub occupant: Option<Occupancy>,
+    pub last_occupant: Option<String>,
+}
+
+/// The assignment for one frame. A slot whose `occupant` is `None` is a
+/// **ghost** — its occupant departed and the position is retained, vacant.
 ///
 /// Equality is over the slot map alone, which is what makes idempotence a
 /// meaningful assertion. Per-frame *transitions* are deliberately not stored on
@@ -89,7 +103,7 @@ pub struct Occupancy {
 /// is computed by [`Layout::changes_from`] rather than baked into the state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Layout {
-    slots: BTreeMap<SlotKey, Option<Occupancy>>,
+    slots: BTreeMap<SlotKey, SlotState>,
 }
 
 /// One slot's transition between two layouts — A5's raw material.
@@ -108,26 +122,34 @@ impl Layout {
     }
     /// Every slot, ghosts included, in deterministic order.
     pub fn slots(&self) -> impl Iterator<Item = (&SlotKey, Option<&Occupancy>)> {
-        self.slots.iter().map(|(k, v)| (k, v.as_ref()))
+        self.slots.iter().map(|(k, v)| (k, v.occupant.as_ref()))
     }
     /// Slots with an occupant.
     pub fn occupied(&self) -> impl Iterator<Item = (&SlotKey, &Occupancy)> {
         self.slots
             .iter()
-            .filter_map(|(k, v)| v.as_ref().map(|o| (k, o)))
+            .filter_map(|(k, v)| v.occupant.as_ref().map(|o| (k, o)))
     }
     /// Vacant slots — positions whose occupant departed and which are held open
     /// rather than closed up. See [`assign_layout`] on why.
     pub fn ghosts(&self) -> impl Iterator<Item = &SlotKey> {
         self.slots
             .iter()
-            .filter_map(|(k, v)| v.is_none().then_some(k))
+            .filter_map(|(k, v)| v.occupant.is_none().then_some(k))
     }
     /// Where this node currently sits, if anywhere.
     pub fn slot_of(&self, node: &str) -> Option<&SlotKey> {
         self.slots
             .iter()
-            .find(|(_, v)| v.as_ref().is_some_and(|o| o.node == node))
+            .find(|(_, v)| v.occupant.as_ref().is_some_and(|o| o.node == node))
+            .map(|(k, _)| k)
+    }
+    /// The slot this node last held, occupied or not — the ground a returning
+    /// node reclaims.
+    pub fn home_of(&self, node: &str) -> Option<&SlotKey> {
+        self.slots
+            .iter()
+            .find(|(_, v)| v.last_occupant.as_deref() == Some(node))
             .map(|(k, _)| k)
     }
 
@@ -140,12 +162,12 @@ impl Layout {
                 let from = prior
                     .slots
                     .get(k)
-                    .and_then(|o| o.as_ref())
+                    .and_then(|s| s.occupant.as_ref())
                     .map(|o| o.node.clone());
                 let to = self
                     .slots
                     .get(k)
-                    .and_then(|o| o.as_ref())
+                    .and_then(|s| s.occupant.as_ref())
                     .map(|o| o.node.clone());
                 (from != to).then(|| SlotChange {
                     slot: k.clone(),
@@ -178,21 +200,31 @@ impl Layout {
 /// `prior` is just the previous frame's output. This function does not know
 /// whether that came from memory or from disk, and must not.
 pub fn assign_layout(prior: &Layout, observed: &[ObservedNode]) -> Layout {
-    let mut slots: BTreeMap<SlotKey, Option<Occupancy>> = BTreeMap::new();
     // Every prior slot survives as at least a ghost — nothing is ever removed,
-    // so ordinals never shift to close a gap.
-    for k in prior.slots.keys() {
-        slots.insert(k.clone(), None);
-    }
+    // so ordinals never shift to close a gap. `last_occupant` is carried so a
+    // returning node can find its own ground again.
+    let mut slots: BTreeMap<SlotKey, SlotState> = prior
+        .slots
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                SlotState {
+                    occupant: None,
+                    last_occupant: v.last_occupant.clone(),
+                },
+            )
+        })
+        .collect();
 
     // 1. CARRY. A node keeps its slot only while it still belongs to that
-    //    (zone, pool): a node that MOVES zone vacates the old slot and takes a
-    //    new one, rather than dragging coordinates across a continent.
+    //    (zone, pool): a node that MOVES zone or pool vacates the old slot and
+    //    takes a new one, rather than dragging coordinates across a continent.
     let mut unplaced: Vec<&ObservedNode> = Vec::new();
     for n in observed {
         match prior.slot_of(&n.name) {
             Some(k) if k.zone == n.zone && k.pool == n.pool => {
-                slots.insert(k.clone(), Some(occupancy(n)));
+                place(&mut slots, k.clone(), n);
             }
             _ => unplaced.push(n),
         }
@@ -205,24 +237,65 @@ pub fn assign_layout(prior: &Layout, observed: &[ObservedNode]) -> Layout {
     unplaced.sort_by_key(|n| (fnv1a64(&n.name), n.name.clone()));
 
     for n in unplaced {
-        // 2. REUSE the lowest-ordinal vacancy in this node's own (zone, pool).
-        let vacancy = slots
-            .iter()
-            .find(|(k, v)| v.is_none() && k.zone == n.zone && k.pool == n.pool)
-            .map(|(k, _)| k.clone());
-        let key = match vacancy {
+        // 2a. RECLAIM — the node's OWN former slot, if it is still vacant and
+        //     still in the right (zone, pool). This is what stops two nodes that
+        //     drained together from swapping coordinates when they return, and
+        //     what stops a returning node landing on a stranger's ground.
+        let own = prior.home_of(&n.name).filter(|k| {
+            k.zone == n.zone
+                && k.pool == n.pool
+                && slots.get(*k).is_some_and(|s| s.occupant.is_none())
+        });
+        // 2b. REUSE — otherwise the LOWEST-ordinal vacancy in this (zone, pool).
+        //     BTreeMap orders by (zone, pool, ordinal), so the first match in
+        //     iteration order is the lowest ordinal; asserted by test rather than
+        //     left to the map's ordering to imply.
+        let key = match own.cloned().or_else(|| {
+            slots
+                .iter()
+                .filter(|(k, v)| v.occupant.is_none() && k.zone == n.zone && k.pool == n.pool)
+                .map(|(k, _)| k.ordinal)
+                .min()
+                .map(|ordinal| SlotKey {
+                    zone: n.zone.clone(),
+                    pool: n.pool.clone(),
+                    ordinal,
+                })
+        }) {
             Some(k) => k,
             // 3. APPEND at the next ordinal.
-            None => SlotKey {
-                zone: n.zone.clone(),
-                pool: n.pool.clone(),
-                ordinal: next_ordinal(&slots, &n.zone, &n.pool),
+            None => match next_ordinal(&slots, &n.zone, &n.pool) {
+                Some(ordinal) => SlotKey {
+                    zone: n.zone.clone(),
+                    pool: n.pool.clone(),
+                    ordinal,
+                },
+                // The (zone, pool) has used every ordinal AND every slot is
+                // occupied — 65_536 live nodes in one pool of one zone. There is
+                // no honest coordinate to give, so the node is reported unplaced
+                // rather than handed one a live node already holds. The previous
+                // `saturating_add` did exactly that: it returned u16::MAX again
+                // and the insert silently EVICTED the incumbent, losing a node
+                // from the layout entirely.
+                None => continue,
             },
         };
-        slots.insert(key, Some(occupancy(n)));
+        place(&mut slots, key, n);
     }
 
     Layout { slots }
+}
+
+/// Seat a node, recording it as the slot's most recent occupant so it can
+/// reclaim the ground later.
+fn place(slots: &mut BTreeMap<SlotKey, SlotState>, key: SlotKey, n: &ObservedNode) {
+    slots.insert(
+        key,
+        SlotState {
+            occupant: Some(occupancy(n)),
+            last_occupant: Some(n.name.clone()),
+        },
+    );
 }
 
 fn occupancy(n: &ObservedNode) -> Occupancy {
@@ -239,13 +312,19 @@ fn occupancy(n: &ObservedNode) -> Occupancy {
 /// `max().unwrap_or(0)` on an empty set would hand back 0 — an ordinal a real
 /// slot may already hold. Empty means *no ordinals yet*, which is a different
 /// statement from *the highest ordinal is zero*.
-fn next_ordinal(slots: &BTreeMap<SlotKey, Option<Occupancy>>, zone: &str, pool: &str) -> u16 {
-    slots
+fn next_ordinal(slots: &BTreeMap<SlotKey, SlotState>, zone: &str, pool: &str) -> Option<u16> {
+    match slots
         .keys()
         .filter(|k| k.zone == zone && k.pool == pool)
         .map(|k| k.ordinal)
         .max()
-        .map_or(0, |m| m.saturating_add(1))
+    {
+        None => Some(0),
+        // `checked_add`, NOT `saturating_add`: saturating hands back u16::MAX a
+        // second time, and since the key is then equal to the incumbent's, the
+        // insert OVERWRITES a live node — it vanishes from the layout. Verified.
+        Some(m) => m.checked_add(1),
+    }
 }
 
 #[cfg(test)]
@@ -383,6 +462,125 @@ mod tests {
         assert_eq!(l1.ghosts().count(), 1);
     }
 
+    /// THE MULTI-VACANCY CASE, which the single-vacancy reclaim test could not
+    /// discriminate: with more than one ghost, a returning node must land on ITS
+    /// OWN ground, not on whichever vacancy sorts lowest.
+    ///
+    /// Without slot memory, `b` below takes `a`'s ordinal and leaves a permanent
+    /// ghost at its own — and if `a` and `b` drain and return together they
+    /// simply SWAP coordinates, which is precisely the move this engine exists
+    /// to prevent.
+    #[test]
+    fn a_returning_node_reclaims_its_own_ground_when_several_slots_are_vacant() {
+        let l0 = assign_layout(&Layout::default(), &fleet(&["a", "b", "c"], "z", "p"));
+        let (home_a, home_b) = (
+            l0.slot_of("a").cloned().expect("a"),
+            l0.slot_of("b").cloned().expect("b"),
+        );
+        assert_ne!(home_a.ordinal, home_b.ordinal);
+
+        // a and b drain together: two vacancies, so "lowest" and "own" differ.
+        let l1 = assign_layout(&l0, &fleet(&["c"], "z", "p"));
+        assert_eq!(l1.ghosts().count(), 2);
+
+        // b alone returns — it must NOT take a's ground just because it sorts lower.
+        let l2 = assign_layout(&l1, &fleet(&["b", "c"], "z", "p"));
+        assert_eq!(
+            l2.slot_of("b"),
+            Some(&home_b),
+            "b landed on a stranger's slot"
+        );
+
+        // Both return: they must not swap.
+        let l3 = assign_layout(&l1, &fleet(&["a", "b", "c"], "z", "p"));
+        assert_eq!(
+            l3.slot_of("a"),
+            Some(&home_a),
+            "a and b swapped coordinates"
+        );
+        assert_eq!(
+            l3.slot_of("b"),
+            Some(&home_b),
+            "a and b swapped coordinates"
+        );
+        assert_eq!(l3.ghosts().count(), 0);
+    }
+
+    /// The FALLBACK when a node has no ground of its own: the LOWEST-ordinal
+    /// vacancy. Stated in three places in the docs and previously pinned by
+    /// nothing — inverting it to `.max()` left every test green.
+    #[test]
+    fn a_newcomer_takes_the_lowest_ordinal_vacancy() {
+        let l0 = assign_layout(&Layout::default(), &fleet(&["a", "b", "c", "d"], "z", "p"));
+        let lowest = l0
+            .occupied()
+            .map(|(k, _)| k.ordinal)
+            .min()
+            .expect("some ordinal");
+        let gone: Vec<&str> = l0
+            .occupied()
+            .filter(|(k, _)| k.ordinal != 1)
+            .map(|(_, o)| o.node.as_str())
+            .collect();
+        // Drain everything except ordinal 1, leaving several vacancies.
+        let keep = fleet(
+            &l0.occupied()
+                .filter(|(k, _)| k.ordinal == 1)
+                .map(|(_, o)| o.node.as_str())
+                .collect::<Vec<_>>(),
+            "z",
+            "p",
+        );
+        let l1 = assign_layout(&l0, &keep);
+        assert!(l1.ghosts().count() >= 2, "need multiple vacancies");
+        assert!(!gone.is_empty());
+
+        // A NEWCOMER (no history) must take the lowest vacancy.
+        let mut obs = keep.clone();
+        obs.push(node("newcomer", "z", "p"));
+        let l2 = assign_layout(&l1, &obs);
+        assert_eq!(
+            l2.slot_of("newcomer").map(|k| k.ordinal),
+            Some(lowest),
+            "a newcomer did not take the lowest-ordinal vacancy"
+        );
+    }
+
+    /// The ordinal ceiling must not fabricate a coordinate. `saturating_add`
+    /// returned `u16::MAX` a second time, making the newcomer's key equal the
+    /// incumbent's — and the insert then EVICTED a live node from the layout.
+    #[test]
+    fn a_full_ordinal_space_never_evicts_a_live_node() {
+        let mut prior = Layout::default();
+        prior.slots.insert(
+            SlotKey {
+                zone: "z".into(),
+                pool: "p".into(),
+                ordinal: u16::MAX,
+            },
+            SlotState {
+                occupant: Some(Occupancy {
+                    node: "incumbent".into(),
+                    pool_source: PoolSource::Default,
+                }),
+                last_occupant: Some("incumbent".into()),
+            },
+        );
+        let l = assign_layout(&prior, &fleet(&["incumbent", "newcomer"], "z", "p"));
+        assert_eq!(
+            l.slot_of("incumbent").map(|k| k.ordinal),
+            Some(u16::MAX),
+            "the incumbent was evicted from its own slot"
+        );
+        assert_eq!(
+            l.slot_of("newcomer"),
+            None,
+            "a node with no honest coordinate must be left unplaced, not given one \
+             a live node holds"
+        );
+        assert_eq!(l.occupied().count(), 1);
+    }
+
     // --- Determinism -------------------------------------------------------
 
     #[test]
@@ -514,6 +712,36 @@ mod tests {
         // A layout compared with itself has no changes — which is what makes
         // "changed this frame" a relation rather than stored state.
         assert!(l1.changes_from(&l1).is_empty());
+    }
+
+    /// `changes_from` is A5's declared raw material, and it was tested only on
+    /// the replacement case — dropping either direction left every test green.
+    /// Both are pinned here: a slot present only in the NEW layout (an arrival at
+    /// fresh ground) and one present only in the PRIOR (a departure).
+    #[test]
+    fn changes_from_reports_both_directions_of_the_key_union() {
+        let l0 = assign_layout(&Layout::default(), &fleet(&["a"], "z", "p"));
+
+        // ARRIVAL at a slot the prior layout did not contain at all.
+        let l1 = assign_layout(&l0, &fleet(&["a", "b"], "z", "p"));
+        let arrivals = l1.changes_from(&l0);
+        assert_eq!(arrivals.len(), 1, "{arrivals:?}");
+        assert_eq!(arrivals[0].from, None, "the slot did not exist before");
+        assert_eq!(arrivals[0].to.as_deref(), Some("b"));
+
+        // DEPARTURE: the slot exists in both, occupied only in the prior.
+        let l2 = assign_layout(&l1, &fleet(&["a"], "z", "p"));
+        let departures = l2.changes_from(&l1);
+        assert_eq!(departures.len(), 1, "{departures:?}");
+        assert_eq!(departures[0].from.as_deref(), Some("b"));
+        assert_eq!(departures[0].to, None, "b left a ghost");
+
+        // And the reverse comparison sees the mirror image, so neither direction
+        // is silently dropped.
+        let mirrored = l1.changes_from(&l2);
+        assert_eq!(mirrored.len(), 1);
+        assert_eq!(mirrored[0].from, None);
+        assert_eq!(mirrored[0].to.as_deref(), Some("b"));
     }
 
     #[test]
