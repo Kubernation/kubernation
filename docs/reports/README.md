@@ -8,6 +8,7 @@ are diffable, greppable, and survive alongside the code they describe.
 
 | Report | Date | Outcome |
 |---|---|---|
+| [A3 — interior stability](a3-interior-stability.md) | 2026-08-03 | **Gate passed** — 3 of 3 incumbents moved, now 0 |
 | [A3-pre — an instrument that can see assignment](a3-pre-instrument.md) | 2026-08-03 | Baseline taken; **A3 is smaller than scoped** |
 | [Measurement session](measurement-session.md) | 2026-08-03 | Instruments committed; **A3 next**, on a measured trigger |
 | [A2 — wire the layout in](a2-wire-layout.md) | 2026-08-02 | **Gate passed** — the map holds still |

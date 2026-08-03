@@ -3520,6 +3520,59 @@ what makes the interesting logic unit-testable without a cluster.
   did not list: two ticks sharing no city (the natural code prints `0.0%`, which
   reads as perfect stability — it now refuses and exits 2) and the CARRIED case.
 
+- **A3 — interior stability** (2026-08-03, **v1.8.0**; from
+  `docs/kubernation-a3-interior-stability-guidance.md`, report in
+  `docs/reports/a3-interior-stability.md`): **THE GATE PASSED — adding a
+  workload that sorts ahead of a province's incumbents moved 3 of 3 before and
+  0 now**; delete-ahead 2 of 2 → 0; every event boundary in the run reports 0
+  MOVED-WITHIN / 0 CARRIED / 0 FOLLOWED, and 0 of 13 cities realm-wide. Read
+  per-province, per A3-pre (the fleet-wide 27.3% → 0% is a packing artefact that
+  improves by adding nodes). **The fix is two lines**: the row seed became
+  name-derived, symmetric with the column that already was —
+  `city_dy(&c.r, rows)` replacing `(i as u16) % rows`, hashing the **full ref**
+  through the `Display` impl `WorkloadRef` already provides (so a name shared
+  across namespaces seeds differently), with `rows.max(1)` guarding the modulo.
+  **§2.1 decided: (a) ACCEPT the residual**, with the measurement behind it —
+  hashing removes the *index* dependency but not the *collision* one (two cities
+  can hash alike and the probe resolves them in ref order), measured at **11.4%
+  of cities displaced on a crowded 4-row/6-city province** and 0 on the ordinary
+  1–2-city case, versus 100% of incumbents on every insertion before; per-city
+  slots in `Layout` (option b) deliberately NOT built, with a 20% test ceiling as
+  the tripwire. **§4's consumer audit produced one real finding:** the hit-test
+  **forgiveness ring is clipped by the province boundary**, so a city on an edge
+  row has a smaller target — correct (extending it would let a city claim a
+  neighbouring node's ground) but A3 makes edge rows ORDINARY where round-robin
+  always put the first city on row 0; the existing ring test failed on the first
+  run and the invariant is now asserted over "every ring cell inside the
+  province". **Coast markers cost nothing**: hashing clusters more (a 4-row/
+  4-city province occupies 2.9 distinct rows vs the index seed's 4.0) but drops
+  are zero at every realistic density — only a 2-row province with 6+ exposed
+  cities drops any, where the index seed already did (0.535 vs 0.450) — pinned by
+  a test giving every city a Service. Everything else reading `City.x/y` is
+  position-agnostic (keep-out, depth sort, label de-confliction, `city_pos`,
+  `--center`, blast, IMPACT, almanac). **§6 fixture:** `workloads.sh` ships a
+  co-located trio so multi-city provinces exist by default, pinned by
+  **(pool, index)** — a new `churn.kubernation.io/index` label — rather than by
+  hostname, since node names carry a generation token a refresh rewrites and a
+  hostname pin would strand them Pending. **GUIDANCE DEFECT, inherited from my
+  own A3-pre report:** §0 claim 10, §5's fixture instruction and §7's gate
+  condition all assumed the scenario targets the allocatable-less node and so
+  measured a *defaulted* extent. It doesn't — `lib.sh:131` puts that node in the
+  **`sys`** pool at index 0, while the target reports `memory: 128Gi` and its
+  province records `"h": 7, "extent_source": "Capacity"`. §7's requirement was
+  already satisfied; the A3-pre report is corrected with a retraction. **A
+  near-miss worth keeping:** the collision test first generated names from a
+  counter and measured **0.0%** — FNV-1a's low bits advance by a constant for
+  names differing in a trailing char and `PRIME % CITY_COLS == 1`, so six
+  sequential names take six *consecutive* columns and cannot collide; rewritten
+  with a fixed LCG it reads 11.4%. Third round running where an instrument
+  emitted a plausible number for a reason unrelated to what it claimed to
+  measure. 407 core + 90 GUI tests; gui-smoke 51. **Deferred:** decomposition
+  §4's instability source 5 (islands depending on continent height) — never
+  measured, untouched; `city_dx` still hashes the bare name while the row hashes
+  the full ref (an asymmetry, not a defect — changing it would move every city
+  once).
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

@@ -8,6 +8,16 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-08-03
+
+### Fixed
+- **A workload no longer shifts its neighbours on the map.** Deploying something
+  used to move every other workload already sited on that node by a row, and
+  deleting it moved them all back — because a city's row came from its position
+  in an alphabetical list of its neighbours rather than from anything about
+  itself. Cities now sit where their own identity puts them, so an unrelated
+  deployment leaves them where you last saw them.
+
 ## [1.7.2] — 2026-08-03
 
 ### Development

@@ -261,11 +261,21 @@ a node routinely hosts several workloads. Worth deciding whether
 `workloads.sh` should pin a few workloads together permanently, so other
 scenarios and the dev loop see multi-city provinces too.
 
-### A caution about the target node
+### ~~A caution about the target node~~ — **this was wrong; retracted**
 
-The scenario picks the first `mem` node, which on this fixture is
-`churn-mem-g1-000` — the deliberately **allocatable-less** node from A-pre. It
-therefore takes the *declared default* extent rather than a measured one. That
-did not affect the result (the mechanism is index-based, not size-based), but a
-future reader comparing row counts should know the province is 5 rows by
-fallback, not by capacity.
+> The original text said the scenario targets `churn-mem-g1-000`, "the
+> deliberately allocatable-less node from A-pre", and therefore measured on a
+> province sized by the *declared default* extent.
+>
+> **That is false.** `lib.sh:131` puts the allocatable-less node in the **`sys`**
+> pool at index 0 — `churn-sys-g1-000`, which is also what the attention queue
+> names in the gate frames. The scenario's target reports
+> `memory: 128Gi`, and its province record in the dump reads
+> `"h": 7, "extent_source": "Capacity"` — a **measured** extent.
+>
+> The error propagated: the A3 guidance took it up as claim 10, as a §5 fixture
+> instruction ("do not use the allocatable-less node as the test province.
+> A3-pre's scenario used it; change that too"), and as a §7 gate condition ("a
+> multi-city province whose extent is measured, not defaulted"). That condition
+> was already satisfied, and nothing needed changing. Caught in A3's §0
+> verification, by checking the claim instead of inheriting it.

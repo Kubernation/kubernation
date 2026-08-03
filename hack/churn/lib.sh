@@ -39,7 +39,7 @@ kc() { kubectl --context "$CTX" "$@"; }
 # (verified), so this reproduces a real, if rare, node. See the README for what
 # KuberNation actually renders for such a node — it is not what you would hope.
 node_yaml() {
-  local name="$1" zone="$2" pool="$3" key="$4" cpu="$5" mem="$6" itype="$7" noalloc="${8:-}"
+  local name="$1" zone="$2" pool="$3" key="$4" cpu="$5" mem="$6" itype="$7" noalloc="${8:-}" idx="${9:-}"
   cat <<EOF
 ---
 apiVersion: v1
@@ -57,6 +57,7 @@ metadata:
     node-role.kubernetes.io/agent: ""
     topology.kubernetes.io/zone: ${zone}
     churn.kubernation.io/pool: ${pool}
+    churn.kubernation.io/index: "${idx}"
 EOF
   # The provider-specific key is the one a real fallback cascade must handle.
   # `edge` has none — that is the point of it.
@@ -129,7 +130,7 @@ pool_nodes() {
     # Exactly one node in the fleet has no allocatable (guidance §4).
     noalloc=""
     if [ "$pool" = "sys" ] && [ "$i" -eq 0 ]; then noalloc="yes"; fi
-    node_yaml "$name" "$zone" "$pool" "$key" "$cpu" "$mem" "$itype" "$noalloc"
+    node_yaml "$name" "$zone" "$pool" "$key" "$cpu" "$mem" "$itype" "$noalloc" "$(printf '%03d' "$i")"
   done
 }
 

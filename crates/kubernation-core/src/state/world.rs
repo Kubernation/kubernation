@@ -392,6 +392,28 @@ fn city_dx(name: &str) -> u16 {
     CITY_COL0 + (fnv1a64(name) % CITY_COLS as u64) as u16
 }
 
+/// A city's row inside its province, from a stable hash of the workload rather
+/// than from its index among siblings.
+///
+/// The index was the whole of A3's defect. A city's row was `i % rows` over the
+/// `WorkloadRef`-sorted sibling list, so anything that changed how many siblings
+/// sorted *ahead* of it moved it: adding one unrelated workload to a province
+/// moved every incumbent on it by a row (measured 3 of 3, and the inverse on
+/// delete), while scaling, node churn, and adding a later-sorting workload moved
+/// nothing. Hashing makes the row a property of the workload's identity, so a
+/// stranger's arrival cannot shift it.
+///
+/// Hashed on the FULL ref rather than the bare name: two workloads of different
+/// kinds or in different namespaces may share a name, and seeding them
+/// identically would put them in the same row for no reason.
+///
+/// `rows` is `h - 1` for the province's extent class, so it is at least 2 in
+/// practice; `max(1)` is here because a modulo by zero is a panic, and a
+/// fabricated row would collide with a real cell rather than announce itself.
+fn city_dy(r: &WorkloadRef, rows: u16) -> u16 {
+    (fnv1a64(&r.to_string()) % u64::from(rows.max(1))) as u16
+}
+
 /// Westmost column a settlement may occupy, and how many the preferred band
 /// spans. The overflow band is wider but still short of the east shore, where
 /// the coast markers moor.
@@ -637,13 +659,15 @@ pub fn build_world(
             let Some(y) = province_y(layout, &zone.name, tile) else {
                 continue;
             };
-            // Cities keep their A2 hash-derived column and index-derived row,
-            // but the province no longer grows to fit them, so each one takes a
-            // cell no other city holds. See `city_cell`.
+            // Both of a city's seeds are now derived from the workload itself —
+            // column from its name, row from its full ref — so its cell depends
+            // on WHO it is, not on how many siblings happen to sort ahead of it.
+            // The probe still resolves an actual collision, and that residual is
+            // deliberate: see `city_cell`.
             let rows = h.saturating_sub(1).max(1);
             let mut taken: BTreeSet<(u16, u16)> = BTreeSet::new();
-            for (i, c) in cities.iter_mut().enumerate() {
-                let cell = city_cell(cx, y, rows, city_dx(&c.r.name), (i as u16) % rows, &taken);
+            for c in cities.iter_mut() {
+                let cell = city_cell(cx, y, rows, city_dx(&c.r.name), city_dy(&c.r, rows), &taken);
                 taken.insert(cell);
                 c.x = cell.0;
                 c.y = cell.1;
@@ -937,9 +961,35 @@ mod tests {
         let city = w.cities().next().expect("a city").clone();
         // The settlement's own cell resolves to the city…
         assert!(matches!(w.region_at(city.x, city.y), Region::City(..)));
-        // …and so does the forgiveness ring around it.
-        assert!(matches!(w.region_at(city.x + 1, city.y), Region::City(..)));
-        assert!(matches!(w.region_at(city.x, city.y + 1), Region::City(..)));
+        // …and so does every cell of the forgiveness ring THAT LIES INSIDE THE
+        // PROVINCE. The clip is not incidental: `region_at` finds the province
+        // by y-range first, so a ring cell below a city on the province's last
+        // row belongs to the next province's band — extending the ring across
+        // that boundary would let a city claim ground on a neighbouring node,
+        // which is worse than a slightly smaller target. Cities sit on hashed
+        // rows now, so the edge rows are ordinary rather than rare, and this
+        // asserts the invariant rather than one fixture's happening row.
+        let prov = w
+            .continents
+            .iter()
+            .flat_map(|c| &c.provinces)
+            .find(|p| p.cities.iter().any(|c| c.r == city.r))
+            .expect("the city's province");
+        let mut ring_hits = 0;
+        for dy in -1i32..=1 {
+            for dx in -1i32..=1 {
+                let (rx, ry) = (city.x as i32 + dx, city.y as i32 + dy);
+                if ry < prov.y as i32 || ry >= (prov.y + prov.h) as i32 {
+                    continue; // outside the province — not this city's to claim
+                }
+                assert!(
+                    matches!(w.region_at(rx as u16, ry as u16), Region::City(..)),
+                    "ring cell ({rx}, {ry}) inside the province does not resolve to the city"
+                );
+                ring_hits += 1;
+            }
+        }
+        assert!(ring_hits >= 6, "the ring should cover at least two rows");
         // But a cell well east on the same row is the PROVINCE (the node), not
         // the city — the whole point of the fix.
         assert!(
@@ -1325,6 +1375,226 @@ mod tests {
                 ),
                 other => panic!("{} does not hit-test as a city: {other:?}", c.r.name),
             }
+        }
+    }
+
+    /// A province with several cities on one node, for the sibling-order tests.
+    /// `names` are Deployments in `demo`, all pinned to the one node.
+    fn crowded(names: &[&str]) -> ObservedWorld {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("only", Some("z-a")));
+        for name in names {
+            s.deployment(fx::deployment("demo", name, 1, 1));
+            s.replicaset(fx::replicaset("demo", &format!("{name}-rs"), name));
+            s.pod(fx::pod_owned(
+                fx::pod("demo", &format!("{name}-rs-1"), Some("only")),
+                "ReplicaSet",
+                &format!("{name}-rs"),
+            ));
+        }
+        world
+    }
+
+    /// Every city's cell, keyed by workload name.
+    fn cells(w: &WorldModel) -> BTreeMap<String, (u16, u16)> {
+        w.continents
+            .iter()
+            .flat_map(|c| &c.provinces)
+            .flat_map(|p| &p.cities)
+            .map(|c| (c.r.name.clone(), (c.x, c.y)))
+            .collect()
+    }
+
+    /// **A3's GATE, as a unit test.** Adding a workload that sorts AHEAD of the
+    /// incumbents on a province must move none of them.
+    ///
+    /// The row used to be `i % rows` over the `WorkloadRef`-sorted sibling list,
+    /// so an insertion shifted every later index and every incumbent with it —
+    /// measured on the churn fleet as 3 of 3, each by exactly one row.
+    #[test]
+    fn adding_a_workload_that_sorts_first_moves_no_incumbent() {
+        let before = cells(&Models::build(&crowded(&["m-one", "m-two", "m-three"])).world);
+        let after =
+            cells(&Models::build(&crowded(&["a-newcomer", "m-one", "m-two", "m-three"])).world);
+        assert_eq!(before.len(), 3);
+        assert_eq!(after.len(), 4);
+        for (name, cell) in &before {
+            assert_eq!(
+                after.get(name),
+                Some(cell),
+                "{name} moved when an unrelated workload was added"
+            );
+        }
+    }
+
+    /// The inverse: removing a workload that sorts ahead must move no survivor.
+    #[test]
+    fn removing_a_workload_that_sorts_first_moves_no_survivor() {
+        let before = cells(&Models::build(&crowded(&["a-newcomer", "m-one", "m-two"])).world);
+        let after = cells(&Models::build(&crowded(&["m-one", "m-two"])).world);
+        assert_eq!(after.len(), 2);
+        for (name, cell) in &after {
+            assert_eq!(
+                before.get(name),
+                Some(cell),
+                "{name} moved when a sibling left"
+            );
+        }
+    }
+
+    /// PLACEMENT IS A PURE FUNCTION OF THE CITY SET — not of arrival order.
+    ///
+    /// The seeds are hashes of the workload, and the probe walks a `taken` set
+    /// in `WorkloadRef` order, which `build_world` sorts. So the same set
+    /// presented in a different order must produce identical cells.
+    #[test]
+    fn the_same_workloads_land_identically_whatever_order_they_arrive_in() {
+        let a = cells(&Models::build(&crowded(&["alpha", "beta", "gamma", "delta"])).world);
+        let b = cells(&Models::build(&crowded(&["delta", "gamma", "beta", "alpha"])).world);
+        assert_eq!(a.len(), 4);
+        assert_eq!(a, b);
+    }
+
+    /// The row seed hashes the FULL ref, so a name shared across namespaces does
+    /// not force two workloads onto the same row for no reason.
+    #[test]
+    fn the_same_name_in_two_namespaces_seeds_differently() {
+        let r = |ns: &str| WorkloadRef {
+            kind: WorkloadKind::Deployment,
+            namespace: ns.into(),
+            name: "web".into(),
+        };
+        let rows = 4;
+        assert_ne!(
+            city_dy(&r("alpha"), rows),
+            city_dy(&r("beta"), rows),
+            "a bare-name seed would have collided here"
+        );
+    }
+
+    /// A one-row province is a real input: every city seeds to row 0 and the
+    /// column probe has to do the separating. It must not divide by zero.
+    #[test]
+    fn a_single_row_province_places_every_city_by_column() {
+        let r = |n: &str| WorkloadRef {
+            kind: WorkloadKind::Deployment,
+            namespace: "demo".into(),
+            name: n.into(),
+        };
+        for n in ["a", "b", "c"] {
+            assert_eq!(city_dy(&r(n), 1), 0);
+        }
+        assert_eq!(city_dy(&r("a"), 0), 0, "rows=0 must not panic");
+    }
+
+    /// THE RESIDUAL, SIZED. Hashing removes the *index* dependency; it does not
+    /// remove the *collision* dependency, and this pins how much is left.
+    ///
+    /// Two cities can still hash to one cell, and the probe then resolves them
+    /// in `WorkloadRef` order — so a newcomer that both sorts ahead of an
+    /// incumbent AND collides with it still displaces it. That is bounded to
+    /// actual collisions rather than to every insertion, which is the whole
+    /// improvement: before, ONE arrival moved EVERY incumbent.
+    ///
+    /// The decision (A3 §2.1) is to accept that residual rather than reserve
+    /// per-city slots in the layout store, and this test is the evidence behind
+    /// it. If a future change makes collisions common, this fires.
+    #[test]
+    fn cell_collisions_stay_rare_enough_to_accept() {
+        // A 4-row province (the declared-default extent) with six cities is a
+        // crowded but realistic one. Names come from a fixed LCG rather than a
+        // counter, and that is load-bearing: FNV-1a's low bits advance by a
+        // constant for names differing only in a trailing character
+        // (`PRIME % CITY_COLS == 1`), so `svc-0`..`svc-5` take six CONSECUTIVE
+        // columns and cannot collide at all. Written that way this test
+        // measured a 0% collision rate — a property of the name generator, not
+        // of the placement.
+        const ROWS: u16 = 4;
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut displaced = 0usize;
+        let mut total = 0usize;
+        for _ in 0..200u32 {
+            let names: Vec<String> = (0..6).map(|_| format!("w{:x}", next())).collect();
+            let mut taken: BTreeSet<(u16, u16)> = BTreeSet::new();
+            let mut refs: Vec<WorkloadRef> = names
+                .iter()
+                .map(|n| WorkloadRef {
+                    kind: WorkloadKind::Deployment,
+                    namespace: "demo".into(),
+                    name: n.clone(),
+                })
+                .collect();
+            refs.sort();
+            for r in &refs {
+                let want = (city_dx(&r.name), city_dy(r, ROWS));
+                let got = city_cell(0, 0, ROWS, want.0, want.1, &taken);
+                taken.insert(got);
+                total += 1;
+                if got != (want.0, 1 + want.1) {
+                    displaced += 1;
+                }
+            }
+        }
+        let pct = 100.0 * displaced as f64 / total as f64;
+        assert!(
+            pct < 20.0,
+            "{displaced} of {total} cities ({pct:.1}%) were displaced from their \
+             hashed cell — collisions are no longer rare, so §2.1's decision to \
+             accept the residual instead of reserving slots needs revisiting"
+        );
+    }
+
+    /// COAST MARKERS SURVIVE THE HASHED ROWS.
+    ///
+    /// The §4 consumer question. Markers moor on their city's row and take a
+    /// free column in the ocean strip, dropping when the row fills — so a row
+    /// seed that CLUSTERS cities onto fewer distinct rows would drop more of
+    /// them. Hashing does cluster more than the old round-robin index did
+    /// (independent draws versus a perfect spread), so this checks the
+    /// consequence rather than assuming it away.
+    #[test]
+    fn hashed_rows_do_not_cost_coast_markers() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("only", Some("z-a"))); // smallest extent → two city rows
+        let names = ["a-app", "b-app", "c-app", "d-app"];
+        for name in names {
+            s.deployment(fx::deployment("demo", name, 1, 1));
+            s.replicaset(fx::replicaset("demo", &format!("{name}-rs"), name));
+            let mut pod = fx::pod_owned(
+                fx::pod("demo", &format!("{name}-rs-1"), Some("only")),
+                "ReplicaSet",
+                &format!("{name}-rs"),
+            );
+            pod.metadata
+                .labels
+                .get_or_insert_with(Default::default)
+                .insert("app".into(), name.into());
+            s.pod(pod);
+            s.service(fx::service(
+                "demo",
+                &format!("{name}-svc"),
+                &[("app", name)],
+            ));
+        }
+        let m = Models::build(&world);
+        let cont = &m.world.continents[0];
+        // Every exposed city keeps a marker: four cities, four harbours. The
+        // strip is OCEAN_GAP wide, so this only fails if the rows cluster hard
+        // enough to put more than OCEAN_GAP cities on one row.
+        assert_eq!(
+            cont.coast.len(),
+            names.len(),
+            "a marker was dropped — the hashed rows crowded the ocean strip"
+        );
+        let mut seen: BTreeSet<(u16, u16)> = BTreeSet::new();
+        for mk in &cont.coast {
+            assert!(seen.insert((mk.x, mk.y)), "two markers share a cell");
         }
     }
 

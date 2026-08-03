@@ -60,6 +60,49 @@ spec:
 EOF
   done
 
+  # A CO-LOCATED TRIO, so at least one province carries several cities by
+  # default.
+  #
+  # Without this every province holds exactly ONE city — seven workloads spread
+  # over a hundred nodes — and a single-city province cannot exhibit a
+  # sibling-order effect at all. A3-pre found the fixture could not exercise its
+  # own gate: the scenario had to build the conditions itself before it could
+  # measure anything. Real clusters routinely put several workloads on a node,
+  # so the fixture should too.
+  #
+  # Pinned by (pool, index) rather than by hostname: node names carry a
+  # generation token that a rolling refresh rewrites, so a hostname pin would
+  # strand these as Pending the moment that pool was refreshed. `mem` index 001
+  # is deliberately NOT the node scenario 7 targets (mem index 000), so the
+  # scenario's own construction and this one stay independent.
+  for t in alpha bravo charlie; do
+    cat <<EOF
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: colo-${t}
+  namespace: churn
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: colo-${t}}
+  template:
+    metadata:
+      labels: {app: colo-${t}}
+    spec:
+      tolerations: [{operator: Exists}]
+      nodeSelector:
+        churn.kubernation.io/pool: mem
+        churn.kubernation.io/index: "001"
+      containers:
+        - name: app
+          image: fake.registry/colo-${t}:1.0
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+EOF
+  done
+
   cat <<'EOF'
 ---
 apiVersion: apps/v1
