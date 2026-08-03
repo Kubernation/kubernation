@@ -226,4 +226,5 @@ jobs:
             launch — choose "More info ▸ Run anyway".
 
             Run against your current kube-context. See the README for flags and RBAC
-            requirements.
+            requirements, and [CHANGELOG.md](https://github.com/Kubernation/kubernation/blob/${{ github.ref_name }}/CHANGELOG.md)
+            for what changed.

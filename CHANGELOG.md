@@ -10,6 +10,11 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [1.9.0] — 2026-08-03
 
+The first release since 1.6.0. It carries the work versioned 1.7.0, 1.7.1, 1.7.2
+and 1.8.0, none of which was tagged — so the map fixes below reach users for the
+first time here. **If your cluster has more than one nodepool in a zone, the
+1.7.0 fix matters: nodes were being drawn on top of each other.**
+
 ### Added
 - **The map is remembered between sessions.** Where each node sits is saved per
   context and restored when you reopen, so the shape you learned yesterday is
