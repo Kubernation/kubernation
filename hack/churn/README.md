@@ -129,6 +129,39 @@ A flipbook beats prose: "does the map hold still?" is answered by alternating tw
 images, not by describing them. Set `CAPTURE=1` (the default) on a scenario to
 get a frame per wave.
 
+**Use `gate.sh`, not `capture.sh` in a loop.** Each `capture.sh` frame is its own
+process, so its layout is assigned from scratch — and assignment is deterministic
+in the node set, so such a flipbook renders identically whether or not the layout
+carry exists at all. It measures determinism, which was never in doubt.
+`gate.sh` drives one long-lived session through a scenario with
+`--shot-seq`/`--shot-interval`, which is the only regime in which the carry is
+observable. It refuses to run when the scenario would churn nothing.
+
+**Reset and settle before every capture set.** Runs chain: reserved ground
+accumulates, so a second run starts from a partly-grey map and is not comparable
+with the first.
+
+## Measuring
+
+`compare.py A B --class land|settlement` diffs two frames over the play area,
+exact match, and reports identical / class-lost / class-gained / changed-in-place.
+The method is documented at the top of the file; `compare-selftest.py` breaks
+what it measures and confirms it notices, including that the crop really does
+exclude the docked column whose counters change every frame.
+
+Read `DELTA / FOOTPRINT`, not the share of map area. Land covers ~33% of this map
+and settlements ~0.14%, so the same map-area percentage means two wildly
+different things — by map area the cities look *more* stable than the terrain,
+and by their own footprint they are about ninety times less so.
+
+`reshuffle.py` answers a question `compare.py` structurally cannot: **how many
+provinces a refresh would MOVE under the pre-A2 ordering.** A pixel diff sees the
+rendered map, and permuting uniformly-green provinces inside a contiguous
+landmass changes almost nothing — a refresh that moved 15 of one zone's 27
+untouched provinces registered as ~1% of land area. It works from the node names
+alone, needs no capture, and is the instrument to reach for when the question is
+about placement rather than appearance.
+
 ## Not
 
 **Not CI.** A hundred-node cluster per PR is not a reasonable ask. This is a

@@ -46,7 +46,7 @@ path="${OUT}/${name}.png"
 # replaced, so framing must not depend on a node that can vanish mid-scenario:
 # fall back to a fit-the-world view if the anchor is gone.
 anchor=("--center" "$CENTER")
-if ! kc get node "$CENTER" >/dev/null 2>&1; then
+if [ -n "$CENTER" ] && ! kc get node "$CENTER" >/dev/null 2>&1; then
   # LOUD, not silent: a reframed capture is not comparable with its neighbours,
   # and a flipbook that quietly changes framing mid-sequence reads as movement.
   echo "  !! anchor '$CENTER' is gone — this frame is NOT comparable." >&2

@@ -40,10 +40,15 @@ SETTLE="${SETTLE:-12}"
 mkdir -p "$OUT"
 rm -f "$OUT"/frame-*.png
 
-log "flipbook: ${SHOTS} frames, ${INTERVAL}s apart, one session (anchor ${CENTER})"
+# CENTER= (empty) frames the whole world instead of an anchor. The fit runs once
+# on first sync, so the camera still holds still for the rest of the session.
+anchor=()
+[ -n "$CENTER" ] && anchor=("--center" "$CENTER")
+
+log "flipbook: ${SHOTS} frames, ${INTERVAL}s apart, one session (anchor ${CENTER:-fit})"
 ( cd ../.. && cargo run -q -p kubernation -- \
     --context "$CTX" \
-    --center "$CENTER" \
+    ${anchor[@]+"${anchor[@]}"} \
     --zoom "$ZOOM" \
     --overlay terrain \
     --map-style plain \

@@ -56,6 +56,13 @@ provinces and settlements.
 replacement.** No province moved. Nearly all the remaining change is *colour*: a
 slot whose node departed keeps its ground and goes grey.
 
+> **Read with the caveat in [the measurement session](measurement-session.md)
+> §4.** This figure is sound for what it measures — the rendered map — but a
+> pixel diff is nearly blind to a *permutation* of which node sits where when
+> every node is healthy: the same metric reports ~1% for the pre-A2 layout,
+> which moves 27% of its untouched provinces. The assignment evidence is the
+> core tests and `hack/churn/reshuffle.py`, not this number.
+
 Cities did move — settlement pixels change during the run, and one workload
 crossed the map when its pods rescheduled. That is instability sources 2/3/5,
 which the guidance assigns to A3 and tells A2 not to touch.

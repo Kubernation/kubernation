@@ -3424,6 +3424,56 @@ what makes the interesting logic unit-testable without a cluster.
   scenario (A3's gate has no instrument — all six are node-level);
   instance-type-as-pool-fallback still open from A1.
 
+- **Measurement session — the pixel gate cannot see a permutation** (2026-08-03,
+  unversioned; no product change, test assets + docs like A-pre; from
+  `docs/kubernation-measurement-session-guidance.md`, report in
+  `docs/reports/measurement-session.md`): turned A2's ad-hoc measurement into
+  committed instruments, quantified the axis A2 left unmeasured, and retired the
+  baseline debt. All seven §1 claims TRUE, including the session-invalidating
+  claim 6 (settlements ARE colour-separable: `POP_CALM` has exactly two uses in
+  the GUI, both settlement, and `CRIT`/`WARN` are 0 px in the crop). **Two
+  inversions, both load-bearing.** (1) §3's prescribed metric — delta as a share
+  of MAP area — reverses the city-vs-province comparison: by map area cities look
+  2.5× more stable (0.164% vs 0.413%), by their own footprint they are 95× LESS
+  stable (120.5% vs 1.26%), because land covers 33% of the map and settlements
+  0.14%. `compare.py` now prints both and the README says which to read. (2) **The
+  before/after baseline is not commensurable, for a deeper reason than framing:
+  a pixel diff measures the RENDERED map, while the instability A2 removes is a
+  permutation of which node occupies which ground — and permuting uniformly-green
+  provinces inside a contiguous pre-A2 landmass changes almost no pixels.** The
+  naive read (v1.6.0 1.09% vs A2 1.26%) says A2 made things worse; measured
+  directly by `reshuffle.py` (rank in the pre-A2 `(fnv1a64(name), name)` order,
+  computable from node names alone) the pre-A2 layout moves **27% of untouched
+  provinces — 15 of z-a's 27, every one by exactly ten slots** — where A2 moves 0
+  by construction. Mechanism: **FNV-1a mixes trailing bytes mainly into the low
+  bits, so names sharing a prefix share their high bits and the ordering clusters
+  by name prefix** (→ by pool, with conventional naming); a refresh rewrites a
+  generation token mid-name and moves that pool's whole cluster, so `sys` hashing
+  `0xd8…`→`0xfd…` jumped from between `burst` and `edge` to after `edge` and
+  pushed every `edge` province up ten slots — **renaming one pool's nodes moved a
+  different pool's provinces.** (Incidental: that clustering meant pre-A2
+  provinces were already grouped by pool *by accident*, which A2's zone-wide
+  ordinals deliberately gave up; the decomposition's `region ← pool ∩ zone` row is
+  still unowned.) **Cities:** node churn moved none (frames 00→09 of the A2 run,
+  a full 30-node refresh, settlement delta **0.000%**); a *workload appearing*
+  moved an incumbent 20px WITHIN its province — instability source 2/3, and a
+  measured violation of A3's gate. Coverage is honestly 2 of 7 workloads and no
+  framing fixes it (zooming out far enough to hold every city crosses into World
+  scale, where the GUI stops drawing the name plates the classifier detects), so
+  **city stability is not measurable by pixels at realm scale** — A3-pre needs a
+  positional dump instead. Instruments: `compare.py` (crop + classifier as flags,
+  exact match, four buckets + footprint; reproduces A2's published figures
+  exactly), `compare-selftest.py` (§6's four tests, committed — a comparator
+  always emits a plausible percentage), `reshuffle.py`. Two near-misses caught in
+  flight: the settlement blob merge fused neighbouring settlements (a banner sits
+  ~22px above its own chip while a neighbour's is ~21px aside, so proximity can't
+  discriminate — X-overlap can), and the intra/inter verdict compared component
+  **ids across two independently-labelled frames**, confidently reporting ACROSS
+  when the truth is WITHIN (both frames must now agree, else INDETERMINATE).
+  Recorded for the next round: the GUI's f32 colours reach the framebuffer by
+  **truncation, not rounding** — `0.83 × 255` is 211 — and getting it backwards
+  matches nothing at all, silently.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

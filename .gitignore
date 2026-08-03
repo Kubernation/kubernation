@@ -33,3 +33,4 @@ hack/churn/out/
 
 # scratch capture dirs (the A2 gate evidence lives in docs/reports/a2-gate/)
 hack/churn/*-a2/
+__pycache__/
