@@ -110,6 +110,19 @@ struct Args {
     /// Seconds between the frames of a `--shot-seq` run.
     #[arg(long = "shot-interval", value_name = "SECS", default_value_t = 10.0)]
     shot_interval: f64,
+
+    /// Append a positional record per tick to PATH (JSON-lines). Dev instrument.
+    ///
+    /// A screenshot shows what was RENDERED; this shows what the model
+    /// ASSIGNED. The two are not the same, and the difference is the point:
+    /// permuting uniformly-green provinces changes almost no pixels, so a
+    /// pixel diff reported ~1% for a pre-A2 layout that moved 27% of its
+    /// provinces. Placement has to be measured where it is decided.
+    ///
+    /// A pure read of `WorldModel` — no new model fields, no new observation
+    /// path — so it cannot drift from what the map is actually drawing.
+    #[arg(long = "dump-positions", value_name = "PATH")]
+    dump_positions: Option<PathBuf>,
     /// On sync, select the first city whose name contains this and open
     /// its panel (development verification)
     #[arg(long)]
@@ -459,6 +472,82 @@ fn parse_tier(s: &str) -> Option<kubernation_core::state::chaos::Tier> {
 
 /// The namespace the Charter focuses on: a single active filter namespace if one
 /// is selected, else `default` (if present) or the first observed namespace.
+/// Append one tick's assignment to a JSON-lines file: every city, every
+/// province, every reserved slot.
+///
+/// Deliberately a read of the FINISHED `WorldModel` rather than a trace of the
+/// placement algorithm. The gate asks where things ended up; a trace would
+/// couple the instrument to internals that are about to change, and could
+/// disagree with what the map draws. Nothing here computes a position.
+///
+/// A city's cell is recorded twice over: absolutely (`x`, `y`) and as an offset
+/// from its province's origin (`ox`, `oy`). The offset is what separates the
+/// two failure modes — a settlement moving *inside* its province is placement
+/// instability, while a settlement carried along by a province that itself
+/// relocated is a layout question, and only the offset can tell them apart.
+fn dump_positions(
+    path: &std::path::Path,
+    tick: u64,
+    models: &kubernation_core::state::model::Models,
+) {
+    use std::io::Write;
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut out = String::new();
+    for cont in &models.world.continents {
+        for p in &cont.provinces {
+            let slot = models.layout.slot_of(&p.tile.name);
+            out.push_str(&format!(
+                "{{\"tick\":{},\"kind\":\"province\",\"node\":\"{}\",\"zone\":\"{}\",\"pool\":\"{}\",\
+                 \"ordinal\":{},\"x\":{},\"y\":{},\"w\":{},\"h\":{},\"extent_source\":\"{:?}\"}}\n",
+                tick,
+                esc(&p.tile.name),
+                esc(&cont.zone),
+                esc(&p.tile.pool),
+                slot.map_or(-1, |k| i64::from(k.ordinal)),
+                p.x,
+                p.y,
+                p.w,
+                p.h,
+                p.extent_source,
+            ));
+            for c in &p.cities {
+                out.push_str(&format!(
+                    "{{\"tick\":{},\"kind\":\"city\",\"workload\":\"{:?} {}/{}\",\"node\":\"{}\",\
+                     \"zone\":\"{}\",\"x\":{},\"y\":{},\"ox\":{},\"oy\":{}}}\n",
+                    tick,
+                    c.r.kind,
+                    esc(&c.r.namespace),
+                    esc(&c.r.name),
+                    esc(&p.tile.name),
+                    esc(&cont.zone),
+                    c.x,
+                    c.y,
+                    c.x as i64 - p.x as i64,
+                    c.y as i64 - p.y as i64,
+                ));
+            }
+        }
+        for g in &cont.ghosts {
+            out.push_str(&format!(
+                "{{\"tick\":{},\"kind\":\"ghost\",\"zone\":\"{}\",\"x\":{},\"y\":{},\"w\":{},\"h\":{}}}\n",
+                tick,
+                esc(&cont.zone),
+                g.x,
+                g.y,
+                g.w,
+                g.h,
+            ));
+        }
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = f.write_all(out.as_bytes());
+    }
+}
+
 fn charter_focus_ns(filter: &NamespaceFilter, snap: Option<&net::Snapshot>) -> String {
     if let NamespaceFilter::Only(set) = filter
         && set.len() == 1
@@ -669,6 +758,12 @@ async fn main() {
     // earliest wall-clock time the next one may be taken.
     let mut shots_taken: u32 = 0;
     let mut next_shot_at: f64 = 0.0;
+    // `--dump-positions`: one record set per MODEL REBUILD, keyed on the
+    // snapshot's identity rather than on the frame. The world rebuilds at tick
+    // cadence and the GUI redraws at ~60fps, so dumping per frame would emit
+    // fifteen identical copies of every tick and make a diff meaningless.
+    let mut dumped_snap: usize = 0;
+    let mut dump_tick: u64 = 0;
     let mut prev_had_snap = false;
     let mut inspected = false;
     // Fire the --forward dev verification once.
@@ -829,6 +924,16 @@ async fn main() {
             }
         }
         let snap = net.snapshot();
+        if let Some(path) = &args.dump_positions
+            && let Some(s) = snap.as_ref()
+        {
+            let id = std::sync::Arc::as_ptr(&s.hot.models) as usize;
+            if id != dumped_snap {
+                dumped_snap = id;
+                dump_positions(path, dump_tick, &s.hot.models);
+                dump_tick += 1;
+            }
+        }
         let status = net.status();
         let mouse = Vec2::from(mouse_position());
         let had_snap = prev_had_snap;

@@ -8,6 +8,7 @@ are diffable, greppable, and survive alongside the code they describe.
 
 | Report | Date | Outcome |
 |---|---|---|
+| [A3-pre — an instrument that can see assignment](a3-pre-instrument.md) | 2026-08-03 | Baseline taken; **A3 is smaller than scoped** |
 | [Measurement session](measurement-session.md) | 2026-08-03 | Instruments committed; **A3 next**, on a measured trigger |
 | [A2 — wire the layout in](a2-wire-layout.md) | 2026-08-02 | **Gate passed** — the map holds still |
 | [A1 — the layout engine](a1-layout-engine.md) | 2026-08-02 | Shipped, unversioned (consumer-less) |

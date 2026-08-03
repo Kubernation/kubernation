@@ -8,6 +8,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [1.7.2] — 2026-08-03
+
+### Development
+- `--dump-positions <PATH>` records what the model *assigned* — every city and
+  province, per tick, as JSON-lines. A screenshot shows what was rendered, and
+  the two differ: permuting uniformly-coloured provinces changes almost no
+  pixels, so a pixel diff reported ~1% for a layout that had moved 27% of its
+  provinces. A pure read of the existing world model; changes no behaviour.
+
 ## [1.7.1] — 2026-08-02
 
 ### Fixed

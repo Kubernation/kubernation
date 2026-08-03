@@ -3474,6 +3474,52 @@ what makes the interesting logic unit-testable without a cluster.
   **truncation, not rounding** — `0.83 × 255` is 211 — and getting it backwards
   matches nothing at all, silently.
 
+- **A3-pre — an instrument that can see assignment** (2026-08-03, **v1.7.2**, a
+  dev flag with no behaviour change; from
+  `docs/kubernation-a3-pre-instrument-guidance.md`, report in
+  `docs/reports/a3-pre-instrument.md`): `--dump-positions <PATH>` appends
+  JSON-lines per model REBUILD (keyed on the snapshot's `Arc` identity — the world
+  rebuilds at tick cadence while the GUI redraws at 60fps, so a per-frame dump
+  would emit ~15 identical copies of every tick) recording every city (workload,
+  node, zone, absolute cell, **and offset from its province origin**) and every
+  province/ghost. A **pure read of the finished `WorldModel`** — no new model
+  fields, no new observation path, no trace of the placement algorithm (which A3
+  is about to change). It replaces the pixel instrument for this question and has
+  **total coverage**: 7 of 7 workloads on the first probe, where no label-drawing
+  viewport holds more than ~3. `hack/churn/positions.py` classifies each city
+  HELD / **CARRIED** / MOVED-WITHIN / FOLLOWED / ARRIVED / DEPARTED and prints the
+  rate **with its denominator**. **Two guidance corrections.** (1) §2.4's
+  `MOVED-ACROSS` class **cannot occur**: `city_home` sites a workload at its
+  pod-plurality node and the render loop emits a city only on that node's
+  province, so a city's province IS its plurality by construction and any
+  cross-province move is `FOLLOWED` — the suggested extra pod-plurality column
+  would have been the same column twice. (2) A class the guidance did not ask for
+  and the design needs: **`CARRIED`** (same node, same offset, but the PROVINCE
+  moved) — on absolute coordinates a layout relocation is indistinguishable from a
+  city moving, so classification is on the OFFSET and A2's domain is not charged
+  to A3. **All nine §1 claims TRUE (sixth round running)**, including claim 4
+  (`cities.sort_by(|a,b| a.r.cmp(&b.r))` runs BEFORE placement), whose implication
+  is the measured mechanism. **THE PRE-A3 BASELINE, from the new seventh scenario
+  (`7-workload-churn.sh`, touches no nodes, no-op-guarded):** adding one workload
+  that sorts AHEAD of the incumbents moved **all 3 of 3** on that province, each
+  by exactly one row keeping its column; deleting it moved **2 of 2** back —
+  the exact inverse. Scaling up, scaling down, and deleting a LATER-sorting
+  workload moved **nothing**. So the defect is **one index dependency** —
+  `row0 = i % rows` over a `WorkloadRef`-sorted sibling list — not a family of
+  placement problems, and **A3 is smaller than it was scoped to be**. Rate is
+  27.3% (3 of 11 cities in both ticks) but the honest gate figure is **100% of
+  incumbents on the affected province**: the fleet-wide number is a packing
+  artefact (7 workloads over 100 nodes land on 7 distinct provinces, so 0 of the
+  7 original cities ever moved). **The stock fixture cannot exercise its own
+  gate** — every province carries exactly one city and a single-city province has
+  no sibling-order effect at all — so the scenario builds a multi-city province
+  itself (three workloads pinned by `nodeSelector`, keeping the real scheduler in
+  the loop) plus a same-zone bystander, and names the newcomer to sort FIRST
+  because a last-sorting name would change no index and test nothing. Seven
+  committed self-tests (`positions-selftest.py`), including the two the guidance
+  did not list: two ticks sharing no city (the natural code prints `0.0%`, which
+  reads as perfect stability — it now refuses and exits 2) and the CARRIED case.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form
