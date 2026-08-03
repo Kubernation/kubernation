@@ -8,6 +8,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [1.7.1] — 2026-08-02
+
+### Fixed
+- Two workloads sharing a row on one node could moor their Service and Ingress
+  markers on the same cell offshore, so the anchor drawn there belonged to one
+  workload and clicking it opened another.
+
 ## [1.7.0] — 2026-08-02
 
 ### Added
@@ -19,7 +26,7 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 - **A province's size comes from the node's capacity**, not from how many
   workloads happen to be running on it — so deploying something no longer
   resizes terrain. A node that reports no capacity gets a declared default size
-  and is marked as unmeasured rather than drawn as a small one.
+  rather than being drawn as a small one.
 - **Ground held by a departed node stays on the map**, painted plain. The slot
   is reserved for a successor; without this a node replacement read as the
   continent losing a piece of itself.

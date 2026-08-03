@@ -59,6 +59,20 @@ if ! kill -0 "$app" 2>/dev/null; then
   exit 1
 fi
 
+# A gate whose scenario churned NOTHING returns a perfect, meaningless result.
+# Scenario 1 breaks at wave 0 when no OLD_GEN node exists — which is what you get
+# by re-running it without a reset — and the flipbook then photographs a static
+# fleet and reports that the map held perfectly still. Count first, and refuse.
+before_old="$(kc get nodes -o name | grep -c -- "-${OLD_GEN:-g1}-" || true)"
+if [ "$before_old" -eq 0 ]; then
+  echo "  !! no ${OLD_GEN:-g1} nodes to refresh — the scenario would churn nothing" >&2
+  echo "     and the flipbook would report a perfectly still map. Run ./reset.sh" >&2
+  echo "     (or set OLD_GEN to the generation actually on the fleet) first." >&2
+  kill "$app" 2>/dev/null || true
+  exit 2
+fi
+log "refreshing ${before_old} nodes of generation ${OLD_GEN:-g1}"
+
 CAPTURE=0 ./scenarios/1-rolling-refresh.sh
 
 log "scenario done; waiting for the remaining frames"

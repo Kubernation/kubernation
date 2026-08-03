@@ -3385,11 +3385,44 @@ what makes the interesting logic unit-testable without a cluster.
   `province_extent` being tested disguised it), the layout carry itself (now
   `net::build_carrying`, named so it can be asserted), and the "byte for byte"
   purity test (compared four numbers for two nodes; now the whole structure via
-  `Debug`). 399 core + 90 GUI tests; gui-smoke 51. **Deferred:** A3's city slots
-  (cities still move — measured, declared, out of scope); declared compaction to
-  reclaim ghost ground, which otherwise accumulates for the life of a session
-  (A4) and is a lot of grey after a refresh; instance-type-as-pool-fallback still
-  open from A1.
+  `Debug`). 399 core + 90 GUI tests; gui-smoke 51.
+  **Completeness audit of the report (v1.7.1), 4 lenses → 16 gaps, 3 of them live
+  code issues:** (a) the city-collision class was only HALF closed —
+  `CoastMarker`'s column was the index within ONE city's markers, collision-free
+  only while `h` grew to give every city its own row, so two cities now sharing a
+  row moored their harbour/gate on the SAME cell; worse than the city case,
+  because painters draw in order (last visible) while `coast_at` returns the
+  first and a coast hit opens `m.workload` — the anchor on screen belonged to one
+  workload and clicking it opened another. Markers now take a free column in the
+  ocean strip (dropped, per the existing COAST_CAP semantics, if a shared row
+  fills it). **The invariant, violated three times in one phase and now stated
+  outright: what is PAINTED at a cell and what RESOLVES there must be the same
+  object.** (b) `ExtentSource` has **no consumer anywhere** — §3/§7 require the
+  fallback declared *and* marked; it is declared only, and the v1.7.0 CHANGELOG
+  claimed the marking (corrected). (c) `EXTENT_BOUNDS_GIB = [32,128,512]` is
+  compared against **allocatable**, always below nominal, so a nominal 32 GiB node
+  reports ~30.9 and takes the *smallest* class — the classes never fire at the
+  sizes they name, which is why the smallest extent is the ordinary case. Also
+  found: the stride is the largest class (9) while most provinces are 3–5 rows, so
+  ~half the rows in a continent are unbuilt and **render as ocean — the same
+  defect as unpainted ghosts, at smaller scale** (the map is ~2/3 ocean; it also
+  settles the deferred "chunkier landmasses on multi-node zones" question
+  negatively); `gate.sh` itself could report a perfectly still map having churned
+  NOTHING (scenario 1 breaks at wave 0 with no OLD_GEN nodes) — now guarded, the
+  sixth instrument failure of the phase and the fourth silent one; and the report
+  had dropped §0/§7 accounting, the zone-ordinal half of A2's scope, and the
+  gate's measurement method. **Both headline defects were PREDICTED by name**
+  (decomposition §7's summing-before-comparing is exactly `province_y`; guidance
+  §9 q3 named the ghost divergence and prescribed the fixture) — so the standing
+  questions were not the failure, running them was. 400 core + 90 GUI tests.
+  **Deferred:** A3's city slots (cities still move — and were NOT quantified,
+  which the report flags as the missing input to the A3-vs-A4 ordering call, since
+  the kill point moves to A3's gate); declared compaction to reclaim ghost ground
+  (A4), which must also persist/compact the durable **zone** ordinals; the §6
+  pre-A2 baseline comparison, withdrawn as non-comparable and not re-taken;
+  marking the extent fallback; the extent-bounds calibration; a workload-churn
+  scenario (A3's gate has no instrument — all six are node-level);
+  instance-type-as-pool-fallback still open from A1.
 
 ## The pair (hot/warm)
 

@@ -684,7 +684,18 @@ pub fn build_world(
         // Moor connectivity markers in the ocean strip east of this
         // continent, each on its city's row. Gates sort ahead of harbors so
         // external exposure is never the marker dropped to the cap.
+        //
+        // Each marker takes a cell no other marker holds. The column used to be
+        // the index within ONE city's markers, which was collision-free only
+        // while every city had its own row — true when `h` grew to fit them,
+        // false since extent came from capacity and cities began sharing rows.
+        // Two markers on one cell is worse than two cities on one cell: the
+        // painters draw them in order so the LAST one is what you see, while
+        // `coast_at` returns the FIRST, and a coast hit opens `m.workload` — so
+        // the anchor on screen belongs to one workload and clicking it opens
+        // another.
         let mut coast = Vec::new();
+        let mut moored: BTreeSet<(u16, u16)> = BTreeSet::new();
         for p in &provinces {
             for c in &p.cities {
                 let Some(entries) = exp_by.get(&c.r) else {
@@ -700,13 +711,26 @@ pub fn build_world(
                         .cmp(&rank(b.kind))
                         .then_with(|| a.name.cmp(&b.name))
                 });
-                for (i, e) in ordered.into_iter().take(COAST_CAP).enumerate() {
+                for e in ordered.into_iter().take(COAST_CAP) {
+                    // First free column in the ocean strip on this row. The
+                    // strip is OCEAN_GAP wide — beyond it is the next
+                    // continent's land — so a row shared by several exposed
+                    // cities can run out, and the marker is dropped rather than
+                    // stacked or moored on someone else's ground. Gates are
+                    // ordered first, so external exposure is never what falls.
+                    let Some(x) = (0..OCEAN_GAP)
+                        .map(|i| cx + PATCH_W + i)
+                        .find(|x| !moored.contains(&(*x, c.y)))
+                    else {
+                        continue;
+                    };
+                    moored.insert((x, c.y));
                     coast.push(CoastMarker {
                         kind: e.kind,
                         name: e.name.clone(),
                         detail: e.detail.clone(),
                         workload: c.r.clone(),
-                        x: cx + PATCH_W + i as u16,
+                        x,
                         y: c.y,
                     });
                 }
@@ -1301,6 +1325,63 @@ mod tests {
                 ),
                 other => panic!("{} does not hit-test as a city: {other:?}", c.r.name),
             }
+        }
+    }
+
+    /// NO TWO COAST MARKERS SHARE A CELL EITHER.
+    ///
+    /// Distinct city cells are not enough. A marker's column used to be its
+    /// index within ONE city's markers, which never collided while every city
+    /// had its own row — guaranteed when `h` grew to fit them, and no longer
+    /// true since extent came from capacity. Two markers on a cell is the worse
+    /// half of the same defect: painters draw in order so the LAST is visible,
+    /// `coast_at` returns the FIRST, and a coast hit opens `m.workload` — so the
+    /// anchor you see belongs to one workload and clicking it opens another.
+    #[test]
+    fn coast_markers_of_cities_sharing_a_row_never_share_a_cell() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("only", Some("z-a"))); // smallest extent → 2 city rows
+        for name in ["a-app", "b-app", "c-app", "d-app"] {
+            s.deployment(fx::deployment("demo", name, 1, 1));
+            s.replicaset(fx::replicaset("demo", &format!("{name}-rs"), name));
+            let mut pod = fx::pod_owned(
+                fx::pod("demo", &format!("{name}-rs-1"), Some("only")),
+                "ReplicaSet",
+                &format!("{name}-rs"),
+            );
+            pod.metadata
+                .labels
+                .get_or_insert_with(Default::default)
+                .insert("app".into(), name.into());
+            s.pod(pod);
+            // Each workload is fronted by a Service, so each wants a harbour.
+            s.service(fx::service(
+                "demo",
+                &format!("{name}-svc"),
+                &[("app", name)],
+            ));
+        }
+        let m = Models::build(&world);
+        let cont = &m.world.continents[0];
+        assert!(cont.coast.len() >= 3, "need several moored markers");
+
+        let mut seen: BTreeMap<(u16, u16), &str> = BTreeMap::new();
+        for mk in &cont.coast {
+            if let Some(other) = seen.insert((mk.x, mk.y), mk.name.as_str()) {
+                panic!(
+                    "{} and {} moor on cell ({}, {})",
+                    other, mk.name, mk.x, mk.y
+                );
+            }
+        }
+        // And what is drawn at the cell is what resolves there.
+        for mk in &cont.coast {
+            let (_, hit) = m.world.coast_at(mk.x, mk.y).expect("a marker");
+            assert_eq!(
+                hit.workload, mk.workload,
+                "the anchor at ({}, {}) is {}'s but resolves to {}'s",
+                mk.x, mk.y, mk.name, hit.name
+            );
         }
     }
 
