@@ -3573,6 +3573,53 @@ what makes the interesting logic unit-testable without a cluster.
   the full ref (an asymmetry, not a defect — changing it would move every city
   once).
 
+- **A4 — persistence** (2026-08-03, **v1.9.0**; from
+  `docs/kubernation-a4-persistence-guidance-rev2.md`, report in
+  `docs/reports/a4-persistence.md`; rev1 was stopped at §0 — see
+  `a4-verification.md`): the layout survives restart. **`state/layout_store.rs`**
+  is the pure DTO + conversions (no filesystem), **`layout_io.rs`** the only
+  disk-touching file, **`k8s/fingerprint.rs`** the one-shot identity read —
+  mirroring the `state/oracle_config.rs` + `oracle_config_io.rs` split so the
+  round trip and every identity rule are testable without a temp dir. Layouts
+  live at `~/.local/state/kubernation/layouts/<context>.json` — **state, not
+  config** (a layout is derived fact about a cluster, not a user preference);
+  context names are sanitised to one path component (an EKS ARN would otherwise
+  create directories or escape). **THE GATE PASSED — 70 of 70 surviving
+  provinces held their exact ground** across a 30-node refresh performed while
+  the app was closed, 13 of 14 cities HELD (the one FOLLOWED had its pods move).
+  **But the gate as specified does not discriminate:** §8's headline form
+  (unchanged fleet, close, reopen) reports a perfect score *with the layout file
+  deleted*, because assignment from scratch is deterministic in the node set —
+  so the number is reported with its discrimination check, **100% with the saved
+  map vs 78% without**. Third appearance of that blind spot (A2's
+  process-per-frame flipbook; A4's first restart unit tests; now the gate
+  itself). **`Layout` gains `vacated_at`** — carried by `assign_layout`, cleared
+  on re-occupation, stamped by a separate `stamp_vacancies(now)` so the pure
+  function stays clockless (the `attention::build` pattern) — and read by
+  NOTHING: per rev2 §1 there is **no automatic age reap**, because ghosts hold
+  at the refresh batch size rather than accumulating, so reaping by age would be
+  the map quietly deciding nodes are not coming back. **Compaction** is the one
+  verb: explicit, reported, and it **never renumbers** (a reclaimed ordinal is
+  left unused — renumbering would move live provinces and undo A1),
+  mutation-verified. Identity: context name as key, `kube-system` UID as
+  *fingerprint* (Kubernetes has no cluster ID); mismatch discards + declares,
+  **absent or unreadable loads as unverified** — conflating those would discard a
+  working map for every RBAC-restricted user. All eleven §2 claims TRUE
+  including the three tagged inherited; claim 6 sits next to a trap
+  (`ObservedWorld::namespaces()` derives namespace NAMES from watched objects'
+  metadata and never reads a Namespace, so it cannot yield a UID). **The mutation
+  floor changed the work:** run against the first restart tests it passed
+  straight through both — single-shot fixtures, so a rebuild produced the same
+  map — and the fix took two attempts (growing the fleet is luck; a departure
+  leaving an INTERIOR gap is not, but which ordinal a departing node holds is
+  itself hash order, so the candidate is searched for). Both tests now carry a
+  guard-the-guard assertion that fails if a from-scratch assignment already
+  matches. 419 core + 94 GUI tests; gui-smoke 51. **Deferred:** warm-cluster
+  persistence (a comparison view, not somewhere the operator navigates); the age
+  machinery, with `vacated_at` already in the format so it needs no migration —
+  the signal to revisit is ghosts substantially exceeding the batch size on a
+  fleet nobody shrank, measurable with `--dump-positions`.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

@@ -17,6 +17,7 @@
 //! [`Layout::changes_from`].
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::SystemTime;
 
 use crate::util::fnv1a64;
 
@@ -107,6 +108,19 @@ pub struct Occupancy {
 pub struct SlotState {
     pub occupant: Option<Occupancy>,
     pub last_occupant: Option<String>,
+    /// When this slot last became a ghost. `Some` only while vacant — a slot
+    /// that is re-occupied clears it, so the timestamp always answers "how long
+    /// has THIS vacancy stood", never "when was it ever empty".
+    ///
+    /// **Nothing reads it yet.** A4 deliberately has no automatic reap: ghosts
+    /// hold at the refresh batch size rather than accumulating, so reaping by
+    /// age would be the map quietly deciding those nodes are not coming back.
+    /// It is carried because A5's succession ageing wants it and adding a field
+    /// to a format already on disk costs a version bump.
+    ///
+    /// Absent is **unknown**, not infinitely old — an older file or a bug must
+    /// never be read as "reap me". Whoever adds ageing inherits that guard.
+    pub vacated_at: Option<SystemTime>,
 }
 
 /// The assignment for one frame. A slot whose `occupant` is `None` is a
@@ -157,6 +171,32 @@ impl Layout {
     pub fn slots(&self) -> impl Iterator<Item = (&SlotKey, Option<&Occupancy>)> {
         self.slots.iter().map(|(k, v)| (k, v.occupant.as_ref()))
     }
+    /// Every slot with its full state — what persistence needs to write.
+    ///
+    /// Deliberately separate from [`Layout::slots`]: that one exposes only what
+    /// a renderer needs, and widening it would hand every consumer the internal
+    /// state so it could grow a dependency on the representation.
+    pub fn entries(&self) -> impl Iterator<Item = (&SlotKey, &SlotState)> {
+        self.slots.iter()
+    }
+
+    /// Rebuild a layout from persisted parts.
+    ///
+    /// Explicit rather than public fields: the fields stay private so the
+    /// on-disk shape is a decision rather than a `#[derive]`, and a later
+    /// refactor of `slots` cannot silently become a format break.
+    ///
+    /// Takes whatever it is given. Validation belongs to the loader, which knows
+    /// about versions and fingerprints; this only assembles.
+    pub fn from_stored(
+        slots: impl IntoIterator<Item = (SlotKey, SlotState)>,
+        zone_ordinals: impl IntoIterator<Item = (String, u16)>,
+    ) -> Self {
+        Layout {
+            slots: slots.into_iter().collect(),
+            zone_ordinals: zone_ordinals.into_iter().collect(),
+        }
+    }
     /// Slots with an occupant.
     pub fn occupied(&self) -> impl Iterator<Item = (&SlotKey, &Occupancy)> {
         self.slots
@@ -170,6 +210,50 @@ impl Layout {
             .iter()
             .filter_map(|(k, v)| v.occupant.is_none().then_some(k))
     }
+    /// Stamp any vacancy that does not yet carry a time, using a clock the
+    /// caller supplies.
+    ///
+    /// Separate from [`assign_layout`] on purpose: that function is pure, and
+    /// purity is what lets the whole engine be tested against synthetic
+    /// fixtures without a cluster or a clock. Passing `now` in explicitly is the
+    /// house pattern — `attention::build` and `build_timeline` do the same.
+    ///
+    /// Only *unstamped* ghosts are touched. A vacancy that already has a time
+    /// keeps it, so the timestamp answers how long this vacancy has stood
+    /// rather than restarting on every tick.
+    pub fn stamp_vacancies(&mut self, now: SystemTime) {
+        for state in self.slots.values_mut() {
+            if state.occupant.is_none() && state.vacated_at.is_none() {
+                state.vacated_at = Some(now);
+            }
+        }
+    }
+
+    /// **Reclaim all ghost ground.** Returns how many slots were released.
+    ///
+    /// Explicit and user-triggered — never automatic. Ghosts hold at the
+    /// refresh batch size rather than accumulating, so an automatic reap would
+    /// be the map quietly deciding some nodes are not coming back, which is a
+    /// judgment it has no basis for. The reason to reach for this is the one
+    /// case the map cannot infer: *"I decommissioned that pool and I want the
+    /// map to show it."*
+    ///
+    /// **It does NOT renumber the survivors**, and that is the invariant that
+    /// keeps A4 from undoing A1. "Compaction" invites the opposite reading —
+    /// closing the gaps — but closing a gap moves every live slot below it,
+    /// which is exactly the reshuffle this workstream exists to eliminate. A
+    /// reclaimed ordinal is simply left unused.
+    pub fn compact(&mut self) -> usize {
+        let before = self.slots.len();
+        self.slots.retain(|_, v| v.occupant.is_some());
+        before - self.slots.len()
+    }
+
+    /// When a slot became vacant, if it is vacant and has been stamped.
+    pub fn vacated_at(&self, key: &SlotKey) -> Option<SystemTime> {
+        self.slots.get(key).and_then(|s| s.vacated_at)
+    }
+
     /// Where this node currently sits, if anywhere.
     pub fn slot_of(&self, node: &str) -> Option<&SlotKey> {
         self.slots
@@ -245,6 +329,14 @@ pub fn assign_layout(prior: &Layout, observed: &[ObservedNode]) -> Layout {
                 SlotState {
                     occupant: None,
                     last_occupant: v.last_occupant.clone(),
+                    // Carried, never stamped here: `assign_layout` is pure and
+                    // an ambient clock is what would end that. A slot that is
+                    // vacant now and was vacant before keeps its original
+                    // timestamp — the answer to "how long has THIS vacancy
+                    // stood" must not restart every tick. `place` clears it on
+                    // re-occupation, and `stamp_vacancies` fills in the new
+                    // ones with a clock the caller supplies.
+                    vacated_at: v.vacated_at,
                 },
             )
         })
@@ -347,6 +439,10 @@ fn place(slots: &mut BTreeMap<SlotKey, SlotState>, key: SlotKey, n: &ObservedNod
         SlotState {
             occupant: Some(occupancy(n)),
             last_occupant: Some(n.name.clone()),
+            // Occupied ground is not vacant ground: clearing here is what keeps
+            // `vacated_at` meaning "how long this CURRENT vacancy has stood"
+            // rather than "when this slot was ever last empty".
+            vacated_at: None,
         },
     );
 }
@@ -606,6 +702,156 @@ mod tests {
     /// The ordinal ceiling must not fabricate a coordinate. `saturating_add`
     /// returned `u16::MAX` a second time, making the newcomer's key equal the
     /// incumbent's — and the insert then EVICTED a live node from the layout.
+    /// **COMPACTION RECLAIMS GROUND. IT DOES NOT RENUMBER.**
+    ///
+    /// The invariant that keeps A4 from undoing A1. The word invites the
+    /// opposite reading — closing the gaps — but closing a gap moves every live
+    /// slot below it, which is the exact reshuffle this workstream exists to
+    /// eliminate. A reclaimed ordinal is left unused.
+    #[test]
+    fn compaction_reclaims_ghost_ground_without_moving_a_live_slot() {
+        let all = assign_layout(
+            &Layout::default(),
+            &fleet(&["a", "b", "c", "d", "e"], "z", "p"),
+        );
+        // Keep the FIRST and LAST ordinals, so the three ghosts are interior —
+        // the case where renumbering is tempting and would drag the last
+        // survivor two slots north. Chosen by ordinal rather than by name:
+        // ordinals come from hash order, so naming them would be asserting a
+        // fixture accident instead of the invariant.
+        let ends: Vec<String> = {
+            let mut occ: Vec<(u16, String)> = all
+                .occupied()
+                .map(|(k, o)| (k.ordinal, o.node.clone()))
+                .collect();
+            occ.sort();
+            vec![
+                occ.first().unwrap().1.clone(),
+                occ.last().unwrap().1.clone(),
+            ]
+        };
+        let survivors: Vec<&str> = ends.iter().map(String::as_str).collect();
+        let mut layout = assign_layout(&all, &fleet(&survivors, "z", "p"));
+        let before: Vec<(SlotKey, String)> = layout
+            .occupied()
+            .map(|(k, o)| (k.clone(), o.node.clone()))
+            .collect();
+        assert_eq!(layout.ghosts().count(), 3, "three interior ghosts");
+
+        let reclaimed = layout.compact();
+
+        assert_eq!(reclaimed, 3);
+        assert_eq!(layout.ghosts().count(), 0, "all ghost ground reclaimed");
+        let after: Vec<(SlotKey, String)> = layout
+            .occupied()
+            .map(|(k, o)| (k.clone(), o.node.clone()))
+            .collect();
+        assert_eq!(before, after, "compaction moved a live slot");
+        // Said plainly: the reclaimed ordinals stay unused rather than closing
+        // up. Renumbering two survivors would produce 0 and 1; the gap between
+        // the ends must still be there.
+        let mut ordinals: Vec<u16> = layout.occupied().map(|(k, _)| k.ordinal).collect();
+        ordinals.sort();
+        assert_eq!(ordinals, vec![0, 4], "the ordinal gap was closed up");
+    }
+
+    /// Compacting a layout with nothing to reclaim reports zero rather than
+    /// succeeding silently — the caller has to be able to tell "done" from
+    /// "there was nothing to do", because it will say so to a user.
+    #[test]
+    fn compacting_with_no_ghosts_reclaims_nothing_and_says_so() {
+        let mut layout = assign_layout(&Layout::default(), &fleet(&["a", "b"], "z", "p"));
+        assert_eq!(layout.compact(), 0);
+        assert_eq!(layout.occupied().count(), 2);
+    }
+
+    /// A vacancy is stamped once and keeps that time; re-occupying clears it.
+    /// Without the first half, "how long has this stood empty" would restart on
+    /// every tick and any future ageing would never fire.
+    #[test]
+    fn a_vacancy_is_stamped_once_and_cleared_on_return() {
+        let t0 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        let t1 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(9_999);
+        let all = assign_layout(&Layout::default(), &fleet(&["a", "b"], "z", "p"));
+
+        let mut gone = assign_layout(&all, &fleet(&["a"], "z", "p"));
+        gone.stamp_vacancies(t0);
+        let ghost = gone.ghosts().next().expect("a ghost").clone();
+        assert_eq!(gone.vacated_at(&ghost), Some(t0));
+
+        // A later tick with the slot still vacant must not restamp it.
+        let mut still = assign_layout(&gone, &fleet(&["a"], "z", "p"));
+        still.stamp_vacancies(t1);
+        assert_eq!(still.vacated_at(&ghost), Some(t0), "the vacancy restarted");
+
+        // `b` returns to its own ground.
+        let back = assign_layout(&still, &fleet(&["a", "b"], "z", "p"));
+        assert_eq!(back.vacated_at(&ghost), None);
+    }
+
+    /// GHOSTS REACH A STEADY STATE AT THE REFRESH BATCH SIZE — they do not
+    /// accumulate with cadence.
+    ///
+    /// This pins the claim A4's first revision got wrong, and the reason it was
+    /// wrong is worth keeping: a *single-wave full-fleet surge* really does
+    /// leave N ghosts for N nodes, which is what A1 measured and reported
+    /// correctly. Generalising that to a **rolling** refresh does not hold,
+    /// because each wave's replacements REUSE the vacancies the previous wave
+    /// left — so the standing count is the batch size, forever, however often
+    /// the fleet is refreshed.
+    ///
+    /// The design consequence, recorded because it is easy to lose: a standing
+    /// batch-size set of ghosts is the mechanism working, not debt to be
+    /// reclaimed. That ground is reserved for nodes that may return.
+    #[test]
+    fn batched_refreshes_hold_ghosts_at_the_batch_size() {
+        const BATCH: usize = 10;
+        let mut live: Vec<String> = (0..100).map(|i| format!("g0-{i:03}")).collect();
+        let as_nodes =
+            |v: &[String]| -> Vec<ObservedNode> { v.iter().map(|n| node(n, "z", "p")).collect() };
+        let mut layout = assign_layout(&Layout::default(), &as_nodes(&live));
+
+        for round in 1..=4 {
+            let prefix = format!("g{round}-");
+            let stale: Vec<String> = live
+                .iter()
+                .filter(|n| !n.starts_with(&prefix))
+                .cloned()
+                .collect();
+            for wave in stale.chunks(BATCH) {
+                // SURGE: replacements are Ready before the predecessors drain,
+                // which is what makes this a rolling refresh rather than a
+                // delete-then-create.
+                let mut surged = live.clone();
+                for (i, old) in wave.iter().enumerate() {
+                    surged.push(format!("{prefix}{i}-{old}"));
+                }
+                layout = assign_layout(&layout, &as_nodes(&surged));
+                // DRAIN
+                live = surged.into_iter().filter(|n| !wave.contains(n)).collect();
+                layout = assign_layout(&layout, &as_nodes(&live));
+            }
+            assert_eq!(layout.occupied().count(), 100, "round {round}: fleet size");
+            assert_eq!(
+                layout.ghosts().count(),
+                BATCH,
+                "round {round}: ghosts should hold at the batch size, not accumulate"
+            );
+        }
+
+        // Shrinkage is the case that DOES leave lasting ground: twenty nodes
+        // leave and are not replaced, so their slots stay reserved on top of
+        // the standing batch. That is what compaction is for.
+        live.truncate(80);
+        let after = assign_layout(&layout, &as_nodes(&live));
+        assert_eq!(after.occupied().count(), 80);
+        assert_eq!(
+            after.ghosts().count(),
+            BATCH + 20,
+            "a genuine scale-down retains its ground"
+        );
+    }
+
     #[test]
     fn a_full_ordinal_space_never_evicts_a_live_node() {
         let mut prior = Layout::default();
@@ -621,6 +867,7 @@ mod tests {
                     pool_source: PoolSource::Default,
                 }),
                 last_occupant: Some("incumbent".into()),
+                vacated_at: None,
             },
         );
         let l = assign_layout(&prior, &fleet(&["incumbent", "newcomer"], "z", "p"));

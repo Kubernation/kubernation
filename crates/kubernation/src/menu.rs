@@ -18,6 +18,10 @@ use crate::theme::*;
 /// GUI state (open a picker, fit the camera, set the overlay, …).
 #[derive(Clone, Copy, PartialEq)]
 pub enum MenuAction {
+    /// Reclaim every slot whose node departed. Explicit and confirmed — never
+    /// automatic, because reserved ground is the mechanism working rather than
+    /// debt, and the map has no basis for deciding a node is not coming back.
+    Compact,
     SwitchContext,
     Fit,
     ExportPostmortem,
@@ -114,6 +118,7 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
             items: vec![
                 Item::act("Switch context\u{2026}", MenuAction::SwitchContext),
                 Item::act("Fit view", MenuAction::Fit),
+                Item::act("Reclaim empty ground\u{2026}", MenuAction::Compact),
                 Item::sep(),
                 Item::act(
                     "Export after-action report\u{2026}",

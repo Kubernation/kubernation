@@ -5,6 +5,7 @@ pub mod actions;
 pub mod adapter;
 pub mod browse;
 pub mod client;
+pub mod fingerprint;
 pub mod logs;
 pub mod metrics;
 /// OpenCost adapter — polls the in-cluster OpenCost `/allocation` API through the

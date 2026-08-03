@@ -21,6 +21,7 @@ mod charter;
 mod city;
 mod draw;
 mod inspect;
+mod layout_io;
 mod logging;
 mod logo;
 mod menu;
@@ -762,6 +763,7 @@ async fn main() {
     // snapshot's identity rather than on the frame. The world rebuilds at tick
     // cadence and the GUI redraws at ~60fps, so dumping per frame would emit
     // fifteen identical copies of every tick and make a diff meaningless.
+    let mut layout_note: Option<(String, f64)> = None;
     let mut dumped_snap: usize = 0;
     let mut dump_tick: u64 = 0;
     let mut prev_had_snap = false;
@@ -2867,6 +2869,7 @@ async fn main() {
                 picker_just_opened = picker;
             }
             Some(MenuAction::Fit) => pending_fit = true,
+            Some(MenuAction::Compact) => net.request_compact(),
             Some(MenuAction::ExportPostmortem) => {
                 if let Some(s) = net.snapshot() {
                     let msg = export_postmortem(
@@ -3512,6 +3515,29 @@ async fn main() {
             }
         }
 
+        // The saved map did something worth saying: it was discarded, or
+        // restored without being able to confirm this is the same cluster.
+        // Taken once and held, rather than logged only — the operator is about
+        // to notice their world changed, and a map that changes silently is the
+        // failure this whole workstream exists to remove.
+        if layout_note.is_none() {
+            layout_note = net.take_layout_note().map(|m| (m, get_time()));
+        }
+        if let Some((msg, at)) = &layout_note {
+            if get_time() - at > 12.0 {
+                layout_note = None;
+            } else {
+                let fs = 15.0;
+                let tm = text_size(msg, fs);
+                let bw = tm.width + 24.0;
+                let bx = (panels::map_width() - bw) / 2.0;
+                let by = panels::CHROME_H + 8.0;
+                draw_rectangle(bx, by, bw, 26.0, STONE);
+                draw_rectangle_lines(bx, by, bw, 26.0, 1.0, WARN);
+                text(ascii(msg), bx + 12.0, by + 18.0, fs, STONE_INK);
+            }
+        }
+
         // Eviction result toast (auto-cleared by the net thread after a few s).
         if let Some(msg) = net.evict_status() {
             let fs = 15.0;
@@ -3661,6 +3687,22 @@ async fn main() {
 
     // Persist UI preferences on exit — skip a headless --screenshot run so a dev /
     // CI capture never mutates the user's prefs.
+    // Save the map on the way out. The world loop also saves on a cadence, which
+    // covers a kill; this covers the ordinary case of closing between two of
+    // those.
+    //
+    // Skipped under --screenshot, but note the asymmetry with the cadence save,
+    // which is NOT: a layout is a fact about where the cluster's nodes sit, so a
+    // capture run computes the same one a normal run would and writing it
+    // changes nothing. Prefs are the opposite — a capture forcing `--overlay
+    // walls` must not persist that choice — which is why the two rules differ.
+    if shot.is_none()
+        && let Some((ctx, fingerprint)) = net.layout_ident()
+        && let Some(s) = net.snapshot()
+        && let Err(e) = layout_io::save(&ctx, &s.hot.models.layout, fingerprint.as_deref())
+    {
+        tracing::warn!("could not save the map for {ctx}: {e}");
+    }
     if shot.is_none() {
         prefs::save(&prefs::Prefs {
             version: prefs::PREFS_VERSION,

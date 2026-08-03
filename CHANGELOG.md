@@ -8,6 +8,25 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-08-03
+
+### Added
+- **The map is remembered between sessions.** Where each node sits is saved per
+  context and restored when you reopen, so the shape you learned yesterday is
+  the shape you get today — including after nodes were replaced while the app
+  was closed. Measured on a hundred-node fleet across a thirty-node refresh:
+  every surviving node kept its exact ground, where without the saved map
+  fifteen of them moved.
+- **Game ▸ Reclaim empty ground** releases the slots left by nodes that have
+  gone for good, for when you have decommissioned something and want the map to
+  show it. Explicit and reported — it is never done automatically, because
+  ground held for a node that may return is the map working rather than clutter,
+  and occupied ground never moves when it runs.
+- If a saved map cannot be used — it was written by a newer version, or the
+  context now points at a different cluster — the map starts fresh and **says
+  so** rather than quietly changing shape. A cluster whose identity cannot be
+  confirmed still loads, and says that too.
+
 ## [1.8.0] — 2026-08-03
 
 ### Fixed

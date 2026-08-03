@@ -13,9 +13,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
+use crate::layout_io;
 use kubernation_core::events::{ClusterId, WorldDelta};
+use kubernation_core::k8s::fingerprint;
 use kubernation_core::k8s::opencost::{self, OpenCostArc, OpenCostSource, OpenCostStore};
 use kubernation_core::k8s::oracle_client::{self, LlmConfig};
 use kubernation_core::k8s::{actions, browse, client, logs, portforward, rbac, watch};
@@ -247,11 +249,24 @@ pub enum ConnState {
 pub struct Net {
     pub snapshot: Mutex<Option<Arc<Snapshot>>>,
     pub status: Mutex<String>,
+    /// Something the saved map did that the operator should know about — it was
+    /// discarded, or restored without being able to confirm the cluster.
+    ///
+    /// A map that silently changed is the failure this workstream exists to
+    /// remove, and arriving at it through the LOAD path would be no better, so
+    /// the load outcome is carried out to the UI rather than only logged.
+    layout_note: Mutex<Option<String>>,
     /// Hot-cluster API liveness (the connection banner).
     conn: Mutex<ConnState>,
     /// Bumped on context switch so a slow probe from the OLD cluster can't write its
     /// liveness into the NEW cluster's banner (the established gen-guard pattern).
     conn_gen: AtomicU64,
+    /// Set by the UI to ask the world loop to reclaim all ghost ground once.
+    compact_req: AtomicBool,
+    /// (context, fingerprint) for the hot cluster — what a layout is saved
+    /// under. Published so the clean-exit path can write one last time without
+    /// waiting on the world loop to be scheduled again.
+    layout_ident: Mutex<Option<(String, Option<String>)>>,
     /// A pending hot-context switch requested by the UI.
     switch: Mutex<Option<String>>,
     /// The pod whose logs to tail (None = log panel closed).
@@ -521,6 +536,9 @@ impl Net {
         Arc::new(Self {
             snapshot: Mutex::new(None),
             status: Mutex::new("starting…".into()),
+            layout_note: Mutex::new(None),
+            compact_req: AtomicBool::new(false),
+            layout_ident: Mutex::new(None),
             conn: Mutex::new(ConnState::Connecting),
             conn_gen: AtomicU64::new(0),
             switch: Mutex::new(None),
@@ -1031,6 +1049,29 @@ impl Net {
             .clone()
     }
 
+    /// The context and fingerprint a layout should be saved under, once the
+    /// world loop has connected. `None` before that.
+    pub fn layout_ident(&self) -> Option<(String, Option<String>)> {
+        self.layout_ident
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+    /// Ask for a compaction. Drained once by the world loop.
+    pub fn request_compact(&self) {
+        self.compact_req.store(true, Ordering::Relaxed);
+    }
+    /// Record (or clear) the note about what the saved map did on load.
+    pub fn set_layout_note(&self, note: Option<String>) {
+        *self.layout_note.lock().unwrap_or_else(|e| e.into_inner()) = note;
+    }
+    /// Take the note, if any — read once and cleared, like a toast.
+    pub fn take_layout_note(&self) -> Option<String> {
+        self.layout_note
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
     pub fn status(&self) -> String {
         self.status
             .lock()
@@ -1276,11 +1317,36 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
             let mut log_target: Option<(ClusterId, String, String)> = None;
             let mut evict_set: Option<u64> = None;
             let mut last_filter = NamespaceFilter::All;
-            // Per-world slot assignments, carried across ticks. A context switch
-            // replaces the handle and these reset with it — a different cluster
-            // has no claim on this one's ground.
-            let mut prior_hot = kubernation_core::state::layout::Layout::default();
+            // Per-world slot assignments, carried across ticks — and, for the
+            // hot cluster, across RUNS. A context switch replaces the handle and
+            // resets these: a different cluster has no claim on this one's
+            // ground.
+            //
+            // Only the hot world persists. The warm cluster is fixed at launch
+            // and is a comparison view, not a place the operator navigates by,
+            // so it has no spatial memory to accrue.
+            let mut hot_ctx = hot_cluster.meta.context.clone();
+            let mut hot_fingerprint = fingerprint::read(hot_client.clone()).await;
+            let (loaded_layout, loaded) = layout_io::load(&hot_ctx, hot_fingerprint.value());
+            if let Some(note) = loaded.announce() {
+                tracing::info!("{note}");
+                net.set_layout_note(Some(note));
+            }
+            if let fingerprint::Fingerprint::Unavailable(why) = &hot_fingerprint {
+                tracing::info!("cluster fingerprint unavailable: {why}");
+            }
+            *net.layout_ident.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some((hot_ctx.clone(), hot_fingerprint.value().map(str::to_owned)));
+            let mut prior_hot = loaded_layout;
             let mut prior_warm = kubernation_core::state::layout::Layout::default();
+            // Saved on a cadence rather than every tick — the write is a real
+            // fsync and the next open is the only reader — but not a slow one:
+            // this is also the only save a session that is KILLED will have had,
+            // and the clean-exit save in `main` cannot help there. Guarded on
+            // the layout actually having changed, so a settled fleet writes
+            // nothing at all.
+            const LAYOUT_SAVE_TICKS: u64 = 20; // ~5s
+            let mut saved_layout = prior_hot.clone();
             let mut last_browse: Option<String> = None;
             // Live port-forwards: the private handles (dropping one aborts its
             // accept loop + in-flight tunnels). `net.forwards` mirrors these for
@@ -1334,7 +1400,27 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             // ground: drop the slot assignments with the handle,
                             // or the new cluster inherits ordinals earned by
                             // nodes it has never heard of.
-                            prior_hot = kubernation_core::state::layout::Layout::default();
+                            //
+                            // Save the outgoing cluster's layout before letting
+                            // go of it — switching away is the commonest way a
+                            // session ends for that cluster, and losing the map
+                            // because someone looked at another one would defeat
+                            // the point.
+                            if prior_hot != saved_layout
+                                && let Err(e) =
+                                    layout_io::save(&hot_ctx, &prior_hot, hot_fingerprint.value())
+                            {
+                                tracing::warn!("could not save the map for {hot_ctx}: {e}");
+                            }
+                            hot_ctx = c.meta.context.clone();
+                            hot_fingerprint = fingerprint::read(c.client.clone()).await;
+                            let (next, loaded) =
+                                layout_io::load(&hot_ctx, hot_fingerprint.value());
+                            net.set_layout_note(loaded.announce());
+                            prior_hot = next;
+                            saved_layout = prior_hot.clone();
+                            *net.layout_ident.lock().unwrap_or_else(|e| e.into_inner()) =
+                                Some((hot_ctx.clone(), hot_fingerprint.value().map(str::to_owned)));
                             // Restart the liveness probe against the new cluster.
                             // Bump the gen FIRST so the old probe (which may be past
                             // its await) can't write the old cluster's state.
@@ -2294,6 +2380,39 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // per world, rather than on `ObservedWorld` (which must not carry
                 // derived state) or in a global.
                 let hot_models = build_carrying(&hot_handle.world, &filter, &mut prior_hot);
+                // Stamp any slot that just became a ghost. Kept out of
+                // `assign_layout`, which is pure and must stay clockless — the
+                // clock is supplied here, once the assignment is done.
+                prior_hot.stamp_vacancies(SystemTime::now());
+                // Compaction: explicit, once, and DECLARED. Reserved ground is
+                // reclaimed only because someone asked; the count is reported
+                // because a world that quietly shrank is the same silent
+                // reshuffle this workstream exists to remove, arriving by a
+                // different door.
+                if net.compact_req.swap(false, Ordering::Relaxed) {
+                    let reclaimed = prior_hot.compact();
+                    net.set_layout_note(Some(if reclaimed == 0 {
+                        "no empty ground to reclaim — every slot is occupied".to_string()
+                    } else {
+                        format!("reclaimed {reclaimed} empty slots; occupied ground is unmoved")
+                    }));
+                    if reclaimed > 0
+                        && let Err(e) =
+                            layout_io::save(&hot_ctx, &prior_hot, hot_fingerprint.value())
+                    {
+                        tracing::warn!("could not save the map for {hot_ctx}: {e}");
+                    }
+                    saved_layout = prior_hot.clone();
+                }
+                if ticks.is_multiple_of(LAYOUT_SAVE_TICKS) && prior_hot != saved_layout {
+                    match layout_io::save(&hot_ctx, &prior_hot, hot_fingerprint.value()) {
+                        Ok(_) => saved_layout = prior_hot.clone(),
+                        // A map that cannot be saved is not worth interrupting
+                        // anyone over — the session still works, only its memory
+                        // is lost — but it goes in the log rather than nowhere.
+                        Err(e) => tracing::warn!("could not save the map for {hot_ctx}: {e}"),
+                    }
+                }
                 // MTTD: note the first tick the attention queue flags the drill's
                 // subject (the fresh hot concerns are right here).
                 if let Some(sess) = net.chaos_session.lock().unwrap_or_else(|e| e.into_inner()).as_mut()

@@ -9,6 +9,7 @@ pub mod filter;
 pub mod harden;
 pub mod inspect;
 pub mod layout;
+pub mod layout_store;
 pub mod logline;
 pub mod model;
 pub mod netpol;
