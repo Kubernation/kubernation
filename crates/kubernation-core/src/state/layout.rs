@@ -121,6 +121,18 @@ pub struct SlotState {
     /// Absent is **unknown**, not infinitely old — an older file or a bug must
     /// never be read as "reap me". Whoever adds ageing inherits that guard.
     pub vacated_at: Option<SystemTime>,
+    /// When this slot last **changed hands** — a different node took ground its
+    /// predecessor held. Succession, in the plan's sense.
+    ///
+    /// Not set when a slot is first created, and not set when a node returns to
+    /// its own ground: neither is a succession. The first distinction is what
+    /// stops a first run painting the entire map as freshly changed; the second
+    /// is what stops a node coming back from a blip looking like a replacement.
+    ///
+    /// Absent is **unknown**, not "changed at the dawn of time" — a slot from an
+    /// older file, or one never restamped, must read as *not fresh* rather than
+    /// as either extreme.
+    pub occupied_at: Option<SystemTime>,
 }
 
 /// The assignment for one frame. A slot whose `occupant` is `None` is a
@@ -227,6 +239,39 @@ impl Layout {
                 state.vacated_at = Some(now);
             }
         }
+    }
+
+    /// Stamp any slot that just changed hands, using a clock the caller supplies.
+    ///
+    /// `prior` is the layout this one was assigned from, and it is what makes
+    /// the three cases separable: ground that changed hands, ground merely
+    /// carried, and ground seen for the first time. All three leave
+    /// `occupied_at` unset, so the field alone cannot tell them apart —
+    /// [`changed_hands`] against the prior occupant can, and is the same
+    /// predicate `place` uses.
+    pub fn stamp_successions(&mut self, prior: &Layout, now: SystemTime) {
+        let changed: Vec<SlotKey> = self
+            .slots
+            .iter()
+            .filter(|(k, v)| {
+                let Some(taking) = v.occupant.as_ref() else {
+                    return false;
+                };
+                let held = prior.slots.get(*k).and_then(|s| s.last_occupant.as_deref());
+                changed_hands(held, &taking.node)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in changed {
+            if let Some(s) = self.slots.get_mut(&k) {
+                s.occupied_at = Some(now);
+            }
+        }
+    }
+
+    /// When this slot last changed hands, if it has and was stamped.
+    pub fn occupied_at(&self, key: &SlotKey) -> Option<SystemTime> {
+        self.slots.get(key).and_then(|s| s.occupied_at)
     }
 
     /// **Reclaim all ghost ground.** Returns how many slots were released.
@@ -337,6 +382,9 @@ pub fn assign_layout(prior: &Layout, observed: &[ObservedNode]) -> Layout {
                     // re-occupation, and `stamp_vacancies` fills in the new
                     // ones with a clock the caller supplies.
                     vacated_at: v.vacated_at,
+                    // Carried the same way. `place` decides whether the slot
+                    // changed hands and clears it if so.
+                    occupied_at: v.occupied_at,
                 },
             )
         })
@@ -431,14 +479,76 @@ pub fn assign_layout(prior: &Layout, observed: &[ObservedNode]) -> Layout {
     }
 }
 
+/// How recently ground changed hands, as `1.0` at the moment of succession
+/// decaying to `0.0` at the end of the window.
+///
+/// `None` means **do not mark**, and it covers three genuinely different states
+/// that all have the same honest answer: the slot never changed hands, its
+/// timestamp is unknown (an older file, a slot never restamped), or the window
+/// is `0` and marking is off.
+///
+/// A `window` of zero is a real supported value meaning *never mark*, not a
+/// degenerate one — so it is checked before the division rather than producing
+/// an infinity that would mark everything forever.
+///
+/// A timestamp in the future is treated as "just now" rather than discarded: a
+/// clock that stepped backwards is a reason to be slightly wrong about age, not
+/// a reason to lose the fact that ground changed.
+pub fn freshness(
+    occupied_at: Option<SystemTime>,
+    now: SystemTime,
+    window: std::time::Duration,
+) -> Option<f64> {
+    if window.is_zero() {
+        return None;
+    }
+    let at = occupied_at?;
+    let age = now.duration_since(at).unwrap_or_default();
+    if age >= window {
+        return None;
+    }
+    Some(1.0 - age.as_secs_f64() / window.as_secs_f64())
+}
+
+/// Did ground change hands? `held` is who the slot last belonged to.
+///
+/// The single definition of succession, consulted by both `place` (which clears
+/// the stamp) and [`Layout::stamp_successions`] (which sets it). They ran as two
+/// copies of the rule at first and disagreed immediately — the placer cleared on
+/// a change of hands while the stamper stamped anything unstamped, so a carry
+/// and a node returning to its own ground were both marked as replacements.
+///
+/// `None` — the slot never had an occupant — is a **first sighting**, not a
+/// succession. That is what stops a first run painting the whole map.
+fn changed_hands(held: Option<&str>, taking: &str) -> bool {
+    held.is_some_and(|h| h != taking)
+}
+
 /// Seat a node, recording it as the slot's most recent occupant so it can
 /// reclaim the ground later.
 fn place(slots: &mut BTreeMap<SlotKey, SlotState>, key: SlotKey, n: &ObservedNode) {
+    // Did this ground CHANGE HANDS? Compared against who last held it, not
+    // against who held it on the previous tick — a rolling refresh drains a node
+    // in one tick and its replacement reclaims the slot in another, so a
+    // tick-to-tick comparison sees a departure and then an arrival and never a
+    // succession at all. `last_occupant` spans that gap, which is exactly what
+    // it was added for.
+    let prior = slots.get(&key);
+    let succeeded = changed_hands(prior.and_then(|s| s.last_occupant.as_deref()), &n.name);
     slots.insert(
         key,
         SlotState {
             occupant: Some(occupancy(n)),
             last_occupant: Some(n.name.clone()),
+            // Cleared on a change of hands so `stamp_successions` fills it in
+            // with the caller's clock; carried otherwise, so a slot that merely
+            // persists keeps ageing from when it actually changed rather than
+            // resetting every tick.
+            occupied_at: if succeeded {
+                None
+            } else {
+                prior.and_then(|s| s.occupied_at)
+            },
             // Occupied ground is not vacant ground: clearing here is what keeps
             // `vacated_at` meaning "how long this CURRENT vacancy has stood"
             // rather than "when this slot was ever last empty".
@@ -702,6 +812,119 @@ mod tests {
     /// The ordinal ceiling must not fabricate a coordinate. `saturating_add`
     /// returned `u16::MAX` a second time, making the newcomer's key equal the
     /// incumbent's — and the insert then EVICTED a live node from the layout.
+    /// **SUCCESSION IS A CHANGE OF HANDS — not an arrival, not a return.**
+    ///
+    /// The three cases have to be distinguished or the marking is useless: a
+    /// first run would paint every slot, and a node returning from a blip would
+    /// look like it had been replaced.
+    #[test]
+    fn only_ground_that_changed_hands_is_stamped() {
+        let t = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+
+        // FIRST SIGHTING — every slot is new. Nothing changed hands.
+        let empty = Layout::default();
+        let mut first = assign_layout(&empty, &fleet(&["a", "b"], "z", "p"));
+        first.stamp_successions(&empty, t);
+        assert!(
+            first
+                .occupied()
+                .all(|(k, _)| first.occupied_at(k).is_none()),
+            "a first run marked the map as freshly changed"
+        );
+
+        // CARRY — the same nodes again. Still nothing.
+        let mut same = assign_layout(&first, &fleet(&["a", "b"], "z", "p"));
+        same.stamp_successions(&first, t);
+        assert!(same.occupied().all(|(k, _)| same.occupied_at(k).is_none()));
+
+        // SUCCESSION — `b` drains, and a differently-named replacement reclaims
+        // its ground. Note this spans TWO rebuilds, which is why the detection
+        // keys on `last_occupant` rather than on a tick-to-tick comparison:
+        // between them the slot is a ghost, so a transient detector sees a
+        // departure and then an arrival and never a succession at all.
+        let drained = assign_layout(&same, &fleet(&["a"], "z", "p"));
+        let mut refreshed = assign_layout(&drained, &fleet(&["a", "b2"], "z", "p"));
+        refreshed.stamp_successions(&drained, t);
+
+        let b2 = refreshed.slot_of("b2").expect("placed").clone();
+        assert_eq!(
+            refreshed.occupied_at(&b2),
+            Some(t),
+            "the wave was not marked"
+        );
+        let a = refreshed.slot_of("a").expect("placed").clone();
+        assert_eq!(
+            refreshed.occupied_at(&a),
+            None,
+            "an untouched slot was marked"
+        );
+    }
+
+    /// A node that leaves and comes back has not been succeeded — the ground
+    /// never changed hands, so marking it would report a replacement that did
+    /// not happen.
+    #[test]
+    fn a_node_returning_to_its_own_ground_is_not_a_succession() {
+        let t = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        let both = assign_layout(&Layout::default(), &fleet(&["a", "b"], "z", "p"));
+        let gone = assign_layout(&both, &fleet(&["a"], "z", "p"));
+        let mut back = assign_layout(&gone, &fleet(&["a", "b"], "z", "p"));
+        back.stamp_successions(&gone, t);
+
+        let b = back.slot_of("b").expect("placed").clone();
+        assert_eq!(
+            back.occupied_at(&b),
+            None,
+            "a return was marked as a replacement"
+        );
+    }
+
+    /// The stamp is set once and then ages; a later rebuild must not reset it,
+    /// or the marking would never fade and the wave would have no trailing edge.
+    #[test]
+    fn a_succession_stamp_ages_rather_than_resetting_each_tick() {
+        let t0 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        let t1 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5_000);
+        let both = assign_layout(&Layout::default(), &fleet(&["a", "b"], "z", "p"));
+        let gone = assign_layout(&both, &fleet(&["a"], "z", "p"));
+        let mut refreshed = assign_layout(&gone, &fleet(&["a", "b2"], "z", "p"));
+        refreshed.stamp_successions(&gone, t0);
+        let slot = refreshed.slot_of("b2").expect("placed").clone();
+
+        let mut later = assign_layout(&refreshed, &fleet(&["a", "b2"], "z", "p"));
+        later.stamp_successions(&refreshed, t1);
+        assert_eq!(later.occupied_at(&slot), Some(t0), "the stamp restarted");
+    }
+
+    /// Ageing: fresh at the moment, gone by the end of the window, and every
+    /// "do not mark" case answers `None` rather than a fabricated extreme.
+    #[test]
+    fn freshness_fades_and_refuses_to_guess() {
+        use std::time::Duration;
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let hour = Duration::from_secs(3600);
+
+        assert_eq!(freshness(Some(t), t, hour), Some(1.0));
+        let half = freshness(Some(t), t + Duration::from_secs(1800), hour).expect("mid-window");
+        assert!((half - 0.5).abs() < 1e-9, "{half}");
+        assert_eq!(
+            freshness(Some(t), t + hour, hour),
+            None,
+            "still fresh at the window's end"
+        );
+        assert_eq!(freshness(Some(t), t + hour * 2, hour), None);
+
+        // Unknown is not "infinitely old" and not "brand new" — it is unmarked.
+        assert_eq!(freshness(None, t, hour), None);
+        // A window of zero means never mark, and must not divide by it.
+        assert_eq!(freshness(Some(t), t, Duration::ZERO), None);
+        // A clock that stepped backwards loses precision, not the fact.
+        assert_eq!(
+            freshness(Some(t), t - Duration::from_secs(60), hour),
+            Some(1.0)
+        );
+    }
+
     /// **COMPACTION RECLAIMS GROUND. IT DOES NOT RENUMBER.**
     ///
     /// The invariant that keeps A4 from undoing A1. The word invites the
@@ -868,6 +1091,7 @@ mod tests {
                 }),
                 last_occupant: Some("incumbent".into()),
                 vacated_at: None,
+                occupied_at: None,
             },
         );
         let l = assign_layout(&prior, &fleet(&["incumbent", "newcomer"], "z", "p"));

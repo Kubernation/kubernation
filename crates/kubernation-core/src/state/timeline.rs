@@ -84,6 +84,15 @@ pub enum OpVerb {
     Cordon,
     Evict,
     Chaos,
+    /// Ground reclaimed — the slots of nodes that have gone for good released
+    /// back to the map.
+    ///
+    /// A **cataclysm** in the plan's sense: structural change to the world
+    /// rather than a routine replacement. It reaches the operator as a record
+    /// here rather than as a mark on the terrain, because after a compaction
+    /// there is nothing left to mark — the ground it describes is precisely the
+    /// ground that stopped existing.
+    Compact,
 }
 
 /// A change KuberNation itself made this session — injected by the GUI (which

@@ -1194,9 +1194,18 @@ fn build_carrying(
     world: &ObservedWorld,
     filter: &NamespaceFilter,
     prior: &mut kubernation_core::state::layout::Layout,
+    now: SystemTime,
 ) -> Arc<Models> {
     let m = Arc::new(Models::build_with(world, filter, prior));
-    *prior = m.layout.clone();
+    // Stamp before the new layout replaces the old one: both stamps need the
+    // PRIOR layout to tell what just changed, and `prior` is about to become the
+    // new one. Kept here rather than inside `assign_layout`, which is pure and
+    // must stay clockless — this is the one place that holds both sides and a
+    // clock at the same moment.
+    let mut next = m.layout.clone();
+    next.stamp_successions(prior, now);
+    next.stamp_vacancies(now);
+    *prior = next;
     m
 }
 
@@ -2379,11 +2388,8 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // successor inherits its ground and the map holds still. Held here,
                 // per world, rather than on `ObservedWorld` (which must not carry
                 // derived state) or in a global.
-                let hot_models = build_carrying(&hot_handle.world, &filter, &mut prior_hot);
-                // Stamp any slot that just became a ghost. Kept out of
-                // `assign_layout`, which is pure and must stay clockless — the
-                // clock is supplied here, once the assignment is done.
-                prior_hot.stamp_vacancies(SystemTime::now());
+                let hot_models =
+                    build_carrying(&hot_handle.world, &filter, &mut prior_hot, SystemTime::now());
                 // Compaction: explicit, once, and DECLARED. Reserved ground is
                 // reclaimed only because someone asked; the count is reported
                 // because a world that quietly shrank is the same silent
@@ -2391,6 +2397,26 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                 // different door.
                 if net.compact_req.swap(false, Ordering::Relaxed) {
                     let reclaimed = prior_hot.compact();
+                    // A cataclysm goes in the RECORD, not on the terrain. There
+                    // is nothing left to mark: the ground a compaction describes
+                    // is exactly the ground that stopped existing. The Annals
+                    // already render this ring, so it reaches the operator
+                    // through the path that exists rather than a parallel one —
+                    // note the toast below is transient and cleared on first
+                    // read, so it is not a record and could not be read as one.
+                    if reclaimed > 0 {
+                        net.push_op(OperatorAction {
+                            when: kubernation_core::util::now(),
+                            verb: OpVerb::Compact,
+                            namespace: String::new(),
+                            name: hot_ctx.clone(),
+                            kind: "Map".into(),
+                            detail: format!(
+                                "reclaimed {reclaimed} empty slots; occupied ground unmoved"
+                            ),
+                            severity: Severity::Info,
+                        });
+                    }
                     net.set_layout_note(Some(if reclaimed == 0 {
                         "no empty ground to reclaim — every slot is occupied".to_string()
                     } else {
@@ -2441,7 +2467,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     .as_ref()
                     .filter(|_| ready_warm.load(Ordering::Relaxed))
                     .map(|h| WorldSnap {
-                        models: build_carrying(&h.world, &filter, &mut prior_warm),
+                        models: build_carrying(&h.world, &filter, &mut prior_warm, SystemTime::now()),
                         observed: h.world.clone(),
                         slo: Arc::new(
                             slo_warm
@@ -2690,15 +2716,16 @@ mod tests {
 
         let mut prior = Layout::default();
         let t0 = fleet(&["a", "b", "c"]);
-        let m0 = build_carrying(&t0, &NamespaceFilter::All, &mut prior);
+        let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        let m0 = build_carrying(&t0, &NamespaceFilter::All, &mut prior, t);
         let a0 = pos(&m0, "a").expect("placed");
 
         // `b` and `c` are replaced, surging: successors Ready before they drain.
         let t1 = fleet(&["a", "b", "c", "b2", "c2"]);
-        let m1 = build_carrying(&t1, &NamespaceFilter::All, &mut prior);
+        let m1 = build_carrying(&t1, &NamespaceFilter::All, &mut prior, t);
         let b2 = pos(&m1, "b2").expect("placed");
         let t2 = fleet(&["a", "b2", "c2"]);
-        let m2 = build_carrying(&t2, &NamespaceFilter::All, &mut prior);
+        let m2 = build_carrying(&t2, &NamespaceFilter::All, &mut prior, t);
 
         assert_eq!(pos(&m2, "a"), Some(a0), "a survivor moved");
         assert_eq!(

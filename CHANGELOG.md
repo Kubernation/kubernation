@@ -8,6 +8,11 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Reclaiming empty ground now appears in the Annals**, alongside the other
+  changes KuberNation itself made this session, rather than only as a toast that
+  vanishes when you look away.
+
 ## [1.9.0] — 2026-08-03
 
 The first release since 1.6.0. It carries the work versioned 1.7.0, 1.7.1, 1.7.2

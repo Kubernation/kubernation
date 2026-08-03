@@ -57,6 +57,17 @@ pub struct StoredSlot {
     /// Absent means **unknown**, not infinitely old.
     #[serde(default)]
     pub vacated_at: Option<u64>,
+    /// Seconds since the Unix epoch, set when the slot last CHANGED HANDS.
+    ///
+    /// Added after the format shipped. **`LAYOUT_VERSION` is deliberately not
+    /// bumped**: an optional field with `#[serde(default)]` reads an older file
+    /// as `None` (which means *unknown*, and unknown means not fresh), and a
+    /// newer file read by an older build is ignored rather than rejected —
+    /// `StoredSlot` does not deny unknown fields. Compatible both directions, so
+    /// per `prefs.rs`'s convention of bumping only on an INCOMPATIBLE change,
+    /// this is not one.
+    #[serde(default)]
+    pub occupied_at: Option<u64>,
 }
 
 /// Why a stored layout could not be used as-is.
@@ -118,6 +129,7 @@ pub fn to_stored(layout: &Layout, fingerprint: Option<&str>) -> StoredLayout {
                 occupant: v.occupant.as_ref().map(|o| o.node.clone()),
                 last_occupant: v.last_occupant.clone(),
                 vacated_at: v.vacated_at.and_then(to_unix),
+                occupied_at: v.occupied_at.and_then(to_unix),
             })
             .collect(),
     }
@@ -169,6 +181,7 @@ pub fn from_stored(
             }),
             last_occupant: s.last_occupant,
             vacated_at: s.vacated_at.map(from_unix),
+            occupied_at: s.occupied_at.map(from_unix),
         };
         (key, state)
     });
@@ -421,6 +434,80 @@ mod tests {
             session_two.slots().count(),
             restored_slots,
             "the world grew — replacements took new ground rather than reserved ground"
+        );
+    }
+
+    /// **A CHANGE THAT HAPPENED WHILE THE APP WAS CLOSED MUST STILL READ AS
+    /// FRESH.** This is the case that motivates a stamp over a transient
+    /// detector, and the reason the field is persisted at all: a refresh
+    /// overnight should be visible on the map in the morning.
+    #[test]
+    fn a_succession_that_happened_while_closed_survives_the_restart() {
+        use crate::state::layout::freshness;
+        use std::time::Duration;
+        let t = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+
+        // Session one: `b` holds ground, then is replaced by `b2`.
+        let both = assign_layout(&Layout::default(), &[node("a"), node("b")]);
+        let drained = assign_layout(&both, &[node("a")]);
+        let mut refreshed = assign_layout(&drained, &[node("a"), node("b2")]);
+        refreshed.stamp_successions(&drained, t);
+        let slot = refreshed.slot_of("b2").expect("placed").clone();
+        assert_eq!(refreshed.occupied_at(&slot), Some(t));
+
+        // Close, reopen. The stamp has to come back, or the wave is invisible
+        // in exactly the case the operator was not watching it happen.
+        let json = serde_json::to_string(&to_stored(&refreshed, None)).expect("write");
+        drop(refreshed);
+        let (restored, _) =
+            from_stored(serde_json::from_str(&json).expect("read"), None).expect("loads");
+        assert_eq!(
+            restored.occupied_at(&slot),
+            Some(t),
+            "the succession was forgotten across the restart"
+        );
+
+        // And it is still fresh a few minutes later, then not an hour on.
+        let hour = Duration::from_secs(3600);
+        assert!(
+            freshness(
+                restored.occupied_at(&slot),
+                t + Duration::from_secs(300),
+                hour
+            )
+            .is_some()
+        );
+        assert!(freshness(restored.occupied_at(&slot), t + hour, hour).is_none());
+    }
+
+    /// A file written before the field existed loads with the map intact and
+    /// **nothing marked** — an upgrade must not paint the whole world as
+    /// freshly changed.
+    #[test]
+    fn a_file_from_before_the_field_existed_marks_nothing() {
+        let mut stored = to_stored(&sample(), None);
+        // Exactly what an older writer produced: no `occupied_at` key at all.
+        for s in &mut stored.slots {
+            s.occupied_at = None;
+        }
+        let json = serde_json::to_string(&stored).expect("write");
+        let stripped = json.replace(",\"occupied_at\":null", "");
+        assert!(
+            !stripped.contains("occupied_at"),
+            "the fixture still has the field"
+        );
+
+        let (layout, _) =
+            from_stored(serde_json::from_str(&stripped).expect("read"), None).expect("loads");
+        assert!(
+            layout.occupied().count() > 0,
+            "the fixture must have occupied slots or this proves nothing"
+        );
+        assert!(
+            layout
+                .occupied()
+                .all(|(k, _)| layout.occupied_at(k).is_none()),
+            "an older file marked the map as freshly changed"
         );
     }
 
