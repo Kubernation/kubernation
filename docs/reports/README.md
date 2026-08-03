@@ -6,6 +6,10 @@ got wrong, and what needs a decision. One per round, newest first.
 They are kept here — in the repo, in markdown — rather than as hosted links, so they
 are diffable, greppable, and survive alongside the code they describe.
 
+**Start here for planning:** [Workstream A — open decisions](open-decisions.md)
+consolidates what still needs deciding across every round below, so they do not
+have to be read in sequence.
+
 | Report | Date | Outcome |
 |---|---|---|
 | [A4 — verification, stopped at §0](a4-verification.md) | 2026-08-03 | **Stopped** — claim 10 false; §4 needs revising |
