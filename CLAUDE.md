@@ -3620,6 +3620,59 @@ what makes the interesting logic unit-testable without a cluster.
   the signal to revisit is ghosts substantially exceeding the batch size on a
   fleet nobody shrank, measurable with `--dump-positions`.
 
+- **A5 — succession (core); cataclysm is a RECORD** (2026-08-03, **v1.9.1**;
+  from `docs/kubernation-a5-succession-cataclysm-guidance.md`, report in
+  `docs/reports/a5-succession-core.md`): `SlotState` gains **`occupied_at`** —
+  when a slot last **changed hands**. Three cases are deliberately separated: a
+  **first sighting** is not marked (or a first run paints the entire map), a
+  **carry or return** is not marked (nothing changed hands), only a **different
+  node taking ground its predecessor held** is. **The detail that decides the
+  design:** a rolling refresh is NEVER a replacement in any single tick — the
+  node drains in one tick (`from Some → to None`) and its replacement reclaims in
+  another (`from None → to Some`) — so `changes_from` cannot detect succession at
+  all, and detection keys on `last_occupant`, which spans the gap (what A1 added
+  it for). The predicate first existed TWICE (the placer clearing on a change of
+  hands, the stamper stamping anything unstamped) and they disagreed immediately —
+  a carry and a return were both marked as replacements; now one `changed_hands`
+  with two callers. `assign_layout` stays clockless: it carries/clears, and
+  `build_carrying` supplies the clock where it holds both sides at once.
+  **`LAYOUT_VERSION` deliberately NOT bumped** — an optional `#[serde(default)]`
+  field reads an older file as `None` and a newer file is ignored by an older
+  build, compatible both ways, so per `prefs.rs`'s bump-only-on-incompatible rule
+  it is not one; the deciding case is that a pre-field file must load with
+  **nothing marked**, tested by stripping the key from the JSON. `freshness`
+  returns `None` for all three "do not mark" states (never changed hands, unknown
+  timestamp, window 0 — checked before the division, not an infinity).
+  **CATACLYSM IS A RECORD, NOT A RENDERING** (§3.3's own question, answered):
+  after a structural change there is nothing left to draw on — a vanished pool's
+  slots already render as ghost ground, a compaction removes the ground it
+  describes, a vanished zone keeps an ordinal with no provinces. So compaction
+  pushes an `OpVerb::Compact` `OperatorAction` and surfaces in the **Annals**.
+  **§3.2's premise was FALSE** — it says A4 already records these events and A5
+  should read them, but A4's compaction and fingerprint-mismatch both call
+  `set_layout_note`, a transient toast cleared on first read; there was no record.
+  The instruction survived its premise because the `OperatorAction` ring the
+  Annals already renders exists, so this extends `OpVerb` rather than building the
+  parallel path §3.2 warned against. **§0: claim 5 is FALSE** — `attention::build`
+  takes no `now`, it reads `jiff::Timestamp::now()` internally (attention.rs:597),
+  so it is a counter-example to the clock convention, not an example (the
+  convention is real via `build_timeline`/`postmortem`/`chaos`). **Claim 9
+  refined:** measured live, ghosts ran 10→1→11→2→12 and settle at **12, not the
+  batch size of 10**, because reclaim is per-(zone, pool) and `sys` spans three
+  zones — the not-cumulative half holds, "at batch size" is approximate on a
+  partitioned fleet (A4's single-partition fixture is why it read a clean 10).
+  Claim 8 nearly read as refuted because the first dump inspected had zero ghost
+  records — it simply had no ghosts; a live refresh shows them in 138 of 166
+  ticks. Mutation floor exercised BOTH ways (ageing forced to "not fresh" fails 2;
+  succession detection disabled fails 3). 425 core + 94 GUI tests; gui-smoke 51.
+  **DELIBERATELY HALF THE PHASE:** §2.3's fresh-ground rendering and §4's gate are
+  a separate session, because the guidance calls the treatment "the phase's main
+  aesthetic decision" to be "made against the live map, not in advance"
+  (quantised steps vs a continuous fade). The seam is one call —
+  `freshness(layout.occupied_at(slot), now, window)`. Also outstanding with it:
+  the ageing window as a persisted flag-overridable setting, the `cb_*` funnel
+  routing, and fresh-vs-ghost distinguishability during a surge.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

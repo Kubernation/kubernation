@@ -1,61 +1,47 @@
 # Workstream A — open decisions
 
-**For the planning session** · 2026-08-03 · state as of `v1.8.0`
+**For the planning session** · 2026-08-03 · state as of `v1.9.1` (released: `v1.9.0`)
 
 A rolling consolidation of what needs deciding, gathered from the per-round
 reports so they do not have to be read in sequence. Each item states the
 evidence, what is blocked by it, and a recommendation. Items already answered by
 subsequent rounds have been dropped rather than carried forward.
 
-**One item blocks a phase. Four change scope. The rest are housekeeping, one of
-which is overdue.**
+**Nothing blocks a phase.** A4 shipped and A5's core landed; the immediate work
+is A5's second half. Four items change scope, and the overdue release is done.
 
 ---
 
-## 1. Blocking: A4's §4 needs rewriting
+## 1. Next: A5's second half
 
-**Status:** A4 stopped at §0. No code written.
+**Not blocked — scoped and seamed.** A5's core landed in v1.9.1: ground records
+when it changed hands, it persists, and cataclysm was resolved as a *record*
+rather than a rendering (there is nothing left to draw on after a structural
+change — see [a5-succession-core.md](a5-succession-core.md) §2).
 
-Claim 10 — *"one refresh of N nodes produces N ghosts; accumulation rate is
-refresh cadence"* — is false, and it is the claim §4's design rests on.
-Ghosts reach a **steady state at the refresh batch size** and stay there: a
-100-node fleet refreshed in waves of ten holds ten ghosts after the first
-refresh and still ten after the fourth, because each wave's replacements reclaim
-the previous wave's ghosts.
+What remains is §2.3's **fresh-ground rendering** and §4's **gate**, held back
+deliberately because the guidance calls the treatment *"the phase's main
+aesthetic decision"* to be made *"against the live map, not in advance"* —
+specifically whether ageing should be quantised into two or three steps rather
+than a continuous fade, since a continuous fade is hard to read as a wave.
 
-The consequences, in [a4-verification.md](a4-verification.md):
+Everything a renderer needs is one call:
 
-- §4.2's sizing is void — ~10 ghosts, not ~200, and it does not grow with cadence
-- the automatic **age reap** is left addressing something that does not occur
-- what *does* leave lasting ghosts is **shrinkage**, which is already
-  compaction's job
+```rust
+freshness(layout.occupied_at(slot), now, window)
+```
 
-**The decision:** what is the automatic reap for, now that accumulation is not
-the answer? Three shapes, ranked:
+Outstanding with it: the ageing window as a persisted, flag-overridable setting;
+`cb_*` funnel routing; fresh-versus-ghost distinguishability during a surge; and
+the gate with its mandatory discrimination check.
 
-1. **Compaction only** — build persistence, identity and the explicit verb;
-   leave the age reap until something demonstrates a need. This is A3 §2.1's own
-   principle applied one section over: *do not build it speculatively; the
-   measurement exists to size the problem first.*
-2. **Both, retention defaulting to `0`** (never) — machinery exists, opt-in,
-   honest that the window is unsized.
-3. **Both, keeping 14 days**, re-justified as bounding ghosts from *shrinkage* —
-   which means a decommissioned pool's ground is reclaimed automatically after a
-   fortnight, a different promise from the one §4.2 currently makes.
-
-**A question worth settling first:** is a standing batch-size set of ghosts even
-undesirable? Ten reserved slots on a 100-node fleet is the mechanism *working* —
-ground held for nodes that may return — and A2's gate found that painting that
-ground is what made a refresh read as stable rather than as the continent losing
-pieces of itself. An eager reap would undo that.
-
-**Two things for the rewrite regardless:** `Namespace` is not watched anywhere,
-so §3's fingerprint needs a new one-shot read (`browse.rs` is the precedent, and
-it is a small new read surface on a project whose privilege posture is
-deliberate); and `vacated_at` is worth keeping in the format whichever way §4
-goes, since A5's ageing wants it.
-
----
+**One input worth having first.** A5's claim-9 refinement matters here: ghosts
+settle at **12 on the churn fleet, not the batch size of 10**, because reclaim is
+per-(zone, pool). The standing quantity of marked ground is therefore
+*per-partition*, so a fleet with many partitions carries more fresh and ghost
+ground on screen at once than a single-partition estimate suggests — and the
+ageing window's default and that quantity together decide how much of the map is
+marked at any moment.
 
 ## 2. Scope and ownership
 
@@ -87,16 +73,19 @@ work? The dump already records provinces and ghosts; islands would be a small
 addition, and the last three rounds have all found the measurement changed the
 scope.
 
-### 2.3 Where the kill point sits now
+### 2.3 The kill point — settled, and worth leaving settled
 
-It has moved twice. The decomposition put it at A2; A2's gate passed for
-provinces and moved it to A3; A3's gate passed. The A4 guidance §1 argues it is
-now A4 — *"nobody builds spatial memory of a layout that resets on restart"* —
-and that is the first version of plan §1's claim a user could actually
-experience.
+It moved twice (decomposition said A2; A2's report said A3; A4's guidance said
+A4), and A4 §8.1 said **stop moving it**, which its report accepted. The position
+now on record:
 
-**Worth confirming explicitly**, because the framing decides how much weight A4's
-gate carries and what a failure there would mean.
+> **Plan §1's spatial-memory thesis is not testable by any single gate.** A1–A3
+> proved the map *can* hold still; A4 proved it holds still across sessions.
+> Whether that produces spatial memory in a user is answerable only by someone
+> living with it for weeks.
+
+Every gate since has been reported as what it is — real, binary, and silent on
+the thesis. Recorded here so it is not relitigated a fourth time.
 
 ### 2.4 Instance-type as a pool fallback
 
@@ -136,27 +125,25 @@ zones the provinces are still thin ribbons.
 
 ---
 
-## 4. Overdue housekeeping: the release drift has restarted
+## 4. ~~Overdue housekeeping: the release drift~~ — **done**
 
-**The last tag is `v1.6.0`. The workspace is at `v1.8.0`.** Four versions are
-unreleased: 1.7.0, 1.7.1, 1.7.2, 1.8.0 — including the critical fix where
-provinces of different pools were drawn on top of each other, which affects any
-cluster with two nodepools in a zone.
+**v1.9.0 is released**, carrying 1.7.0, 1.7.1, 1.7.2 and 1.8.0. Signed and
+notarized `.dmg`, Linux tarball, Windows zip, `SHA256SUMS`.
 
-This is the exact drift `CLAUDE.md` records the project already being burned by:
-seventy versions piled up under Unreleased before v1.0.0 and had to be
-aggregated. The convention added afterwards says *"actually roll it at tag time
-— don't let that drift restart."*
+The five versions were **not** backfilled as tags, because `gh release list`
+against the CHANGELOG showed that is not drift but the project's convention —
+v1.6.0's own entry records aggregating 1.2.0 through 1.5.0 the same way.
+Backfilling would also have fired five full release builds to publish four
+releases nobody would download.
 
-A release has been asked for in **five** consecutive reports (substrate, A0,
-A-pre, unmeasurable-capacity, and now) and not answered.
+Two things fixed in passing: the release body was a fixed template that never
+said what changed (it now links the CHANGELOG at the tag), and the
+pool-collision fix is called out explicitly, since it is the one a user might
+need to act on.
 
-**Ask:** cut `v1.8.0`, or set a cadence. The `CHANGELOG` sections are already
-rolled and dated; the signed-release pipeline needs a `v*` tag push and the five
-Apple secrets, and pushing one would also prove the multi-platform CI green,
-which is the last pre-1.0 item that still needs an operator.
-
----
+**Also closed:** this was the last pre-1.0-hardening item needing an operator.
+A real tag push has now proven the multi-platform release pipeline green end to
+end, which local dry runs structurally could not.
 
 ## 5. Method — three practices that earned adoption
 
@@ -241,8 +228,9 @@ but only if the gate is run before and after that mutation, not merely written.
 | Measurement | unversioned | instruments committed; pixel method retired for assignment |
 | A3-pre | **v1.7.2** | baseline taken: 3 of 3 incumbents moved |
 | A3 | **v1.8.0** | *no incumbent moves* — 3 of 3 → **0** ✅ |
-| **A4** | **stopped at §0** | *open, close, reopen — same map?* — not started |
-| A5 | not started | a refresh reads as a *wave* |
+| A4 | **v1.9.0** | *open, close, reopen* — 70/70 hold, vs 55/70 without ✅ |
+| **A5** | **v1.9.1, core only** | *a refresh reads as a wave* — **not yet run** |
 | A6 | not started | two people name the same position |
 
-407 core + 90 GUI tests; gui-smoke 51 states; CI green on every commit.
+425 core + 94 GUI tests; gui-smoke 51 states; CI green on every commit.
+Released at **v1.9.0**; working version **v1.9.1**.

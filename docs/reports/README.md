@@ -12,6 +12,7 @@ have to be read in sequence.
 
 | Report | Date | Outcome |
 |---|---|---|
+| [A5 — succession (core)](a5-succession-core.md) | 2026-08-03 | Core landed; **cataclysm is a record**; rendering deferred |
 | [A4 — persistence](a4-persistence.md) | 2026-08-03 | **Gate passed** — 70/70 hold, vs 55/70 without |
 | [A4 — verification, stopped at §0](a4-verification.md) | 2026-08-03 | Superseded by rev2 — claim 10 was false |
 | [A3 — interior stability](a3-interior-stability.md) | 2026-08-03 | **Gate passed** — 3 of 3 incumbents moved, now 0 |
