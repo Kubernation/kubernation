@@ -240,6 +240,7 @@ pub fn region_lines(
                     }
                     // The city sits on the tinted province — show its host node's
                     // strain / upkeep too, so the distinguisher isn't lost on the settlement.
+                    lines.extend(fresh_line(sw.fresh.get(&p.tile.name).copied()));
                     if overlay == Overlay::Saturation {
                         lines.extend(saturation_lines(&p.tile.saturation));
                     }
@@ -267,6 +268,9 @@ pub fn region_lines(
                         format!("{} . {} pods", health.0, p.tile.pods.len()),
                         health.1,
                     ));
+                    // Ungated, unlike the three below: fresh ground is tinted under
+                    // every overlay, so its explanation must be too.
+                    lines.extend(fresh_line(sw.fresh.get(&p.tile.name).copied()));
                     // Under the Saturation overlay, name the binding strain
                     // dimension(s) — the distinguisher the Pressure overlay lacks.
                     if overlay == Overlay::Saturation {
@@ -348,6 +352,32 @@ pub fn cost_lines(nc: &NodeCost) -> Vec<(String, Color)> {
         }
     }
     lines
+}
+
+/// PURE draw-decision fn: the SELECTION/tooltip line for ground that recently
+/// changed hands. `None` for settled ground. Unit-tested.
+///
+/// This is the panel half of fresh ground, and it exists for the reason the
+/// Substrate overlay's does: the map answers *where* in a colour the operator
+/// has no way to interpret, so something must answer *what happened*. Unlike the
+/// overlay-gated lines below it, this one is NOT gated — fresh ground is tinted
+/// under every overlay, so the explanation has to be available under every one
+/// too, or the colour is unexplained exactly where it is most surprising.
+///
+/// The wording is bucketed by `theme::fresh_tier` — the SAME authority the
+/// colour uses — so the words and the paint cannot describe different ages.
+pub fn fresh_line(freshness: Option<f64>) -> Option<(String, Color)> {
+    let f = freshness?;
+    let tier = crate::theme::fresh_tier(f, crate::theme::FRESH_STEPS);
+    // Deliberately relative, not a timestamp: freshness is a fraction of the
+    // ageing window, and reconstructing a duration from it would state a
+    // precision the fraction doesn't carry.
+    let words = match tier {
+        3 => "new ground . just changed hands",
+        2 => "new ground . changed hands recently",
+        _ => "new ground . settling",
+    };
+    Some((words.into(), STONE_INK_DIM))
 }
 
 /// PURE draw-decision fn: SELECTION/tooltip lines naming the fleet-wide
@@ -1243,6 +1273,40 @@ mod tests {
         assert!(t.contains("reconnecting") && t.contains("prod") && t.contains("reach") && err);
     }
 
+    /// Settled ground says nothing; fresh ground says something at every tier.
+    ///
+    /// The load-bearing half is the second assertion: the words must change at
+    /// exactly the freshness values the COLOUR changes at. Both go through
+    /// `theme::fresh_tier`, so this pins that they still do — a second,
+    /// independent bucketing would let the map paint a province "just changed
+    /// hands" while the panel called it "settling", and nothing else would fail.
+    #[test]
+    fn fresh_wording_changes_where_the_colour_does() {
+        assert!(fresh_line(None).is_none(), "settled ground says nothing");
+
+        // Every tier produces a line, and adjacent tiers produce different ones.
+        let at = |f: f64| fresh_line(Some(f)).expect("fresh ground speaks").0;
+        let (newest, middle, oldest) = (at(1.0), at(0.5), at(0.01));
+        assert_ne!(newest, middle);
+        assert_ne!(middle, oldest);
+
+        // The boundaries agree with the paint. With FRESH_STEPS = 3 the tiers
+        // break at 1/3 and 2/3; sample just either side of each.
+        for edge in [1.0 / 3.0, 2.0 / 3.0] {
+            let (lo, hi) = (edge - 1e-6, edge + 1e-6);
+            assert_ne!(at(lo), at(hi), "wording must change at the tier edge");
+            assert_ne!(
+                crate::theme::fresh_land_pair(lo, crate::theme::FRESH_STEPS)
+                    .0
+                    .r,
+                crate::theme::fresh_land_pair(hi, crate::theme::FRESH_STEPS)
+                    .0
+                    .r,
+                "and the colour must change at the SAME edge",
+            );
+        }
+    }
+
     /// The tooltip / SELECTION text is pure draw-decision logic — testable
     /// without a GL context (it formats strings + picks colors, no macroquad
     /// calls). This is the Option-A pattern: every GUI view's *decisions*
@@ -1276,6 +1340,7 @@ mod tests {
                 posture,
                 cost,
                 opencost_note: None,
+                fresh: Arc::new(std::collections::HashMap::new()),
             },
             warm: None,
             pair: None,
@@ -1323,6 +1388,7 @@ mod tests {
                 posture,
                 cost,
                 opencost_note: None,
+                fresh: Arc::new(std::collections::HashMap::new()),
             },
             warm: None,
             pair: None,

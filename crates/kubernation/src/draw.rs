@@ -196,6 +196,16 @@ pub struct OverlayData<'a> {
     pub walls: Option<&'a WallData<'a>>,
     pub cost: Option<&'a CostReport>,
     pub substrate: Option<&'a SubstrateReport>,
+    /// How recently each node's ground changed hands, by node name.
+    ///
+    /// Precomputed per tick rather than looked up here: the renderer holds a
+    /// `Province` and no layout, and `Layout::slot_of` is a linear scan, so a
+    /// per-province lookup in a 60fps draw would be O(slots x provinces). Same
+    /// reasoning as `substrate` and the posture chip.
+    ///
+    /// A node absent from the map is not marked, which is how all three of
+    /// `freshness`'s do-not-mark states arrive at one rule here.
+    pub fresh: Option<&'a HashMap<String, f64>>,
 }
 
 /// Per-workload NetworkPolicy coverage + exposure, for the walls overlay + the
@@ -342,6 +352,14 @@ pub(crate) fn province_unmeasured(overlay: Overlay, prov: &Province) -> bool {
 /// terrain or idle land when that field is absent (as on the minimap, which
 /// threads none of them).
 fn overlay_pair(overlay: Overlay, prov: &Province, data: OverlayData) -> (Color, Color) {
+    // Succession is drawn UNDER every overlay, not as one of them. It says
+    // "this ground just changed hands", which is orthogonal to whatever the
+    // overlay is measuring — an operator reading pressure still wants to see
+    // the wave crossing it. It wins the fill because it is transient by
+    // construction: it fades, and the overlay comes back.
+    if let Some(f) = data.fresh.and_then(|m| m.get(&prov.tile.name)) {
+        return fresh_land_pair(*f, FRESH_STEPS);
+    }
     match overlay {
         Overlay::Terrain => iso_terrain_pair(prov.tile.health),
         // Worst of cpu/mem, where either is known. A province whose node
@@ -419,6 +437,9 @@ pub struct SceneWorld<'a> {
     pub off: u16,
     pub world: &'a WorldModel,
     pub label: String,
+    /// Per-node succession freshness for this world, computed once per tick by
+    /// the net thread. Empty for warm, which never marks.
+    pub fresh: &'a HashMap<String, f64>,
 }
 
 pub fn scene(snap: &Snapshot) -> Vec<SceneWorld<'_>> {
@@ -427,6 +448,7 @@ pub fn scene(snap: &Snapshot) -> Vec<SceneWorld<'_>> {
         off: 0,
         world: &snap.hot.models.world,
         label: snap.hot.observed.meta.context.clone(),
+        fresh: &snap.hot.fresh,
     }];
     if let Some(w) = &snap.warm {
         worlds.push(SceneWorld {
@@ -434,6 +456,7 @@ pub fn scene(snap: &Snapshot) -> Vec<SceneWorld<'_>> {
             off: snap.hot.models.world.width + WORLD_GAP,
             world: &w.models.world,
             label: w.observed.meta.context.clone(),
+            fresh: &w.fresh,
         });
     }
     worlds

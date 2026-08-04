@@ -297,6 +297,61 @@ pub fn ghost_land_pair() -> (Color, Color) {
     )
 }
 
+/// Ground whose occupant just changed, in `steps` discrete tiers — brightest at
+/// the moment of succession, fading to nothing at the end of the window.
+///
+/// **Quantised, not a smooth ramp.** A wave is perceived by its leading edge, and
+/// a continuous fade has no edge — it has a gradient, which the eye reads as a
+/// smear rather than as motion. Discrete steps put a boundary where the front is.
+///
+/// **A warm ochre, deliberately far from ghost grey.** The two are adjacent
+/// during a surge — a wave leaves vacancies behind it and new occupancy ahead of
+/// it — and they mean opposite things: ghost is *absence*, fresh is *recent
+/// change*. Two shades of one colour would read as damage rather than motion.
+///
+/// Routes through the colour-blind funnel like every other meaning colour: this
+/// encodes cluster state, so it is instrumentation, not scenery. Under the
+/// red-green-safe palette the ochre moves to a violet that stays distinct from
+/// both the steel-blue healthy land and the neutral ghost grey.
+pub fn fresh_land_pair(freshness: f64, steps: u8) -> (Color, Color) {
+    let steps = steps.max(1);
+    let tier = fresh_tier(freshness, steps);
+    let t = f64::from(tier) / f64::from(steps);
+    // The tiers vary in INTENSITY within one hue, and the faintest is still
+    // plainly the hue. The first version faded toward ghost grey, so the lowest
+    // step landed 0.18 from it — the "two shades of the same thing" §2.2 warns
+    // reads as damage rather than motion. The separability test caught it.
+    let mix = |floor: f32, peak: f32| floor + (peak - floor) * t as f32;
+    if colorblind() {
+        (
+            Color::new(mix(0.42, 0.66), mix(0.30, 0.38), mix(0.48, 0.76), 1.0),
+            Color::new(mix(0.47, 0.72), mix(0.34, 0.44), mix(0.53, 0.82), 1.0),
+        )
+    } else {
+        (
+            Color::new(mix(0.52, 0.82), mix(0.42, 0.60), mix(0.24, 0.20), 1.0),
+            Color::new(mix(0.58, 0.88), mix(0.47, 0.66), mix(0.28, 0.24), 1.0),
+        )
+    }
+}
+
+/// Which ageing tier a freshness falls in — `steps` (just changed hands) down to
+/// 1 (nearly settled).
+///
+/// THE SINGLE AUTHORITY for that bucketing. The colour on the map and the words
+/// in the SELECTION box both go through here, so a province cannot be painted at
+/// one age and described at another. Two independent quantisations of the same
+/// number is the drift this codebase keeps paying for.
+pub fn fresh_tier(freshness: f64, steps: u8) -> u8 {
+    let steps = steps.max(1);
+    ((freshness * f64::from(steps)).ceil() as u8).clamp(1, steps)
+}
+
+/// How many tiers fresh ground fades through. Three: enough for a leading edge
+/// and a body, few enough that the steps stay distinct when a many-partition
+/// fleet has a lot of marked ground at once.
+pub const FRESH_STEPS: u8 = 3;
+
 pub fn idle_land_pair() -> (Color, Color) {
     (
         Color::new(0.34, 0.37, 0.34, 1.0),
@@ -478,5 +533,90 @@ mod tests {
         // Clamps out of range.
         assert_eq!(cost_pair(2.0).0.r, cost_pair(1.0).0.r);
         assert_eq!(cost_pair(-1.0).0.r, cost_pair(0.0).0.r);
+    }
+}
+
+#[cfg(test)]
+mod fresh_tests {
+    use super::*;
+
+    fn far(a: Color, b: Color) -> f32 {
+        // Plain RGB distance. Crude, but the question is "can these be told
+        // apart at a glance", and a perceptual metric would be precision the
+        // decision does not need.
+        ((a.r - b.r).powi(2) + (a.g - b.g).powi(2) + (a.b - b.b).powi(2)).sqrt()
+    }
+
+    /// **Fresh ground must be separable from ghost ground**, in every palette.
+    ///
+    /// They are adjacent during a surge — a wave leaves vacancies behind it and
+    /// new occupancy ahead of it — and they mean opposite things: ghost is
+    /// absence, fresh is recent change. §4.2 lists "fresh not separable from
+    /// ghost" as a gate failure, so it is asserted rather than eyeballed.
+    #[test]
+    fn fresh_ground_is_separable_from_ghost_ground_in_both_palettes() {
+        for cb in [false, true] {
+            set_colorblind(cb);
+            let ghost = ghost_land_pair().0;
+            // At full freshness, and at the faintest step that still marks.
+            for f in [1.0, 1.0 / f64::from(FRESH_STEPS)] {
+                let fresh = fresh_land_pair(f, FRESH_STEPS).0;
+                let d = far(fresh, ghost);
+                assert!(
+                    d > 0.20,
+                    "colorblind={cb} freshness={f}: fresh {fresh:?} is only {d:.3} from ghost"
+                );
+            }
+            // And from healthy land, or the wave would be invisible on the
+            // terrain it crosses.
+            let healthy = iso_terrain_pair(NodeHealth::Healthy).0;
+            let fresh = fresh_land_pair(1.0, FRESH_STEPS).0;
+            assert!(
+                far(fresh, healthy) > 0.20,
+                "colorblind={cb}: fresh {fresh:?} is indistinguishable from healthy land"
+            );
+        }
+        set_colorblind(false);
+    }
+
+    /// Quantisation is deterministic and actually quantises: the same inputs
+    /// give the same step, and a range of freshness values collapses to exactly
+    /// `FRESH_STEPS` distinct colours rather than a smooth ramp.
+    #[test]
+    fn ageing_is_quantised_into_distinct_steps() {
+        set_colorblind(false);
+        let mut seen: Vec<(u8, u8, u8)> = (1..=200)
+            .map(|i| {
+                let c = fresh_land_pair(f64::from(i) / 200.0, FRESH_STEPS).0;
+                (
+                    (c.r * 255.0) as u8,
+                    (c.g * 255.0) as u8,
+                    (c.b * 255.0) as u8,
+                )
+            })
+            .collect();
+        seen.dedup();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            usize::from(FRESH_STEPS),
+            "a continuous ramp, not steps: {} distinct colours",
+            seen.len()
+        );
+        // Deterministic: same input, same output.
+        assert_eq!(
+            fresh_land_pair(0.5, FRESH_STEPS).0.r,
+            fresh_land_pair(0.5, FRESH_STEPS).0.r
+        );
+    }
+
+    /// A zero step count must not divide by zero or panic — the window setting
+    /// already guards `0`, but the render side must not rely on that alone.
+    #[test]
+    fn a_zero_step_count_does_not_panic() {
+        set_colorblind(false);
+        let _ = fresh_land_pair(1.0, 0);
+        let _ = fresh_land_pair(0.0, 0);
     }
 }

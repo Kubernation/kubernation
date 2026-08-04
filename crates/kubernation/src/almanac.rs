@@ -484,6 +484,19 @@ fn page_world(cx: &mut Ctx) {
     cx.para(
         "An attention queue surfaces what needs focus and parks your cursor on it: 4X's \"next unit needing orders\", not a wall of dashboards.",
     );
+    cx.heading("Ground that changed hands");
+    cx.para(
+        "A province keeps its place on the map for as long as the cluster keeps a node there — replacing a node does not move the world around it. That stability is what makes the two exceptions below worth noticing.",
+    );
+    cx.para(
+        "Warm ochre ground (steel blue under the colour-blind palette) is NEW: a different node now holds ground its predecessor held. It fades through three steps back to ordinary terrain, so a rolling refresh reads as a wave crossing the fleet. Select the province and the panel says how recently.",
+    );
+    cx.para(
+        "Plain grey ground is EMPTY: a node departed and nothing has claimed its place. The ground is kept rather than closed up, so a returning node lands where it was. Game ▸ Reclaim empty ground removes it when you decide it isn't coming back.",
+    );
+    cx.para(
+        "Ageing is measured against a window you set — View ▸ AGEING WINDOW, or --fresh-minutes. Set it near your refresh cadence: much longer and everything stays marked, much shorter and the wave is gone before you look.",
+    );
     cx.heading("Read-first, gated writes");
     cx.para(
         "KuberNation reads by default — exploring the world never changes the cluster. A few deliberate writes exist, each confirmed and RBAC-checked: evict a pod, commit a planning turn (scale/cordon/restart/image/rollback), and Game Day chaos drills. Port-forward is active but non-mutating. The whole write surface is one small auditable file.",

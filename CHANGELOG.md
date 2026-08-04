@@ -9,6 +9,20 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Ground that just changed hands is marked on the map**, fading back to
+  ordinary terrain over an ageing window. A rolling node refresh now reads as a
+  wave crossing the fleet instead of an invisible substitution — the provinces
+  hold still (that is what the last several releases bought), so the one thing
+  that *did* change is the thing you can see. Select a marked province and the
+  panel says how recently.
+- **View ▸ AGEING WINDOW** sets how long that lasts — off, 5 minutes, 15
+  minutes, 1 hour, or 4 hours — and is remembered between runs. `--fresh-minutes`
+  takes any value. Match it to your refresh cadence: much longer than a refresh
+  takes and everything stays marked at once, much shorter and the wave has passed
+  before you look. The default is 1 hour.
+- The Almanac's World page now explains both kinds of unusual ground — the new
+  ochre and the grey left where a node departed, which had gone undocumented
+  since it was introduced.
 - **Reclaiming empty ground now appears in the Annals**, alongside the other
   changes KuberNation itself made this session, rather than only as a toast that
   vanishes when you look away.

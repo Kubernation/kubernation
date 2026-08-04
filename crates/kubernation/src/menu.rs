@@ -40,6 +40,8 @@ pub enum MenuAction {
     Annals,
     Workloads,
     ToggleColorblind,
+    /// Set the ageing window (minutes; 0 disables the marking entirely).
+    SetFreshMinutes(u64),
 }
 
 /// Live state the bar reflects: the active overlay and map style (radio marks),
@@ -50,7 +52,22 @@ pub struct MenuCtx {
     pub style: MapStyle,
     pub staged: usize,
     pub ns_active: bool,
+    /// The ageing window, in whole minutes (0 = ground is never marked).
+    pub fresh_minutes: u64,
 }
+
+/// The ageing windows offered in the menu. Not arbitrary: a refresh has to fit
+/// inside the window with room left over, or the ground never finishes fading
+/// and the wave has a leading edge but no trailing one. These span a fast
+/// simulated fleet (minutes) to a conservative production cadence (hours); the
+/// `--fresh-minutes` flag takes any value, this is just the reachable-in-app set.
+pub const FRESH_CHOICES: [(u64, &str); 5] = [
+    (0, "off"),
+    (5, "5 minutes"),
+    (15, "15 minutes"),
+    (60, "1 hour"),
+    (240, "4 hours"),
+];
 
 /// One dropdown row. A `None` action with a non-empty label is a non-clickable
 /// section header / footnote; an empty label is a separator rule.
@@ -179,6 +196,14 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                 )
                 .check(ctx.style == MapStyle::Relief),
                 Item::sep(),
+                Item::header("AGEING WINDOW"),
+            ]
+            .into_iter()
+            .chain(FRESH_CHOICES.map(|(mins, label)| {
+                Item::act(label, MenuAction::SetFreshMinutes(mins)).check(ctx.fresh_minutes == mins)
+            }))
+            .chain([
+                Item::sep(),
                 Item::act("Annals (what changed) — H", MenuAction::Annals),
                 Item::act("Workloads (table) — O", MenuAction::Workloads),
                 Item::act(
@@ -189,7 +214,8 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                     },
                     MenuAction::ToggleColorblind,
                 ),
-            ],
+            ])
+            .collect(),
         },
         Menu {
             title: orders_title,
@@ -378,4 +404,59 @@ pub fn draw_menu_bar(
         *open = None;
     }
     (result, bar_right)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view_of(ctx: &MenuCtx) -> Vec<(String, bool)> {
+        menus(ctx)
+            .into_iter()
+            .find(|m| m.title == "View")
+            .expect("a View menu")
+            .items
+            .into_iter()
+            .filter(|i| matches!(i.action, Some(MenuAction::SetFreshMinutes(_))))
+            .map(|i| (i.label, i.checked))
+            .collect()
+    }
+
+    fn ctx(fresh_minutes: u64) -> MenuCtx {
+        MenuCtx {
+            overlay: Overlay::Terrain,
+            style: MapStyle::Plain,
+            staged: 0,
+            ns_active: false,
+            fresh_minutes,
+        }
+    }
+
+    /// The ageing-window radio marks the active choice, and marks EXACTLY one.
+    #[test]
+    fn the_ageing_radio_marks_the_active_window() {
+        for (mins, label) in FRESH_CHOICES {
+            let rows = view_of(&ctx(mins));
+            let checked: Vec<_> = rows.iter().filter(|(_, c)| *c).collect();
+            assert_eq!(checked.len(), 1, "exactly one row marked for {mins}m");
+            assert_eq!(checked[0].0, label);
+        }
+    }
+
+    /// A window the menu doesn't offer marks NOTHING.
+    ///
+    /// `--fresh-minutes` takes any value while the menu offers five, so this is
+    /// reachable, not hypothetical. The failure it forbids is the menu putting a
+    /// tick beside "5 minutes" when the window is really 7 — a control claiming a
+    /// state the app is not in, which is worse than admitting it has no name for
+    /// the current one.
+    #[test]
+    fn an_off_list_window_claims_no_choice() {
+        let rows = view_of(&ctx(7));
+        assert!(!rows.is_empty(), "the radio is still offered");
+        assert!(
+            rows.iter().all(|(_, checked)| !checked),
+            "no row may claim a window it doesn't set",
+        );
+    }
 }

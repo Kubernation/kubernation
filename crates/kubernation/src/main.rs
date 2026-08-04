@@ -260,6 +260,13 @@ struct Args {
     /// gaps). Set from the View menu at runtime; flag is for shots.
     #[arg(long, value_name = "MODE")]
     overlay: Option<String>,
+
+    /// Minutes that ground stays marked after it changes hands. `0` never marks.
+    ///
+    /// Persisted like `--overlay`; the flag overrides for one run. The default is
+    /// a judgment rather than a measurement — see `prefs::DEFAULT_FRESH_MINUTES`.
+    #[arg(long = "fresh-minutes", value_name = "MINUTES")]
+    fresh_minutes: Option<u64>,
     /// Map rendering style: "plain" (default — the flat isometric chart) or
     /// "relief" (raised terrain with cliff faces). Set from the View menu at
     /// runtime; flag is for shots.
@@ -686,6 +693,17 @@ async fn main() {
         );
         net.set_oracle_config(Some(cfg));
     }
+    // How long succession stays marked. Flag beats saved preference beats the
+    // declared default, the same precedence `--overlay` uses. `0` is a real
+    // value meaning never mark, so it must survive this resolution intact —
+    // `unwrap_or` on the default would be right, but `or` on a `Some(0)` must
+    // not be mistaken for "unset".
+    let fresh_window = std::time::Duration::from_secs(
+        60 * args
+            .fresh_minutes
+            .or(saved.fresh_minutes)
+            .unwrap_or(prefs::DEFAULT_FRESH_MINUTES),
+    );
     let slo_default = args
         .slo_target
         .as_deref()
@@ -721,6 +739,7 @@ async fn main() {
             warm: args.warm.clone(),
             projections: args.project.clone(),
             slo_default,
+            fresh_window,
             cost_rates,
             opencost,
         },
@@ -2326,6 +2345,7 @@ async fn main() {
                         cost: Some(wcost),
                         // Already on the per-world `Models`, unlike cost.
                         substrate: Some(&wmodels.substrate),
+                        fresh: Some(sw.fresh),
                     };
                     draw_world(sw.world, &wc, banner, s.pair.as_deref(), overlay, data);
                 }
@@ -2838,6 +2858,7 @@ async fn main() {
             style: cam.style,
             staged: planned.len(),
             ns_active: ns_filter_now.is_active(),
+            fresh_minutes: net.fresh_window().as_secs() / 60,
         };
         let menu_click = is_mouse_button_pressed(MouseButton::Left) && menu_live;
         let (menu_action, bar_right) =
@@ -2957,6 +2978,18 @@ async fn main() {
                 // Runtime-switchable (the palette reads the atomic each frame);
                 // persisted on exit.
                 theme::set_colorblind(!theme::colorblind());
+            }
+            Some(MenuAction::SetFreshMinutes(m)) => {
+                // Takes effect on the next world rebuild; persisted on exit.
+                net.set_fresh_window(std::time::Duration::from_secs(m * 60));
+                toast = Some((
+                    if m == 0 {
+                        "new ground is no longer marked".to_string()
+                    } else {
+                        format!("ageing window: {m} minutes")
+                    },
+                    get_time(),
+                ));
             }
             None => {}
         }
@@ -3709,6 +3742,10 @@ async fn main() {
             colorblind: theme::colorblind(),
             overlay: Some(overlay.label().to_string()),
             map_style: Some(cam.style.label().to_string()),
+            // The LIVE window, not the one we launched with — the menu can have
+            // changed it since, and saving the launch value would silently
+            // discard the choice the operator just made.
+            fresh_minutes: Some(net.fresh_window().as_secs() / 60),
         });
         // Clean shutdown — remove the abnormal-exit marker (every exit path
         // funnels through this point; a crash never reaches it).

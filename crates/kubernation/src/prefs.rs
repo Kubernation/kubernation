@@ -31,7 +31,23 @@ pub struct Prefs {
     /// Last map style, in its `--map-style` string form ("plain" / "relief");
     /// `None` or unrecognised → the default plain chart.
     pub map_style: Option<String>,
+    /// How long ground stays marked after it changes hands, in minutes.
+    ///
+    /// `Some(0)` means **never mark** and is a real supported value, not a
+    /// degenerate one. `None` means the operator has expressed no preference and
+    /// the declared default applies.
+    #[serde(default)]
+    pub fresh_minutes: Option<u64>,
 }
+
+/// How long ground stays marked after a node replaced its predecessor.
+///
+/// **A judgment, not a measurement**, and said so where a user can see it: long
+/// enough to survive stepping away from the screen during a rollout, and gone by
+/// the next working day so a morning map is not covered in marks from yesterday's
+/// routine churn. Nothing measured picks this number, and it is a setting
+/// precisely because it is arguable.
+pub const DEFAULT_FRESH_MINUTES: u64 = 60;
 
 /// `$XDG_CONFIG_HOME` else `$HOME/.config` else the cwd — the same dir as
 /// `oracle.json` (kept independent so prefs never touch the token-bearing module).
@@ -119,6 +135,7 @@ mod tests {
             colorblind: true,
             overlay: Some("cost".into()),
             map_style: Some("relief".into()),
+            fresh_minutes: Some(0),
         };
         let json = serde_json::to_vec(&p).unwrap();
         let back: Prefs = serde_json::from_slice(&json).unwrap();
@@ -126,6 +143,10 @@ mod tests {
         assert_eq!(back.overlay.as_deref(), Some("cost"));
         assert_eq!(back.map_style.as_deref(), Some("relief"));
         assert_eq!(back.version, PREFS_VERSION);
+        // `0` means NEVER MARK and is a real supported value — it has to survive
+        // the round trip as `Some(0)` and not collapse into "unset", which would
+        // silently restore the default window.
+        assert_eq!(back.fresh_minutes, Some(0));
     }
 
     #[test]

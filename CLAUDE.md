@@ -3673,6 +3673,60 @@ what makes the interesting logic unit-testable without a cluster.
   the ageing window as a persisted flag-overridable setting, the `cb_*` funnel
   routing, and fresh-vs-ghost distinguishability during a surge.
 
+- **A5 — fresh ground rendered; the wave gate** (2026-08-03, **v1.10.0**; from
+  `docs/kubernation-a5-render-guidance.md`, the deferred half of A5, report in
+  `docs/reports/a5-render.md`): ground that changed hands is tinted warm ochre
+  (steel blue under the colour-blind palette) and fades back to terrain over an
+  ageing window, so **a rolling refresh reads as a wave crossing the fleet**.
+  **THE GATE PASSED, but only on the second run, and the first run's failure is
+  the finding.** With the declared 60-minute default the wave *arrived and never
+  left* — 0 → 26k → 52k fresh pixels, a leading edge with no trailing one, which
+  is §4.2's named failure "too long and everything is marked". The cause is not a
+  bug: the harness compresses a 30-node refresh into ~4 minutes, so a 60-minute
+  window swallows it whole. **So the declared default is untestable on this
+  harness by construction**, and the gate was re-run at a window matched to the
+  observed cadence (`--fresh-minutes 1`), where it reads as a wave: baseline →
+  258k (first wave) → **517k (peak, two waves overlapping)** → 259k (first wave
+  aged out) → baseline by frame 10. That asymmetry — the window must exceed one
+  refresh but not the whole run — is why the window is a **setting** and why it
+  gained a **View ▸ AGEING WINDOW** radio rather than staying a launch flag: the
+  right value is found by trying values against a live fleet, and a flag-only
+  setting means restarting to try each one. `Net.fresh_window` is therefore an
+  atomic read per tick (the map re-tints within a tick), and the exit-save
+  persists the **live** value, not the launch one.
+  **§4.1's discrimination check, run rather than assumed: peak 0 with
+  `--fresh-minutes 0` vs 517,575 with it on** — so the instrument sees the
+  mechanism and not merely the scenario. That check exists because this
+  workstream has now had six instruments emit a plausible number for a reason
+  unrelated to what they claimed to measure.
+  **One authority for the bucketing:** `theme::fresh_tier` is used by BOTH the
+  colour (`fresh_land_pair`) and the words (`panels::fresh_line`), pinned by a
+  test asserting they change at the same freshness values — two independent
+  quantisations of one number is the drift this codebase keeps paying for.
+  **The panel half is not optional**, by the standard the substrate round set: a
+  colour the operator cannot interpret raises a question the map can't answer, so
+  a fresh province says "new ground · just changed hands / recently / settling" in
+  SELECTION — **ungated by overlay**, unlike the saturation/cost/substrate lines,
+  because fresh ground is tinted under *every* overlay. The wording is
+  deliberately relative, not a reconstructed duration: freshness is a fraction of
+  the window and inverting it would state a precision it doesn't carry.
+  **Found while writing the Almanac:** the entry as first drafted named a "Game ▸
+  Ageing window" menu item **that did not exist** — the check that caught it also
+  turned up that **ghost ground has been undocumented since A2 shipped it**, so
+  the Almanac now explains both kinds of unusual ground rather than adding a
+  second uninterpretable colour on top of the first. A menu test pins that an
+  off-list window (reachable — the flag takes any value, the menu offers five)
+  marks **nothing**, rather than ticking the nearest choice and claiming a state
+  the app is not in. Mutation floor exercised five ways (freshness always `None`;
+  fresh painted as ghost; gradient flattened; quantisation dropped; `fresh_line`
+  bucketing independently) — each caught, the last by the new shared-authority
+  test. 425 core + 100 GUI tests; gui-smoke 51. **Deferred:** distinguishing
+  fresh from ghost ground *during a surge* was not separately measured (both were
+  on screen and plainly distinct at the gate, but no metric pins it); a minimap
+  tint for fresh ground (the minimap has no per-node fresh data threaded to it,
+  like walls + cost + substrate); and warm-cluster ageing (`fresh` is always empty
+  for warm, matching layout persistence).
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

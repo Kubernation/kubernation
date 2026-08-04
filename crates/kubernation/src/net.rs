@@ -213,6 +213,17 @@ pub struct WorldSnap {
     /// The realm-defense Posture score, computed once per tick (the STATUS chip
     /// is on the 60fps sidebar — it must not re-scan per frame).
     pub posture: PostureReport,
+    /// How recently each node's ground changed hands: `1.0` at the moment of
+    /// succession, decaying to `0.0` at the end of the ageing window. Absent
+    /// means do not mark.
+    ///
+    /// Computed here, once per tick, for two reasons. The renderer has a
+    /// `Province` (a node name) and no layout, so it cannot do the lookup at
+    /// all; and `Layout::slot_of` is a linear scan, so a per-province lookup
+    /// inside a 60fps draw would be O(slots x provinces) — 10,000 comparisons a
+    /// frame on a hundred-node fleet. Same reason `substrate` and `posture` are
+    /// precomputed and borrowed for a frame.
+    pub fresh: Arc<HashMap<String, f64>>,
     /// Upkeep (cost cartography), computed once per tick — the overlay + advisor
     /// tab read this (the overlay does a by-node lookup every frame, never a scan).
     pub cost: CostReport,
@@ -261,6 +272,11 @@ pub struct Net {
     /// Bumped on context switch so a slow probe from the OLD cluster can't write its
     /// liveness into the NEW cluster's banner (the established gen-guard pattern).
     conn_gen: AtomicU64,
+    /// The ageing window, in seconds — read fresh on every tick so changing it
+    /// from the menu re-tints the map on the next rebuild rather than at the
+    /// next launch. Seeded from `NetArgs`; an atomic rather than a lock because
+    /// the render thread writes it and the world loop reads it every tick.
+    fresh_window_secs: AtomicU64,
     /// Set by the UI to ask the world loop to reclaim all ghost ground once.
     compact_req: AtomicBool,
     /// (context, fingerprint) for the hot cluster — what a layout is saved
@@ -541,6 +557,7 @@ impl Net {
             layout_ident: Mutex::new(None),
             conn: Mutex::new(ConnState::Connecting),
             conn_gen: AtomicU64::new(0),
+            fresh_window_secs: AtomicU64::new(0),
             switch: Mutex::new(None),
             log_req: Mutex::new(None),
             log_tail: Mutex::new(LogTail::default()),
@@ -1015,6 +1032,19 @@ impl Net {
         *self.conn.lock().unwrap_or_else(|e| e.into_inner()) = s;
     }
 
+    /// How long ground stays marked after it changes hands. `ZERO` never marks.
+    pub fn fresh_window(&self) -> Duration {
+        Duration::from_secs(self.fresh_window_secs.load(Ordering::Relaxed))
+    }
+
+    /// Change the ageing window. Takes effect on the next world rebuild — the
+    /// operator sees the map re-tint within a tick rather than at next launch,
+    /// which matters because the right window depends on a fleet's refresh
+    /// cadence and is found by trying values against a live cluster.
+    pub fn set_fresh_window(&self, d: Duration) {
+        self.fresh_window_secs.store(d.as_secs(), Ordering::Relaxed);
+    }
+
     pub fn request_logs(&self, req: LogReq) {
         *self.log_req.lock().unwrap_or_else(|e| e.into_inner()) = Some(req);
         *self.log_tail.lock().unwrap_or_else(|e| e.into_inner()) = LogTail::default();
@@ -1092,6 +1122,8 @@ pub struct NetArgs {
     pub projections: Vec<String>,
     /// Global default SLO availability target (`--slo-target`, else 0.99).
     pub slo_default: f64,
+    /// How long ground stays marked after it changes hands. `ZERO` never marks.
+    pub fresh_window: Duration,
     /// Launch-resolved cost pricing (`--cpu-rate`/`--mem-rate`/`--node-rate`/
     /// `--cost-mem-weight`); empty ⇒ unitless "cost units". Node annotations are
     /// merged on top per tick (the frontend boundary).
@@ -1209,6 +1241,32 @@ fn build_carrying(
     m
 }
 
+/// How recently each node's ground changed hands, keyed by node name.
+///
+/// Keyed by NAME rather than by `SlotKey` because that is what the renderer
+/// holds: a `Province` carries its `NodeTile`, not the slot it sits in. Doing
+/// the join here means the draw path reads a value instead of searching for one.
+///
+/// A node with no entry is not marked — which covers all three of `freshness`'s
+/// do-not-mark states at once, so the draw site has a single rule and cannot
+/// accidentally fall through to a default that marks.
+fn freshness_by_node(
+    layout: &kubernation_core::state::layout::Layout,
+    now: SystemTime,
+    window: Duration,
+) -> HashMap<String, f64> {
+    if window.is_zero() {
+        return HashMap::new();
+    }
+    layout
+        .occupied()
+        .filter_map(|(k, occ)| {
+            kubernation_core::state::layout::freshness(layout.occupied_at(k), now, window)
+                .map(|f| (occ.node.clone(), f))
+        })
+        .collect()
+}
+
 /// The net thread's name — the panic hook watches for it to set [`NET_PANICKED`]
 /// so a crashed world loop surfaces a banner instead of a silently frozen world.
 pub const NET_THREAD: &str = "kn-net";
@@ -1218,6 +1276,8 @@ pub const NET_THREAD: &str = "kn-net";
 pub static NET_PANICKED: AtomicBool = AtomicBool::new(false);
 
 pub fn spawn(args: NetArgs, net: Arc<Net>) {
+    // Seed the live window from the launch args before the loop can read it.
+    net.set_fresh_window(args.fresh_window);
     let spawned = std::thread::Builder::new()
         .name(NET_THREAD.into())
         .spawn(move || {
@@ -2478,6 +2538,9 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                                 .collect(),
                         ),
                         posture: posture::posture_report(&h.world),
+                        // Warm never marks: it is a comparison view, not
+                        // somewhere the operator watches change happen.
+                        fresh: Arc::new(HashMap::new()),
                         cost: cost::cost_report(
                             &h.world,
                             &effective_cost_rates(&args.cost_rates, &h.world),
@@ -2654,6 +2717,11 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         observed: hot_handle.world.clone(),
                         slo: hot_slo,
                         posture: posture::posture_report(&hot_handle.world),
+                        fresh: Arc::new(freshness_by_node(
+                            &prior_hot,
+                            SystemTime::now(),
+                            net.fresh_window(),
+                        )),
                         cost: hot_cost,
                         opencost_note,
                     },
