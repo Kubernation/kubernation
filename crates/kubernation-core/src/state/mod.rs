@@ -6,6 +6,7 @@ pub mod charter;
 pub mod cost;
 pub mod diagnose;
 pub mod filter;
+pub mod graticule;
 pub mod harden;
 pub mod inspect;
 pub mod layout;

@@ -58,6 +58,16 @@ pub struct Province {
     /// Where this province's SIZE came from — see [`province_extent`]. A
     /// `Default` province is sized but unmeasured, and must not read as small.
     pub extent_source: crate::state::model::ExtentSource,
+    /// This province's graticule reference, e.g. `C4` — how an operator names
+    /// it out loud.
+    ///
+    /// Stored rather than recomputed by each consumer: it comes from
+    /// `graticule::reference_for`, the single authority, so the map, the panel
+    /// and a positional dump cannot disagree about what a province is called.
+    /// `None` when the node has no durable position (A1 leaves a node unplaced
+    /// rather than giving it an ordinal a live node holds) — never fabricated,
+    /// because a made-up reference names some other node's ground.
+    pub reference: Option<crate::state::graticule::GridRef>,
     /// Distinct DaemonSets with pods here — the node's *infrastructure*,
     /// rendered as roads rather than cities. Sorted, so the order is stable.
     ///
@@ -99,6 +109,13 @@ pub struct Continent {
     /// Connectivity markers moored on the east coast: Service harbors and
     /// Ingress gates, each on the row of the city it serves.
     pub coast: Vec<CoastMarker>,
+    /// This zone's graticule column letter, from its DURABLE ordinal.
+    ///
+    /// `None` when the zone has no ordinal — deliberately not the `unwrap_or`
+    /// fallback `x` uses. A fabricated letter would collide with a real zone's,
+    /// and for a scheme whose only job is unambiguous naming that is the worst
+    /// available failure; an unlabelled column merely says so.
+    pub column: Option<String>,
 }
 
 /// Which connectivity kind a coast marker represents.
@@ -215,6 +232,23 @@ pub struct WorldModel {
     pub continents: Vec<Continent>,
     pub islands: Vec<Island>,
     pub city_count: usize,
+    /// Columns whose zone has no nodes left, but whose ground and letter stay
+    /// reserved so surviving zones neither move nor re-letter.
+    ///
+    /// These have no `Continent` at all — verified on the churn fleet, a fully
+    /// departed zone leaves not even ghost ground, because ghosts hang off a
+    /// continent and there is none. Without this the reservation is an
+    /// unexplained gap in the sea; with it the map can say "B is taken".
+    pub reserved: Vec<ReservedColumn>,
+}
+
+/// A graticule column standing empty: every node in the zone has departed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReservedColumn {
+    pub zone: String,
+    pub letter: String,
+    /// West edge, in the same world cells a continent's `x` uses.
+    pub x: u16,
 }
 
 /// A custom-resource instance to project onto the map.
@@ -521,12 +555,38 @@ pub fn province_extent(
 /// live node already holds — so fabricating an ordinal here (this returned 0,
 /// which is a real province's row) would re-introduce one level up exactly the
 /// collision the layout engine refused to create.
+/// The vertical pitch of one slot, in world rows.
+///
+/// The largest extent class, so a province of any size fits its own slot without
+/// depending on its neighbours' sizes — that independence is what lets a node be
+/// replaced by a larger or smaller one without moving anything.
+pub const SLOT_STRIDE: u16 = EXTENT_CLASSES[EXTENT_CLASSES.len() - 1];
+
+/// The north edge of a slot's band.
+///
+/// The ONE place a slot ordinal becomes a world row. The graticule draws its
+/// rules here and `province_y` puts land here, so a rule cannot drift off the
+/// province tops it is supposed to delimit.
+pub fn slot_row(ordinal: u16) -> u16 {
+    1 + ordinal * SLOT_STRIDE
+}
+
+/// Which slot a world row falls in — the inverse of [`slot_row`].
+///
+/// Exposed rather than left to each caller to re-derive: the graticule labels
+/// bands with this, and a label that disagreed with the reference on the same
+/// province would send someone to the wrong node, which is the one failure a
+/// naming scheme cannot have.
+pub fn slot_of_row(y: u16) -> u16 {
+    y.saturating_sub(1) / SLOT_STRIDE
+}
+
 fn province_y(layout: &crate::state::layout::Layout, zone: &str, tile: &NodeTile) -> Option<u16> {
     let ordinal = layout
         .slot_of(&tile.name)
         .filter(|k| k.zone == zone)?
         .ordinal;
-    Some(1 + ordinal * EXTENT_CLASSES[EXTENT_CLASSES.len() - 1])
+    Some(slot_row(ordinal))
 }
 
 /// The non-node things placed on the map, bundled because they arrive together
@@ -681,6 +741,7 @@ pub fn build_world(
                 h,
                 cities,
                 extent_source,
+                reference: crate::state::graticule::reference_for(layout, &tile.name),
                 infra: infra
                     .get(tile.name.as_str())
                     .map_or_else(Vec::new, |s| s.iter().map(|n| (*n).to_string()).collect()),
@@ -781,6 +842,9 @@ pub fn build_world(
             provinces,
             ghosts,
             coast,
+            column: layout
+                .zone_ordinal(&zone.name)
+                .map(crate::state::graticule::column_letter),
         });
     }
 
@@ -882,12 +946,25 @@ pub fn build_world(
         island_bottom + 2
     };
 
+    // Zones the layout still reserves but that no longer appear on the map.
+    let live: Vec<&str> = map.zones.iter().map(|z| z.name.as_str()).collect();
+    let reserved: Vec<ReservedColumn> = crate::state::graticule::columns(layout, &live)
+        .into_iter()
+        .filter(|c| c.departed)
+        .map(|c| ReservedColumn {
+            zone: c.zone,
+            letter: c.letter,
+            x: c.ordinal * (PATCH_W + OCEAN_GAP),
+        })
+        .collect();
+
     WorldModel {
         width,
         height,
         continents,
         islands,
         city_count,
+        reserved,
     }
 }
 
@@ -895,6 +972,29 @@ pub fn build_world(
 mod tests {
     use super::*;
     use crate::state::fixtures as fx;
+
+    /// `slot_of_row` inverts `slot_row` across the band, not just at its edge.
+    ///
+    /// Every row WITHIN a slot's band must report that slot: the graticule
+    /// labels a band by the row it draws the label at, and if the two disagreed
+    /// the number beside a province would name a different province's slot.
+    #[test]
+    fn slot_row_and_its_inverse_agree_across_the_whole_band() {
+        for ordinal in 0..40u16 {
+            let top = slot_row(ordinal);
+            assert_eq!(slot_of_row(top), ordinal, "at the top of band {ordinal}");
+            for within in 0..SLOT_STRIDE {
+                assert_eq!(
+                    slot_of_row(top + within),
+                    ordinal,
+                    "row {} is inside band {ordinal}",
+                    top + within,
+                );
+            }
+            // And the row one past the band belongs to the next one.
+            assert_eq!(slot_of_row(top + SLOT_STRIDE), ordinal + 1);
+        }
+    }
     use crate::state::model::Models;
 
     fn world_with(f: impl FnOnce(&mut fx::Seeds)) -> Models {

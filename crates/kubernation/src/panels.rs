@@ -152,6 +152,7 @@ pub fn region_lines(
     local: (u16, u16),
     snap: &Snapshot,
     overlay: Overlay,
+    graticule: bool,
 ) -> Vec<(String, Color)> {
     let paired = snap.warm.is_some();
     let mut lines: Vec<(String, Color)> = Vec::new();
@@ -240,6 +241,7 @@ pub fn region_lines(
                     }
                     // The city sits on the tinted province — show its host node's
                     // strain / upkeep too, so the distinguisher isn't lost on the settlement.
+                    lines.extend(grid_ref_line(p.reference.as_ref(), graticule));
                     lines.extend(fresh_line(sw.fresh.get(&p.tile.name).copied()));
                     if overlay == Overlay::Saturation {
                         lines.extend(saturation_lines(&p.tile.saturation));
@@ -268,6 +270,9 @@ pub fn region_lines(
                         format!("{} . {} pods", health.0, p.tile.pods.len()),
                         health.1,
                     ));
+                    // How to say where this is. First, because a reference is
+                    // what you write down or read out before anything else.
+                    lines.extend(grid_ref_line(p.reference.as_ref(), graticule));
                     // Ungated, unlike the three below: fresh ground is tinted under
                     // every overlay, so its explanation must be too.
                     lines.extend(fresh_line(sw.fresh.get(&p.tile.name).copied()));
@@ -352,6 +357,55 @@ pub fn cost_lines(nc: &NodeCost) -> Vec<(String, Color)> {
         }
     }
     lines
+}
+
+/// State the frame the graticule is anchored to, bottom-left of the play area.
+///
+/// §3's requirement, and the half that matters more than the grid: a grid makes
+/// positions LOOK meaningful, so a map that draws one and says nothing asserts
+/// by implication that adjacency means something. On this map it does not —
+/// column order is when a zone was first seen, row order is allocation order.
+///
+/// On the map rather than only in the Almanac because the gate is run by handing
+/// someone a CAPTURE, and a screenshot travels without the Almanac. Drawn once
+/// per frame in the chrome pass, not per world: the frame is the same statement
+/// for a hot/warm pair, and saying it twice would suggest it were two frames.
+pub fn draw_frame_note(on: bool) {
+    if !on {
+        return;
+    }
+    use kubernation_core::state::graticule::FRAME_DECLARATION;
+    let fs = 12.0;
+    let mut y = screen_height() - 10.0 - fs * FRAME_DECLARATION.len() as f32 * 1.35;
+    for line in FRAME_DECLARATION {
+        text(ascii(line), 12.0, y, fs, crate::theme::GRATICULE_INK);
+        y += fs * 1.35;
+    }
+}
+
+/// PURE draw-decision fn: the graticule reference for a position, e.g. `C4`.
+///
+/// Shown only while the frame is drawn. That gating is deliberate and is what
+/// makes the gate's discrimination check meaningful (§4.1): with the frame off,
+/// the app offers no naming aid at all, so a second person finding the slot
+/// anyway would be demonstrating familiarity with the fleet rather than that the
+/// graticule works.
+///
+/// `None` for a node with no durable position — never a fabricated `A0`, which
+/// would name a slot some other node really holds.
+pub fn grid_ref_line(
+    reference: Option<&kubernation_core::state::graticule::GridRef>,
+    on: bool,
+) -> Option<(String, Color)> {
+    if !on {
+        return None;
+    }
+    Some(match reference {
+        Some(r) => (format!("grid {r}"), STONE_STRUCT),
+        // Said out loud rather than omitted: a blank where a reference belongs
+        // reads as "not loaded yet", and this is a standing fact about the node.
+        None => ("grid - no durable position".into(), STONE_INK_DIM),
+    })
 }
 
 /// PURE draw-decision fn: the SELECTION/tooltip line for ground that recently
@@ -442,9 +496,10 @@ pub fn draw_tooltip(
     local: (u16, u16),
     snap: &Snapshot,
     overlay: Overlay,
+    graticule: bool,
     mouse: Vec2,
 ) {
-    let lines = region_lines(sw, local, snap, overlay);
+    let lines = region_lines(sw, local, snap, overlay, graticule);
     if lines.is_empty() {
         return;
     }
@@ -1273,6 +1328,35 @@ mod tests {
         assert!(t.contains("reconnecting") && t.contains("prod") && t.contains("reach") && err);
     }
 
+    /// A reference is shown only with the frame, and unknown is said out loud.
+    ///
+    /// The gating is what makes the gate's discrimination check meaningful: with
+    /// the frame off the app must offer NO naming aid, or a second person finding
+    /// the slot would be demonstrating familiarity with the fleet instead.
+    #[test]
+    fn a_reference_appears_only_with_the_frame_and_is_never_invented() {
+        use kubernation_core::state::graticule::GridRef;
+        let r = GridRef {
+            column: "C".into(),
+            row: 4,
+        };
+        assert_eq!(grid_ref_line(Some(&r), false), None, "off: no naming aid");
+        assert_eq!(grid_ref_line(None, false), None);
+
+        let (text, _) = grid_ref_line(Some(&r), true).expect("on: the reference");
+        assert!(text.contains("C4"), "got {text:?}");
+
+        // A node with no durable position says so. Never `A0`, which is a real
+        // slot some other node holds — the one unacceptable failure for a
+        // scheme whose entire job is naming exactly one thing.
+        let (unknown, _) = grid_ref_line(None, true).expect("unknown is stated");
+        assert!(
+            !unknown.contains('0'),
+            "fabricated a reference: {unknown:?}"
+        );
+        assert!(unknown.to_lowercase().contains("no durable"), "{unknown:?}");
+    }
+
     /// Settled ground says nothing; fresh ground says something at every tier.
     ///
     /// The load-bearing half is the second assertion: the words must change at
@@ -1347,10 +1431,29 @@ mod tests {
             attention: Arc::new(Vec::new()),
         };
         let worlds = scene(&snap);
-        let lines = region_lines(&worlds[0], (cx, cy), &snap, Overlay::Terrain);
+        let lines = region_lines(&worlds[0], (cx, cy), &snap, Overlay::Terrain, false);
         assert!(
             lines.iter().any(|(t, _)| t.contains("web")),
             "the SELECTION/tooltip lines should name the workload: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|(t, _)| t.starts_with("grid")),
+            "with the frame off, no naming aid at all: {lines:?}"
+        );
+
+        // With the frame on, the same position is nameable. Asserted through the
+        // real `region_lines` rather than only against `grid_ref_line`, because
+        // the unit test cannot catch the line being wired to the wrong arm or
+        // dropped on the way out.
+        let named = region_lines(&worlds[0], (cx, cy), &snap, Overlay::Terrain, true);
+        let reference = named
+            .iter()
+            .find(|(t, _)| t.starts_with("grid"))
+            .unwrap_or_else(|| panic!("the frame is on, so say where this is: {named:?}"));
+        assert!(
+            !reference.0.contains("no durable"),
+            "a placed province has a real reference: {:?}",
+            reference.0,
         );
     }
 
@@ -1431,7 +1534,7 @@ mod tests {
         for y in 0..bh {
             for x in 0..bw {
                 let panel = panel_for(&worlds, Hit::at((x, y)));
-                let lines = region_lines(&worlds[0], (x, y), &snap, Overlay::Terrain);
+                let lines = region_lines(&worlds[0], (x, y), &snap, Overlay::Terrain, false);
                 let text = lines
                     .iter()
                     .map(|(t, _)| t.as_str())

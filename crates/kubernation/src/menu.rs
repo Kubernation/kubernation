@@ -42,6 +42,8 @@ pub enum MenuAction {
     ToggleColorblind,
     /// Set the ageing window (minutes; 0 disables the marking entirely).
     SetFreshMinutes(u64),
+    /// Show or hide the reference frame (graticule).
+    ToggleGraticule,
 }
 
 /// Live state the bar reflects: the active overlay and map style (radio marks),
@@ -54,6 +56,8 @@ pub struct MenuCtx {
     pub ns_active: bool,
     /// The ageing window, in whole minutes (0 = ground is never marked).
     pub fresh_minutes: u64,
+    /// Whether the reference frame is drawn.
+    pub graticule: bool,
 }
 
 /// The ageing windows offered in the menu. Not arbitrary: a refresh has to fit
@@ -206,6 +210,14 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                 Item::sep(),
                 Item::act("Annals (what changed) — H", MenuAction::Annals),
                 Item::act("Workloads (table) — O", MenuAction::Workloads),
+                Item::act(
+                    if ctx.graticule {
+                        "Reference frame: on"
+                    } else {
+                        "Reference frame: off"
+                    },
+                    MenuAction::ToggleGraticule,
+                ),
                 Item::act(
                     if crate::theme::colorblind() {
                         "Colour-blind palette: on"
@@ -429,6 +441,7 @@ mod tests {
             staged: 0,
             ns_active: false,
             fresh_minutes,
+            graticule: false,
         }
     }
 

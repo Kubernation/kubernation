@@ -297,6 +297,28 @@ pub fn ghost_land_pair() -> (Color, Color) {
     )
 }
 
+/// The graticule — rules, row numbers and column letters.
+///
+/// **Scenery, not instrumentation.** It encodes no cluster state, so unlike
+/// every meaning colour in this file it deliberately does NOT route through the
+/// colour-blind funnel: there is nothing here to confuse with health, and a
+/// reference frame that changed colour with the palette would be the one thing
+/// on the map varying for no reason.
+///
+/// Faint by construction. A graticule that competes with terrain has failed at
+/// being a reference — it is meant to be consulted, not read.
+pub const GRATICULE: Color = Color::new(0.94, 0.92, 0.84, 0.20);
+/// Row numbers and the reserved-column note.
+///
+/// Brighter than the rules: "recede" applies to the tessellation, which is
+/// ambient, but a label the operator is meant to READ has to survive being
+/// looked for. A hairline at a rule's alpha is a texture; a numeral at that
+/// alpha is just illegible, which is one of §4.2's stated failure criteria.
+pub const GRATICULE_INK: Color = Color::new(0.96, 0.94, 0.86, 0.55);
+/// The column letter — a large mark over the column's visible span, so it
+/// carries at any zoom while staying plainly behind the terrain.
+pub const GRATICULE_MARK: Color = Color::new(0.98, 0.96, 0.88, 0.22);
+
 /// Ground whose occupant just changed, in `steps` discrete tiers — brightest at
 /// the moment of succession, fading to nothing at the end of the window.
 ///
@@ -494,12 +516,32 @@ pub fn sync_on_stone(state: &kubernation_core::state::pair::SyncState) -> Color 
     }
 }
 
+/// Serialises the tests that mutate the process-global palette.
+///
+/// `COLOR_MODE` is one atomic for the whole process, so two palette tests
+/// running in parallel can see each other's setting mid-assertion. This was
+/// latent from the moment the palette became runtime-switchable and surfaced
+/// only when an unrelated test changed the scheduling — the quantisation test
+/// sampled a ramp that flipped palette halfway and counted four colours where
+/// three were expected. A flake, not a wrong colour, which is worse: it would
+/// have failed in CI at random and passed on every retry.
+#[cfg(test)]
+static PALETTE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take the palette lock, tolerating a poisoned mutex — a panicking test must
+/// fail on its own assertion, not cascade into every other palette test.
+#[cfg(test)]
+fn palette_guard() -> std::sync::MutexGuard<'static, ()> {
+    PALETTE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn colorblind_palette_swaps_meaning_greens_to_blue() {
+        let _palette = super::palette_guard();
         // Standard: "good"/healthy reads green (green channel dominates blue).
         set_colorblind(false);
         assert!(good().g > good().b, "standard good is green");
@@ -555,6 +597,7 @@ mod fresh_tests {
     /// ghost" as a gate failure, so it is asserted rather than eyeballed.
     #[test]
     fn fresh_ground_is_separable_from_ghost_ground_in_both_palettes() {
+        let _palette = super::palette_guard();
         for cb in [false, true] {
             set_colorblind(cb);
             let ghost = ghost_land_pair().0;
@@ -584,6 +627,7 @@ mod fresh_tests {
     /// `FRESH_STEPS` distinct colours rather than a smooth ramp.
     #[test]
     fn ageing_is_quantised_into_distinct_steps() {
+        let _palette = super::palette_guard();
         set_colorblind(false);
         let mut seen: Vec<(u8, u8, u8)> = (1..=200)
             .map(|i| {
@@ -615,6 +659,7 @@ mod fresh_tests {
     /// already guards `0`, but the render side must not rely on that alone.
     #[test]
     fn a_zero_step_count_does_not_panic() {
+        let _palette = super::palette_guard();
         set_colorblind(false);
         let _ = fresh_land_pair(1.0, 0);
         let _ = fresh_land_pair(0.0, 0);

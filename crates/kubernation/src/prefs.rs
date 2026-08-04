@@ -31,6 +31,10 @@ pub struct Prefs {
     /// Last map style, in its `--map-style` string form ("plain" / "relief");
     /// `None` or unrecognised → the default plain chart.
     pub map_style: Option<String>,
+    /// Draw the reference frame (column letters + row numbers). `None` means no
+    /// preference expressed, and the frame stays off until asked for.
+    #[serde(default)]
+    pub graticule: Option<bool>,
     /// How long ground stays marked after it changes hands, in minutes.
     ///
     /// `Some(0)` means **never mark** and is a real supported value, not a
@@ -131,6 +135,7 @@ mod tests {
     #[test]
     fn round_trips_through_json() {
         let p = Prefs {
+            graticule: Some(true),
             version: PREFS_VERSION,
             colorblind: true,
             overlay: Some("cost".into()),

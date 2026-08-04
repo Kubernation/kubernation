@@ -3727,6 +3727,76 @@ what makes the interesting logic unit-testable without a cluster.
   like walls + cost + substrate); and warm-cluster ageing (`fresh` is always empty
   for warm, matching layout persistence).
 
+- **A6 — the graticule and the declared frame; Workstream A closes**
+  (2026-08-04, **v1.11.0**; from `docs/kubernation-a6-graticule-guidance.md`,
+  report in `docs/reports/a6-graticule.md`): a position on the map is now
+  nameable — `C4` — and the map states what that frame is anchored to. **All
+  eight §0 claims verified TRUE** (seventh round running), including the two the
+  guidance flagged for measurement rather than inheritance. **§2.1 option 1
+  chosen**: columns are zones lettered from the durable `zone_ordinal`, rows are
+  zone-wide slot ordinals, so a reference names a **slot** and survives a
+  refresh, a restart and the node being replaced — where a uniform lattice would
+  spend most of its labels on water (claim 6 **measured**, not inherited:
+  **67.4% ocean**, and the stride is 9 while no province on the churn fleet
+  exceeds 7). `(zone, ordinal)` uniqueness — the invariant the whole scheme rests
+  on, since `SlotKey` also carries a pool — was verified live at 100 provinces
+  across 4 pools with **zero collisions**, and pinned by a test.
+  **THE ONE REAL DEFECT WAS IN THE UNTESTABLE HALF.** Row numbers were drawn at
+  each band's south-west corner (its west-most point, hence the first choice),
+  which sits on the boundary between two bands and reads as labelling the one
+  below: the map said `3` beside the node the positional dump called **C4**. A
+  reference read off that map sends someone to the wrong node — the single
+  failure a naming scheme cannot have. No test could catch it (it is a screen
+  position, exactly what the GUI testability policy concedes is unassertable);
+  it was caught by rendering the live map and comparing it against
+  `--dump-positions`, which now emits each province's reference for that purpose.
+  The fix also removed the local re-derivation of an ordinal from a row in favour
+  of `world::slot_of_row`, the tested inverse of `slot_row` — one authority, so
+  a label cannot disagree with the reference on the same province.
+  **§2.3 needed a decision the guidance did not anticipate.** A fully departed
+  zone leaves **no `Continent` at all** — verified on the churn fleet, it does not
+  even leave ghost ground, because ghosts hang off a continent — so "a departed
+  zone keeps its letter" is unobservable unless the map labels reserved columns.
+  Hence `WorldModel.reserved`, and the letter drawn over the empty sea with
+  "departed, ground reserved": the same argument A2 used for painting ghost
+  ground rather than letting a vacated slot read as ocean. Verified live —
+  deleting z-b left z-c and z-d at exactly x=60 and x=90, and the lettering runs
+  **A → C → D**.
+  **§2.2 and §4.2 genuinely conflict** ("must recede" vs "unreadable at fleet
+  zoom is a failure"), resolved by splitting the ink rather than picking one:
+  hairlines stay ambient at 0.20 alpha, labels meant to be READ get 0.55. The
+  frame is **scenery** — drawn between the terrain pass and the feature pass, so
+  it lies on the ground but can never compete with a settlement — and
+  deliberately **outside the `cb_*` colour-blind funnel**, since it encodes no
+  cluster state (the explicit contrast with A5's fresh ground). A first attempt
+  centred each column letter in its screen-space bounding box, which in iso is an
+  enormous diagonal overlapping its neighbours': all four letters stacked within
+  a few pixels of screen centre. Placement now rides each column's own centre
+  line. **§7 q2 answered in code**: `Continent.column` is `Option`, deliberately
+  NOT the `unwrap_or(zi)` fallback the continent's *x* uses (audited as
+  unreachable — `build_with` always runs `assign_layout` first — but a fabricated
+  letter collides with a real zone's, which is worse than an unlabelled column).
+  **Found in passing, pre-existing:** four theme tests mutate one process-global
+  palette atomic in parallel, so the A5 quantisation test could sample a ramp
+  that flipped palette halfway; it passed by scheduling luck until this round's
+  new tests perturbed it. Serialised behind a lock — a random CI failure that
+  passes on retry is worse than a wrong colour. **§4's gate is a usability gate
+  and CANNOT be run solo** — it needs a second person resolving a reference from
+  a capture; the artefact and answer key are in the report, and the mechanical
+  halves (round-trip, live uniqueness, the discrimination check showing the frame
+  accounts for 1.25% of play-area pixels and vanishes cleanly) are done. Mutation
+  floor exercised four ways including §6's named one — letters from the current
+  zone list rather than the durable ordinal, `slot_of_row` off by one,
+  `reference_for` fabricating `A0`, and the reference ignoring the toggle — each
+  caught. 432 core + 101 GUI tests; gui-smoke 53. **This closes Workstream A**
+  (A1 slots, A2 wiring, A3 interiors, A4 persistence, A5 succession, A6 naming)
+  and is the prerequisite for the plan's §7 time-series work. **Deferred:** the
+  `region ← pool ∩ zone` grouping, still unclaimed since A2 gave up contiguity
+  when ordinals went zone-wide; a keyboard "go to reference" jump (`resolve` is
+  built and tested, nothing calls it yet); and the SELECTION reference is not
+  capturable headlessly — no dev flag drives a hover — so it is covered by a test
+  through the real `region_lines` rather than by a screenshot.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

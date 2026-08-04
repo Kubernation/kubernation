@@ -43,6 +43,8 @@ STATES=(
   "node|--inspect kubernation-worker"
   "plan|--plan"
   "menu|--menu view"
+  "graticule|--graticule"
+  "graticule-relief|--graticule --map-style relief"
   "overlay-pressure|--overlay pressure"
   "overlay-namespace|--overlay namespace"
   "overlay-walls|--overlay walls"

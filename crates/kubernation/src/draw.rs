@@ -206,6 +206,11 @@ pub struct OverlayData<'a> {
     /// A node absent from the map is not marked, which is how all three of
     /// `freshness`'s do-not-mark states arrive at one rule here.
     pub fresh: Option<&'a HashMap<String, f64>>,
+    /// Draw the reference frame. A plain bool rather than an `Overlay` variant:
+    /// the graticule is orthogonal to what the terrain is coloured by, and
+    /// making it a radio option would force the operator to give up their view
+    /// in order to name a position.
+    pub graticule: bool,
 }
 
 /// Per-workload NetworkPolicy coverage + exposure, for the walls overlay + the
@@ -1235,6 +1240,12 @@ pub fn draw_world(
         draw_island_terrain(&world.islands[ii], cam);
     }
 
+    // The reference frame goes down on the finished ground, before anything
+    // that carries meaning is painted over it.
+    if data.graticule {
+        draw_graticule(world, cam, &detail);
+    }
+
     // Pass 2 — features, settlements, labels. Labels placed this frame are
     // tracked so later (lesser) ones step around earlier (more important)
     // ones: continent → province → city.
@@ -1439,7 +1450,161 @@ pub fn draw_blast(cam: &Camera, sw: &SceneWorld, blast: &BlastRadius) -> Option<
     Some(targets.len())
 }
 
-/// Cheap 4-corner screen-AABB cull for a province footprint; true = offscreen.
+/// The graticule: rules at slot boundaries, row numbers, and a column letter.
+///
+/// Drawn BETWEEN the terrain pass and the feature pass — on the ground, so it
+/// reads as part of the map rather than an overlay floating above it, but under
+/// every settlement and label, so it can never compete with them. That position
+/// in the painter's order is what makes it scenery.
+///
+/// Geometry comes from `slot_row`, the same function that puts land where it is,
+/// so a rule cannot drift off the province tops it delimits. Positions use
+/// `to_land`, which is identity under Plain and lifts under Relief — so the
+/// frame lies on the surface in both styles without a per-style branch.
+///
+/// Density generalises with scale, per the existing cartographic tiers: at World
+/// the numbers would be illegible and the rules a moiré, so only the letter
+/// survives; Regional labels every fifth row; Local labels every one.
+fn draw_graticule(world: &WorldModel, cam: &Camera, detail: &Lod) {
+    use kubernation_core::state::world::{SLOT_STRIDE, slot_of_row};
+
+    for cont in &world.continents {
+        // Rules only where a slot actually exists. An ordinal reclaimed by
+        // compaction has no slot and gets no rule — the frame describes ground
+        // that is spoken for, and drawing a rule across reclaimed sea would name
+        // a position nothing answers to.
+        let mut rows: Vec<u16> = cont
+            .provinces
+            .iter()
+            .map(|p| p.y)
+            .chain(cont.ghosts.iter().map(|g| g.y))
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
+
+        if detail.scale != Scale::World {
+            let x0 = f32::from(cont.x);
+            let x1 = f32::from(cont.x + cont.w);
+            for (i, &row) in rows.iter().enumerate() {
+                // The tested inverse of `slot_row`, not a local re-derivation:
+                // this number IS the reference's row, and a label disagreeing
+                // with the reference on the same province sends someone to the
+                // wrong node.
+                let ordinal = slot_of_row(row);
+                // North edge of every band, plus a closing rule under the last.
+                let mut edges = vec![row];
+                if i == rows.len() - 1 {
+                    edges.push(row + SLOT_STRIDE);
+                }
+                for e in edges {
+                    let a = cam.to_land(x0, f32::from(e));
+                    let b = cam.to_land(x1, f32::from(e));
+                    draw_line(a.x, a.y, b.x, b.y, 1.0, GRATICULE);
+                }
+                let every = if detail.scale == Scale::Local { 1 } else { 5 };
+                if ordinal.is_multiple_of(every) {
+                    // MID-band on the west edge, deliberately not the south-west
+                    // corner. The corner is the band's west-most point, which is
+                    // why it was the first choice — but it sits on the boundary
+                    // between two bands and reads as labelling the one below.
+                    // Verified live against a positional dump: every number was
+                    // one less than the reference of the province beside it.
+                    let w = cam.to_land(x0, f32::from(row) + f32::from(SLOT_STRIDE) * 0.5);
+                    let fs = (13.0 * cam.zoom.clamp(0.6, 1.4)).max(9.0);
+                    let label = ordinal.to_string();
+                    let tm = text_size(&label, fs);
+                    text(&label, w.x - tm.width - 6.0, w.y, fs, GRATICULE_INK);
+                }
+            }
+        }
+
+        // The column letter, over the VISIBLE part of the column.
+        //
+        // World-anchoring it to the continent's midpoint put it off-screen at
+        // every zoom where a fleet is actually viewed — a column identified only
+        // when you happen to be looking at its middle identifies nothing. So it
+        // is placed at the centre of the column's on-screen span and follows the
+        // pan, the way an atlas repeats its edge labels down a long sheet. The
+        // existing continent-name label already clamps for the same reason.
+        if let (Some(letter), Some(&first), Some(&last)) =
+            (cont.column.as_ref(), rows.first(), rows.last())
+        {
+            column_mark(letter, None, cam, cont.x, first, last + SLOT_STRIDE);
+        }
+    }
+
+    // Columns whose zone is gone. Their ground is still spoken for, so the
+    // letter is drawn over the empty sea — the same argument that made ghost
+    // ground visible in A2: an unexplained gap reads as the map having churned,
+    // when in fact the position is being held.
+    for r in &world.reserved {
+        // No provinces to bound it, so the band is the whole world height: the
+        // reservation is the column, not any particular row in it.
+        column_mark(
+            &r.letter,
+            Some(&format!("{} - departed, ground reserved", r.zone)),
+            cam,
+            r.x,
+            1,
+            world.height.max(2),
+        );
+    }
+}
+
+/// Draw a column's letter (and optional note) on the part of that column
+/// currently on screen, or nothing if none of it is.
+///
+/// Placement rides the column's centre LINE, not its bounding box. Iso makes a
+/// column a diagonal band, so its screen-space AABB is enormous and overlaps
+/// every neighbour's — centring in that box stacked all four letters within a
+/// few pixels of the screen middle, labelling nothing. Riding the centre line
+/// spreads the letters exactly as the bands are spread, which is the thing being
+/// labelled. It also follows the pan, the way an atlas repeats its edge labels
+/// down a long sheet; the continent-name label already clamps for that reason.
+fn column_mark(letter: &str, note: Option<&str>, cam: &Camera, x: u16, y0: u16, y1: u16) {
+    use kubernation_core::state::world::PATCH_W;
+    let mid_x = f32::from(x) + f32::from(PATCH_W) * 0.5;
+    let (_, hh) = cam.cell_px();
+    let (py0, py1) = (crate::panels::CHROME_H + 26.0, screen_height());
+    let target = (py0 + py1) * 0.5;
+    // Screen y is linear in world y along a fixed x, so solve for the world row
+    // sitting at the viewport's vertical centre rather than searching for it.
+    let top = cam.to_land(mid_x, f32::from(y0));
+    let wy = if hh > 0.0 {
+        (f32::from(y0) + (target - top.y) / hh).clamp(f32::from(y0), f32::from(y1))
+    } else {
+        f32::from(y0)
+    };
+    let p = cam.to_land(mid_x, wy);
+    // Off the play area: draw nothing rather than jam the mark against an edge,
+    // where it would appear to label whatever else is there.
+    if p.x < 0.0 || p.x > crate::panels::map_width() || p.y < py0 || p.y > py1 {
+        return;
+    }
+    let (cx, cy) = (p.x, p.y);
+    let fs = (78.0 * cam.zoom.clamp(0.45, 1.6)).max(38.0);
+    let tm = text_size(letter, fs);
+    text_bold(
+        letter,
+        cx - tm.width * 0.5,
+        cy + tm.height * 0.35,
+        fs,
+        GRATICULE_MARK,
+    );
+    if let Some(n) = note {
+        let n = ascii(n);
+        let nfs = 13.0;
+        let ntm = text_size(&n, nfs);
+        text(
+            &n,
+            cx - ntm.width * 0.5,
+            cy + tm.height * 0.35 + nfs * 1.6,
+            nfs,
+            GRATICULE_INK,
+        );
+    }
+}
+
 /// Ground a departed node still holds: the land, and nothing else.
 ///
 /// No terrain health, no overlay tint, no hatching, no trees, no settlement —
@@ -1478,6 +1643,7 @@ fn draw_ghost_ground(g: &GhostGround, cam: &Camera, coast: &Coast) {
     }
 }
 
+/// Cheap 4-corner screen-AABB cull for a province footprint; true = offscreen.
 fn province_offscreen(prov: &Province, cam: &Camera) -> bool {
     let corners = [
         cam.to_screen(prov.x as f32, prov.y as f32),

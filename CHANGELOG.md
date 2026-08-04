@@ -9,6 +9,20 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **A position on the map can now be named.** *View ▸ Reference frame* (or
+  `--graticule`) draws a letter per zone and a number per slot, so a province is
+  "C4" — something you can put in a ticket, say on a call, or write on a
+  screenshot. Select a province and the panel shows its reference. A reference
+  names a **slot**, not a spot on screen, so it survives a rolling refresh, a
+  restart, and the node being replaced.
+- The map states what the frame is anchored to, on the map itself rather than
+  only in the Almanac — a screenshot travels without the Almanac. Columns are
+  zones in the order first observed, rows are slot ordinals, and **position
+  asserts nothing about the cluster**: neighbouring provinces are unrelated, and
+  zone is the only grouping that means anything real.
+- A zone whose nodes have all departed keeps its letter and its ground, and the
+  map now shows that letter over the empty column instead of leaving an
+  unexplained gap in the sea.
 - **Ground that just changed hands is marked on the map**, fading back to
   ordinary terrain over an ageing window. A rolling node refresh now reads as a
   wave crossing the fleet instead of an invisible substitution — the provinces

@@ -279,6 +279,7 @@ pub fn draw_sidebar(
     ns_filter: &NamespaceFilter,
     ml: &MinimapLayout,
     overlay: Overlay,
+    graticule: bool,
     concern_idx: usize,
     forwards: &[ForwardInfo],
     blast: Option<&BlastView>,
@@ -650,7 +651,7 @@ pub fn draw_sidebar(
     // Compute the lines first so an empty result (e.g. open sea in a single
     // cluster) falls back to the placeholder rather than a bare header.
     let lines = sel
-        .map(|(sw, local)| region_lines(sw, local, snap, overlay))
+        .map(|(sw, local)| region_lines(sw, local, snap, overlay, graticule))
         .unwrap_or_default();
     if lines.is_empty() {
         text("click a tile to inspect", x, y, 13.0, STONE_INK_DIM);

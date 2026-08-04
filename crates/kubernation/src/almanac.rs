@@ -497,6 +497,19 @@ fn page_world(cx: &mut Ctx) {
     cx.para(
         "Ageing is measured against a window you set — View ▸ AGEING WINDOW, or --fresh-minutes. Set it near your refresh cadence: much longer and everything stays marked, much shorter and the wave is gone before you look.",
     );
+    cx.heading("Naming a position");
+    cx.para(
+        "View \u{25b8} Reference frame draws a graticule: a letter per zone, a number per slot. A province is then nameable - \"the node in C4\" - which is what a handover, a ticket or an annotated screenshot needs. Select a province and the panel shows its reference.",
+    );
+    cx.para(
+        "A reference names a SLOT, not a spot on screen. It survives a rolling refresh, a restart, and the node being replaced, because both halves come from the durable layout rather than from the projection.",
+    );
+    cx.para(
+        "Columns are zones in the order first observed - not alphabetical. Rows are slot ordinals within a zone. Position asserts nothing about the cluster: two neighbouring provinces are unrelated, and zone is the only grouping that means anything real (it is the failure domain).",
+    );
+    cx.para(
+        "A zone whose nodes have all departed keeps its letter and its ground; the map shows the letter over the empty column so the reservation is visible rather than an unexplained gap.",
+    );
     cx.heading("Read-first, gated writes");
     cx.para(
         "KuberNation reads by default — exploring the world never changes the cluster. A few deliberate writes exist, each confirmed and RBAC-checked: evict a pod, commit a planning turn (scale/cordon/restart/image/rollback), and Game Day chaos drills. Port-forward is active but non-mutating. The whole write surface is one small auditable file.",

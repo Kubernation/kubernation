@@ -253,6 +253,10 @@ struct Args {
     /// become a steel blue, so blue/amber/red are all distinguishable).
     #[arg(long)]
     colorblind: bool,
+    /// Draw the reference frame: column letters per zone, row numbers per slot,
+    /// so a position can be named ("the node in C4") in a handover or a ticket.
+    #[arg(long)]
+    graticule: bool,
     /// Start with a map overlay active: "terrain" (default), "pressure"
     /// (cpu/mem heat), "replicas" (workload health), "namespace" (territory),
     /// "walls" (NetworkPolicy segmentation), "saturation" (the 4th golden
@@ -506,7 +510,8 @@ fn dump_positions(
             let slot = models.layout.slot_of(&p.tile.name);
             out.push_str(&format!(
                 "{{\"tick\":{},\"kind\":\"province\",\"node\":\"{}\",\"zone\":\"{}\",\"pool\":\"{}\",\
-                 \"ordinal\":{},\"x\":{},\"y\":{},\"w\":{},\"h\":{},\"extent_source\":\"{:?}\"}}\n",
+                 \"ordinal\":{},\"x\":{},\"y\":{},\"w\":{},\"h\":{},\"extent_source\":\"{:?}\",\
+                 \"ref\":\"{}\"}}\n",
                 tick,
                 esc(&p.tile.name),
                 esc(&cont.zone),
@@ -517,6 +522,7 @@ fn dump_positions(
                 p.w,
                 p.h,
                 p.extent_source,
+                p.reference.as_ref().map_or_else(String::new, |r| r.to_string()),
             ));
             for c in &p.cities {
                 out.push_str(&format!(
@@ -809,6 +815,10 @@ async fn main() {
         .or(saved.overlay.as_deref())
         .map(overlay_from_str)
         .unwrap_or(Overlay::Terrain);
+    // The reference frame. Same precedence as the overlay, except the flag is a
+    // bare switch so it can only turn it ON — `--graticule` in a capture must not
+    // be the only way to see it, and a saved `false` must still be honoured.
+    let mut graticule = args.graticule || saved.graticule.unwrap_or(false);
     // Dev: a forced hover cell for headless capture (the pointer can't be placed).
     let hover_cell: Option<(u16, u16)> = args.hover.as_deref().and_then(|s| {
         let (x, y) = s.split_once(',')?;
@@ -2346,6 +2356,7 @@ async fn main() {
                         // Already on the per-world `Models`, unlike cost.
                         substrate: Some(&wmodels.substrate),
                         fresh: Some(sw.fresh),
+                        graticule,
                     };
                     draw_world(sw.world, &wc, banner, s.pair.as_deref(), overlay, data);
                 }
@@ -2511,6 +2522,7 @@ async fn main() {
                     &ns_filter_now,
                     &ml,
                     overlay,
+                    graticule,
                     concern_idx,
                     &forwards,
                     blast_view.as_ref(),
@@ -2567,7 +2579,7 @@ async fn main() {
                 // Hover tooltip over the map (not the column / chrome /
                 // an open overlay — incl. a panel-less concern-`L` log).
                 if hover_ok && let Some((sw, local)) = hovered {
-                    draw_tooltip(sw, local, s, overlay, mouse);
+                    draw_tooltip(sw, local, s, overlay, graticule, mouse);
                 }
 
                 // The End-of-Turn review takes over the center when open;
@@ -2859,6 +2871,7 @@ async fn main() {
             staged: planned.len(),
             ns_active: ns_filter_now.is_active(),
             fresh_minutes: net.fresh_window().as_secs() / 60,
+            graticule,
         };
         let menu_click = is_mouse_button_pressed(MouseButton::Left) && menu_live;
         let (menu_action, bar_right) =
@@ -2880,6 +2893,7 @@ async fn main() {
             } else {
                 panels::draw_conn_banner(&net.conn(), ctx_label);
             }
+            panels::draw_frame_note(graticule);
         }
         match menu_action {
             Some(MenuAction::SwitchContext) => {
@@ -2978,6 +2992,9 @@ async fn main() {
                 // Runtime-switchable (the palette reads the atomic each frame);
                 // persisted on exit.
                 theme::set_colorblind(!theme::colorblind());
+            }
+            Some(MenuAction::ToggleGraticule) => {
+                graticule = !graticule;
             }
             Some(MenuAction::SetFreshMinutes(m)) => {
                 // Takes effect on the next world rebuild; persisted on exit.
@@ -3742,6 +3759,7 @@ async fn main() {
             colorblind: theme::colorblind(),
             overlay: Some(overlay.label().to_string()),
             map_style: Some(cam.style.label().to_string()),
+            graticule: Some(graticule),
             // The LIVE window, not the one we launched with — the menu can have
             // changed it since, and saving the launch value would silently
             // discard the choice the operator just made.
