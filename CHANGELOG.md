@@ -17,9 +17,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   section's whole point. A deploy that broke something now gets flagged even
   while unrelated chronic noise is present. Affected the realm feed and a city's
   or province's own feed alike.
-- The "(before the failure)" cue no longer loses a width contest with a long
-  event message — it used to be the first thing truncated away, which made it
-  effectively invisible in the narrower city and province panels.
+- The "(before the failure)" cue is no longer truncated away before you can read
+  it. It used to be appended and the row then cut to fit, so it was the first
+  thing lost — and a city row is capped at 30 characters when it shares space
+  with a rollback button, which an entry title alone exceeds. It was therefore
+  effectively invisible in the city and province panels, which is where you look
+  after the map sends you somewhere. The wording is also one string now; two of
+  the three places that drew it had drifted apart.
 
 ### Added
 - **A position on the map can now be named.** *View ▸ Reference frame* (or

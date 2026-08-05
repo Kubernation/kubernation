@@ -544,12 +544,9 @@ pub fn draw_node(
                 ry += 6.0;
             }
             if visr(ry, 16.0) {
-                let mut s = format!("{} {}", ln.glyph, ln.text);
-                if ln.suspect {
-                    s.push_str("  (before failure)");
-                }
+                let s = crate::timeline::row_text(ln.glyph, &ln.text, ln.suspect, 44);
                 text(
-                    ascii(&truncate_str(&s, 44)),
+                    ascii(&s),
                     right_x,
                     ry + 12.0,
                     12.0,

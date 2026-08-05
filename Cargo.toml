@@ -8,7 +8,7 @@ default-members = ["crates/kubernation"]
 # commit as the change: post-1.0, major = breaking change, minor =
 # features/behaviour, patch = fixes/docs/refactor. See CLAUDE.md "Versioning".
 # Releases are tagged vX.Y.Z.
-version = "1.11.1"
+version = "1.11.2"
 edition = "2024"
 authors = ["Jason Olmsted"]
 license = "MIT OR Apache-2.0"

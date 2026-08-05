@@ -689,11 +689,8 @@ pub fn draw_city(
             let rollback_rev = entry
                 .filter(|e| e.kind == ChangeKind::Deploy)
                 .and_then(|e| e.revision.filter(|rev| Some(*rev) != current_rev));
-            let mut s = format!("{} {}", ln.glyph, ln.text);
-            if ln.suspect {
-                s.push_str("  (before failure)");
-            }
-            let width = if rollback_rev.is_some() { 30 } else { 46 };
+            let width: usize = if rollback_rev.is_some() { 30 } else { 46 };
+            let s = crate::timeline::row_text(ln.glyph, &ln.text, ln.suspect, width);
             let mut col = crate::timeline::role_color(ln.role);
             if visr(ry, 16.0) {
                 if let Some(rev) = rollback_rev {
@@ -716,13 +713,7 @@ pub fn draw_city(
                         });
                     }
                 }
-                text(
-                    ascii(&truncate_str(&s, width)),
-                    right_x,
-                    ry + 12.0,
-                    12.0,
-                    col,
-                );
+                text(ascii(&s), right_x, ry + 12.0, 12.0, col);
             }
             ry += 16.0;
         }

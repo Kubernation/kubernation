@@ -121,6 +121,34 @@ fn bucket_for(when: Option<&kubernation_core::Time>, now: Timestamp) -> RecencyB
     }
 }
 
+/// How a suspect row is marked.
+///
+/// ONE authority for the wording, because three renderers show it — the Annals
+/// modal, a city's ANNALS and a province's — and they had drifted to two
+/// different strings. All three now add it only via [`row_text`] (the modal
+/// through its pixel-width twin), so a fourth wording cannot appear without
+/// deliberately bypassing the one producer. It is also why the width arithmetic below reserves it
+/// rather than appending and truncating: it is the section's analytical claim,
+/// and it was the first thing every one of those three dropped.
+pub const SUSPECT_CUE: &str = "  (before the failure)";
+
+/// PURE draw-decision fn: one Annals row's text, capped at `max_chars`, with the
+/// suspect cue reserved rather than appended.
+///
+/// The reservation is the point. All three renderers used to append the cue and
+/// then truncate the whole string, so the cue was the FIRST thing dropped — and
+/// a city row is capped at 30 characters when it shares space with a rollback
+/// button, which an entry title alone already exceeds. The section's analytical
+/// claim was therefore invisible in exactly the panels an operator drills into.
+pub fn row_text(glyph: &str, text: &str, suspect: bool, max_chars: usize) -> String {
+    let cue = if suspect { SUSPECT_CUE } else { "" };
+    let body = format!("{glyph} {text}");
+    format!(
+        "{}{cue}",
+        crate::panels::truncate_str(&body, max_chars.saturating_sub(cue.chars().count()))
+    )
+}
+
 /// PURE: the Annals feed as rendered lines. The fault-line rule lands above the
 /// first row older than `first_trouble`; a change within `CORRELATION_WINDOW_MIN`
 /// before the first failure is flagged `suspect` ("preceded by" — never "caused
@@ -266,9 +294,8 @@ impl Annals {
                     // FIRST thing dropped — invisible in the narrower city/node
                     // panels, where rows already truncate. Reserve its width,
                     // fit the text to what is left, then append.
-                    const CUE: &str = "  (before the failure)";
                     let cue_w = if ln.suspect {
-                        text_size(CUE, 13.0).width
+                        text_size(SUSPECT_CUE, 13.0).width
                     } else {
                         0.0
                     };
@@ -276,7 +303,7 @@ impl Annals {
                     let mut shown =
                         crate::panels::fit_width(&ascii(&body), 13.0, (avail - cue_w).max(0.0));
                     if ln.suspect {
-                        shown.push_str(CUE);
+                        shown.push_str(SUSPECT_CUE);
                     }
                     text(&shown, b.x + 10.0, y, 13.0, role_color(ln.role));
                 }
@@ -581,5 +608,33 @@ mod tests {
         );
         assert_eq!(lines[0].bucket, RecencyBucket::Undated);
         assert_eq!(lines[0].age, "?");
+    }
+    /// The cue survives truncation — it used to be the first thing lost.
+    ///
+    /// Measured on the live defect: a city row is capped at 30 characters when a
+    /// rollback button shares it, and `^ crashy — rev 1->2 · boom: busybox:1.36
+    /// -> …` exceeds that on its own, so appending the cue and then truncating
+    /// dropped it every single time.
+    #[test]
+    fn the_suspect_cue_is_reserved_not_truncated_away() {
+        let long = "crashy — rev 1->2 · boom: busybox:1.36 -> registry.example/very/long/image:tag";
+
+        let plain = row_text("^", long, false, 30);
+        assert_eq!(plain.chars().count(), 30, "a non-suspect row uses it all");
+        assert!(!plain.contains("before"));
+
+        let flagged = row_text("^", long, true, 30);
+        assert!(
+            flagged.ends_with(SUSPECT_CUE),
+            "the cue must survive the cap: {flagged:?}",
+        );
+        assert!(
+            flagged.chars().count() <= 30 + SUSPECT_CUE.chars().count(),
+            "and the text yields room for it rather than overflowing",
+        );
+
+        // A cap smaller than the cue must not panic or produce a negative width.
+        let tiny = row_text("^", long, true, 3);
+        assert!(tiny.ends_with(SUSPECT_CUE), "{tiny:?}");
     }
 }
