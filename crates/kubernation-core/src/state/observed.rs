@@ -210,6 +210,19 @@ pub struct RecentEvent {
     pub name: String,
     pub count: i32,
     pub when: Option<Time>,
+    /// When this event FIRST occurred — the incident's onset, as distinct from
+    /// `when`, which is its most recent occurrence.
+    ///
+    /// The ring keeps one entry per (kind, ns, name, reason) and refreshes its
+    /// `when`, so a chronic failure looks perpetually recent. Onset is what
+    /// separates a crash-looper running for four days from one that started two
+    /// minutes ago, and without it the two are indistinguishable.
+    ///
+    /// `None` is a real state, not a placeholder: some events carry neither
+    /// `firstTimestamp` nor `eventTime`. It stays `Option` here rather than
+    /// falling back at capture, so a consumer that resolves it can also record
+    /// that it was resolving rather than reading.
+    pub onset: Option<Time>,
 }
 
 impl RecentEvent {
@@ -223,12 +236,24 @@ impl RecentEvent {
             .clone()
             .or_else(|| ev.event_time.clone().map(|mt| Time(mt.0)))
             .or_else(|| ev.metadata.creation_timestamp.clone());
+        // Onset, by the same shape of chain `when` uses. `event_time` is not an
+        // approximation on that rung: an event carrying it instead of
+        // `firstTimestamp` is a single-occurrence event from the newer events
+        // path (measured on kind: all such were `Scheduled`, with no
+        // `lastTimestamp` at all), so its one occurrence IS both onset and last
+        // seen. `creation_timestamp` is deliberately NOT a rung — an object's
+        // creation is when the record was written, not when the trouble began.
+        let onset = ev
+            .first_timestamp
+            .clone()
+            .or_else(|| ev.event_time.clone().map(|mt| Time(mt.0)));
         let mut message = ev.message.clone().unwrap_or_default();
         message = message.replace('\n', " ");
         if message.len() > 200 {
             message.truncate(200);
         }
         RecentEvent {
+            onset,
             warning: ev.type_.as_deref() == Some("Warning"),
             reason: ev.reason.clone().unwrap_or_default(),
             message,
@@ -248,6 +273,7 @@ impl RecentEvent {
 
 #[cfg(test)]
 mod tests {
+    use super::{RecentEvent, Time};
     use crate::state::fixtures as fx;
 
     #[test]
@@ -261,5 +287,47 @@ mod tests {
         // Namespace + name must both match (no cross-namespace false positive).
         assert!(!world.pod_exists("other", "web-1"));
         assert!(!world.pod_exists("demo", "web-2"));
+    }
+    /// The onset chain, including the rung that is exact rather than approximate.
+    ///
+    /// Measured on kind: 28 of 31 events carried `firstTimestamp`; the other
+    /// three were `Scheduled` from the newer events path, carrying `eventTime`
+    /// and **no `lastTimestamp` at all**. A single-occurrence event's one
+    /// occurrence is both its onset and its latest sighting, so that fallback
+    /// states a fact rather than guessing one.
+    #[test]
+    fn onset_reads_first_timestamp_then_event_time_and_otherwise_admits_nothing() {
+        use k8s_openapi::api::core::v1::Event;
+        let t = |s: &str| -> Time { Time(s.parse().unwrap()) };
+
+        // Both present: onset is the FIRST, `when` the latest. This is the
+        // separation the whole fix rests on.
+        let mut ev = Event {
+            first_timestamp: Some(t("2026-06-15T00:00:00Z")),
+            last_timestamp: Some(t("2026-06-19T11:59:00Z")),
+            ..Default::default()
+        };
+        let r = RecentEvent::from_event(&ev);
+        assert_eq!(r.onset, Some(t("2026-06-15T00:00:00Z")));
+        assert_eq!(r.when, Some(t("2026-06-19T11:59:00Z")));
+
+        // The newer-events shape: eventTime only, no lastTimestamp.
+        ev = Event {
+            event_time: Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(
+                "2026-06-19T11:58:00Z".parse().unwrap(),
+            )),
+            ..Default::default()
+        };
+        let r = RecentEvent::from_event(&ev);
+        assert_eq!(r.onset, Some(t("2026-06-19T11:58:00Z")));
+        assert_eq!(r.when, r.onset, "one occurrence is both");
+
+        // Neither: onset is unknown, and `creation_timestamp` is deliberately
+        // NOT a rung — when the record was written is not when trouble began.
+        ev = Event::default();
+        ev.metadata.creation_timestamp = Some(t("2026-06-19T11:00:00Z"));
+        let r = RecentEvent::from_event(&ev);
+        assert_eq!(r.onset, None, "unknown, not the record's creation time");
+        assert_eq!(r.when, Some(t("2026-06-19T11:00:00Z")));
     }
 }

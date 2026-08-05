@@ -8,6 +8,19 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **"Trouble begins here" now marks when the incident began**, not when the app
+  last saw the oldest long-running failure. If anything in view had been failing
+  for hours or days, it kept refreshing its own timestamp and stole the marker —
+  so on a cluster with a crash-looping pod anywhere, the Annals drew the line in
+  the wrong place and silently dropped the "(before the failure)" cue that is the
+  section's whole point. A deploy that broke something now gets flagged even
+  while unrelated chronic noise is present. Affected the realm feed and a city's
+  or province's own feed alike.
+- The "(before the failure)" cue no longer loses a width contest with a long
+  event message — it used to be the first thing truncated away, which made it
+  effectively invisible in the narrower city and province panels.
+
 ### Added
 - **A position on the map can now be named.** *View ▸ Reference frame* (or
   `--graticule`) draws a letter per zone and a number per slot, so a province is

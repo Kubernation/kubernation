@@ -438,6 +438,8 @@ mod tests {
         detail: &str,
     ) -> TimelineEntry {
         TimelineEntry {
+            onset: when.clone(),
+            onset_reported: true,
             when,
             kind,
             severity: sev,

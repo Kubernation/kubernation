@@ -260,11 +260,24 @@ impl Annals {
                         text(&ln.age, b.x + b.w - aw - 6.0, y, 12.0, DIM);
                     }
                     let avail = b.w - 70.0;
-                    let mut body = format!("{} {}", ln.glyph, ln.text);
+                    // The cue is this section's analytical claim, so it must not
+                    // lose a width contest with an event message. It used to be
+                    // appended and the whole string truncated, which made it the
+                    // FIRST thing dropped — invisible in the narrower city/node
+                    // panels, where rows already truncate. Reserve its width,
+                    // fit the text to what is left, then append.
+                    const CUE: &str = "  (before the failure)";
+                    let cue_w = if ln.suspect {
+                        text_size(CUE, 13.0).width
+                    } else {
+                        0.0
+                    };
+                    let body = format!("{} {}", ln.glyph, ln.text);
+                    let mut shown =
+                        crate::panels::fit_width(&ascii(&body), 13.0, (avail - cue_w).max(0.0));
                     if ln.suspect {
-                        body.push_str("  (before the failure)");
+                        shown.push_str(CUE);
                     }
-                    let shown = crate::panels::fit_width(&ascii(&body), 13.0, avail);
                     text(&shown, b.x + 10.0, y, 13.0, role_color(ln.role));
                 }
             }
@@ -346,6 +359,8 @@ mod tests {
         key: &str,
     ) -> TimelineEntry {
         TimelineEntry {
+            onset: when.clone(),
+            onset_reported: true,
             when,
             kind,
             severity: sev,

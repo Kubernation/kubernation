@@ -131,6 +131,17 @@ pub struct TimelineEntry {
     pub operator: bool,
     /// Stable identity (cycling / dedup tiebreak).
     pub key: String,
+    /// When this entry's subject FIRST went wrong — the incident's onset, as
+    /// opposed to `when`, its latest occurrence. Already resolved: falls back to
+    /// `when` when nothing reported it, so an entry with unknown onset behaves
+    /// exactly as it did before this field existed.
+    pub onset: Option<Time>,
+    /// Whether `onset` was READ or ASSUMED from `when`.
+    ///
+    /// Recorded rather than silently collapsed, in the voice `metric_source` and
+    /// `CostBasis` use: a fault line anchored on an assumed onset is as good as
+    /// the old behaviour and no better, and a caller that cares can tell.
+    pub onset_reported: bool,
 }
 
 /// What the feed is scoped to.
@@ -157,7 +168,12 @@ pub struct TimelineOpts<'a> {
 pub struct Timeline {
     /// Newest first; untimed entries trail at the end.
     pub entries: Vec<TimelineEntry>,
-    /// Earliest in-scope failure (>= Warning) — the fault-line anchor.
+    /// When the current trouble BEGAN: the earliest onset among in-scope
+    /// failures (>= Warning) that started recently enough to be part of it.
+    ///
+    /// Onset, not latest occurrence — see [`anchors`]. `None` means nothing
+    /// started recently, which is a real answer: a scope whose only failures are
+    /// chronic gets no fault line rather than one drawn at an arbitrary point.
     pub first_trouble: Option<Time>,
     /// The cap clipped older entries.
     pub truncated: bool,
@@ -165,6 +181,55 @@ pub struct Timeline {
     pub deployment_only_note: bool,
     /// Echoed in the honesty footer.
     pub window_min: i64,
+}
+
+/// The onset at which `e` could anchor a fault line, or `None` if it cannot.
+///
+/// # Onset, not latest occurrence
+///
+/// The anchor is the entry's ONSET. "Trouble begins here" is a claim about when
+/// the incident started, and the suspect window is measured backwards from it —
+/// so a deploy five minutes before a failure *started* is a candidate cause,
+/// while five minutes before that failure's four-thousandth recurrence is not a
+/// fact about anything. Anchoring on the latest occurrence made the second
+/// reading the only one available.
+///
+/// # Why the recency window, and not the correlation window
+///
+/// Two windows exist and they are different constants for different purposes:
+/// `opts.window_min` bounds what is recent enough to appear in the feed at all,
+/// and `CORRELATION_WINDOW_MIN` bounds how long before a failure a change may be
+/// called a precursor.
+///
+/// The anchor uses the **recency** window, because the entry set has already
+/// been narrowed by it — so an anchor bounded any more tightly could leave an
+/// entry visible in the Annals that is nonetheless unable to be the trouble it
+/// visibly is. Using the correlation window would do exactly that: a failure
+/// that began twelve minutes ago would be shown and simultaneously ineligible.
+/// It is also the caller's option rather than a constant, so a caller that
+/// widens the feed widens the anchor with it.
+///
+/// # What this excludes
+///
+/// A chronic failure self-excludes: its onset is hours or days old, outside any
+/// window, so it stops winning the minimum by virtue of having been refreshed a
+/// moment ago. No chronic *threshold* is introduced — that would be another
+/// unmeasured constant to defend, and the window already earns its keep.
+///
+/// If every failure in scope is chronic, there is no anchor and no fault line.
+/// That is the honest answer: nothing started recently.
+///
+/// Clock skew follows the convention the recency filter already set — the
+/// signed comparison keeps a future timestamp rather than treating it as
+/// impossibly old, so onset does not get a second, contradictory skew policy.
+fn anchors(e: &TimelineEntry, now: Timestamp, cutoff: i64) -> Option<Time> {
+    let onset = e.onset.clone()?;
+    // An entry with no `when` sinks to the untimed tail and never anchors, the
+    // same rule as before this change.
+    e.when.as_ref()?;
+    // Signed, like the recency filter above: a future onset (skew) yields a
+    // negative age and is kept.
+    (now.duration_since(onset.0).as_secs() <= cutoff).then_some(onset)
 }
 
 /// THE pure builder. `now` is passed in.
@@ -241,6 +306,8 @@ pub fn build_timeline(
                 None => format!("rev {} (first observed)", rev.number),
             };
             entries.push(TimelineEntry {
+                onset: rev.created.clone(),
+                onset_reported: true,
                 when: rev.created.clone(),
                 kind: ChangeKind::Deploy,
                 severity: Severity::Info,
@@ -302,6 +369,8 @@ pub fn build_timeline(
             format!("{}: {}", ev.reason, ev.message)
         };
         entries.push(TimelineEntry {
+            onset: ev.onset.clone().or_else(|| ev.when.clone()),
+            onset_reported: ev.onset.is_some(),
             when: ev.when.clone(),
             kind,
             severity,
@@ -331,6 +400,8 @@ pub fn build_timeline(
             continue;
         }
         entries.push(TimelineEntry {
+            onset: Some(Time(op.when)),
+            onset_reported: true,
             when: Some(Time(op.when)),
             kind: ChangeKind::Operator,
             severity: op.severity,
@@ -392,12 +463,20 @@ pub fn build_timeline(
         },
     });
 
-    // The fault line: earliest in-scope failure (computed over the full windowed
-    // set, before the cap, so it's correct even if the failure is past the cap).
+    // The fault line: the earliest ONSET among failures that STARTED recently
+    // (computed over the full windowed set, before the cap, so it's correct even
+    // if the failure is past the cap).
+    //
+    // The `anchors` filter runs BEFORE the minimum, and has to. `first_trouble`
+    // is a reduction, and the chronic/acute distinction is not recoverable from
+    // its result — once the minimum is taken, the entry it came from is gone.
+    // Filtering after would mean deciding whether to keep an answer without
+    // being able to see what produced it.
+    let cutoff = opts.window_min * 60;
     let first_trouble = entries
         .iter()
-        .filter(|e| e.severity >= Severity::Warning && e.when.is_some())
-        .filter_map(|e| e.when.clone())
+        .filter(|e| e.severity >= Severity::Warning)
+        .filter_map(|e| anchors(e, now, cutoff))
         .min_by(|a, b| a.0.cmp(&b.0));
 
     let truncated = entries.len() > opts.cap;
@@ -580,6 +659,27 @@ mod tests {
             name: name.into(),
             count: 1,
             when: Some(when),
+            // Unknown onset: falls back to `when`, i.e. exactly the behaviour
+            // that existed before onset was captured. Every test written against
+            // the old anchor therefore keeps its meaning.
+            onset: None,
+        }
+    }
+
+    /// An event whose onset is KNOWN and distinct from its latest occurrence —
+    /// the shape of a chronic failure: started long ago, seen a moment ago.
+    fn ev_onset(
+        kind: &str,
+        ns: &str,
+        name: &str,
+        reason: &str,
+        warning: bool,
+        when: Time,
+        onset: Time,
+    ) -> RecentEvent {
+        RecentEvent {
+            onset: Some(onset),
+            ..ev(kind, ns, name, reason, warning, when)
         }
     }
 
@@ -1117,5 +1217,272 @@ mod tests {
         assert!(tl.entries.is_empty());
         assert!(tl.first_trouble.is_none());
         assert!(!tl.truncated);
+    }
+    // --- onset-aware fault lines (T-fix) ---------------------------------
+    //
+    // The defect these pin: `first_trouble` was a minimum over each entry's
+    // LATEST occurrence, and the event ring refreshes that, so a failure running
+    // for days looked like it had just started and won the anchor. Measured on
+    // kind, one controlled variable: chronic crash-looper running -> 0 suspects;
+    // scaled to zero -> 2.
+
+    const DAYS_4: i64 = 4 * 24 * 3600;
+
+    /// The T-pre scenario, as a unit test: both present, the acute one wins.
+    #[test]
+    fn a_chronic_failure_does_not_anchor_and_an_acute_one_does() {
+        let (world, _s) = fx::world();
+        // Started four days ago, last seen 6 minutes ago — a mature
+        // crash-looper's cadence. Under the old rule this anchored.
+        push_event(
+            &world,
+            ev_onset(
+                "Pod",
+                "demo",
+                "old",
+                "BackOff",
+                true,
+                ago(now(), 360),
+                ago(now(), DAYS_4),
+            ),
+        );
+        // Started 45 s ago.
+        push_event(
+            &world,
+            ev_onset(
+                "Pod",
+                "demo",
+                "new",
+                "Failed",
+                true,
+                ago(now(), 30),
+                ago(now(), 45),
+            ),
+        );
+        let tl = cluster_tl(&world);
+        assert_eq!(
+            tl.first_trouble.as_ref().map(|t| t.0),
+            Some(ago(now(), 45).0),
+            "the acute onset anchors, not the chronic entry's refreshed sighting",
+        );
+    }
+
+    /// With ONLY a chronic failure there is no anchor at all — the honest
+    /// answer. Nothing started recently, so nothing marks where it began.
+    #[test]
+    fn an_all_chronic_scope_has_no_fault_line_rather_than_a_wrong_one() {
+        let (world, _s) = fx::world();
+        push_event(
+            &world,
+            ev_onset(
+                "Pod",
+                "demo",
+                "old",
+                "BackOff",
+                true,
+                ago(now(), 60),
+                ago(now(), DAYS_4),
+            ),
+        );
+        let tl = cluster_tl(&world);
+        assert_eq!(tl.first_trouble, None);
+        assert!(
+            row_decisions(&tl, CLUSTER_CAP)
+                .iter()
+                .all(|r| !r.fault_line_above),
+            "no anchor means no rule drawn, not a rule drawn somewhere arbitrary",
+        );
+    }
+
+    /// THE GATE, as a unit test — at BOTH scopes.
+    ///
+    /// A deploy 1–10 min before an acute failure is a suspect even while a
+    /// chronic failure is present. The subject-scope arm is the §1.1 probe that
+    /// revision 1 of the guidance asserted could not fail; it failed, and is why
+    /// revision 1 was stopped.
+    #[test]
+    fn a_change_before_an_acute_failure_is_a_suspect_despite_chronic_noise() {
+        for subject_scope in [false, true] {
+            let (world, _s) = fx::world();
+            push_event(
+                &world,
+                ev_onset(
+                    "Pod",
+                    "demo",
+                    "web-old-abc",
+                    "BackOff",
+                    true,
+                    ago(now(), 360),
+                    ago(now(), DAYS_4),
+                ),
+            );
+            push_event(
+                &world,
+                ev_onset(
+                    "Pod",
+                    "demo",
+                    "web-new-xyz",
+                    "Failed",
+                    true,
+                    ago(now(), 30),
+                    ago(now(), 45),
+                ),
+            );
+            // 105 s before the acute onset — inside the correlation window.
+            push_event(
+                &world,
+                ev(
+                    "Deployment",
+                    "demo",
+                    "web",
+                    "ScalingReplicaSet",
+                    false,
+                    ago(now(), 150),
+                ),
+            );
+            let scope = if subject_scope {
+                TimelineScope::Workload(WorkloadRef {
+                    kind: WorkloadKind::Deployment,
+                    namespace: "demo".into(),
+                    name: "web".into(),
+                })
+            } else {
+                TimelineScope::Cluster
+            };
+            let tl = build_timeline(
+                &world,
+                &TimelineOpts {
+                    scope,
+                    filter: &NamespaceFilter::All,
+                    window_min: TIMELINE_WINDOW_MIN,
+                    cap: CLUSTER_CAP,
+                },
+                &[],
+                now(),
+            );
+            let suspects = row_decisions(&tl, CLUSTER_CAP)
+                .iter()
+                .filter(|r| r.suspect)
+                .count();
+            assert!(
+                suspects > 0,
+                "subject_scope={subject_scope}: the change before the acute \
+                 failure must be flagged even with a chronic entry present",
+            );
+        }
+    }
+
+    /// Subject scope with no chronic failure of its own is UNCHANGED — the case
+    /// T-pre observed live and mistook for a property of the scope.
+    #[test]
+    fn a_subject_without_chronic_noise_anchors_exactly_as_before() {
+        let (world, _s) = fx::world();
+        push_event(
+            &world,
+            ev("Pod", "demo", "web-new-xyz", "Failed", true, ago(now(), 30)),
+        );
+        push_event(
+            &world,
+            ev(
+                "Deployment",
+                "demo",
+                "web",
+                "ScalingReplicaSet",
+                false,
+                ago(now(), 150),
+            ),
+        );
+        let tl = build_timeline(
+            &world,
+            &TimelineOpts {
+                scope: TimelineScope::Workload(WorkloadRef {
+                    kind: WorkloadKind::Deployment,
+                    namespace: "demo".into(),
+                    name: "web".into(),
+                }),
+                filter: &NamespaceFilter::All,
+                window_min: TIMELINE_WINDOW_MIN,
+                cap: CLUSTER_CAP,
+            },
+            &[],
+            now(),
+        );
+        // Unknown onset falls back to `when`, so this is the old anchor exactly.
+        assert_eq!(
+            tl.first_trouble.as_ref().map(|t| t.0),
+            Some(ago(now(), 30).0)
+        );
+        assert!(row_decisions(&tl, CLUSTER_CAP).iter().any(|r| r.suspect));
+    }
+
+    /// Unknown onset is recorded, not silently collapsed — and behaves as it did
+    /// before the field existed.
+    #[test]
+    fn absent_onset_falls_back_to_when_and_says_that_it_did() {
+        let (world, _s) = fx::world();
+        push_event(
+            &world,
+            ev("Pod", "demo", "quiet", "Failed", true, ago(now(), 30)),
+        );
+        push_event(
+            &world,
+            ev_onset(
+                "Pod",
+                "demo",
+                "loud",
+                "BackOff",
+                true,
+                ago(now(), 60),
+                ago(now(), 90),
+            ),
+        );
+        let tl = cluster_tl(&world);
+        let quiet = tl.entries.iter().find(|e| e.title == "quiet").unwrap();
+        let loud = tl.entries.iter().find(|e| e.title == "loud").unwrap();
+        assert!(!quiet.onset_reported, "nothing reported this one's onset");
+        assert_eq!(quiet.onset, quiet.when, "so it stands in for itself");
+        assert!(loud.onset_reported);
+        assert_ne!(
+            loud.onset, loud.when,
+            "a real onset is distinct from last-seen"
+        );
+    }
+
+    /// Clock skew: an onset in the future must not be treated as impossibly old
+    /// and dropped. Follows the convention the recency filter already set.
+    #[test]
+    fn an_onset_in_the_future_still_anchors() {
+        let (world, _s) = fx::world();
+        push_event(
+            &world,
+            ev_onset(
+                "Pod",
+                "demo",
+                "skewed",
+                "Failed",
+                true,
+                ago(now(), 30),
+                ago(now(), -120),
+            ),
+        );
+        let tl = cluster_tl(&world);
+        assert!(
+            tl.first_trouble.is_some(),
+            "a future onset is kept, like a future `when` in the recency filter",
+        );
+    }
+
+    fn cluster_tl(world: &ObservedWorld) -> Timeline {
+        build_timeline(
+            world,
+            &TimelineOpts {
+                scope: TimelineScope::Cluster,
+                filter: &NamespaceFilter::All,
+                window_min: TIMELINE_WINDOW_MIN,
+                cap: CLUSTER_CAP,
+            },
+            &[],
+            now(),
+        )
     }
 }
