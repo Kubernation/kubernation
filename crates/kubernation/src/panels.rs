@@ -242,6 +242,10 @@ pub fn region_lines(
                     // The city sits on the tinted province — show its host node's
                     // strain / upkeep too, so the distinguisher isn't lost on the settlement.
                     lines.extend(grid_ref_line(p.reference.as_ref(), graticule));
+                    lines.extend(changed_line(
+                        sw.changed.get(&p.tile.name).copied(),
+                        overlay == Overlay::Changed,
+                    ));
                     lines.extend(fresh_line(sw.fresh.get(&p.tile.name).copied()));
                     if overlay == Overlay::Saturation {
                         lines.extend(saturation_lines(&p.tile.saturation));
@@ -273,6 +277,10 @@ pub fn region_lines(
                     // How to say where this is. First, because a reference is
                     // what you write down or read out before anything else.
                     lines.extend(grid_ref_line(p.reference.as_ref(), graticule));
+                    lines.extend(changed_line(
+                        sw.changed.get(&p.tile.name).copied(),
+                        overlay == Overlay::Changed,
+                    ));
                     // Ungated, unlike the three below: fresh ground is tinted under
                     // every overlay, so its explanation must be too.
                     lines.extend(fresh_line(sw.fresh.get(&p.tile.name).copied()));
@@ -381,6 +389,35 @@ pub fn draw_frame_note(on: bool) {
         text(ascii(line), 12.0, y, fs, crate::theme::GRATICULE_INK);
         y += fs * 1.35;
     }
+}
+
+/// PURE draw-decision fn: what the Changed overlay is saying about a province.
+///
+/// The panel half, by the standard the substrate round set: the overlay says
+/// WHICH ground, so something must say WHAT — or the map raises a question it
+/// cannot answer and the operator leaves for `kubectl`.
+///
+/// Only under its own overlay, unlike the fresh-ground line: change-since
+/// recolours nothing elsewhere, so there is nothing elsewhere to explain.
+///
+/// The three states are said in three different ways on purpose. "Unknown" is
+/// not silence and not "unchanged" — the map has no succession record for that
+/// ground, which is a different statement from "nothing happened here".
+pub fn changed_line(
+    verdict: Option<kubernation_core::state::layout::ChangeSince>,
+    on: bool,
+) -> Option<(String, Color)> {
+    use kubernation_core::state::layout::ChangeSince;
+    if !on {
+        return None;
+    }
+    Some(match verdict {
+        Some(ChangeSince::Changed) => ("changed hands since the baseline".into(), STONE_STRUCT),
+        Some(ChangeSince::Unchanged) => ("same node as at the baseline".into(), STONE_INK_DIM),
+        // Said out loud: a blank here would read as "unchanged", which is
+        // exactly the claim the record cannot support.
+        _ => ("no succession on record".into(), STONE_INK_DIM),
+    })
 }
 
 /// PURE draw-decision fn: the graticule reference for a position, e.g. `C4`.
@@ -1357,6 +1394,29 @@ mod tests {
         assert!(unknown.to_lowercase().contains("no durable"), "{unknown:?}");
     }
 
+    /// The overlay and the panel must agree, and "unknown" must be said out loud.
+    #[test]
+    fn the_changed_line_says_which_of_three_states_it_is() {
+        use kubernation_core::state::layout::ChangeSince;
+        // Off: the overlay recolours nothing elsewhere, so nothing to explain.
+        assert_eq!(changed_line(Some(ChangeSince::Changed), false), None);
+        assert_eq!(changed_line(None, false), None);
+
+        let say = |v| {
+            changed_line(v, true)
+                .expect("under its own overlay it speaks")
+                .0
+        };
+        let changed = say(Some(ChangeSince::Changed));
+        let unchanged = say(Some(ChangeSince::Unchanged));
+        let unknown = say(None);
+        assert!(changed.contains("changed"), "{changed:?}");
+        assert_ne!(changed, unchanged);
+        // The load-bearing one: no record is not the same sentence as no change.
+        assert_ne!(unknown, unchanged, "unknown must not read as unchanged");
+        assert!(unknown.contains("no succession"), "{unknown:?}");
+    }
+
     /// Settled ground says nothing; fresh ground says something at every tier.
     ///
     /// The load-bearing half is the second assertion: the words must change at
@@ -1425,6 +1485,7 @@ mod tests {
                 cost,
                 opencost_note: None,
                 fresh: Arc::new(std::collections::HashMap::new()),
+                changed: Arc::new(std::collections::HashMap::new()),
             },
             warm: None,
             pair: None,
@@ -1492,6 +1553,7 @@ mod tests {
                 cost,
                 opencost_note: None,
                 fresh: Arc::new(std::collections::HashMap::new()),
+                changed: Arc::new(std::collections::HashMap::new()),
             },
             warm: None,
             pair: None,

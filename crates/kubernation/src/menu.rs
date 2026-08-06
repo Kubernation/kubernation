@@ -44,6 +44,12 @@ pub enum MenuAction {
     SetFreshMinutes(u64),
     /// Show or hide the reference frame (graticule).
     ToggleGraticule,
+    /// Fix the change-since baseline this many minutes before now. `0` clears it.
+    ///
+    /// The menu offers offsets, but what is STORED is the instant computed at
+    /// click time — a stored duration would slide with the clock and make this
+    /// A5's rolling window under another name.
+    SetChangeBaseline(u64),
 }
 
 /// Live state the bar reflects: the active overlay and map style (radio marks),
@@ -58,7 +64,23 @@ pub struct MenuCtx {
     pub fresh_minutes: u64,
     /// Whether the reference frame is drawn.
     pub graticule: bool,
+    /// How long ago the change-since baseline was fixed, in whole minutes;
+    /// `None` when none is set. Shown so the radio can mark the choice that was
+    /// made, even though the stored value is an instant.
+    pub change_baseline_min: Option<u64>,
 }
+
+/// The change-since baselines offered in the menu.
+///
+/// `0` clears it and is a real value, not a degenerate one — "not asking" is a
+/// state the overlay renders differently from "asked, nothing changed".
+pub const BASELINE_CHOICES: [(u64, &str); 5] = [
+    (0, "off"),
+    (15, "15 minutes ago"),
+    (60, "1 hour ago"),
+    (240, "4 hours ago"),
+    (1440, "24 hours ago"),
+];
 
 /// The ageing windows offered in the menu. Not arbitrary: a refresh has to fit
 /// inside the window with room left over, or the ground never finishes fading
@@ -187,6 +209,11 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                     MenuAction::SetOverlay(Overlay::Substrate),
                 )
                 .check(ctx.overlay == Overlay::Substrate),
+                Item::act(
+                    "Changed (since a baseline)",
+                    MenuAction::SetOverlay(Overlay::Changed),
+                )
+                .check(ctx.overlay == Overlay::Changed),
                 Item::sep(),
                 Item::header("MAP STYLE"),
                 Item::act(
@@ -200,9 +227,14 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                 )
                 .check(ctx.style == MapStyle::Relief),
                 Item::sep(),
-                Item::header("AGEING WINDOW"),
+                Item::header("CHANGED SINCE"),
             ]
             .into_iter()
+            .chain(BASELINE_CHOICES.map(|(mins, label)| {
+                Item::act(label, MenuAction::SetChangeBaseline(mins))
+                    .check(ctx.change_baseline_min == (mins > 0).then_some(mins))
+            }))
+            .chain([Item::sep(), Item::header("AGEING WINDOW")])
             .chain(FRESH_CHOICES.map(|(mins, label)| {
                 Item::act(label, MenuAction::SetFreshMinutes(mins)).check(ctx.fresh_minutes == mins)
             }))
@@ -442,6 +474,38 @@ mod tests {
             ns_active: false,
             fresh_minutes,
             graticule: false,
+            change_baseline_min: None,
+        }
+    }
+
+    /// The baseline radio marks the choice that was made, and "off" is real.
+    #[test]
+    fn the_baseline_radio_marks_the_active_choice() {
+        let rows = |min: Option<u64>| -> Vec<(String, bool)> {
+            let mut c = ctx(60);
+            c.change_baseline_min = min;
+            menus(&c)
+                .into_iter()
+                .find(|m| m.title == "View")
+                .expect("a View menu")
+                .items
+                .into_iter()
+                .filter(|i| matches!(i.action, Some(MenuAction::SetChangeBaseline(_))))
+                .map(|i| (i.label, i.checked))
+                .collect()
+        };
+        // No baseline: "off" is the MARKED row, not an absence of marking — the
+        // overlay renders "not asking" differently from "asked, nothing changed".
+        let off = rows(None);
+        let checked: Vec<_> = off.iter().filter(|(_, c)| *c).collect();
+        assert_eq!(checked.len(), 1);
+        assert_eq!(checked[0].0, "off");
+
+        for (mins, label) in BASELINE_CHOICES.into_iter().filter(|(m, _)| *m > 0) {
+            let r = rows(Some(mins));
+            let c: Vec<_> = r.iter().filter(|(_, c)| *c).collect();
+            assert_eq!(c.len(), 1, "exactly one row marked for {mins}m");
+            assert_eq!(c[0].0, label);
         }
     }
 

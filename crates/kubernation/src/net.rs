@@ -224,6 +224,9 @@ pub struct WorldSnap {
     /// frame on a hundred-node fleet. Same reason `substrate` and `posture` are
     /// precomputed and borrowed for a frame.
     pub fresh: Arc<HashMap<String, f64>>,
+    /// Whether each node's ground changed hands since the chosen baseline.
+    /// Empty when no baseline is set — "not asking", not "nothing changed".
+    pub changed: Arc<HashMap<String, kubernation_core::state::layout::ChangeSince>>,
     /// Upkeep (cost cartography), computed once per tick — the overlay + advisor
     /// tab read this (the overlay does a by-node lookup every frame, never a scan).
     pub cost: CostReport,
@@ -272,6 +275,14 @@ pub struct Net {
     /// Bumped on context switch so a slow probe from the OLD cluster can't write its
     /// liveness into the NEW cluster's banner (the established gen-guard pattern).
     conn_gen: AtomicU64,
+    /// The change-since baseline: a FIXED instant, or `None` for "not asking".
+    ///
+    /// Deliberately an instant rather than a duration. A duration would make
+    /// this A5's rolling window under another name — ground would un-mark with
+    /// the passage of time alone. Captured once when chosen, the marked set only
+    /// grows until the operator moves it, which is the question "what has
+    /// changed since I started looking" rather than "what changed recently".
+    change_baseline: Mutex<Option<SystemTime>>,
     /// The ageing window, in seconds — read fresh on every tick so changing it
     /// from the menu re-tints the map on the next rebuild rather than at the
     /// next launch. Seeded from `NetArgs`; an atomic rather than a lock because
@@ -558,6 +569,7 @@ impl Net {
             conn: Mutex::new(ConnState::Connecting),
             conn_gen: AtomicU64::new(0),
             fresh_window_secs: AtomicU64::new(0),
+            change_baseline: Mutex::new(None),
             switch: Mutex::new(None),
             log_req: Mutex::new(None),
             log_tail: Mutex::new(LogTail::default()),
@@ -1032,6 +1044,23 @@ impl Net {
         *self.conn.lock().unwrap_or_else(|e| e.into_inner()) = s;
     }
 
+    /// The change-since baseline, or `None` when the overlay is not asking.
+    pub fn change_baseline(&self) -> Option<SystemTime> {
+        *self
+            .change_baseline
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Fix the baseline at an instant (or clear it). Takes effect on the next
+    /// rebuild, like the ageing window.
+    pub fn set_change_baseline(&self, at: Option<SystemTime>) {
+        *self
+            .change_baseline
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = at;
+    }
+
     /// How long ground stays marked after it changes hands. `ZERO` never marks.
     pub fn fresh_window(&self) -> Duration {
         Duration::from_secs(self.fresh_window_secs.load(Ordering::Relaxed))
@@ -1250,6 +1279,34 @@ fn build_carrying(
 /// A node with no entry is not marked — which covers all three of `freshness`'s
 /// do-not-mark states at once, so the draw site has a single rule and cannot
 /// accidentally fall through to a default that marks.
+/// Which nodes' ground changed hands since `baseline`, by node name.
+///
+/// Precomputed once per tick for the same reason `freshness_by_node` is: the
+/// renderer holds a `Province` and no layout, and `slot_of` is a linear scan, so
+/// a per-province lookup in a 60fps draw would be O(slots x provinces).
+///
+/// `None` baseline yields an empty map, which the draw path reads as "not
+/// asking" — distinct from a populated map in which a node is absent.
+fn changed_by_node(
+    layout: &kubernation_core::state::layout::Layout,
+    baseline: Option<SystemTime>,
+) -> HashMap<String, kubernation_core::state::layout::ChangeSince> {
+    use kubernation_core::state::layout::changed_since;
+    let Some(base) = baseline else {
+        return HashMap::new();
+    };
+    layout
+        .entries()
+        .filter_map(|(k, st)| {
+            let node = st.occupant.as_ref()?;
+            Some((
+                node.node.clone(),
+                changed_since(layout.occupied_at(k), base),
+            ))
+        })
+        .collect()
+}
+
 fn freshness_by_node(
     layout: &kubernation_core::state::layout::Layout,
     now: SystemTime,
@@ -2539,8 +2596,12 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         ),
                         posture: posture::posture_report(&h.world),
                         // Warm never marks: it is a comparison view, not
-                        // somewhere the operator watches change happen.
+                        // somewhere the operator watches change happen. Change-
+                        // since follows for the same reason, and because warm's
+                        // layout is not persisted (A4), so it has no succession
+                        // record older than this session anyway.
                         fresh: Arc::new(HashMap::new()),
+                        changed: Arc::new(HashMap::new()),
                         cost: cost::cost_report(
                             &h.world,
                             &effective_cost_rates(&args.cost_rates, &h.world),
@@ -2722,6 +2783,7 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                             SystemTime::now(),
                             net.fresh_window(),
                         )),
+                        changed: Arc::new(changed_by_node(&prior_hot, net.change_baseline())),
                         cost: hot_cost,
                         opencost_note,
                     },

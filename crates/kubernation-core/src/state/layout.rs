@@ -479,6 +479,47 @@ pub fn assign_layout(prior: &Layout, observed: &[ObservedNode]) -> Layout {
     }
 }
 
+/// Whether a slot's ground changed hands since a chosen moment.
+///
+/// Three states, and the third is not a shrug. An absent `occupied_at` means
+/// either the slot has never changed hands *or* its record predates the field —
+/// and neither of those is "unchanged since the baseline". Collapsing them into
+/// Unchanged would let the map report "nothing happened here" about ground it
+/// has no record for, which is the unearned all-clear this codebase refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeSince {
+    /// A different node took this ground at or after the baseline.
+    Changed,
+    /// It changed hands, but before the baseline.
+    Unchanged,
+    /// Nothing is recorded. See the type doc — NOT the same as Unchanged.
+    Unknown,
+}
+
+/// Did this slot change hands since `baseline`?
+///
+/// # A fixed instant, not a rolling window
+///
+/// This is the whole difference from [`freshness`], which asks *how recently*
+/// against `now` and therefore decays on its own: ground it marks un-marks with
+/// the passage of time alone. Here the baseline is captured once, so the answer
+/// changes only when the cluster does, and the marked set only grows until the
+/// operator moves the baseline.
+///
+/// Same field, two comparisons, different right-hand sides — the standing
+/// question about moving one side of a comparison, answered deliberately here
+/// rather than by accident.
+///
+/// At-or-after rather than strictly after: a succession stamped in the same
+/// instant the baseline was taken is still a change the operator has not seen.
+pub fn changed_since(occupied_at: Option<SystemTime>, baseline: SystemTime) -> ChangeSince {
+    match occupied_at {
+        None => ChangeSince::Unknown,
+        Some(t) if t >= baseline => ChangeSince::Changed,
+        Some(_) => ChangeSince::Unchanged,
+    }
+}
+
 /// How recently ground changed hands, as `1.0` at the moment of succession
 /// decaying to `0.0` at the end of the window.
 ///
@@ -1362,5 +1403,57 @@ mod tests {
             PoolSource::Provider("cloud.google.com/gke-nodepool")
         );
         assert_eq!(occ.pool_source.label(), "cloud.google.com/gke-nodepool");
+    }
+    /// The three states, and the one that must not collapse.
+    #[test]
+    fn changed_since_separates_unknown_from_unchanged() {
+        let base = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        let after = base + std::time::Duration::from_secs(1);
+        let before = base - std::time::Duration::from_secs(1);
+
+        assert_eq!(changed_since(Some(after), base), ChangeSince::Changed);
+        assert_eq!(changed_since(Some(before), base), ChangeSince::Unchanged);
+        // At-or-after: a succession stamped in the baseline's own instant is
+        // still something the operator has not seen.
+        assert_eq!(changed_since(Some(base), base), ChangeSince::Changed);
+
+        // The one that matters. No record is NOT "unchanged" — the map would be
+        // claiming nothing happened on ground it has no history for.
+        assert_eq!(changed_since(None, base), ChangeSince::Unknown);
+        assert_ne!(changed_since(None, base), ChangeSince::Unchanged);
+    }
+
+    /// Deterministic for the same inputs — it is read every tick.
+    #[test]
+    fn changed_since_is_deterministic() {
+        let base = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(500);
+        let t = Some(base + std::time::Duration::from_secs(30));
+        assert_eq!(changed_since(t, base), changed_since(t, base));
+    }
+
+    /// The two occupant-change questions are genuinely different, and this is
+    /// the fixture where they diverge.
+    ///
+    /// Ground that changed hands 10 minutes ago, read with a 5-minute ageing
+    /// window and a baseline of 1 hour ago: `freshness` says nothing to mark
+    /// (it decayed), `changed_since` says Changed (the baseline has not moved).
+    /// That divergence IS the feature — one asks how recently, the other asks
+    /// whether, since a moment the operator fixed.
+    #[test]
+    fn freshness_and_changed_since_answer_different_questions() {
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10_000);
+        let ten_min_ago = now - std::time::Duration::from_secs(600);
+        let hour_ago = now - std::time::Duration::from_secs(3_600);
+
+        assert_eq!(
+            freshness(Some(ten_min_ago), now, std::time::Duration::from_secs(300)),
+            None,
+            "the rolling window has already forgotten it",
+        );
+        assert_eq!(
+            changed_since(Some(ten_min_ago), hour_ago),
+            ChangeSince::Changed,
+            "but it did change since the fixed baseline, and still has",
+        );
     }
 }

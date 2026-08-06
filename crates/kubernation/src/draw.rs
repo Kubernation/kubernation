@@ -16,6 +16,7 @@ use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::Severity;
 use kubernation_core::state::blast::{Affected, BlastRadius, Subject};
 use kubernation_core::state::cost::{CostReport, IDLE_NOTABLE};
+use kubernation_core::state::layout::ChangeSince;
 use kubernation_core::state::model::{NodeHealth, WorkloadRef};
 use kubernation_core::state::netpol::Coverage;
 use kubernation_core::state::pair::PairSync;
@@ -65,10 +66,12 @@ pub enum Overlay {
     /// DaemonSet coverage — nodes missing infrastructure the rest of the fleet
     /// has. Deliberately NOT kubelet pressure: `Saturation` already renders that.
     Substrate,
+    /// Ground that changed hands since a chosen baseline — T1's change-since.
+    Changed,
 }
 
 impl Overlay {
-    pub const ALL: [Overlay; 8] = [
+    pub const ALL: [Overlay; 9] = [
         Overlay::Terrain,
         Overlay::Pressure,
         Overlay::Replicas,
@@ -77,6 +80,7 @@ impl Overlay {
         Overlay::Saturation,
         Overlay::Cost,
         Overlay::Substrate,
+        Overlay::Changed,
     ];
 
     /// Short label for the chrome / menu radio — the persisted / `--overlay`
@@ -91,6 +95,7 @@ impl Overlay {
             Overlay::Saturation => "saturation",
             Overlay::Cost => "cost",
             Overlay::Substrate => "substrate",
+            Overlay::Changed => "changed",
         }
     }
 }
@@ -206,6 +211,11 @@ pub struct OverlayData<'a> {
     /// A node absent from the map is not marked, which is how all three of
     /// `freshness`'s do-not-mark states arrive at one rule here.
     pub fresh: Option<&'a HashMap<String, f64>>,
+    /// Whether each node's ground changed hands since the chosen baseline, by
+    /// node name. `None` when no baseline is set — which is a real state
+    /// meaning "not asking", distinct from an empty map meaning "asked, nothing
+    /// changed". Precomputed per tick for the same reason `fresh` is.
+    pub changed: Option<&'a HashMap<String, ChangeSince>>,
     /// Draw the reference frame. A plain bool rather than an `Overlay` variant:
     /// the graticule is orthogonal to what the terrain is coloured by, and
     /// making it a radio option would force the operator to give up their view
@@ -344,10 +354,19 @@ fn worst_known(a: Option<f64>, b: Option<f64>) -> Option<f64> {
 /// Only the ratio-derived overlays: Terrain reads node HEALTH (still known),
 /// Cost already has its own unpriced path, and Namespace/Replicas/Walls/
 /// Substrate never touch allocatable.
-pub(crate) fn province_unmeasured(overlay: Overlay, prov: &Province) -> bool {
+pub(crate) fn province_unmeasured(overlay: Overlay, prov: &Province, data: OverlayData) -> bool {
     match overlay {
         Overlay::Pressure => worst_known(prov.tile.cpu_ratio, prov.tile.mem_ratio).is_none(),
         Overlay::Saturation => prov.tile.saturation.worst_level().is_none(),
+        // Ground with no succession record. Hatched only while a baseline is
+        // SET: with none, the overlay is not asking anything, so there is no
+        // unanswered question to mark.
+        Overlay::Changed => data.changed.is_some_and(|m| {
+            !matches!(
+                m.get(&prov.tile.name),
+                Some(ChangeSince::Changed | ChangeSince::Unchanged)
+            )
+        }),
         _ => false,
     }
 }
@@ -362,7 +381,14 @@ fn overlay_pair(overlay: Overlay, prov: &Province, data: OverlayData) -> (Color,
     // overlay is measuring — an operator reading pressure still wants to see
     // the wave crossing it. It wins the fill because it is transient by
     // construction: it fades, and the overlay comes back.
-    if let Some(f) = data.fresh.and_then(|m| m.get(&prov.tile.name)) {
+    //
+    // The one exception is the Changed overlay, which asks about the SAME fact
+    // from a fixed baseline rather than a rolling one. Letting the rolling mark
+    // win there would overwrite the answer on exactly the provinces the overlay
+    // exists to describe, and put two occupant-change colours on one tile.
+    if overlay != Overlay::Changed
+        && let Some(f) = data.fresh.and_then(|m| m.get(&prov.tile.name))
+    {
         return fresh_land_pair(*f, FRESH_STEPS);
     }
     match overlay {
@@ -417,6 +443,21 @@ fn overlay_pair(overlay: Overlay, prov: &Province, data: OverlayData) -> (Color,
                 _ => heat_pair(2),
             })
             .unwrap_or_else(|| iso_terrain_pair(prov.tile.health)),
+        // Two states plus an honest third. Changed pops; unchanged recedes to
+        // idle land (Cost's precedent); UNKNOWN keeps the terrain fill and is
+        // hatched by `draw_province_terrain` — the established no-data texture,
+        // so ground with no succession record cannot be read as "nothing
+        // happened here". With no baseline set at all, nothing is being asked,
+        // so terrain stands.
+        Overlay::Changed => match data.changed.map(|m| {
+            m.get(&prov.tile.name)
+                .copied()
+                .unwrap_or(ChangeSince::Unknown)
+        }) {
+            Some(ChangeSince::Changed) => changed_land_pair(),
+            Some(ChangeSince::Unchanged) => idle_land_pair(),
+            _ => iso_terrain_pair(prov.tile.health),
+        },
     }
 }
 
@@ -428,9 +469,11 @@ fn overlay_flat(overlay: Overlay, prov: &Province) -> Color {
     match overlay {
         // Walls + Cost + Substrate have no per-node data threaded to the minimap
         // (an overview) — fall back to terrain there, like the breach marks.
-        Overlay::Terrain | Overlay::Coverage | Overlay::Cost | Overlay::Substrate => {
-            terrain(prov.tile.health)
-        }
+        Overlay::Terrain
+        | Overlay::Coverage
+        | Overlay::Cost
+        | Overlay::Substrate
+        | Overlay::Changed => terrain(prov.tile.health),
         _ => overlay_pair(overlay, prov, OverlayData::default()).1,
     }
 }
@@ -445,6 +488,9 @@ pub struct SceneWorld<'a> {
     /// Per-node succession freshness for this world, computed once per tick by
     /// the net thread. Empty for warm, which never marks.
     pub fresh: &'a HashMap<String, f64>,
+    /// Per-node change-since verdicts for this world. Empty for warm, and empty
+    /// when no baseline is set.
+    pub changed: &'a HashMap<String, ChangeSince>,
 }
 
 pub fn scene(snap: &Snapshot) -> Vec<SceneWorld<'_>> {
@@ -454,6 +500,7 @@ pub fn scene(snap: &Snapshot) -> Vec<SceneWorld<'_>> {
         world: &snap.hot.models.world,
         label: snap.hot.observed.meta.context.clone(),
         fresh: &snap.hot.fresh,
+        changed: &snap.hot.changed,
     }];
     if let Some(w) = &snap.warm {
         worlds.push(SceneWorld {
@@ -462,6 +509,7 @@ pub fn scene(snap: &Snapshot) -> Vec<SceneWorld<'_>> {
             world: &w.models.world,
             label: w.observed.meta.context.clone(),
             fresh: &w.fresh,
+            changed: &w.changed,
         });
     }
     worlds
@@ -1746,7 +1794,7 @@ fn draw_province_terrain(
     // texture reads as "no data" where any hue would be read as a value on the
     // ramp. Computed once per province — this is rare (a node that fails to
     // report its own capacity), so the per-cell stroke costs nothing in practice.
-    let hatched = province_unmeasured(overlay, prov);
+    let hatched = province_unmeasured(overlay, prov, data);
     let x0 = prov.x as i32;
     let w = prov.w as f32;
     let y1 = (prov.y + prov.h) as i32;
@@ -3102,11 +3150,11 @@ mod tests {
 
         for ov in [Overlay::Pressure, Overlay::Saturation] {
             assert!(
-                province_unmeasured(ov, get("bare")),
+                province_unmeasured(ov, get("bare"), OverlayData::default()),
                 "{ov:?} needs capacity"
             );
             assert!(
-                !province_unmeasured(ov, get("ok")),
+                !province_unmeasured(ov, get("ok"), OverlayData::default()),
                 "{ov:?} on a normal node"
             );
         }
@@ -3119,7 +3167,7 @@ mod tests {
             Overlay::Substrate,
         ] {
             assert!(
-                !province_unmeasured(ov, get("bare")),
+                !province_unmeasured(ov, get("bare"), OverlayData::default()),
                 "{ov:?} does not read allocatable, so it is not unmeasurable"
             );
         }
