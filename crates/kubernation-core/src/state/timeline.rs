@@ -511,6 +511,12 @@ pub struct RowDecision {
 pub fn row_decisions(tl: &Timeline, cap: usize) -> Vec<RowDecision> {
     let ft = tl.first_trouble.as_ref();
     // The fault line: the first shown row strictly older than the first trouble.
+    //
+    // This comparison deliberately keeps `when` while the suspect test below
+    // moved to `onset`. They are different questions: the rule is a POSITION in
+    // a list sorted by `when`, so "is this row placed before the incident began"
+    // is answered by the sort key. The suspect test is a DURATION, so both its
+    // sides must be the same quantity.
     let mut fault_idx: Option<usize> = None;
     if let Some(ftt) = ft {
         for (i, e) in tl.entries.iter().take(cap).enumerate() {
@@ -527,11 +533,17 @@ pub fn row_decisions(tl: &Timeline, cap: usize) -> Vec<RowDecision> {
         .map(|(i, e)| {
             let suspect = e.kind.is_change()
                 && ft.is_some_and(|ftt| {
-                    e.when.as_ref().is_some_and(|w| {
-                        // Strictly BEFORE the first failure (a change at the exact
-                        // failure instant isn't a precursor).
+                    // ONSET on this side too. `first_trouble` became an onset in
+                    // T-fix and this side was left on `when`, so `d` measured
+                    // "from this change's most recent sighting to the incident's
+                    // start" — not the quantity the rule claims. Deploy and
+                    // operator entries are unaffected (their onset IS their
+                    // `when`); a repeating `ScalingReplicaSet` was not, and
+                    // correlated from its latest refresh rather than from when
+                    // the scaling began.
+                    e.onset.as_ref().is_some_and(|w| {
                         let d = ftt.0.duration_since(w.0).as_secs();
-                        (1..=CORRELATION_WINDOW_MIN * 60).contains(&d)
+                        (correlation_floor(e)..=CORRELATION_WINDOW_MIN * 60).contains(&d)
                     })
                 });
             RowDecision {
@@ -540,6 +552,36 @@ pub fn row_decisions(tl: &Timeline, cap: usize) -> Vec<RowDecision> {
             }
         })
         .collect()
+}
+
+/// The smallest gap at which a change of this kind can be called a precursor.
+///
+/// The lower bound does **two jobs**, and they want different answers.
+///
+/// As a *causality* rule it excludes `d == 0`: something simultaneous with a
+/// failure did not precede it. As a *resolution* rule it is an artifact —
+/// Kubernetes Event timestamps are second-granularity and a kubelet fails an
+/// image pull effectively immediately, so a deploy and the `ImagePullBackOff` it
+/// caused routinely land in the same second. Measured live across three
+/// incidents: 0 s, 1 s, 11 s. Under a flat `1..` the first was silently dropped,
+/// which is the canonical incident this whole feature exists to show.
+///
+/// The asymmetry that resolves it: **a deploy cannot be caused by a failure it
+/// precedes.** At `d == 0` an *act* — a rollout, or something the operator did
+/// here — is either the cause or unrelated, never the consequence. An
+/// event-sourced change has no such direction: a `ScalingReplicaSet` in the same
+/// second as a failure is at least as likely to be the failure's effect (a
+/// controller reacting), and flagging it would print "preceded by" on something
+/// that followed. That phrase is only honest when the ordering is real.
+///
+/// No new constant: the distinction is one the type already carries.
+fn correlation_floor(e: &TimelineEntry) -> i64 {
+    match e.kind {
+        // Acts, with a known direction.
+        ChangeKind::Deploy | ChangeKind::Operator => 0,
+        // Observations, which may be consequences.
+        _ => 1,
+    }
 }
 
 /// Whether an event/action about `(ns, name)` belongs to `scope`. `members` is
@@ -1484,5 +1526,194 @@ mod tests {
             &[],
             now(),
         )
+    }
+    // --- the correlation rule (T-fix-2) ----------------------------------
+    //
+    // Two defects in three lines. (A) T-fix moved `first_trouble` to onset and
+    // left the change side on `when`, so the comparison measured two different
+    // quantities. (B) the `1..` floor did causality AND resolution work, and in
+    // the second role it dropped the canonical incident: a deploy and the
+    // ImagePullBackOff it caused, in the same second (measured live).
+
+    /// Build a one-failure/one-change timeline and report whether the change is
+    /// a suspect. `gap` is seconds from the change to the failure's ONSET.
+    fn correlates(change: RecentEvent, gap_from: Time, ft_onset: Time) -> bool {
+        let (world, _s) = fx::world();
+        push_event(&world, change);
+        push_event(
+            &world,
+            ev_onset(
+                "Pod",
+                "demo",
+                "victim",
+                "Failed",
+                true,
+                ago(now(), 5),
+                ft_onset,
+            ),
+        );
+        let _ = gap_from;
+        let tl = build_timeline(
+            &world,
+            &TimelineOpts {
+                scope: TimelineScope::Cluster,
+                filter: &NamespaceFilter::All,
+                window_min: TIMELINE_WINDOW_MIN,
+                cap: CLUSTER_CAP,
+            },
+            &[],
+            now(),
+        );
+        row_decisions(&tl, CLUSTER_CAP).iter().any(|r| r.suspect)
+    }
+
+    /// DEFECT A: a repeating change correlates from when it STARTED, not from
+    /// its most recent sighting.
+    ///
+    /// A `ScalingReplicaSet` that began 5 minutes before the failure but was
+    /// last seen a minute *after* it is a precursor. Under the old comparison
+    /// its latest sighting was used, which put it on the wrong side entirely.
+    #[test]
+    fn a_repeating_change_correlates_from_its_onset() {
+        let failure_onset = ago(now(), 300);
+        let repeating = ev_onset(
+            "Deployment",
+            "demo",
+            "web",
+            "ScalingReplicaSet",
+            false,
+            ago(now(), 60),  // last seen AFTER the failure began
+            ago(now(), 420), // but it started 2 min before it
+        );
+        assert!(
+            correlates(repeating, ago(now(), 420), failure_onset),
+            "the scaling began before the failure, so it is a precursor",
+        );
+    }
+
+    /// DEFECT A's guard: the Deploy path must be untouched. A revision's `when`
+    /// IS its onset (an RS is created once), so this change cannot move it.
+    #[test]
+    fn a_deploys_correlation_is_unchanged_because_its_onset_is_its_when() {
+        let (world, _s) = fx::world();
+        push_event(
+            &world,
+            ev_onset(
+                "Pod",
+                "demo",
+                "victim",
+                "Failed",
+                true,
+                ago(now(), 5),
+                ago(now(), 120),
+            ),
+        );
+        let tl = build_timeline(
+            &world,
+            &TimelineOpts {
+                scope: TimelineScope::Cluster,
+                filter: &NamespaceFilter::All,
+                window_min: TIMELINE_WINDOW_MIN,
+                cap: CLUSTER_CAP,
+            },
+            &[],
+            now(),
+        );
+        for e in tl.entries.iter().filter(|e| e.kind == ChangeKind::Deploy) {
+            assert_eq!(
+                e.onset, e.when,
+                "a Deploy's onset and `when` are the same instant, so switching \
+                 the comparison to onset cannot change its correlation",
+            );
+        }
+    }
+
+    /// DEFECT B: an act at `d == 0` IS a precursor; an observation is not.
+    ///
+    /// The live measurement as a unit test — an RS created at 22:58:44Z and its
+    /// ImagePullBackOff onset at 22:58:44Z, which a flat `1..` floor dropped.
+    #[test]
+    fn a_same_second_act_correlates_but_a_same_second_observation_does_not() {
+        let at = ago(now(), 120);
+
+        // An operator action in the same second as the failure's onset.
+        let (world, _s) = fx::world();
+        push_event(
+            &world,
+            ev_onset(
+                "Pod",
+                "demo",
+                "victim",
+                "Failed",
+                true,
+                ago(now(), 5),
+                at.clone(),
+            ),
+        );
+        let op = OperatorAction {
+            when: at.0,
+            verb: OpVerb::SetImage,
+            kind: "Deployment".into(),
+            namespace: "demo".into(),
+            name: "web".into(),
+            detail: "set image".into(),
+            severity: Severity::Info,
+        };
+        let tl = build_timeline(
+            &world,
+            &TimelineOpts {
+                scope: TimelineScope::Cluster,
+                filter: &NamespaceFilter::All,
+                window_min: TIMELINE_WINDOW_MIN,
+                cap: CLUSTER_CAP,
+            },
+            &[op],
+            now(),
+        );
+        assert!(
+            row_decisions(&tl, CLUSTER_CAP)
+                .iter()
+                .zip(&tl.entries)
+                .any(|(r, e)| r.suspect && e.kind == ChangeKind::Operator),
+            "an act cannot be the consequence of the failure it coincides with",
+        );
+
+        // An event-sourced change in the same second stays ambiguous.
+        let churn = ev_onset(
+            "Deployment",
+            "demo",
+            "web",
+            "ScalingReplicaSet",
+            false,
+            at.clone(),
+            at.clone(),
+        );
+        assert!(
+            !correlates(churn, at.clone(), at),
+            "a controller reacting in the same second may be the EFFECT",
+        );
+    }
+
+    /// The window's edges, which no test pinned before.
+    #[test]
+    fn the_correlation_window_boundaries_hold() {
+        let ft = ago(now(), 60);
+        let at = |secs_before: i64| {
+            ev_onset(
+                "Deployment",
+                "demo",
+                "web",
+                "ScalingReplicaSet",
+                false,
+                ago(now(), 60 + secs_before),
+                ago(now(), 60 + secs_before),
+            )
+        };
+        assert!(correlates(at(1), ago(now(), 61), ft.clone()), "d = 1");
+        assert!(correlates(at(600), ago(now(), 660), ft.clone()), "d = 600");
+        assert!(
+            !correlates(at(601), ago(now(), 661), ft),
+            "d = 601 is too old"
+        );
     }
 }

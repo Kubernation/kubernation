@@ -9,6 +9,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **A deploy and the failure it caused in the same second are now connected.**
+  Kubernetes timestamps only go down to the second and a kubelet rejects a bad
+  image immediately, so the two routinely land together — and the rule required a
+  gap of at least one second, silently dropping the most common incident there
+  is. Measured across four induced rollouts, half sat at exactly zero. A rollout
+  or an action you took is now treated as a precursor even at the same instant; a
+  passively-observed change is not, since at the same instant it may just as
+  easily be the failure's *consequence*.
+- **A repeating change is now correlated from when it started**, not from the last
+  time it was seen. A scaling event that had been recurring since before a failure
+  could be measured from its most recent repeat and land on the wrong side of it.
 - **"Trouble begins here" now marks when the incident began**, not when the app
   last saw the oldest long-running failure. If anything in view had been failing
   for hours or days, it kept refreshing its own timestamp and stole the marker —

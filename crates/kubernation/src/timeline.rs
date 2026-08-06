@@ -543,6 +543,14 @@ mod tests {
                 ago(60 + 30 * 60),
                 "old-deploy",
             ),
+            // An OBSERVATION at the same instant, for contrast with the act.
+            entry(
+                ChangeKind::Scale,
+                Severity::Info,
+                false,
+                ago(60),
+                "same-instant-scale",
+            ),
         ];
         let lines = annals_lines(&tl(entries, ago(60)), now(), 100);
         let suspect = |k: &str| {
@@ -554,11 +562,24 @@ mod tests {
         };
         assert!(suspect("recent-deploy"));
         assert!(!suspect("old-deploy"));
-        assert!(
-            !suspect("same-instant"),
-            "a change at the failure instant isn't a precursor"
-        );
         assert!(!suspect("boom"), "the failure itself is not a suspect");
+
+        // CHANGED by T-fix-2, and strengthened rather than relaxed. This used to
+        // assert that NO change at the failure instant is a precursor. Event
+        // timestamps are second-granularity and a kubelet fails an image pull
+        // immediately, so that blanket rule dropped the canonical incident —
+        // measured live at d == 0 between an RS creation and its
+        // ImagePullBackOff. A deploy cannot be caused by a failure it precedes,
+        // so at d == 0 an ACT is either the cause or unrelated; an OBSERVATION
+        // may be the failure's effect and stays excluded.
+        assert!(
+            suspect("same-instant"),
+            "an act in the failure's second is a precursor, not a coincidence",
+        );
+        assert!(
+            !suspect("same-instant-scale"),
+            "an observation in the failure's second may be its EFFECT",
+        );
     }
 
     #[test]
@@ -636,5 +657,61 @@ mod tests {
         // A cap smaller than the cue must not panic or produce a negative width.
         let tiny = row_text("^", long, true, 3);
         assert!(tiny.ends_with(SUSPECT_CUE), "{tiny:?}");
+    }
+    /// What the screen shows is what was decided.
+    ///
+    /// `row_decisions` is the shared authority precisely so the Annals and the
+    /// exported postmortem cannot disagree, and both consume it today — so this
+    /// is near-tautological now and is exactly the point: it fails the moment a
+    /// refactor recomputes either side locally. T-fix-2 exists because a
+    /// comparison had one side changed and the other left behind.
+    #[test]
+    fn the_rendered_rows_carry_the_decisions_they_were_given() {
+        let entries = vec![
+            entry(
+                ChangeKind::Failure,
+                Severity::Critical,
+                false,
+                ago(60),
+                "boom",
+            ),
+            entry(
+                ChangeKind::Deploy,
+                Severity::Info,
+                false,
+                ago(90),
+                "rollout",
+            ),
+            entry(ChangeKind::Scale, Severity::Info, false, ago(120), "scaled"),
+            entry(
+                ChangeKind::PodChurn,
+                Severity::Info,
+                false,
+                ago(200),
+                "started",
+            ),
+            entry(
+                ChangeKind::Operator,
+                Severity::Info,
+                true,
+                ago(150),
+                "you did this",
+            ),
+        ];
+        let t = tl(entries, ago(60));
+        let decided = row_decisions(&t, 100);
+        let shown = annals_lines(&t, now(), 100);
+        assert_eq!(shown.len(), decided.len());
+        for (i, (l, d)) in shown.iter().zip(&decided).enumerate() {
+            assert_eq!(l.suspect, d.suspect, "row {i} disagrees on suspect");
+            assert_eq!(
+                l.fault_line_above, d.fault_line_above,
+                "row {i} disagrees on the fault line",
+            );
+        }
+        assert!(
+            decided.iter().any(|d| d.suspect),
+            "the fixture exercises it"
+        );
     }
 }
