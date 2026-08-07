@@ -1284,6 +1284,42 @@ pub fn draw_world(
             occupied.push(Rect::new(lx, ly - tm.height, tm.width, tm.height + 4.0));
             text_outline(&label, lx, ly, fs, PARCHMENT, HALO);
         }
+        // Region names, between the continent's and the provinces' in priority:
+        // a region is `pool ∩ zone`, one level inside the continent. Only under
+        // the Pool overlay, where the fill already groups them and the name is
+        // what turns an arbitrary hue into an identity.
+        if overlay == Overlay::Pool {
+            let names: Vec<&str> = cont
+                .provinces
+                .iter()
+                .map(|p| p.tile.pool.as_str())
+                .collect();
+            for (start, len) in pool_label_runs(&names) {
+                let first = &cont.provinces[start];
+                let last = &cont.provinces[start + len - 1];
+                let mid_y = f32::from(first.y + last.y + last.h) * 0.5;
+                let c = cam.to_land(f32::from(cont.x) + f32::from(cont.w) * 0.5, mid_y);
+                let label = ascii(&first.tile.pool);
+                let fs = 15.0 * label_scale(cam.zoom);
+                let tm = text_size(&label, fs);
+                // Do not print a name larger than the ground it names: at small
+                // zoom, or on a one-province region, the label would overhang
+                // into a neighbouring pool and claim it.
+                let run_px = (cam.to_land(0.0, f32::from(last.y + last.h)).y
+                    - cam.to_land(0.0, f32::from(first.y)).y)
+                    .abs();
+                let r = Rect::new(
+                    c.x - tm.width * 0.5,
+                    c.y - tm.height,
+                    tm.width,
+                    tm.height + 4.0,
+                );
+                if tm.height <= run_px && !rect_hits(r, &occupied) {
+                    occupied.push(r);
+                    text_outline(&label, r.x, c.y, fs, PARCHMENT, HALO);
+                }
+            }
+        }
         for prov in &cont.provinces {
             draw_province_features(prov, cam, &detail, coast, &mut occupied);
             // Cost view: a gold "idle" coin on a province whose node carries a lot
@@ -1462,6 +1498,47 @@ pub fn draw_blast(cam: &Camera, sw: &SceneWorld, blast: &BlastRadius) -> Option<
     let p = 1.0 + (t * 5.0).sin() * 0.15;
     stroke_diamond(sc, hw * 1.3 * p, hh * 1.3 * p, 3.0, CRIT);
     Some(targets.len())
+}
+
+/// The largest contiguous run of each pool down a column, as `(start, len)`.
+///
+/// PURE — unit-tested. One entry per distinct pool, in column order, with the
+/// unpooled sentinel skipped: an absence is not a region and must not be given
+/// a name on the map.
+///
+/// **One label per region, on its largest piece.** A region is `pool ∩ zone`,
+/// and A2's zone-wide ordinals let pools interleave, so a region can be in
+/// several pieces — measured on the churn fleet, 1 of 8 already is. Labelling
+/// every piece would read as several different regions; labelling the largest
+/// and letting the shared fill carry the rest is what an atlas does with an
+/// archipelago, and it is what §3.4.4 means by identity travelling in the colour.
+pub(crate) fn pool_label_runs(pools: &[&str]) -> Vec<(usize, usize)> {
+    use kubernation_core::state::model::DEFAULT_POOL;
+    // Longest run per pool, first-wins on ties so the choice is deterministic
+    // and does not flip between frames when two pieces are the same size.
+    let mut best: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
+    let mut i = 0;
+    while i < pools.len() {
+        let pool = pools[i];
+        let mut j = i;
+        while j < pools.len() && pools[j] == pool {
+            j += 1;
+        }
+        if pool != DEFAULT_POOL {
+            let run = (i, j - i);
+            best.entry(pool)
+                .and_modify(|cur| {
+                    if run.1 > cur.1 {
+                        *cur = run;
+                    }
+                })
+                .or_insert(run);
+        }
+        i = j;
+    }
+    let mut out: Vec<(usize, usize)> = best.into_values().collect();
+    out.sort_unstable();
+    out
 }
 
 /// The graticule: rules at slot boundaries, row numbers, and a column letter.
@@ -3573,5 +3650,30 @@ mod tests {
                 );
             }
         }
+    }
+    /// One label per region, on its largest piece, and never for an absence.
+    #[test]
+    fn pool_label_runs_picks_the_largest_piece_of_each_region() {
+        use kubernation_core::state::model::DEFAULT_POOL;
+        // `sys` is in two pieces (2 then 4); the label belongs on the longer.
+        let col = [
+            "sys", "sys", "burst", "burst", "burst", "sys", "sys", "sys", "sys",
+        ];
+        let runs = pool_label_runs(&col);
+        assert_eq!(
+            runs,
+            vec![(2, 3), (5, 4)],
+            "burst's run, then sys's LARGER run"
+        );
+
+        // Ties keep the first, so the choice cannot flip between frames.
+        let tie = ["a", "a", "b", "a", "a"];
+        assert_eq!(pool_label_runs(&tie), vec![(0, 2), (2, 1)]);
+
+        // An absence is not a region and gets no name on the map.
+        let with_gap = [DEFAULT_POOL, DEFAULT_POOL, "sys"];
+        assert_eq!(pool_label_runs(&with_gap), vec![(2, 1)]);
+        assert!(pool_label_runs(&[DEFAULT_POOL]).is_empty());
+        assert!(pool_label_runs(&[]).is_empty());
     }
 }

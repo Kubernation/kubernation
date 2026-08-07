@@ -3894,9 +3894,23 @@ what makes the interesting logic unit-testable without a cluster.
   scattered placement read as structure rather than disorder. Verified live:
   `sys . 30 nodes . 3 zones`, `t3.xlarge . 30 nodes . 2 zones`, `burst . 24
   nodes . 2 zones`, `mem . 16 nodes`. 450 core + 108 GUI tests; gui-smoke 55.
-  **Deferred:** pool-aware region *labels* drawn on the map itself (the
-  plan's "label" is read here as the panel naming, which is this codebase's
-  established pattern for exactly this).
+  **On-map region labels followed (v1.16.0)**, closing the item entirely. A
+  region is `pool ∩ zone`, and A2's zone-wide ordinals let pools interleave, so a
+  region can be in several pieces — **measured on the churn fleet, 1 of 8 already
+  is**. Pure `draw::pool_label_runs(&[&str]) -> Vec<(start, len)>` returns the
+  LARGEST run per pool, first-wins on ties so the choice cannot flip between
+  frames, skipping the unpooled sentinel (an absence is not a region and must not
+  be given a name on the map). **One label per region, on its largest piece** —
+  naming every piece would read as several different pools, whereas naming the
+  largest and letting the shared fill carry the rest is what an atlas does with
+  an archipelago, and is what §3.4.4 means by identity travelling in the colour.
+  Drawn in pass 2 between the continent label and the province features — a
+  region sits one level inside a continent — so it joins the existing `occupied`
+  de-confliction; and a label taller than the run it names is **skipped**, since
+  it would overhang into a neighbouring pool and appear to claim it. Verified
+  live: `sys` appears as three separately-named regions across columns A, B and C
+  — §3.4.4's "a pool across three AZs should render as three regions", on screen.
+  451 core + 109 GUI tests; gui-smoke 55.
 
 ## The pair (hot/warm)
 

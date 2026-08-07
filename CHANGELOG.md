@@ -43,6 +43,12 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   map could show you that a whole band of the fleet had been replaced without
   being able to say *which pool* — the grouping an operator actually acts on.
 
+  Each region is **named on the map** — a region being one pool within one zone.
+  Where a region has ended up in more than one piece (nodes are placed in
+  allocation order, so pools interleave as they grow), it is named once on its
+  largest piece and the shared colour carries the rest, the way an atlas labels
+  an archipelago; naming every piece would read as several different pools.
+
   A **POOLS legend** in the right column names each colour, largest pool first,
   with how many nodes and how many zones it spans — the colours are generated
   from the pool name, so they tell you two provinces belong together and only the
