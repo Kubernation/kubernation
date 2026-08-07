@@ -243,6 +243,11 @@ pub fn region_lines(
                     // The city sits on the tinted province — show its host node's
                     // strain / upkeep too, so the distinguisher isn't lost on the settlement.
                     lines.extend(grid_ref_line(p.reference.as_ref(), graticule));
+                    lines.extend(pool_line(
+                        &p.tile.pool,
+                        p.tile.pool_source,
+                        overlay == Overlay::Pool,
+                    ));
                     lines.extend(fresh_line(sw.fresh.get(&p.tile.name).copied(), new_ground));
                     if overlay == Overlay::Saturation {
                         lines.extend(saturation_lines(&p.tile.saturation));
@@ -382,6 +387,41 @@ pub fn draw_frame_note(on: bool) {
         text(ascii(line), 12.0, y, fs, crate::theme::GRATICULE_INK);
         y += fs * 1.35;
     }
+}
+
+/// PURE draw-decision fn: which nodepool holds this ground, and how that was
+/// determined.
+///
+/// The label half of the plan's "pool identity travels by colour and label".
+/// Both, not either: the colours are hashed hues with no natural order, so a
+/// reader can see that two provinces belong together without being able to name
+/// what they belong to. The colour groups; the label says what the group IS.
+///
+/// `pool_source` rides along for the same reason `metric_source` and `CostBasis`
+/// do — an `instance-type` pool merges pools the provider considers distinct,
+/// and a reader comparing two nodes deserves to know the grouping is inferred
+/// rather than declared.
+pub fn pool_line(
+    pool: &str,
+    source: kubernation_core::state::layout::PoolSource,
+    on: bool,
+) -> Option<(String, Color)> {
+    use kubernation_core::state::layout::PoolSource;
+    if !on {
+        return None;
+    }
+    // An unresolvable node is not a member of anything, and saying "pool
+    // unpooled" would dress the absence up as a name.
+    if pool == kubernation_core::state::model::DEFAULT_POOL {
+        return Some(("no nodepool label - not grouped".into(), STONE_INK_DIM));
+    }
+    let how = match source {
+        // A declared pool needs no caveat.
+        PoolSource::Override | PoolSource::Provider(_) => String::new(),
+        PoolSource::InstanceType => " (from instance type)".into(),
+        PoolSource::Default => " (inferred)".into(),
+    };
+    Some((format!("pool {pool}{how}"), STONE_STRUCT))
 }
 
 /// PURE draw-decision fn: the graticule reference for a position, e.g. `C4`.
@@ -1372,6 +1412,32 @@ mod tests {
             "fabricated a reference: {unknown:?}"
         );
         assert!(unknown.to_lowercase().contains("no durable"), "{unknown:?}");
+    }
+
+    /// The label half: names the pool, admits when the grouping was inferred,
+    /// and refuses to dress an absent label up as a name.
+    #[test]
+    fn the_pool_line_names_the_group_and_how_it_was_inferred() {
+        use kubernation_core::state::layout::PoolSource;
+        use kubernation_core::state::model::DEFAULT_POOL;
+
+        assert_eq!(pool_line("sys", PoolSource::Provider("eks"), false), None);
+
+        // A declared pool needs no caveat.
+        let (declared, _) = pool_line("sys", PoolSource::Provider("eks"), true).unwrap();
+        assert_eq!(declared, "pool sys");
+
+        // An inferred one says so: instance-type grouping merges pools the
+        // provider considers distinct, and a reader comparing two nodes has to
+        // know the grouping is a guess.
+        let (inferred, _) = pool_line("m5.large", PoolSource::InstanceType, true).unwrap();
+        assert!(inferred.contains("m5.large") && inferred.contains("instance type"));
+
+        // The sentinel is an ABSENCE, not a pool. "pool unpooled" would read as
+        // membership in something called unpooled.
+        let (none_at_all, _) = pool_line(DEFAULT_POOL, PoolSource::Default, true).unwrap();
+        assert!(!none_at_all.contains(DEFAULT_POOL), "{none_at_all:?}");
+        assert!(none_at_all.contains("not grouped"), "{none_at_all:?}");
     }
 
     /// Settled ground says nothing; fresh ground says something at every tier.

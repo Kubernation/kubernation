@@ -65,10 +65,13 @@ pub enum Overlay {
     /// DaemonSet coverage — nodes missing infrastructure the rest of the fleet
     /// has. Deliberately NOT kubelet pressure: `Saturation` already renders that.
     Substrate,
+    /// Which nodepool holds this ground — the plan's `region ← pool ∩ zone`,
+    /// carried by colour rather than by contiguity.
+    Pool,
 }
 
 impl Overlay {
-    pub const ALL: [Overlay; 8] = [
+    pub const ALL: [Overlay; 9] = [
         Overlay::Terrain,
         Overlay::Pressure,
         Overlay::Replicas,
@@ -77,6 +80,7 @@ impl Overlay {
         Overlay::Saturation,
         Overlay::Cost,
         Overlay::Substrate,
+        Overlay::Pool,
     ];
 
     /// Short label for the chrome / menu radio — the persisted / `--overlay`
@@ -91,6 +95,7 @@ impl Overlay {
             Overlay::Saturation => "saturation",
             Overlay::Cost => "cost",
             Overlay::Substrate => "substrate",
+            Overlay::Pool => "pool",
         }
     }
 }
@@ -417,6 +422,11 @@ fn overlay_pair(overlay: Overlay, prov: &Province, data: OverlayData) -> (Color,
                 _ => heat_pair(2),
             })
             .unwrap_or_else(|| iso_terrain_pair(prov.tile.health)),
+        // A political map of the fleet's own structure. Zone stays primary —
+        // it is the failure domain, and it is what the columns already are — so
+        // a pool spanning three zones renders as three regions rather than one
+        // shape, which is the truth a zone outage makes matter.
+        Overlay::Pool => pool_pair(&prov.tile.pool),
     }
 }
 
@@ -431,6 +441,10 @@ fn overlay_flat(overlay: Overlay, prov: &Province) -> Color {
         Overlay::Terrain | Overlay::Coverage | Overlay::Cost | Overlay::Substrate => {
             terrain(prov.tile.health)
         }
+        // Pool DOES reach the minimap: it reads from the tile the minimap
+        // already has, unlike walls/cost/substrate whose data is not threaded
+        // there. A fleet's pool structure is exactly the kind of thing an
+        // overview should show.
         _ => overlay_pair(overlay, prov, OverlayData::default()).1,
     }
 }

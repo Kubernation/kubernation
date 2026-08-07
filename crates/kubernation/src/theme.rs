@@ -398,6 +398,35 @@ pub fn namespace_pair(ns: &str) -> (Color, Color) {
     (hsv(hue, 0.42, 0.52), hsv(hue, 0.42, 0.60))
 }
 
+/// Stable land pair for a nodepool — the plan's "pool identity travels by colour
+/// and label, not contiguity".
+///
+/// The same stable-hue trick `namespace_pair` uses, and for the same reason:
+/// pools have no natural order or count, so any fixed palette either runs out or
+/// implies a ranking. Hashing the name gives every pool a colour that is
+/// arbitrary but *consistent* — the same pool is the same colour across zones,
+/// across restarts, and across clusters that share a naming convention.
+///
+/// **The unpooled sentinel gets no hue.** A node whose pool could not be
+/// resolved is not a member of anything, and giving it a colour beside real
+/// pools would assert a grouping the cascade explicitly refused to invent. It
+/// recedes to idle land, the same treatment cost and substrate give ground with
+/// nothing to report.
+///
+/// Deliberately NOT in the `cb_*` funnel, like `namespace_pair`: these are
+/// categorical identity colours, not a severity ramp, so remapping one axis of
+/// them would not make the set more distinguishable — the honest fix for that is
+/// the label beside the colour, which is why the plan asks for both.
+pub fn pool_pair(pool: &str) -> (Color, Color) {
+    if pool == kubernation_core::state::model::DEFAULT_POOL {
+        return idle_land_pair();
+    }
+    // Offset from the namespace hue so a pool and a namespace of the same name
+    // do not land on the same colour in two different overlays.
+    let hue = ((fnv1a64(pool) / 7) % 360) as f32;
+    (hsv(hue, 0.38, 0.50), hsv(hue, 0.38, 0.58))
+}
+
 /// Minimal HSV→RGB (h in [0,360), s/v in [0,1]) for the namespace palette.
 fn hsv(h: f32, s: f32, v: f32) -> Color {
     let c = v * s;
@@ -558,6 +587,29 @@ mod tests {
         // (Red CRIT + amber WARN are consts — untouched in both modes by design.)
 
         set_colorblind(false); // reset for the rest of the suite
+    }
+
+    /// Pool colours are stable and the unpooled sentinel is NOT one of them.
+    #[test]
+    fn pool_colours_are_stable_and_the_unpooled_get_none() {
+        use kubernation_core::state::model::DEFAULT_POOL;
+        let a = pool_pair("sys").0;
+        assert_eq!(a, pool_pair("sys").0, "same pool, same colour, every frame");
+        assert_ne!(
+            a,
+            pool_pair("burst").0,
+            "different pools are distinguishable"
+        );
+
+        // Not a member of anything: it recedes rather than joining the palette.
+        assert_eq!(pool_pair(DEFAULT_POOL), idle_land_pair());
+        for p in ["sys", "burst", "mem", "t3.xlarge"] {
+            assert_ne!(
+                pool_pair(p),
+                idle_land_pair(),
+                "{p} is a real pool and must not look unpooled",
+            );
+        }
     }
 
     #[test]

@@ -150,7 +150,13 @@ pub fn draw_node(
 
     // --- Status band ------------------------------------------------------
     let mut y = b.y + 6.0;
-    let zone_line = format!("province of {}", t.zone);
+    // Pool beside zone: both are standing facts about where this node belongs,
+    // and once you have drilled in they are worth having without needing the
+    // right overlay turned on — the same argument `substrate_lines` makes.
+    let zone_line = match crate::panels::pool_line(&t.pool, t.pool_source, true) {
+        Some((p, _)) => format!("province of {} . {p}", t.zone),
+        None => format!("province of {}", t.zone),
+    };
     text(zone_line.as_str(), b.x, y + 12.0, 14.0, PARCHMENT);
     let (hword, hcol) = match t.health {
         NodeHealth::Healthy => ("healthy", INK),

@@ -50,6 +50,7 @@ STATES=(
   "overlay-walls|--overlay walls"
   "overlay-saturation|--overlay saturation"
   "overlay-cost|--overlay cost"
+  "overlay-pool|--overlay pool"
   "new-ground-since|--changed-since 60"
   "overlay-substrate|--overlay substrate"
   "map-style-relief|--map-style relief"

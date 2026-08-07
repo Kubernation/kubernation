@@ -36,6 +36,18 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   after the map sends you somewhere. The wording is also one string now; two of
   the three places that drew it had drifted apart.
 
+### Added
+- **Nodepools are now visible on the map** — *View ▸ Pool (nodepools)* tints each
+  province by the pool that holds it, and the panel names it; a province's own
+  window shows its pool beside its zone whichever view you are in. Until now the
+  map could show you that a whole band of the fleet had been replaced without
+  being able to say *which pool* — the grouping an operator actually acts on.
+
+  A pool spanning three zones deliberately reads as three regions rather than one
+  shape: zone stays primary because zone is the failure domain, so a zone outage
+  takes exactly one of them. A node with no pool label recedes instead of being
+  given a colour, since it is not a member of anything.
+
 ### Changed
 - **Ground that changed hands is marked by one setting with two modes** —
   *View ▸ NEW GROUND*. **Fading** lets go, decaying over a window, which is what

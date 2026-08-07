@@ -484,6 +484,9 @@ fn page_world(cx: &mut Ctx) {
     cx.para(
         "An attention queue surfaces what needs focus and parks your cursor on it: 4X's \"next unit needing orders\", not a wall of dashboards.",
     );
+    cx.para(
+        "Nodes also belong to a NODEPOOL, and a pool spanning three zones is normal. Zone stays primary - it is the failure domain, and it is what the columns are - so such a pool reads as three regions rather than one shape, which is the truth a zone outage makes matter. Pool identity travels by COLOUR and LABEL rather than by position: View \u{25b8} Pool tints each province by its pool, and the panel names it. A node with no pool label is not a member of anything and recedes rather than joining the palette.",
+    );
     cx.heading("Ground that changed hands");
     cx.para(
         "A province keeps its place on the map for as long as the cluster keeps a node there — replacing a node does not move the world around it. That stability is what makes the two exceptions below worth noticing.",

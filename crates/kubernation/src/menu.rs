@@ -215,6 +215,8 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                     MenuAction::SetOverlay(Overlay::Substrate),
                 )
                 .check(ctx.overlay == Overlay::Substrate),
+                Item::act("Pool (nodepools)", MenuAction::SetOverlay(Overlay::Pool))
+                    .check(ctx.overlay == Overlay::Pool),
                 Item::sep(),
                 Item::header("MAP STYLE"),
                 Item::act(

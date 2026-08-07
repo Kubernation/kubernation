@@ -3840,6 +3840,52 @@ what makes the interesting logic unit-testable without a cluster.
   map is zone-shaped. **Process note:** the v1.12.0 commit shipped without its
   CHANGELOG entry (a silent failed edit, unverified); superseded by v1.13.0's.
 
+- **`region ← pool ∩ zone` settled — pools by colour and label** (2026-08-06,
+  **v1.14.0**, user "let's settle region ← pool ∩ zone next"): the item deferred
+  since A2, flagged again by A6 and measured as a real gap by T1's gate.
+  **It turned out to be already decided upstream, and the work was to build the
+  decision rather than make it.** `kubernation-enabling-plan.md` §3.4.4: *"Zone
+  stays primary, because zone is the failure domain. A pool across three AZs
+  should render as three regions — a zone outage takes exactly one of them...
+  **Pool identity travels by colour and label, not contiguity.**"* Verified by
+  reading the plan rather than the A6 guidance's one-line summary of it, per the
+  inherited-claim lesson; the summary was accurate. **So `region ← pool ∩ zone`
+  never demanded spatial contiguity**, and A2's zone-wide ordinals — chosen to
+  make the pool-blind collision unrepresentable — were compatible with it all
+  along. What was missing was simply that pool identity **was not rendered at
+  all**: `NodeTile.pool`/`pool_source` have existed since A1, and the only
+  consumer was the `--dump-positions` dev flag. That is precisely the gap T1's
+  gate measured — the map could not say "the sys pool was replaced" while the
+  Annals could, because node names carry the pool and the map carried it nowhere.
+  **Shipped:** `theme::pool_pair` (a stable hashed hue, the `namespace_pair`
+  precedent, offset so a pool and a namespace of the same name differ), a 9th
+  `Overlay::Pool`, `panels::pool_line` (the label half — names the pool AND
+  whether the grouping was declared or inferred, the `metric_source`/`CostBasis`
+  discipline, since an instance-type pool merges pools the provider considers
+  distinct), the pool beside the zone in the province window under **every**
+  overlay (a standing node fact, the `substrate_lines` argument), and a menu
+  entry. **The unpooled sentinel gets no hue** — it recedes to idle land, because
+  a node whose pool could not be resolved is not a member of anything and giving
+  it a colour beside real pools would assert the grouping the cascade explicitly
+  refused to invent; `pool_line` likewise says "no nodepool label - not grouped"
+  rather than "pool unpooled", which would dress an absence up as a name.
+  **The overlay reaches the minimap**, unlike walls/cost/substrate, because it
+  reads from the `NodeTile` the minimap already holds — and a fleet's pool
+  structure is exactly what an overview should show. **A contradiction inside the
+  plan, now settled:** its original hierarchy (§ around 110) says `province ←
+  ordinal in pool`, but §3.4.4 says identity travels by colour not contiguity,
+  and A2 implemented zone-wide ordinals for a documented CRITICAL reason (per-pool
+  numbering hid 42 of 100 nodes). §3.4.4 wins; §110's per-pool ordinal is
+  superseded and should not be re-opened as a numbering change. Verified live on
+  the 4-pool churn fleet: four distinct colours, the same pool appearing in
+  several columns (three regions, as §3.4.4 predicts), the minimap carrying the
+  structure, and the province window reading `province of z-a . pool sys`.
+  449 core + 106 GUI tests; gui-smoke 55. **Deferred:** a pool legend (the hues
+  are arbitrary, so the label carries naming — a legend would help on a
+  many-pool fleet); pool-aware region *labels* drawn on the map itself (the
+  plan's "label" is read here as the panel naming, which is this codebase's
+  established pattern for exactly this).
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form
