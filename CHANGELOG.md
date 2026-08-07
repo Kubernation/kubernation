@@ -36,6 +36,22 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   after the map sends you somewhere. The wording is also one string now; two of
   the three places that drew it had drifted apart.
 
+### Changed
+- **Ground that changed hands is marked by one setting with two modes** —
+  *View ▸ NEW GROUND*. **Fading** lets go, decaying over a window, which is what
+  makes a rolling refresh read as a wave crossing the fleet. **Since** holds
+  instead: pick a moment, and every change of hands from then on stays marked
+  until you move it. Fading answers *how recently*; since answers *whether, from
+  a point you fixed*. Use the second when an investigation outlasts the window.
+  `--changed-since N` selects since, `--fresh-minutes N` fading; a baseline
+  belongs to the session you set it in and is not remembered between runs.
+
+  This replaces a separate "changed" map view built earlier in the same
+  unreleased cycle. On our own evaluation it marked the same ground the ageing
+  marks already did — the only thing it added was reach, and reach is a setting
+  on the window too. One fact now has one colour, one setting and one panel line
+  instead of two of each.
+
 ### Added
 - **A position on the map can now be named.** *View ▸ Reference frame* (or
   `--graticule`) draws a letter per zone and a number per slot, so a province is

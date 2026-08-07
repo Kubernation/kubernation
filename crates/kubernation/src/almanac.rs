@@ -492,10 +492,16 @@ fn page_world(cx: &mut Ctx) {
         "Warm ochre ground (steel blue under the colour-blind palette) is NEW: a different node now holds ground its predecessor held. It fades through three steps back to ordinary terrain, so a rolling refresh reads as a wave crossing the fleet. Select the province and the panel says how recently.",
     );
     cx.para(
+        "SINCE holds instead of fading: pick a moment and every change of hands from then on stays marked until you move it. That is the difference - fading answers how recently, since answers whether, from a point you fixed. Use it when an investigation outlasts the window. A baseline is not remembered between runs; it belongs to the session you set it in.",
+    );
+    cx.para(
         "Plain grey ground is EMPTY: a node departed and nothing has claimed its place. The ground is kept rather than closed up, so a returning node lands where it was. Game ▸ Reclaim empty ground removes it when you decide it isn't coming back.",
     );
     cx.para(
-        "Ageing is measured against a window you set — View ▸ AGEING WINDOW, or --fresh-minutes. Set it near your refresh cadence: much longer and everything stays marked, much shorter and the wave is gone before you look.",
+        "How long it stays marked is ONE setting with two modes — View ▸ NEW GROUND. FADING lets go: the mark decays over a window you set, which is what makes a refresh read as a wave. Set it near your refresh cadence — much longer and everything stays marked at once, much shorter and the wave passes before you look.",
+    );
+    cx.para(
+        "SINCE holds instead. Pick a moment and every change of hands from then on stays marked until you move it. Fading answers HOW RECENTLY and forgets; since answers WHETHER, from a point you fixed, and does not. Use it when an investigation outlasts the window. A baseline belongs to the session you set it in and is not remembered between runs.",
     );
     cx.heading("Naming a position");
     cx.para(

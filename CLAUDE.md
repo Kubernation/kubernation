@@ -3797,6 +3797,49 @@ what makes the interesting logic unit-testable without a cluster.
   capturable headlessly — no dev flag drives a hover — so it is covered by a test
   through the real `region_lines` rather than by a screenshot.
 
+- **T1 — change-since, gated NEGATIVE, then merged into A5** (2026-08-06,
+  **v1.12.0** then **v1.13.0**; from `kubernation-t1-change-since-guidance.md`,
+  reports in `docs/reports/t1-change-since.md`): Workstream T's kill point. Built
+  as a separate `Overlay::Changed`, gated, **failed its own discrimination
+  check**, and was then merged into A5's fresh ground at the user's direction.
+  **All 11 §0 claims verified**; §1's premise that T0 was unreported is FALSE
+  (`62101a7`), and T0's answer chose the axis — the layout persists `occupied_at`,
+  the only persisted per-entity change timestamp, so the occupant baseline can
+  precede app launch. **The gate, on the strongest available case** (18
+  successions, 100% in one pool, 6/6/6 across three zones, one clean): against the
+  Annals **mixed** — the map shows what did NOT change and is immune to the list's
+  80-entry cap amid 970 events, but node names carry the pool, so the list states
+  "the sys pool was replaced" directly, the operationally meaningful grouping the
+  map **cannot express** because its geography is zone-organised; the contiguous
+  stripes it did show are incidental, since pools are contiguous only by
+  allocation order (A2 gave that up, A6 left `region ← pool ∩ zone` unclaimed).
+  Against **the map's own feature: negative** — §4.1's check measured 288,027
+  violet px with the overlay on versus 292,811 ochre px of A5's fresh ground with
+  it off, the same provinces within 2%; a control (fresh ground disabled, T1 still
+  288,027) rules out bleed-through. T1's only gain was **reach**, and reach is
+  already a setting on the ageing window. **The merge (v1.13.0):**
+  `NewGround{Off, Fading(Duration), Since(SystemTime)}` with one `mark()` entry
+  point composing the two existing predicates (`freshness`, `changed_since`), ONE
+  net slot, ONE per-tick map, ONE colour channel, ONE menu radio (View ▸ NEW
+  GROUND, nine choices under two mode labels), ONE panel line that names the mode.
+  `Overlay::Changed`, the violet palette, `OverlayData.changed`,
+  `WorldSnap.changed` and `changed_line` all deleted — the phase is net removal.
+  **A `Since` baseline is an INSTANT, captured at click time**: a stored duration
+  would slide with the clock and silently become the fading mode. It is
+  deliberately not persisted (a baseline belongs to one investigation); only the
+  fading window is. **The merge also removed the need for T1's three-state
+  honesty**: a single channel makes one positive claim, so "no succession on
+  record" needs no colour of its own — where the separate overlay painted
+  "unchanged" and therefore had to distinguish it. Verified live on the churn
+  fleet: identical ground, fading 5 min marks **0 px** while since-24 h marks
+  **287,806** — opposite answers on the same data, which is the divergence that
+  earns the second mode. 449 core + 104 GUI tests; gui-smoke 54. **The workstream
+  thesis is NOT refuted** — the map does show what did not change — but a new
+  overlay was not the way to get it. **Deferred, and now load-bearing for T2:**
+  `region ← pool ∩ zone`, since the gate showed change is pool-shaped while the
+  map is zone-shaped. **Process note:** the v1.12.0 commit shipped without its
+  CHANGELOG entry (a silent failed edit, unverified); superseded by v1.13.0's.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

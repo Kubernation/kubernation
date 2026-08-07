@@ -1,7 +1,7 @@
 # T1 — change-since, and the gate's answer
 
 **Phase:** T1, from `kubernation-t1-change-since-guidance.md` — **the kill point**
-**Version:** v1.12.0 · **Date:** 2026-08-06
+**Version:** v1.12.0, superseded by **v1.13.0** (the merge) · **Date:** 2026-08-06
 **Gate verdict: MIXED against the Annals, and NEGATIVE against the map's own
 existing feature.** §4.1's discrimination check fails. Recommendation in §5.
 
@@ -212,3 +212,34 @@ is the assumption that a *new overlay* was the way to get it.
 The code is committed and off by default, so the decision is reversible in either
 direction — keeping it costs nothing, and merging it into A5 is a smaller change
 from here than from scratch.
+
+---
+
+## 6. Outcome: merged (v1.13.0)
+
+Recommendation 1 was taken. A5's fresh ground gained a fixable baseline, and the
+separate overlay was removed.
+
+`NewGround { Off, Fading(Duration), Since(SystemTime) }` has one `mark()` entry
+point composing the two predicates that already existed. One net slot, one
+per-tick map, one colour channel, one menu radio, one panel line. Deleted:
+`Overlay::Changed`, `changed_land_pair`, `OverlayData.changed`,
+`WorldSnap.changed`, `changed_line`. The phase is net removal.
+
+Two things the merge bought that the separate feature could not:
+
+**The three-state honesty became unnecessary.** T1 painted "unchanged" as its own
+colour, which forced a third state to keep "no succession on record" from reading
+as a positive all-clear. A single channel makes one positive claim, so unmarked
+ground needs no explanation — it means the map is not claiming anything. Pinned by
+`unknown_ground_is_never_marked_in_either_mode`.
+
+**The divergence is now visible in one setting.** Verified live on identical
+ground: *fading 5 min* marks 0 px (it let go — the successions are 23 h old),
+*since 24 h ago* marks 287,806 px (it holds). Opposite answers on the same data,
+which is exactly what justifies keeping the second mode and nothing more.
+
+A `Since` baseline is captured as an **instant** at click time and is not
+persisted — a stored duration would slide with the clock and silently become the
+fading mode, and a restored baseline would answer a question about a different
+afternoon.

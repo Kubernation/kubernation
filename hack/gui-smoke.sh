@@ -50,7 +50,7 @@ STATES=(
   "overlay-walls|--overlay walls"
   "overlay-saturation|--overlay saturation"
   "overlay-cost|--overlay cost"
-  "overlay-changed|--overlay changed --changed-since 60"
+  "new-ground-since|--changed-since 60"
   "overlay-substrate|--overlay substrate"
   "map-style-relief|--map-style relief"
   "hover-province|--hover 10,6"

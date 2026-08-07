@@ -297,31 +297,6 @@ pub fn ghost_land_pair() -> (Color, Color) {
     )
 }
 
-/// Ground that changed hands since the chosen baseline.
-///
-/// A violet, deliberately outside every family already in use: ochre is A5's
-/// fresh ground, bronze is upkeep, amber/red is heat, cyan is structures, grey
-/// is ghost ground. The two occupant-change marks must never be mistaken for
-/// each other, and violet is the only unclaimed hue left.
-///
-/// Routed through the colour-blind funnel because this IS instrumentation — it
-/// encodes cluster state, unlike the graticule. Under that palette it shifts to
-/// a saturated teal, which stays clear of the steel blue A5's fresh ground uses
-/// there; `changed_is_distinct_from_fresh_in_both_palettes` pins the gap.
-pub fn changed_land_pair() -> (Color, Color) {
-    if colorblind() {
-        (
-            Color::new(0.10, 0.52, 0.50, 1.0),
-            Color::new(0.14, 0.60, 0.57, 1.0),
-        )
-    } else {
-        (
-            Color::new(0.46, 0.26, 0.60, 1.0),
-            Color::new(0.53, 0.31, 0.68, 1.0),
-        )
-    }
-}
-
 /// The graticule — rules, row numbers and column letters.
 ///
 /// **Scenery, not instrumentation.** It encodes no cluster state, so unlike
@@ -650,32 +625,6 @@ mod fresh_tests {
     /// Quantisation is deterministic and actually quantises: the same inputs
     /// give the same step, and a range of freshness values collapses to exactly
     /// `FRESH_STEPS` distinct colours rather than a smooth ramp.
-    /// §3.2: the two occupant-change marks must never be mistaken for each other.
-    ///
-    /// Asserted, not eyeballed. They answer different questions about the same
-    /// field, so if they looked alike the map would be showing one fact twice in
-    /// two colours and the operator could not tell which was speaking.
-    #[test]
-    fn changed_is_distinct_from_fresh_in_both_palettes() {
-        let _palette = super::palette_guard();
-        for cb in [false, true] {
-            set_colorblind(cb);
-            let changed = changed_land_pair().0;
-            // Every tier of fresh ground, not just its brightest.
-            for step in 1..=FRESH_STEPS {
-                let f = fresh_land_pair(f64::from(step) / f64::from(FRESH_STEPS), FRESH_STEPS).0;
-                assert!(
-                    far(changed, f) > 0.30,
-                    "colorblind={cb}: changed-since is too close to fresh tier {step}",
-                );
-            }
-            // And from the two neutrals it shares the map with.
-            assert!(far(changed, idle_land_pair().0) > 0.30, "vs idle land");
-            assert!(far(changed, ghost_land_pair().0) > 0.30, "vs ghost ground");
-        }
-        set_colorblind(false);
-    }
-
     #[test]
     fn ageing_is_quantised_into_distinct_steps() {
         let _palette = super::palette_guard();

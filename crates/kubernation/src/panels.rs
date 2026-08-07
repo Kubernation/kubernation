@@ -153,6 +153,7 @@ pub fn region_lines(
     snap: &Snapshot,
     overlay: Overlay,
     graticule: bool,
+    new_ground: kubernation_core::state::layout::NewGround,
 ) -> Vec<(String, Color)> {
     let paired = snap.warm.is_some();
     let mut lines: Vec<(String, Color)> = Vec::new();
@@ -242,11 +243,7 @@ pub fn region_lines(
                     // The city sits on the tinted province — show its host node's
                     // strain / upkeep too, so the distinguisher isn't lost on the settlement.
                     lines.extend(grid_ref_line(p.reference.as_ref(), graticule));
-                    lines.extend(changed_line(
-                        sw.changed.get(&p.tile.name).copied(),
-                        overlay == Overlay::Changed,
-                    ));
-                    lines.extend(fresh_line(sw.fresh.get(&p.tile.name).copied()));
+                    lines.extend(fresh_line(sw.fresh.get(&p.tile.name).copied(), new_ground));
                     if overlay == Overlay::Saturation {
                         lines.extend(saturation_lines(&p.tile.saturation));
                     }
@@ -277,13 +274,9 @@ pub fn region_lines(
                     // How to say where this is. First, because a reference is
                     // what you write down or read out before anything else.
                     lines.extend(grid_ref_line(p.reference.as_ref(), graticule));
-                    lines.extend(changed_line(
-                        sw.changed.get(&p.tile.name).copied(),
-                        overlay == Overlay::Changed,
-                    ));
                     // Ungated, unlike the three below: fresh ground is tinted under
                     // every overlay, so its explanation must be too.
-                    lines.extend(fresh_line(sw.fresh.get(&p.tile.name).copied()));
+                    lines.extend(fresh_line(sw.fresh.get(&p.tile.name).copied(), new_ground));
                     // Under the Saturation overlay, name the binding strain
                     // dimension(s) — the distinguisher the Pressure overlay lacks.
                     if overlay == Overlay::Saturation {
@@ -391,35 +384,6 @@ pub fn draw_frame_note(on: bool) {
     }
 }
 
-/// PURE draw-decision fn: what the Changed overlay is saying about a province.
-///
-/// The panel half, by the standard the substrate round set: the overlay says
-/// WHICH ground, so something must say WHAT — or the map raises a question it
-/// cannot answer and the operator leaves for `kubectl`.
-///
-/// Only under its own overlay, unlike the fresh-ground line: change-since
-/// recolours nothing elsewhere, so there is nothing elsewhere to explain.
-///
-/// The three states are said in three different ways on purpose. "Unknown" is
-/// not silence and not "unchanged" — the map has no succession record for that
-/// ground, which is a different statement from "nothing happened here".
-pub fn changed_line(
-    verdict: Option<kubernation_core::state::layout::ChangeSince>,
-    on: bool,
-) -> Option<(String, Color)> {
-    use kubernation_core::state::layout::ChangeSince;
-    if !on {
-        return None;
-    }
-    Some(match verdict {
-        Some(ChangeSince::Changed) => ("changed hands since the baseline".into(), STONE_STRUCT),
-        Some(ChangeSince::Unchanged) => ("same node as at the baseline".into(), STONE_INK_DIM),
-        // Said out loud: a blank here would read as "unchanged", which is
-        // exactly the claim the record cannot support.
-        _ => ("no succession on record".into(), STONE_INK_DIM),
-    })
-}
-
 /// PURE draw-decision fn: the graticule reference for a position, e.g. `C4`.
 ///
 /// Shown only while the frame is drawn. That gating is deliberate and is what
@@ -457,16 +421,30 @@ pub fn grid_ref_line(
 ///
 /// The wording is bucketed by `theme::fresh_tier` — the SAME authority the
 /// colour uses — so the words and the paint cannot describe different ages.
-pub fn fresh_line(freshness: Option<f64>) -> Option<(String, Color)> {
+///
+/// It also has to say WHICH question is being answered. The two modes make
+/// different claims about the same tint: fading says *how recently*, since says
+/// *whether, against a moment you fixed*. A single wording for both would let
+/// the panel imply a recency the since mode never measured.
+pub fn fresh_line(
+    freshness: Option<f64>,
+    mode: kubernation_core::state::layout::NewGround,
+) -> Option<(String, Color)> {
+    use kubernation_core::state::layout::NewGround;
     let f = freshness?;
-    let tier = crate::theme::fresh_tier(f, crate::theme::FRESH_STEPS);
-    // Deliberately relative, not a timestamp: freshness is a fraction of the
-    // ageing window, and reconstructing a duration from it would state a
-    // precision the fraction doesn't carry.
-    let words = match tier {
-        3 => "new ground . just changed hands",
-        2 => "new ground . changed hands recently",
-        _ => "new ground . settling",
+    let words = match mode {
+        NewGround::Off => return None,
+        // A fixed baseline does not decay, so there is no age to report — only
+        // that this ground is on the changed side of the line.
+        NewGround::Since(_) => "new ground . changed since the baseline",
+        // Deliberately relative, not a timestamp: freshness is a fraction of the
+        // ageing window, and reconstructing a duration from it would state a
+        // precision the fraction doesn't carry.
+        NewGround::Fading(_) => match crate::theme::fresh_tier(f, crate::theme::FRESH_STEPS) {
+            3 => "new ground . just changed hands",
+            2 => "new ground . changed hands recently",
+            _ => "new ground . settling",
+        },
     };
     Some((words.into(), STONE_INK_DIM))
 }
@@ -534,9 +512,10 @@ pub fn draw_tooltip(
     snap: &Snapshot,
     overlay: Overlay,
     graticule: bool,
+    new_ground: kubernation_core::state::layout::NewGround,
     mouse: Vec2,
 ) {
-    let lines = region_lines(sw, local, snap, overlay, graticule);
+    let lines = region_lines(sw, local, snap, overlay, graticule, new_ground);
     if lines.is_empty() {
         return;
     }
@@ -1326,6 +1305,7 @@ mod tests {
     use crate::draw::scene;
     use crate::net::{Snapshot, WorldSnap};
     use kubernation_core::state::fixtures as fx;
+    use kubernation_core::state::layout::NewGround;
     use kubernation_core::state::model::Models;
     use std::sync::Arc;
 
@@ -1394,29 +1374,6 @@ mod tests {
         assert!(unknown.to_lowercase().contains("no durable"), "{unknown:?}");
     }
 
-    /// The overlay and the panel must agree, and "unknown" must be said out loud.
-    #[test]
-    fn the_changed_line_says_which_of_three_states_it_is() {
-        use kubernation_core::state::layout::ChangeSince;
-        // Off: the overlay recolours nothing elsewhere, so nothing to explain.
-        assert_eq!(changed_line(Some(ChangeSince::Changed), false), None);
-        assert_eq!(changed_line(None, false), None);
-
-        let say = |v| {
-            changed_line(v, true)
-                .expect("under its own overlay it speaks")
-                .0
-        };
-        let changed = say(Some(ChangeSince::Changed));
-        let unchanged = say(Some(ChangeSince::Unchanged));
-        let unknown = say(None);
-        assert!(changed.contains("changed"), "{changed:?}");
-        assert_ne!(changed, unchanged);
-        // The load-bearing one: no record is not the same sentence as no change.
-        assert_ne!(unknown, unchanged, "unknown must not read as unchanged");
-        assert!(unknown.contains("no succession"), "{unknown:?}");
-    }
-
     /// Settled ground says nothing; fresh ground says something at every tier.
     ///
     /// The load-bearing half is the second assertion: the words must change at
@@ -1426,10 +1383,24 @@ mod tests {
     /// hands" while the panel called it "settling", and nothing else would fail.
     #[test]
     fn fresh_wording_changes_where_the_colour_does() {
-        assert!(fresh_line(None).is_none(), "settled ground says nothing");
+        assert!(
+            fresh_line(
+                None,
+                NewGround::Fading(std::time::Duration::from_secs(3600))
+            )
+            .is_none(),
+            "settled ground says nothing"
+        );
 
         // Every tier produces a line, and adjacent tiers produce different ones.
-        let at = |f: f64| fresh_line(Some(f)).expect("fresh ground speaks").0;
+        let at = |f: f64| {
+            fresh_line(
+                Some(f),
+                NewGround::Fading(std::time::Duration::from_secs(3600)),
+            )
+            .expect("fresh ground speaks")
+            .0
+        };
         let (newest, middle, oldest) = (at(1.0), at(0.5), at(0.01));
         assert_ne!(newest, middle);
         assert_ne!(middle, oldest);
@@ -1485,14 +1456,20 @@ mod tests {
                 cost,
                 opencost_note: None,
                 fresh: Arc::new(std::collections::HashMap::new()),
-                changed: Arc::new(std::collections::HashMap::new()),
             },
             warm: None,
             pair: None,
             attention: Arc::new(Vec::new()),
         };
         let worlds = scene(&snap);
-        let lines = region_lines(&worlds[0], (cx, cy), &snap, Overlay::Terrain, false);
+        let lines = region_lines(
+            &worlds[0],
+            (cx, cy),
+            &snap,
+            Overlay::Terrain,
+            false,
+            NewGround::Off,
+        );
         assert!(
             lines.iter().any(|(t, _)| t.contains("web")),
             "the SELECTION/tooltip lines should name the workload: {lines:?}"
@@ -1506,7 +1483,14 @@ mod tests {
         // real `region_lines` rather than only against `grid_ref_line`, because
         // the unit test cannot catch the line being wired to the wrong arm or
         // dropped on the way out.
-        let named = region_lines(&worlds[0], (cx, cy), &snap, Overlay::Terrain, true);
+        let named = region_lines(
+            &worlds[0],
+            (cx, cy),
+            &snap,
+            Overlay::Terrain,
+            true,
+            NewGround::Off,
+        );
         let reference = named
             .iter()
             .find(|(t, _)| t.starts_with("grid"))
@@ -1553,7 +1537,6 @@ mod tests {
                 cost,
                 opencost_note: None,
                 fresh: Arc::new(std::collections::HashMap::new()),
-                changed: Arc::new(std::collections::HashMap::new()),
             },
             warm: None,
             pair: None,
@@ -1596,7 +1579,14 @@ mod tests {
         for y in 0..bh {
             for x in 0..bw {
                 let panel = panel_for(&worlds, Hit::at((x, y)));
-                let lines = region_lines(&worlds[0], (x, y), &snap, Overlay::Terrain, false);
+                let lines = region_lines(
+                    &worlds[0],
+                    (x, y),
+                    &snap,
+                    Overlay::Terrain,
+                    false,
+                    NewGround::Off,
+                );
                 let text = lines
                     .iter()
                     .map(|(t, _)| t.as_str())

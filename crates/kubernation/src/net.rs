@@ -28,6 +28,7 @@ use kubernation_core::state::charter::{self, Charter};
 use kubernation_core::state::cost::{self, CostRates, CostReport};
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::harden;
+use kubernation_core::state::layout::NewGround;
 use kubernation_core::state::model::{Models, WorkloadRef, WorkloadRow, build_workloads};
 use kubernation_core::state::netpol;
 use kubernation_core::state::observed::ObservedWorld;
@@ -224,9 +225,6 @@ pub struct WorldSnap {
     /// frame on a hundred-node fleet. Same reason `substrate` and `posture` are
     /// precomputed and borrowed for a frame.
     pub fresh: Arc<HashMap<String, f64>>,
-    /// Whether each node's ground changed hands since the chosen baseline.
-    /// Empty when no baseline is set — "not asking", not "nothing changed".
-    pub changed: Arc<HashMap<String, kubernation_core::state::layout::ChangeSince>>,
     /// Upkeep (cost cartography), computed once per tick — the overlay + advisor
     /// tab read this (the overlay does a by-node lookup every frame, never a scan).
     pub cost: CostReport,
@@ -275,19 +273,14 @@ pub struct Net {
     /// Bumped on context switch so a slow probe from the OLD cluster can't write its
     /// liveness into the NEW cluster's banner (the established gen-guard pattern).
     conn_gen: AtomicU64,
-    /// The change-since baseline: a FIXED instant, or `None` for "not asking".
+    /// How ground that changed hands is marked — off, fading over a window, or
+    /// held since a fixed instant.
     ///
-    /// Deliberately an instant rather than a duration. A duration would make
-    /// this A5's rolling window under another name — ground would un-mark with
-    /// the passage of time alone. Captured once when chosen, the marked set only
-    /// grows until the operator moves it, which is the question "what has
-    /// changed since I started looking" rather than "what changed recently".
-    change_baseline: Mutex<Option<SystemTime>>,
-    /// The ageing window, in seconds — read fresh on every tick so changing it
-    /// from the menu re-tints the map on the next rebuild rather than at the
-    /// next launch. Seeded from `NetArgs`; an atomic rather than a lock because
-    /// the render thread writes it and the world loop reads it every tick.
-    fresh_window_secs: AtomicU64,
+    /// ONE slot, because it is one fact. Marking it twice, in two colours under
+    /// two settings, was measured to be a duplication rather than two features.
+    /// Read on every tick so a change from the menu re-tints the map on the next
+    /// rebuild rather than at the next launch.
+    new_ground: Mutex<NewGround>,
     /// Set by the UI to ask the world loop to reclaim all ghost ground once.
     compact_req: AtomicBool,
     /// (context, fingerprint) for the hot cluster — what a layout is saved
@@ -568,8 +561,7 @@ impl Net {
             layout_ident: Mutex::new(None),
             conn: Mutex::new(ConnState::Connecting),
             conn_gen: AtomicU64::new(0),
-            fresh_window_secs: AtomicU64::new(0),
-            change_baseline: Mutex::new(None),
+            new_ground: Mutex::new(NewGround::Off),
             switch: Mutex::new(None),
             log_req: Mutex::new(None),
             log_tail: Mutex::new(LogTail::default()),
@@ -1044,34 +1036,17 @@ impl Net {
         *self.conn.lock().unwrap_or_else(|e| e.into_inner()) = s;
     }
 
-    /// The change-since baseline, or `None` when the overlay is not asking.
-    pub fn change_baseline(&self) -> Option<SystemTime> {
-        *self
-            .change_baseline
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+    /// How new ground is currently marked.
+    pub fn new_ground(&self) -> NewGround {
+        *self.new_ground.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Fix the baseline at an instant (or clear it). Takes effect on the next
-    /// rebuild, like the ageing window.
-    pub fn set_change_baseline(&self, at: Option<SystemTime>) {
-        *self
-            .change_baseline
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = at;
-    }
-
-    /// How long ground stays marked after it changes hands. `ZERO` never marks.
-    pub fn fresh_window(&self) -> Duration {
-        Duration::from_secs(self.fresh_window_secs.load(Ordering::Relaxed))
-    }
-
-    /// Change the ageing window. Takes effect on the next world rebuild — the
-    /// operator sees the map re-tint within a tick rather than at next launch,
-    /// which matters because the right window depends on a fleet's refresh
-    /// cadence and is found by trying values against a live cluster.
-    pub fn set_fresh_window(&self, d: Duration) {
-        self.fresh_window_secs.store(d.as_secs(), Ordering::Relaxed);
+    /// Change how new ground is marked. Takes effect on the next world rebuild,
+    /// so the operator sees the map re-tint within a tick rather than at the
+    /// next launch — the right setting depends on a fleet's refresh cadence and
+    /// is found by trying values against a live cluster.
+    pub fn set_new_ground(&self, g: NewGround) {
+        *self.new_ground.lock().unwrap_or_else(|e| e.into_inner()) = g;
     }
 
     pub fn request_logs(&self, req: LogReq) {
@@ -1151,8 +1126,8 @@ pub struct NetArgs {
     pub projections: Vec<String>,
     /// Global default SLO availability target (`--slo-target`, else 0.99).
     pub slo_default: f64,
-    /// How long ground stays marked after it changes hands. `ZERO` never marks.
-    pub fresh_window: Duration,
+    /// How ground that changed hands is marked at launch.
+    pub new_ground: NewGround,
     /// Launch-resolved cost pricing (`--cpu-rate`/`--mem-rate`/`--node-rate`/
     /// `--cost-mem-weight`); empty ⇒ unitless "cost units". Node annotations are
     /// merged on top per tick (the frontend boundary).
@@ -1276,49 +1251,25 @@ fn build_carrying(
 /// holds: a `Province` carries its `NodeTile`, not the slot it sits in. Doing
 /// the join here means the draw path reads a value instead of searching for one.
 ///
-/// A node with no entry is not marked — which covers all three of `freshness`'s
-/// do-not-mark states at once, so the draw site has a single rule and cannot
-/// accidentally fall through to a default that marks.
-/// Which nodes' ground changed hands since `baseline`, by node name.
+/// A node with no entry is not marked — which covers every do-not-mark state at
+/// once, in EITHER mode, so the draw site has a single rule and cannot fall
+/// through to a default that marks.
 ///
-/// Precomputed once per tick for the same reason `freshness_by_node` is: the
-/// renderer holds a `Province` and no layout, and `slot_of` is a linear scan, so
-/// a per-province lookup in a 60fps draw would be O(slots x provinces).
-///
-/// `None` baseline yields an empty map, which the draw path reads as "not
-/// asking" — distinct from a populated map in which a node is absent.
-fn changed_by_node(
-    layout: &kubernation_core::state::layout::Layout,
-    baseline: Option<SystemTime>,
-) -> HashMap<String, kubernation_core::state::layout::ChangeSince> {
-    use kubernation_core::state::layout::changed_since;
-    let Some(base) = baseline else {
-        return HashMap::new();
-    };
-    layout
-        .entries()
-        .filter_map(|(k, st)| {
-            let node = st.occupant.as_ref()?;
-            Some((
-                node.node.clone(),
-                changed_since(layout.occupied_at(k), base),
-            ))
-        })
-        .collect()
-}
-
-fn freshness_by_node(
+/// One map for one fact: the fading and since modes both answer "is this ground
+/// new", and shipping them as two maps in two colours was measured to be a
+/// duplication rather than two features.
+fn marking_by_node(
     layout: &kubernation_core::state::layout::Layout,
     now: SystemTime,
-    window: Duration,
+    mode: NewGround,
 ) -> HashMap<String, f64> {
-    if window.is_zero() {
+    if mode.is_off() {
         return HashMap::new();
     }
     layout
         .occupied()
         .filter_map(|(k, occ)| {
-            kubernation_core::state::layout::freshness(layout.occupied_at(k), now, window)
+            mode.mark(layout.occupied_at(k), now)
                 .map(|f| (occ.node.clone(), f))
         })
         .collect()
@@ -1334,7 +1285,7 @@ pub static NET_PANICKED: AtomicBool = AtomicBool::new(false);
 
 pub fn spawn(args: NetArgs, net: Arc<Net>) {
     // Seed the live window from the launch args before the loop can read it.
-    net.set_fresh_window(args.fresh_window);
+    net.set_new_ground(args.new_ground);
     let spawned = std::thread::Builder::new()
         .name(NET_THREAD.into())
         .spawn(move || {
@@ -2597,11 +2548,9 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         posture: posture::posture_report(&h.world),
                         // Warm never marks: it is a comparison view, not
                         // somewhere the operator watches change happen. Change-
-                        // since follows for the same reason, and because warm's
                         // layout is not persisted (A4), so it has no succession
                         // record older than this session anyway.
                         fresh: Arc::new(HashMap::new()),
-                        changed: Arc::new(HashMap::new()),
                         cost: cost::cost_report(
                             &h.world,
                             &effective_cost_rates(&args.cost_rates, &h.world),
@@ -2778,12 +2727,11 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                         observed: hot_handle.world.clone(),
                         slo: hot_slo,
                         posture: posture::posture_report(&hot_handle.world),
-                        fresh: Arc::new(freshness_by_node(
+                        fresh: Arc::new(marking_by_node(
                             &prior_hot,
                             SystemTime::now(),
-                            net.fresh_window(),
+                            net.new_ground(),
                         )),
-                        changed: Arc::new(changed_by_node(&prior_hot, net.change_baseline())),
                         cost: hot_cost,
                         opencost_note,
                     },

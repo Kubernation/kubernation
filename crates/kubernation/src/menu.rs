@@ -40,16 +40,14 @@ pub enum MenuAction {
     Annals,
     Workloads,
     ToggleColorblind,
-    /// Set the ageing window (minutes; 0 disables the marking entirely).
-    SetFreshMinutes(u64),
+    /// Change how ground that changed hands is marked.
+    ///
+    /// The `Since` choice carries an OFFSET in minutes, but what gets stored is
+    /// the instant computed at click time — a stored duration would slide with
+    /// the clock, which is exactly what makes it the fading mode instead.
+    SetNewGround(NewGroundChoice),
     /// Show or hide the reference frame (graticule).
     ToggleGraticule,
-    /// Fix the change-since baseline this many minutes before now. `0` clears it.
-    ///
-    /// The menu offers offsets, but what is STORED is the instant computed at
-    /// click time — a stored duration would slide with the clock and make this
-    /// A5's rolling window under another name.
-    SetChangeBaseline(u64),
 }
 
 /// Live state the bar reflects: the active overlay and map style (radio marks),
@@ -60,39 +58,47 @@ pub struct MenuCtx {
     pub style: MapStyle,
     pub staged: usize,
     pub ns_active: bool,
-    /// The ageing window, in whole minutes (0 = ground is never marked).
-    pub fresh_minutes: u64,
+    /// Which new-ground choice is active, so the radio can mark it. Carries the
+    /// offset that was CHOSEN, not the instant that was stored.
+    pub new_ground: NewGroundChoice,
     /// Whether the reference frame is drawn.
     pub graticule: bool,
-    /// How long ago the change-since baseline was fixed, in whole minutes;
-    /// `None` when none is set. Shown so the radio can mark the choice that was
-    /// made, even though the stored value is an instant.
-    pub change_baseline_min: Option<u64>,
 }
 
-/// The change-since baselines offered in the menu.
+/// A new-ground setting as the menu offers it.
 ///
-/// `0` clears it and is a real value, not a degenerate one — "not asking" is a
-/// state the overlay renders differently from "asked, nothing changed".
-pub const BASELINE_CHOICES: [(u64, &str); 5] = [
-    (0, "off"),
-    (15, "15 minutes ago"),
-    (60, "1 hour ago"),
-    (240, "4 hours ago"),
-    (1440, "24 hours ago"),
-];
+/// Minutes rather than instants: this is the label on the radio, and the
+/// authority is the `NewGround` the net thread holds. Keeping the two apart is
+/// what stops a "since" choice quietly turning back into a rolling window.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NewGroundChoice {
+    Off,
+    /// Fade out over this many minutes.
+    Fading(u64),
+    /// Hold everything that changed in the last this-many minutes, from now.
+    Since(u64),
+}
 
-/// The ageing windows offered in the menu. Not arbitrary: a refresh has to fit
-/// inside the window with room left over, or the ground never finishes fading
-/// and the wave has a leading edge but no trailing one. These span a fast
-/// simulated fleet (minutes) to a conservative production cadence (hours); the
-/// `--fresh-minutes` flag takes any value, this is just the reachable-in-app set.
-pub const FRESH_CHOICES: [(u64, &str); 5] = [
-    (0, "off"),
-    (5, "5 minutes"),
-    (15, "15 minutes"),
-    (60, "1 hour"),
-    (240, "4 hours"),
+/// The new-ground settings offered in the menu, in one list.
+///
+/// One radio, because it is one setting. The two modes sit under headers so
+/// their difference is visible at the point of choosing: fading answers *how
+/// recently* and lets go; since answers *whether, from a moment you fixed* and
+/// does not.
+///
+/// The fading values are not arbitrary — a refresh has to fit inside the window
+/// with room left over, or the mark never finishes fading and the wave has a
+/// leading edge but no trailing one.
+pub const NEW_GROUND_CHOICES: [(NewGroundChoice, &str); 9] = [
+    (NewGroundChoice::Off, "off"),
+    (NewGroundChoice::Fading(5), "fading . 5 minutes"),
+    (NewGroundChoice::Fading(15), "fading . 15 minutes"),
+    (NewGroundChoice::Fading(60), "fading . 1 hour"),
+    (NewGroundChoice::Fading(240), "fading . 4 hours"),
+    (NewGroundChoice::Since(15), "since . 15 minutes ago"),
+    (NewGroundChoice::Since(60), "since . 1 hour ago"),
+    (NewGroundChoice::Since(240), "since . 4 hours ago"),
+    (NewGroundChoice::Since(1440), "since . 24 hours ago"),
 ];
 
 /// One dropdown row. A `None` action with a non-empty label is a non-clickable
@@ -209,11 +215,6 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                     MenuAction::SetOverlay(Overlay::Substrate),
                 )
                 .check(ctx.overlay == Overlay::Substrate),
-                Item::act(
-                    "Changed (since a baseline)",
-                    MenuAction::SetOverlay(Overlay::Changed),
-                )
-                .check(ctx.overlay == Overlay::Changed),
                 Item::sep(),
                 Item::header("MAP STYLE"),
                 Item::act(
@@ -227,16 +228,11 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                 )
                 .check(ctx.style == MapStyle::Relief),
                 Item::sep(),
-                Item::header("CHANGED SINCE"),
+                Item::header("NEW GROUND"),
             ]
             .into_iter()
-            .chain(BASELINE_CHOICES.map(|(mins, label)| {
-                Item::act(label, MenuAction::SetChangeBaseline(mins))
-                    .check(ctx.change_baseline_min == (mins > 0).then_some(mins))
-            }))
-            .chain([Item::sep(), Item::header("AGEING WINDOW")])
-            .chain(FRESH_CHOICES.map(|(mins, label)| {
-                Item::act(label, MenuAction::SetFreshMinutes(mins)).check(ctx.fresh_minutes == mins)
+            .chain(NEW_GROUND_CHOICES.map(|(choice, label)| {
+                Item::act(label, MenuAction::SetNewGround(choice)).check(ctx.new_ground == choice)
             }))
             .chain([
                 Item::sep(),
@@ -454,86 +450,75 @@ pub fn draw_menu_bar(
 mod tests {
     use super::*;
 
-    fn view_of(ctx: &MenuCtx) -> Vec<(String, bool)> {
-        menus(ctx)
-            .into_iter()
-            .find(|m| m.title == "View")
-            .expect("a View menu")
-            .items
-            .into_iter()
-            .filter(|i| matches!(i.action, Some(MenuAction::SetFreshMinutes(_))))
-            .map(|i| (i.label, i.checked))
-            .collect()
-    }
-
-    fn ctx(fresh_minutes: u64) -> MenuCtx {
+    fn ctx(ng: NewGroundChoice) -> MenuCtx {
         MenuCtx {
             overlay: Overlay::Terrain,
             style: MapStyle::Plain,
             staged: 0,
             ns_active: false,
-            fresh_minutes,
+            new_ground: ng,
             graticule: false,
-            change_baseline_min: None,
         }
     }
 
-    /// The baseline radio marks the choice that was made, and "off" is real.
-    #[test]
-    fn the_baseline_radio_marks_the_active_choice() {
-        let rows = |min: Option<u64>| -> Vec<(String, bool)> {
-            let mut c = ctx(60);
-            c.change_baseline_min = min;
-            menus(&c)
-                .into_iter()
-                .find(|m| m.title == "View")
-                .expect("a View menu")
-                .items
-                .into_iter()
-                .filter(|i| matches!(i.action, Some(MenuAction::SetChangeBaseline(_))))
-                .map(|i| (i.label, i.checked))
-                .collect()
-        };
-        // No baseline: "off" is the MARKED row, not an absence of marking — the
-        // overlay renders "not asking" differently from "asked, nothing changed".
-        let off = rows(None);
-        let checked: Vec<_> = off.iter().filter(|(_, c)| *c).collect();
-        assert_eq!(checked.len(), 1);
-        assert_eq!(checked[0].0, "off");
-
-        for (mins, label) in BASELINE_CHOICES.into_iter().filter(|(m, _)| *m > 0) {
-            let r = rows(Some(mins));
-            let c: Vec<_> = r.iter().filter(|(_, c)| *c).collect();
-            assert_eq!(c.len(), 1, "exactly one row marked for {mins}m");
-            assert_eq!(c[0].0, label);
-        }
+    fn ground_rows(ng: NewGroundChoice) -> Vec<(String, bool)> {
+        menus(&ctx(ng))
+            .into_iter()
+            .find(|m| m.title == "View")
+            .expect("a View menu")
+            .items
+            .into_iter()
+            .filter(|i| matches!(i.action, Some(MenuAction::SetNewGround(_))))
+            .map(|i| (i.label, i.checked))
+            .collect()
     }
 
-    /// The ageing-window radio marks the active choice, and marks EXACTLY one.
+    /// ONE radio for one setting: exactly one row marked, "off" included.
+    ///
+    /// "Off" being a MARKED row rather than an absence of marking is the point —
+    /// not asking is a state, not the lack of one.
     #[test]
-    fn the_ageing_radio_marks_the_active_window() {
-        for (mins, label) in FRESH_CHOICES {
-            let rows = view_of(&ctx(mins));
+    fn the_new_ground_radio_marks_exactly_one_choice() {
+        for (choice, label) in NEW_GROUND_CHOICES {
+            let rows = ground_rows(choice);
             let checked: Vec<_> = rows.iter().filter(|(_, c)| *c).collect();
-            assert_eq!(checked.len(), 1, "exactly one row marked for {mins}m");
+            assert_eq!(checked.len(), 1, "exactly one row marked for {choice:?}");
             assert_eq!(checked[0].0, label);
         }
     }
 
-    /// A window the menu doesn't offer marks NOTHING.
+    /// A setting the menu does not offer marks NOTHING.
     ///
-    /// `--fresh-minutes` takes any value while the menu offers five, so this is
-    /// reachable, not hypothetical. The failure it forbids is the menu putting a
-    /// tick beside "5 minutes" when the window is really 7 — a control claiming a
-    /// state the app is not in, which is worse than admitting it has no name for
-    /// the current one.
+    /// The flags take any value while the menu offers nine, so this is
+    /// reachable. The failure it forbids is a tick beside "1 hour" when the
+    /// setting is really 7 minutes — a control claiming a state the app is not
+    /// in, which is worse than admitting it has no name for the current one.
     #[test]
-    fn an_off_list_window_claims_no_choice() {
-        let rows = view_of(&ctx(7));
+    fn an_off_list_setting_claims_no_choice() {
+        let rows = ground_rows(NewGroundChoice::Fading(7));
         assert!(!rows.is_empty(), "the radio is still offered");
         assert!(
             rows.iter().all(|(_, checked)| !checked),
-            "no row may claim a window it doesn't set",
+            "no row may claim a setting it doesn't apply",
         );
+    }
+
+    /// Both modes are reachable from the one radio, and labelled so the
+    /// difference is visible at the point of choosing rather than only in the
+    /// Almanac. They answer different questions about the same ground.
+    #[test]
+    fn both_modes_are_offered_and_labelled() {
+        let n = |f: fn(&NewGroundChoice) -> bool| {
+            NEW_GROUND_CHOICES.iter().filter(|(c, _)| f(c)).count()
+        };
+        assert!(n(|c| matches!(c, NewGroundChoice::Fading(_))) > 0);
+        assert!(n(|c| matches!(c, NewGroundChoice::Since(_))) > 0);
+        for (c, label) in NEW_GROUND_CHOICES {
+            match c {
+                NewGroundChoice::Fading(_) => assert!(label.starts_with("fading"), "{label}"),
+                NewGroundChoice::Since(_) => assert!(label.starts_with("since"), "{label}"),
+                NewGroundChoice::Off => assert_eq!(label, "off"),
+            }
+        }
     }
 }

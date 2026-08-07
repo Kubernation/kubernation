@@ -479,6 +479,60 @@ pub fn assign_layout(prior: &Layout, observed: &[ObservedNode]) -> Layout {
     }
 }
 
+/// How the map decides ground is still worth marking as new.
+///
+/// **One fact, two modes.** Both ask about the same field — when a slot last
+/// changed hands — and differ only in when the mark stops. Shipping them as two
+/// map overlays was measured to be a duplication: on a live refresh the two
+/// marked the same provinces to within 2%, because the only axis on which the
+/// fixed baseline improved was reach, and reach is a setting on the window too.
+///
+/// - [`NewGround::Fading`] decays: it answers *how recently*, and un-marks with
+///   the passage of time alone.
+/// - [`NewGround::Since`] holds: it answers *whether, since a moment I fixed*,
+///   so the marked set only grows until the operator moves it.
+///
+/// The distinction is worth keeping because an investigation lasting longer than
+/// the window otherwise loses its own history while it is still going on. It is
+/// not worth two colours, two overlays and two settings, which is what the
+/// separate feature cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewGround {
+    /// Never mark. A real supported value, not a degenerate one.
+    Off,
+    /// Mark for this long after a change of hands, fading with age.
+    Fading(std::time::Duration),
+    /// Mark everything that changed at or after this instant, without fading.
+    Since(SystemTime),
+}
+
+impl NewGround {
+    /// How strongly to mark this ground, `1.0` down to just above `0.0`, or
+    /// `None` for **do not mark**.
+    ///
+    /// One entry point so the renderer, the panel and the minimap cannot
+    /// disagree about which mode is active — the drift this codebase keeps
+    /// paying for. Each mode delegates to the predicate that already owns it.
+    ///
+    /// `Since` returns a flat `1.0` rather than a ramp: a fixed baseline does
+    /// not decay, so there is no age to shade. That difference is the whole
+    /// visible distinction between the modes, and it is deliberate.
+    pub fn mark(self, occupied_at: Option<SystemTime>, now: SystemTime) -> Option<f64> {
+        match self {
+            NewGround::Off => None,
+            NewGround::Fading(window) => freshness(occupied_at, now, window),
+            NewGround::Since(base) => {
+                matches!(changed_since(occupied_at, base), ChangeSince::Changed).then_some(1.0)
+            }
+        }
+    }
+
+    /// Whether anything is being asked at all.
+    pub fn is_off(self) -> bool {
+        matches!(self, NewGround::Off)
+    }
+}
+
 /// Whether a slot's ground changed hands since a chosen moment.
 ///
 /// Three states, and the third is not a shrug. An absent `occupied_at` means
@@ -1455,5 +1509,64 @@ mod tests {
             ChangeSince::Changed,
             "but it did change since the fixed baseline, and still has",
         );
+    }
+    /// One entry point, two modes — and the divergence that justifies keeping
+    /// both.
+    ///
+    /// Ground that changed hands 10 minutes ago, read with a 5-minute fading
+    /// window and a baseline of an hour ago: fading has already let go, since
+    /// still holds it. That is the whole reason the second mode exists, and it
+    /// is the only thing it buys — which is why it is a mode rather than a
+    /// second overlay with its own colour and setting.
+    #[test]
+    fn the_two_modes_diverge_only_in_when_they_let_go() {
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10_000);
+        let ten_min_ago = now - std::time::Duration::from_secs(600);
+        let hour_ago = now - std::time::Duration::from_secs(3_600);
+
+        let fading = NewGround::Fading(std::time::Duration::from_secs(300));
+        let since = NewGround::Since(hour_ago);
+
+        assert_eq!(fading.mark(Some(ten_min_ago), now), None, "fading let go");
+        assert_eq!(
+            since.mark(Some(ten_min_ago), now),
+            Some(1.0),
+            "since still holds it, flat — a fixed baseline has no age to shade",
+        );
+
+        // On ground that changed a moment ago they agree, which is why they
+        // looked like one feature on a live refresh.
+        let just_now = now - std::time::Duration::from_secs(5);
+        assert!(fading.mark(Some(just_now), now).is_some());
+        assert!(since.mark(Some(just_now), now).is_some());
+    }
+
+    /// Off marks nothing, whatever the ground has done.
+    #[test]
+    fn off_is_a_real_value_in_both_directions() {
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10_000);
+        assert!(NewGround::Off.is_off());
+        assert_eq!(NewGround::Off.mark(Some(now), now), None);
+        assert_eq!(NewGround::Off.mark(None, now), None);
+        assert!(!NewGround::Fading(std::time::Duration::from_secs(60)).is_off());
+        assert!(!NewGround::Since(now).is_off());
+    }
+
+    /// Unknown ground is never marked, in either mode.
+    ///
+    /// A slot with no succession on record has not been shown to have changed,
+    /// and the mark makes a positive claim — so silence is the honest answer.
+    /// This is what merging bought: the separate overlay painted "unchanged" as
+    /// its own colour, which forced a third state to distinguish it from "no
+    /// record". One channel making one claim needs no such distinction.
+    #[test]
+    fn unknown_ground_is_never_marked_in_either_mode() {
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10_000);
+        for mode in [
+            NewGround::Fading(std::time::Duration::from_secs(3_600)),
+            NewGround::Since(now - std::time::Duration::from_secs(3_600)),
+        ] {
+            assert_eq!(mode.mark(None, now), None, "{mode:?} must not claim it");
+        }
     }
 }

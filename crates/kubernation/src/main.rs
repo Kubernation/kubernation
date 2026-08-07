@@ -58,6 +58,7 @@ use kubernation_core::events::ClusterId;
 use kubernation_core::state::attention::{Concern, Target};
 use kubernation_core::state::blast::{Subject, blast_radius};
 use kubernation_core::state::filter::NamespaceFilter;
+use kubernation_core::state::layout::NewGround;
 use kubernation_core::state::model::WorkloadRef;
 use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::oracle::Scope as OracleScope;
@@ -253,8 +254,9 @@ struct Args {
     /// become a steel blue, so blue/amber/red are all distinguishable).
     #[arg(long)]
     colorblind: bool,
-    /// Fix the change-since baseline this many minutes before launch, and show
-    /// the "changed" overlay against it (0 or absent = no baseline).
+    /// Mark ground that changed hands in the last N minutes and KEEP it marked,
+    /// against a baseline fixed at launch. Takes precedence over
+    /// `--fresh-minutes`, which is the fading mode of the same setting.
     #[arg(long, value_name = "MINUTES")]
     changed_since: Option<u64>,
     /// Draw the reference frame: column letters per zone, row numbers per slot,
@@ -708,12 +710,28 @@ async fn main() {
     // value meaning never mark, so it must survive this resolution intact —
     // `unwrap_or` on the default would be right, but `or` on a `Some(0)` must
     // not be mistaken for "unset".
-    let fresh_window = std::time::Duration::from_secs(
-        60 * args
-            .fresh_minutes
-            .or(saved.fresh_minutes)
-            .unwrap_or(prefs::DEFAULT_FRESH_MINUTES),
-    );
+    // ONE setting, two modes. `--changed-since` wins because it is the more
+    // specific ask: it names a moment, where `--fresh-minutes` names a duration.
+    // Only the fading window is remembered between runs — a fixed baseline is a
+    // moment in THIS investigation, and restoring a stale one would silently
+    // answer a question about a different afternoon.
+    let fresh_minutes = args
+        .fresh_minutes
+        .or(saved.fresh_minutes)
+        .unwrap_or(prefs::DEFAULT_FRESH_MINUTES);
+    let (new_ground, mut ground_choice) = match args.changed_since.filter(|m| *m > 0) {
+        Some(m) => (
+            std::time::SystemTime::now()
+                .checked_sub(std::time::Duration::from_secs(m * 60))
+                .map_or(NewGround::Off, NewGround::Since),
+            menu::NewGroundChoice::Since(m),
+        ),
+        None if fresh_minutes == 0 => (NewGround::Off, menu::NewGroundChoice::Off),
+        None => (
+            NewGround::Fading(std::time::Duration::from_secs(60 * fresh_minutes)),
+            menu::NewGroundChoice::Fading(fresh_minutes),
+        ),
+    };
     let slo_default = args
         .slo_target
         .as_deref()
@@ -742,11 +760,6 @@ async fn main() {
         }
         src
     });
-    // The change-since baseline, as an offset in minutes purely so the menu can
-    // mark which choice was made. The AUTHORITY is the instant held in
-    // `net.change_baseline` — a duration kept here would slide with the clock,
-    // which is precisely what separates this from A5's rolling window.
-    let mut change_baseline_min: Option<u64> = None;
     net::spawn(
         net::NetArgs {
             context: args.context.clone(),
@@ -754,23 +767,12 @@ async fn main() {
             warm: args.warm.clone(),
             projections: args.project.clone(),
             slo_default,
-            fresh_window,
+            new_ground,
             cost_rates,
             opencost,
         },
         net.clone(),
     );
-    // `--changed-since N` fixes the baseline N minutes before launch. Not
-    // persisted: a baseline is a moment in this session's investigation, and
-    // restoring a stale one would silently answer a question about a different
-    // afternoon. The OVERLAY choice persists (like every other), the baseline
-    // does not, so a restored "changed" view starts by asking nothing.
-    if let Some(m) = args.changed_since.filter(|m| *m > 0) {
-        change_baseline_min = Some(m);
-        net.set_change_baseline(
-            std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(m * 60)),
-        );
-    }
     if let Some(ns) = &args.namespace {
         net.set_namespace_filter(NamespaceFilter::only(ns.clone()));
     }
@@ -2376,7 +2378,6 @@ async fn main() {
                         // Already on the per-world `Models`, unlike cost.
                         substrate: Some(&wmodels.substrate),
                         fresh: Some(sw.fresh),
-                        changed: Some(sw.changed),
                         graticule,
                     };
                     draw_world(sw.world, &wc, banner, s.pair.as_deref(), overlay, data);
@@ -2544,6 +2545,7 @@ async fn main() {
                     &ml,
                     overlay,
                     graticule,
+                    net.new_ground(),
                     concern_idx,
                     &forwards,
                     blast_view.as_ref(),
@@ -2600,7 +2602,7 @@ async fn main() {
                 // Hover tooltip over the map (not the column / chrome /
                 // an open overlay — incl. a panel-less concern-`L` log).
                 if hover_ok && let Some((sw, local)) = hovered {
-                    draw_tooltip(sw, local, s, overlay, graticule, mouse);
+                    draw_tooltip(sw, local, s, overlay, graticule, net.new_ground(), mouse);
                 }
 
                 // The End-of-Turn review takes over the center when open;
@@ -2891,9 +2893,8 @@ async fn main() {
             style: cam.style,
             staged: planned.len(),
             ns_active: ns_filter_now.is_active(),
-            fresh_minutes: net.fresh_window().as_secs() / 60,
+            new_ground: ground_choice,
             graticule,
-            change_baseline_min,
         };
         let menu_click = is_mouse_button_pressed(MouseButton::Left) && menu_live;
         let (menu_action, bar_right) =
@@ -3018,28 +3019,29 @@ async fn main() {
             Some(MenuAction::ToggleGraticule) => {
                 graticule = !graticule;
             }
-            Some(MenuAction::SetChangeBaseline(m)) => {
-                // Capture the INSTANT now; the offset is only a label.
-                change_baseline_min = (m > 0).then_some(m);
-                net.set_change_baseline(change_baseline_min.and_then(|m| {
-                    std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(m * 60))
-                }));
+            Some(MenuAction::SetNewGround(choice)) => {
+                ground_choice = choice;
+                // A "since" choice captures the INSTANT now; the offset is only
+                // the label on the radio. Storing the duration would make it the
+                // fading mode wearing the other mode's name.
+                net.set_new_ground(match choice {
+                    menu::NewGroundChoice::Off => NewGround::Off,
+                    menu::NewGroundChoice::Fading(m) => {
+                        NewGround::Fading(std::time::Duration::from_secs(m * 60))
+                    }
+                    menu::NewGroundChoice::Since(m) => std::time::SystemTime::now()
+                        .checked_sub(std::time::Duration::from_secs(m * 60))
+                        .map_or(NewGround::Off, NewGround::Since),
+                });
                 toast = Some((
-                    match change_baseline_min {
-                        None => "change-since baseline cleared".to_string(),
-                        Some(m) => format!("changed since {m} minutes ago"),
-                    },
-                    get_time(),
-                ));
-            }
-            Some(MenuAction::SetFreshMinutes(m)) => {
-                // Takes effect on the next world rebuild; persisted on exit.
-                net.set_fresh_window(std::time::Duration::from_secs(m * 60));
-                toast = Some((
-                    if m == 0 {
-                        "new ground is no longer marked".to_string()
-                    } else {
-                        format!("ageing window: {m} minutes")
+                    match choice {
+                        menu::NewGroundChoice::Off => "new ground is no longer marked".to_string(),
+                        menu::NewGroundChoice::Fading(m) => {
+                            format!("new ground fades over {m} min")
+                        }
+                        menu::NewGroundChoice::Since(m) => {
+                            format!("new ground since {m} min ago, held")
+                        }
                     },
                     get_time(),
                 ));
@@ -3796,10 +3798,15 @@ async fn main() {
             overlay: Some(overlay.label().to_string()),
             map_style: Some(cam.style.label().to_string()),
             graticule: Some(graticule),
-            // The LIVE window, not the one we launched with — the menu can have
-            // changed it since, and saving the launch value would silently
-            // discard the choice the operator just made.
-            fresh_minutes: Some(net.fresh_window().as_secs() / 60),
+            // The LIVE fading window, not the one we launched with — the menu
+            // can have changed it since. A "since" baseline is deliberately NOT
+            // persisted: it is a moment in this session's investigation, so the
+            // saved value is the fading window it would fall back to.
+            fresh_minutes: Some(match ground_choice {
+                menu::NewGroundChoice::Fading(m) => m,
+                menu::NewGroundChoice::Off => 0,
+                menu::NewGroundChoice::Since(_) => fresh_minutes,
+            }),
         });
         // Clean shutdown — remove the abnormal-exit marker (every exit path
         // funnels through this point; a crash never reaches it).
