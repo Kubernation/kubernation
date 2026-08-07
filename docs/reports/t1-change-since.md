@@ -75,6 +75,28 @@ z-c  ................XXXXXX....
 z-d  ...............
 ```
 
+> **Corrected 2026-08-07** — re-derived by `hack/churn/pieces.py`; full account
+> in `docs/reports/t1-shape-rederivation.md`.
+>
+> **The method was sound.** The diagram came from the persisted layout store
+> keyed on the slot **ordinal**, i.e. map order — not from a walk over
+> `Continent.provinces`, which v1.17.0 later found is name-hash order. It is not
+> an instance of that defect.
+>
+> **One column is wrong.** The script listed only *live* slots, so a vacated
+> (ghost) ordinal was collapsed out instead of breaking a run. By ordinal, z-b
+> is **two pieces of 3**, not one run of 6 — a ghost sits between them. z-a, z-c
+> and z-d are confirmed exactly as drawn. Corrected fleet total: **18 changed
+> slots in 4 pieces**, not 3.
+>
+> **The conclusion stands and is now quantified.** Against a pool-blind control
+> (the same number of changed slots placed at random among each zone's live
+> ordinals, 2000 trials), random placement gives a median of 5 pieces per zone;
+> the observed 1, 2 and 1 have `P(pieces <= observed)` of 0.0000, 0.0050 and
+> 0.0000. The change was pool-shaped in the data, well beyond chance — which is
+> a statement about the data, not about whether a reader sees it. §3.4's refusal
+> to claim a usability verdict alone is unchanged.
+
 **But the contiguity is incidental, not structural.** It holds because the `sys`
 pool was allocated as a batch so its ordinals are consecutive. A2 deliberately
 gave up pool contiguity when ordinals went zone-wide, and A6 recorded

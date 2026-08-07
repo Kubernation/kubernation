@@ -127,12 +127,22 @@ z-b  22 provinces   burst 1 piece (100%)   sys 3 pieces (largest 40%)
 z-c  26 provinces   mem   1 piece (100%)   sys 2 pieces (largest 60%)
 z-d  15 provinces   t3.xlarge 1 piece (100%)
 
-4 of 8 regions are in more than one piece; a largest piece holds as little as 40%.
+3 of 8 regions are in more than one piece (8 regions in 12 pieces total);
+a largest piece holds as little as 40%.
 ```
 
-Half the regions, not an eighth — and on a fragmented region the majority of its
-ground is *outside* the piece that gets the name. The decision inverts on the
-real number: naming only the largest piece leaves most of a pool's territory
+> **Corrected 2026-08-07.** This report first published *"4 of 8"*. The
+> underlying per-zone data was right and is unchanged; the summary line was not.
+> The instrument printed "8 regions in 12 pieces", and 12 − 8 = 4 counts *extra
+> pieces*, not fragmented regions — three regions are split (into 2, 3 and 2).
+> Re-derived by `hack/churn/pieces.py`, which now **emits** the fleet figure so
+> it cannot be narrated from a breakdown again. The design conclusion is
+> unaffected: 3 of 8 fragmented with a largest piece as low as 40% still says
+> name every piece. See `docs/reports/t1-shape-rederivation.md` §5.
+
+Three times as many as published, not one in eight — and on a fragmented region
+the majority of its ground is *outside* the piece that gets the name (40% and
+60% largest shares). The decision inverts on the real number: naming only the largest piece leaves most of a pool's territory
 anonymous at any zoom close enough to fill the screen with a different piece,
 which is precisely the situation the name exists for.
 

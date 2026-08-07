@@ -3906,6 +3906,38 @@ what makes the interesting logic unit-testable without a cluster.
   `region ← pool ∩ zone`, since the gate showed change is pool-shaped while the
   map is zone-shaped. **Process note:** the v1.12.0 commit shipped without its
   CHANGELOG entry (a silent failed edit, unverified); superseded by v1.13.0's.
+  **Shape evidence re-derived** (2026-08-07, v1.18.1, report in
+  `docs/reports/t1-shape-rederivation.md`): the gate's one POSITIVE finding for
+  the map — "one contiguous run per column" — was re-measured after v1.17.0 found
+  `Continent.provinces` is not in map order. **The method was sound**: the diagram
+  came from the persisted layout store keyed on the slot **ordinal** (established
+  from the session transcript, not recalled), so it is map order, not a
+  hash-order artifact. **One column was wrong**: the script listed only *live*
+  slots, so a ghost ordinal collapsed out instead of breaking a run — z-b is
+  **two pieces of 3**, not one run of 6; the fleet total is 4 pieces, not 3.
+  **The conclusion stands and is now quantified**: against a pool-blind control
+  (same count placed at random among each zone's live ordinals, 2000 trials,
+  median 5 pieces) the observed 1/2/1 have `P(pieces <= observed)` of 0.0000,
+  0.0050, 0.0000 — pool-shaped in the DATA well beyond chance, which is NOT a
+  claim about whether a reader sees it (T1 §3.4's refusal to rule on usability
+  alone stands). So T1's positive evidence is **not withdrawn**, and
+  `region ← pool ∩ zone` stayed a strong suspicion rather than becoming a firm
+  blocker — moot in the event, since it shipped in v1.14.0–v1.17.0. New
+  instrument `hack/churn/pieces.py` (+ self-tests) computes both piece
+  definitions by ordinal, runs the control, and cross-checks every node against
+  `--dump-positions` (100 compared, 0 disagreements) — needed because the
+  guidance's prescribed source cannot answer alone: the dump carries no
+  succession data. **A second finding, in my own record:** v1.17.0's "**4 of 8**
+  regions are in more than one piece" is **3 of 8**. The per-zone data was right;
+  the summary was not — the instrument printed "8 regions in 12 pieces" and I
+  read the difference (4) as fragmented regions when it counts *extra pieces*.
+  Not the v1.17.0 failure repeating (that was a measurement sharing the code's
+  reasoning; this instrument was independent and correct), but the same class of
+  consequence, so the fix is mechanical: `pieces.py` now **emits** the fleet
+  figure so it cannot be narrated off a breakdown. The design conclusion is
+  unaffected — a largest piece holding 40% still says name every piece.
+  Corrected in the doc comment, CHANGELOG, decision log and the region-label
+  report.
 
 - **`region ← pool ∩ zone` settled — pools by colour and label** (2026-08-06,
   **v1.14.0**, user "let's settle region ← pool ∩ zone next"): the item deferred
@@ -3983,7 +4015,7 @@ what makes the interesting logic unit-testable without a cluster.
   means **consecutive slot ordinals** — so a departed node's ghost ground, which
   sits between two same-pool provinces on screen, correctly splits the region.
   **Second correction: every piece is named, not only the largest.** Measured
-  properly, **4 of 8 regions are in more than one piece** (v1.16.0 claimed 1 of 8
+  properly, **3 of 8 regions are in more than one piece** (v1.16.0 claimed 1 of 8
   — computed with the same wrong ordering) and a largest piece holds as little as
   **40%** of its region, so naming only that one leaves most of a pool's ground
   anonymous at any zoom close enough to fill the screen with a different piece —

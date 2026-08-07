@@ -1607,7 +1607,8 @@ pub(crate) fn terrain_order(province_y: &[u16], ghost_y: &[u16]) -> Vec<Band> {
 ///
 /// **Every piece is named, not only the largest.** A2's zone-wide ordinals let
 /// pools interleave, so a region is usually in several pieces — measured on the
-/// churn fleet, 4 of 8 are, and a largest piece holds as little as 40% of its
+/// churn fleet, 3 of 8 are (8 regions in 12 pieces), and a largest piece holds
+/// as little as 40% of its
 /// region. Naming only that one leaves most of the pool's ground anonymous at
 /// any zoom close enough to fill the screen with a different piece, which is
 /// the case the name exists for. Repetition does not read as several different

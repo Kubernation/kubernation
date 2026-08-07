@@ -45,7 +45,7 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
   Each region is **named on the map** — a region being one pool within one zone.
   Nodes are placed in allocation order, so pools interleave and a region is
-  usually in several pieces (4 of 8 on the churn fleet). **Every piece carries
+  usually in several pieces (3 of 8 on the churn fleet). **Every piece carries
   the name**, because the largest piece can hold as little as 40% of a region
   and naming only that one leaves the rest anonymous at any zoom close enough to
   fill the screen with a different piece. Repetition does not read as several
@@ -163,6 +163,30 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   since the TUI was removed, and both returned a vector index documented as a
   map row. A false contract on an unused public helper is a trap for whoever
   calls it next.
+
+### Documentation
+
+- Corrected the churn-fleet region-fragmentation figure from "4 of 8" to
+  **3 of 8** wherever it appeared (8 regions in 12 pieces; the difference counts
+  extra pieces, not fragmented regions). The per-zone data and the design
+  conclusion it supported are unchanged. Re-derived by the new
+  `hack/churn/pieces.py`, which now emits the fleet figure rather than leaving it
+  to be read off a breakdown.
+- Corrected T1's per-column run diagram: one of four columns is two pieces, not
+  one, because the original script collapsed vacated slots out instead of letting
+  them break a run. Full account in `docs/reports/t1-shape-rederivation.md`.
+
+### Documentation
+
+- Corrected the churn-fleet region-fragmentation figure from "4 of 8" to
+  **3 of 8** wherever it appeared (8 regions in 12 pieces; the difference counts
+  extra pieces, not fragmented regions). The per-zone data and the design
+  conclusion it supported are unchanged. Re-derived by the new
+  `hack/churn/pieces.py`, which now emits the fleet figure rather than leaving it
+  to be read off a breakdown.
+- Corrected T1's per-column run diagram: one of four columns is two pieces, not
+  one, because the original script collapsed vacated slots out instead of letting
+  them break a run. Full account in `docs/reports/t1-shape-rederivation.md`.
 
 ## [1.9.0] — 2026-08-03
 
