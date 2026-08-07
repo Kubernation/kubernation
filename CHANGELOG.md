@@ -43,10 +43,16 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   map could show you that a whole band of the fleet had been replaced without
   being able to say *which pool* — the grouping an operator actually acts on.
 
+  A **POOLS legend** in the right column names each colour, largest pool first,
+  with how many nodes and how many zones it spans — the colours are generated
+  from the pool name, so they tell you two provinces belong together and only the
+  legend tells you what they belong to.
+
   A pool spanning three zones deliberately reads as three regions rather than one
   shape: zone stays primary because zone is the failure domain, so a zone outage
-  takes exactly one of them. A node with no pool label recedes instead of being
-  given a colour, since it is not a member of anything.
+  takes exactly one of them — which is why the legend shows the span. A node with
+  no pool label recedes instead of being given a colour, and is listed as "no pool
+  label" rather than named, since it is not a member of anything.
 
 ### Changed
 - **Ground that changed hands is marked by one setting with two modes** —

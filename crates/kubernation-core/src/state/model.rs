@@ -487,6 +487,65 @@ pub const POOL_LABELS: &[&str] = &[
 
 pub const INSTANCE_TYPE_LABEL: &str = "node.kubernetes.io/instance-type";
 
+/// One nodepool's presence in the fleet — the legend's data.
+///
+/// `zones` is the fact the plan's §3.4.4 turns on: a pool spanning three
+/// availability zones renders as three regions, because a zone outage takes
+/// exactly one of them. Showing the span makes that visible rather than leaving
+/// it to be inferred from scattered colour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolTally {
+    pub pool: String,
+    /// How the grouping was determined — an inferred pool merges pools the
+    /// provider considers distinct, and the legend says so.
+    pub source: PoolSource,
+    pub nodes: usize,
+    /// How many zones this pool has nodes in.
+    pub zones: usize,
+}
+
+/// Every nodepool on the map, largest first.
+///
+/// PURE. Ties break on name so the legend does not reshuffle between ticks when
+/// two pools are the same size — the same stability discipline the layout
+/// applies to positions.
+///
+/// The unpooled sentinel sorts **last regardless of size**: it is an absence,
+/// not a pool, and letting it head the legend on a mostly-unlabelled fleet would
+/// present "we could not tell" as the fleet's largest group.
+pub fn pool_tally(world: &WorldModel) -> Vec<PoolTally> {
+    use std::collections::BTreeMap;
+    let mut by_pool: BTreeMap<&str, (PoolSource, usize, BTreeSet<&str>)> = BTreeMap::new();
+    for cont in &world.continents {
+        for prov in &cont.provinces {
+            let e = by_pool.entry(prov.tile.pool.as_str()).or_insert((
+                prov.tile.pool_source,
+                0,
+                BTreeSet::new(),
+            ));
+            e.1 += 1;
+            e.2.insert(cont.zone.as_str());
+        }
+    }
+    let mut out: Vec<PoolTally> = by_pool
+        .into_iter()
+        .map(|(pool, (source, nodes, zones))| PoolTally {
+            pool: pool.to_string(),
+            source,
+            nodes,
+            zones: zones.len(),
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        let unpooled = |t: &PoolTally| t.pool == DEFAULT_POOL;
+        unpooled(a)
+            .cmp(&unpooled(b))
+            .then(b.nodes.cmp(&a.nodes))
+            .then(a.pool.cmp(&b.pool))
+    });
+    out
+}
+
 /// The pool a node with no recognisable pool label belongs to. A real name, not
 /// an empty string, so it reads as a place rather than a gap — the `UNZONED`
 /// convention, and deliberately the same SHAPE as that sentinel.
@@ -1994,6 +2053,12 @@ pub struct Models {
     pub substrate: crate::state::substrate::SubstrateReport,
     /// The explorable world projection of all of the above.
     pub world: WorldModel,
+    /// Every nodepool on the map, largest first — the Pool overlay's legend.
+    ///
+    /// Memoized here rather than tallied by the renderer because the legend is
+    /// drawn on the 60fps sidebar, and re-walking every province each frame is
+    /// the cost the posture chip established this pattern to avoid.
+    pub pools: Vec<PoolTally>,
     /// The slot assignment this build produced. The caller holds it and feeds it
     /// back as `prior` next tick — that is the entire mechanism by which the map
     /// holds still. Kept on `Models` rather than on `ObservedWorld`, which must
@@ -2105,6 +2170,7 @@ impl Models {
             coverage,
             exposed,
             substrate,
+            pools: pool_tally(&world_model),
             world: world_model,
             layout,
         }
@@ -3307,5 +3373,44 @@ mod tests {
                 "rebuild over the 100ms budget: {per:?}"
             );
         }
+    }
+    /// The legend's data: largest first, ties by name, and the absence last.
+    #[test]
+    fn pool_tally_ranks_by_size_and_sinks_the_unpooled() {
+        let (world, mut s) = fx::world();
+        // Three pools of different sizes plus an unlabelled node. `mem` is put
+        // in two zones so the span shows.
+        for (name, zone, pool) in [
+            ("a1", "z-a", Some("sys")),
+            ("a2", "z-a", Some("sys")),
+            ("a3", "z-a", Some("sys")),
+            ("b1", "z-a", Some("mem")),
+            ("b2", "z-b", Some("mem")),
+            ("c1", "z-b", None),
+        ] {
+            let mut n = fx::node(name, Some(zone));
+            if let Some(p) = pool {
+                n.metadata
+                    .labels
+                    .get_or_insert_with(Default::default)
+                    .insert("cloud.google.com/gke-nodepool".into(), p.into());
+            }
+            s.node(n);
+        }
+        let m = Models::build(&world);
+        let names: Vec<&str> = m.pools.iter().map(|t| t.pool.as_str()).collect();
+        assert_eq!(
+            names.last(),
+            Some(&DEFAULT_POOL),
+            "an absence is not the fleet's largest group: {names:?}",
+        );
+        let sys = m.pools.iter().find(|t| t.pool == "sys").expect("sys");
+        let mem = m.pools.iter().find(|t| t.pool == "mem").expect("mem");
+        assert_eq!(sys.nodes, 3);
+        assert_eq!(sys.zones, 1);
+        assert_eq!(mem.nodes, 2);
+        assert_eq!(mem.zones, 2, "a pool spanning two zones says so");
+        // Largest first, so the biggest group is what you read first.
+        assert!(names.iter().position(|n| *n == "sys") < names.iter().position(|n| *n == "mem"),);
     }
 }

@@ -41,6 +41,9 @@ const ATTN_CAP: usize = 6;
 
 /// How many IMPACT rows the column shows before "+N more".
 const IMPACT_CAP: usize = 8;
+/// How many pools the legend names before "+N more". A fleet with more
+/// nodepools than this has a naming problem the legend cannot fix.
+const POOL_LEGEND_CAP: usize = 10;
 
 /// What a frame's interaction with the column asks the caller to do.
 #[derive(Default)]
@@ -96,6 +99,65 @@ fn sev_rank(s: Option<Severity>) -> u8 {
 
 /// Build the IMPACT rows from a (memoized) blast radius — health cross-referenced
 /// against the subject cluster's `workload_severity`, cell-resolved against its
+/// One legend row: the swatch's pool and the words beside it.
+pub struct PoolLegendRow {
+    /// What to draw the swatch with — the SAME `pool_pair` the map fills with,
+    /// so a legend entry cannot show a colour the terrain does not use.
+    pub pool: String,
+    pub label: String,
+    /// The unpooled sentinel: drawn, but as an absence rather than a member.
+    pub unpooled: bool,
+}
+
+/// PURE draw-decision fn: the Pool overlay's legend rows, capped.
+///
+/// The legend exists because the hues are hashed and therefore arbitrary — the
+/// colour tells you two provinces belong together, and only the legend tells you
+/// what they belong to. That is why the plan asks for colour AND label; this is
+/// the map-wide half of the label, where `pool_line` is the per-province half.
+///
+/// The zone span is carried because it is §3.4.4's whole point: a pool across
+/// three availability zones is three regions, and a zone outage takes exactly
+/// one of them. Reading "3 zones" beside the colour is what makes the scattered
+/// placement legible rather than looking like disorder.
+pub fn pool_legend_rows(
+    pools: &[kubernation_core::state::model::PoolTally],
+    cap: usize,
+) -> Vec<PoolLegendRow> {
+    use kubernation_core::state::model::DEFAULT_POOL;
+    let mut out: Vec<PoolLegendRow> = pools
+        .iter()
+        .take(cap)
+        .map(|t| {
+            let unpooled = t.pool == DEFAULT_POOL;
+            let label = if unpooled {
+                // Never "unpooled: 12 nodes", which reads as a pool by that name.
+                format!("no pool label . {} nodes", t.nodes)
+            } else {
+                let zones = if t.zones > 1 {
+                    format!(" . {} zones", t.zones)
+                } else {
+                    String::new()
+                };
+                format!("{} . {} nodes{zones}", t.pool, t.nodes)
+            };
+            PoolLegendRow {
+                pool: t.pool.clone(),
+                label,
+                unpooled,
+            }
+        })
+        .collect();
+    if pools.len() > cap {
+        out.push(PoolLegendRow {
+            pool: String::new(),
+            label: format!("+{} more", pools.len() - cap),
+            unpooled: true,
+        });
+    }
+    out
+}
+
 /// `WorldModel` (the same `affected_cell` the map highlight uses, so the list and
 /// the flash can't disagree). **PURE** (no GL) — unit-tested. Order: hop asc,
 /// then worst-health DESC within a hop (a failing dependent floats to the top of
@@ -526,6 +588,38 @@ pub fn draw_sidebar(
         y += 15.0;
     }
 
+    // --- POOLS (only while the Pool overlay is active) ---------------------
+    // The hues are hashed and therefore arbitrary: the colour says these
+    // provinces belong together, and only this says what they belong to.
+    if overlay == Overlay::Pool {
+        let pools = &snap.hot.models.pools;
+        y += 6.0;
+        divider(y);
+        y += 16.0;
+        text_bold(format!("POOLS ({})", pools.len()), x, y, 15.0, STONE_INK);
+        y += 20.0;
+        let bottom = col.y + col.h - 6.0;
+        for row in pool_legend_rows(pools, POOL_LEGEND_CAP) {
+            if y > bottom {
+                break;
+            }
+            if !row.pool.is_empty() {
+                // The SAME painter the terrain uses, so a swatch cannot show a
+                // colour the map does not.
+                let (a, b) = crate::theme::pool_pair(&row.pool);
+                draw_rectangle(x, y - 9.0, 11.0, 11.0, a);
+                draw_rectangle(x + 11.0, y - 9.0, 11.0, 11.0, b);
+            }
+            let ink = if row.unpooled {
+                STONE_INK_DIM
+            } else {
+                STONE_INK
+            };
+            text(ascii(&row.label), x + 28.0, y, 13.0, ink);
+            y += 16.0;
+        }
+    }
+
     // --- IMPACT (blast radius — only while the overlay is active) ----------
     // The navigable dependency fan-out of the troubled subject; the on-map flash
     // + banner stay visible beside it. Click a row to fly to that resource.
@@ -893,5 +987,55 @@ mod tests {
         let (t2, tier2) = posture_chip(&mk(None, PostureTier::Unscanned));
         assert!(t2.contains("not scanned"));
         assert_eq!(tier2, PostureTier::Unscanned);
+    }
+    /// The legend names the group and refuses to name an absence.
+    #[test]
+    fn the_pool_legend_names_groups_and_says_when_there_is_none() {
+        use kubernation_core::state::layout::PoolSource;
+        use kubernation_core::state::model::{DEFAULT_POOL, PoolTally};
+        let t = |pool: &str, nodes, zones, src| PoolTally {
+            pool: pool.into(),
+            source: src,
+            nodes,
+            zones,
+        };
+        let pools = vec![
+            t("sys", 30, 3, PoolSource::Provider("gke")),
+            t("edge", 15, 1, PoolSource::Provider("gke")),
+            t(DEFAULT_POOL, 4, 2, PoolSource::Default),
+        ];
+        let rows = pool_legend_rows(&pools, 10);
+        assert_eq!(rows.len(), 3);
+
+        // The zone span is §3.4.4's point and is only shown when it is > 1 —
+        // "1 zones" beside every single-zone pool would be noise.
+        assert!(rows[0].label.contains("sys") && rows[0].label.contains("3 zones"));
+        assert!(!rows[1].label.contains("zones"), "{:?}", rows[1].label);
+
+        // The sentinel is an absence, drawn dim and never named as a pool.
+        assert!(rows[2].unpooled);
+        assert!(!rows[2].label.contains(DEFAULT_POOL), "{:?}", rows[2].label);
+        assert!(rows[2].label.contains("no pool label"));
+        assert!(!rows[0].unpooled);
+    }
+
+    /// A fleet with more pools than the cap says how many it left out.
+    #[test]
+    fn the_pool_legend_admits_what_it_dropped() {
+        use kubernation_core::state::layout::PoolSource;
+        use kubernation_core::state::model::PoolTally;
+        let pools: Vec<PoolTally> = (0..14)
+            .map(|i| PoolTally {
+                pool: format!("p{i}"),
+                source: PoolSource::Default,
+                nodes: 1,
+                zones: 1,
+            })
+            .collect();
+        let rows = pool_legend_rows(&pools, 10);
+        assert_eq!(rows.len(), 11, "ten named plus the admission");
+        assert_eq!(rows[10].label, "+4 more");
+        // No swatch for the summary row — there is no one colour it stands for.
+        assert!(rows[10].pool.is_empty());
     }
 }

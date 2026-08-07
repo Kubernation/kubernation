@@ -3880,9 +3880,21 @@ what makes the interesting logic unit-testable without a cluster.
   the 4-pool churn fleet: four distinct colours, the same pool appearing in
   several columns (three regions, as §3.4.4 predicts), the minimap carrying the
   structure, and the province window reading `province of z-a . pool sys`.
-  449 core + 106 GUI tests; gui-smoke 55. **Deferred:** a pool legend (the hues
-  are arbitrary, so the label carries naming — a legend would help on a
-  many-pool fleet); pool-aware region *labels* drawn on the map itself (the
+  **The legend followed (v1.15.0)**, closing the same item's other half: pure
+  `model::pool_tally(&WorldModel) -> Vec<PoolTally>` memoized on `Models` (the
+  posture-chip precedent — the legend is drawn on the 60fps sidebar, so it must
+  not re-walk every province per frame), sorted largest-first with ties by name
+  and **the unpooled sentinel last regardless of size**, since letting an absence
+  head the legend on a mostly-unlabelled fleet would present "we could not tell"
+  as the fleet's largest group. `sidebar::pool_legend_rows` is the pure
+  draw-decision fn; the POOLS column section draws its swatches with the SAME
+  `pool_pair` the terrain fills with, so a swatch cannot show a colour the map
+  does not. `PoolTally.zones` carries the span and is shown only when > 1 ("1
+  zones" beside every single-zone pool is noise) — it is what makes §3.4.4's
+  scattered placement read as structure rather than disorder. Verified live:
+  `sys . 30 nodes . 3 zones`, `t3.xlarge . 30 nodes . 2 zones`, `burst . 24
+  nodes . 2 zones`, `mem . 16 nodes`. 450 core + 108 GUI tests; gui-smoke 55.
+  **Deferred:** pool-aware region *labels* drawn on the map itself (the
   plan's "label" is read here as the panel naming, which is this codebase's
   established pattern for exactly this).
 
