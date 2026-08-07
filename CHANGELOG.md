@@ -44,10 +44,19 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   being able to say *which pool* — the grouping an operator actually acts on.
 
   Each region is **named on the map** — a region being one pool within one zone.
-  Where a region has ended up in more than one piece (nodes are placed in
-  allocation order, so pools interleave as they grow), it is named once on its
-  largest piece and the shared colour carries the rest, the way an atlas labels
-  an archipelago; naming every piece would read as several different pools.
+  Nodes are placed in allocation order, so pools interleave and a region is
+  usually in several pieces (4 of 8 on the churn fleet). **Every piece carries
+  the name**, because the largest piece can hold as little as 40% of a region
+  and naming only that one leaves the rest anonymous at any zoom close enough to
+  fill the screen with a different piece. Repetition does not read as several
+  pools: the shared fill colour is what carries identity.
+
+  Names **follow the view** down their own ground, the way the graticule's
+  column letters do, so panning across a region — or zooming into one — keeps
+  its name on screen instead of leaving it at a midpoint that has scrolled off.
+  A name never leaves the ground it names to chase the view; if its region is
+  off-frame it is simply not drawn, rather than pinned to an edge where it would
+  appear to label whatever is there.
 
   A **POOLS legend** in the right column names each colour, largest pool first,
   with how many nodes and how many zones it spans — the colours are generated

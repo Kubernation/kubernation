@@ -3894,23 +3894,49 @@ what makes the interesting logic unit-testable without a cluster.
   scattered placement read as structure rather than disorder. Verified live:
   `sys . 30 nodes . 3 zones`, `t3.xlarge . 30 nodes . 2 zones`, `burst . 24
   nodes . 2 zones`, `mem . 16 nodes`. 450 core + 108 GUI tests; gui-smoke 55.
-  **On-map region labels followed (v1.16.0)**, closing the item entirely. A
-  region is `pool ∩ zone`, and A2's zone-wide ordinals let pools interleave, so a
-  region can be in several pieces — **measured on the churn fleet, 1 of 8 already
-  is**. Pure `draw::pool_label_runs(&[&str]) -> Vec<(start, len)>` returns the
-  LARGEST run per pool, first-wins on ties so the choice cannot flip between
-  frames, skipping the unpooled sentinel (an absence is not a region and must not
-  be given a name on the map). **One label per region, on its largest piece** —
-  naming every piece would read as several different pools, whereas naming the
-  largest and letting the shared fill carry the rest is what an atlas does with
-  an archipelago, and is what §3.4.4 means by identity travelling in the colour.
-  Drawn in pass 2 between the continent label and the province features — a
-  region sits one level inside a continent — so it joins the existing `occupied`
-  de-confliction; and a label taller than the run it names is **skipped**, since
-  it would overhang into a neighbouring pool and appear to claim it. Verified
-  live: `sys` appears as three separately-named regions across columns A, B and C
-  — §3.4.4's "a pool across three AZs should render as three regions", on screen.
-  451 core + 109 GUI tests; gui-smoke 55.
+  **On-map region labels followed (v1.16.0, corrected in v1.17.0)**, closing the
+  item entirely. A region is `pool ∩ zone`. Drawn in pass 2 between the continent
+  label and the province features — a region sits one level inside a continent —
+  so it joins the existing `occupied` de-confliction; a label taller than the
+  piece it names is **skipped**, since it would overhang into a neighbouring pool
+  and appear to claim it; and the unpooled sentinel is never named (an absence is
+  not a region). **v1.16.0 shipped two defects, both found by building the
+  pan-following the user asked for next**, and both are the same root — *the
+  model does not store provinces in map order*. `zone.nodes` is sorted by
+  `fnv1a64(name)` (model.rs:965) while a province's row comes from its layout
+  ordinal, so **neighbours in `Continent.provinces` are not neighbours on the
+  ground**, and v1.16.0's "largest contiguous run" was a run of consecutive
+  *vector entries* — an arbitrary set of provinces. The span between its first
+  and last entry could be inverted, which the code's `.abs()` silently absorbed
+  (the guard hid the bug; a `clamp` added later crashed on it — `min > max`), and
+  a name could be placed on ground belonging to a different pool. Fixed by making
+  the mistake unrepresentable rather than by sorting at the call site:
+  `draw::pool_label_pieces(&[(pool, row)]) -> Vec<(first, last)>` takes the
+  provinces **in the model's own order and sorts internally**, and contiguity
+  means **consecutive slot ordinals** — so a departed node's ghost ground, which
+  sits between two same-pool provinces on screen, correctly splits the region.
+  **Second correction: every piece is named, not only the largest.** Measured
+  properly, **4 of 8 regions are in more than one piece** (v1.16.0 claimed 1 of 8
+  — computed with the same wrong ordering) and a largest piece holds as little as
+  **40%** of its region, so naming only that one leaves most of a pool's ground
+  anonymous at any zoom close enough to fill the screen with a different piece —
+  which is the case the name exists for. Repetition does not read as several
+  pools because the fill colour is shared, which is exactly what §3.4.4 means by
+  identity travelling in the colour rather than in contiguity.
+  **Names follow the view (v1.17.0).** A name fixed at its piece's midpoint is
+  absent from every view that midpoint has scrolled out of — most of them, once
+  you are close enough to read a province — so the row is now the row of the
+  piece's own ground nearest the vertical middle of the view, clamped to the
+  piece. The rule is `column_mark`'s, now **shared** as the pure, tested
+  `region_label_row` so the graticule and the region names cannot disagree. Only
+  the ROW follows: an attempt to clamp the column as well put names **offshore**,
+  because a region spans every column it has and the rectangle's edges are where
+  the coast carving puts sea — both callers ride the continent's midline
+  instead, and a name whose ground is off-frame is dropped rather than pinned to
+  an edge where it would label whatever is there. Verified live on the churn
+  fleet at zoom 1.4 (the case that previously showed nothing) and 0.6 (two `sys`
+  pieces named across columns B and C — §3.4.4's "a pool across three AZs should
+  render as three regions", on screen). 450 core + 110 GUI tests; gui-smoke 55.
 
 ## The pair (hot/warm)
 

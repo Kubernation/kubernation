@@ -1289,25 +1289,39 @@ pub fn draw_world(
         // the Pool overlay, where the fill already groups them and the name is
         // what turns an arbitrary hue into an identity.
         if overlay == Overlay::Pool {
-            let names: Vec<&str> = cont
+            let rows: Vec<(&str, u16)> = cont
                 .provinces
                 .iter()
-                .map(|p| p.tile.pool.as_str())
+                .map(|p| (p.tile.pool.as_str(), p.y))
                 .collect();
-            for (start, len) in pool_label_runs(&names) {
-                let first = &cont.provinces[start];
-                let last = &cont.provinces[start + len - 1];
-                let mid_y = f32::from(first.y + last.y + last.h) * 0.5;
-                let c = cam.to_land(f32::from(cont.x) + f32::from(cont.w) * 0.5, mid_y);
+            let (py0, py1) = (crate::panels::CHROME_H + 26.0, screen_height());
+            let map_w = crate::panels::map_width();
+            // Names ride the continent's midline and follow the view down it —
+            // the graticule's rule, shared, so a name cannot end up offshore.
+            let mid_x = f32::from(cont.x) + f32::from(cont.w) * 0.5;
+            let target_y = (py0 + py1) * 0.5;
+            let (_, hh) = cam.cell_px();
+            for (top, bottom) in pool_label_pieces(&rows) {
+                let first = &cont.provinces[top];
+                let last = &cont.provinces[bottom];
+                let span = (f32::from(first.y), f32::from(last.y + last.h));
+                let wy = region_label_row(span, cam.to_land(mid_x, span.0).y, target_y, hh);
+                let c = cam.to_land(mid_x, wy);
+                // Off the play area: draw nothing rather than jam the name
+                // against an edge, where it would sit over a different region.
+                if c.x < 0.0 || c.x > map_w || c.y < py0 || c.y > py1 {
+                    continue;
+                }
                 let label = ascii(&first.tile.pool);
                 let fs = 15.0 * label_scale(cam.zoom);
                 let tm = text_size(&label, fs);
                 // Do not print a name larger than the ground it names: at small
                 // zoom, or on a one-province region, the label would overhang
-                // into a neighbouring pool and claim it.
-                let run_px = (cam.to_land(0.0, f32::from(last.y + last.h)).y
-                    - cam.to_land(0.0, f32::from(first.y)).y)
-                    .abs();
+                // into a neighbouring pool and claim it. Slot order makes this
+                // span non-negative by construction; it is deliberately not
+                // absolute-valued, because that is what hid the unsorted bug.
+                let run_px = cam.to_land(0.0, f32::from(last.y + last.h)).y
+                    - cam.to_land(0.0, f32::from(first.y)).y;
                 let r = Rect::new(
                     c.x - tm.width * 0.5,
                     c.y - tm.height,
@@ -1500,44 +1514,81 @@ pub fn draw_blast(cam: &Camera, sw: &SceneWorld, blast: &BlastRadius) -> Option<
     Some(targets.len())
 }
 
-/// The largest contiguous run of each pool down a column, as `(start, len)`.
+/// The world row a name sits on when it labels a band of ground: the row of
+/// that band nearest the vertical middle of the view, never off it.
 ///
-/// PURE — unit-tested. One entry per distinct pool, in column order, with the
-/// unpooled sentinel skipped: an absence is not a region and must not be given
-/// a name on the map.
+/// Inside the band that is the view itself, so panning along a region (or
+/// zooming into one) keeps its name on screen; a name fixed at the band's
+/// midpoint is absent from every view that midpoint has scrolled out of, which
+/// is most of them once you are close enough to read a province. Outside it,
+/// the nearest end, so the name never leaves the ground it names to chase the
+/// view. The clamp is continuous, so the name slides rather than jumping as the
+/// view crosses the boundary.
 ///
-/// **One label per region, on its largest piece.** A region is `pool ∩ zone`,
-/// and A2's zone-wide ordinals let pools interleave, so a region can be in
-/// several pieces — measured on the churn fleet, 1 of 8 already is. Labelling
-/// every piece would read as several different regions; labelling the largest
-/// and letting the shared fill carry the rest is what an atlas does with an
-/// archipelago, and it is what §3.4.4 means by identity travelling in the colour.
-pub(crate) fn pool_label_runs(pools: &[&str]) -> Vec<(usize, usize)> {
+/// Only the row follows. The column is the continent's midline for both callers
+/// — a band spans every column it has, and the rectangle's edges are where the
+/// coast carving puts sea, so clamping across would float the name offshore.
+///
+/// `top_y` is where `rows.0` projects and `hh` the screen height of one row:
+/// screen y is linear in world y along a fixed column, so this is a solve
+/// rather than a search. Total — `hh <= 0.0` yields the band's first row.
+pub(crate) fn region_label_row(rows: (f32, f32), top_y: f32, target_y: f32, hh: f32) -> f32 {
+    let (lo, hi) = (rows.0.min(rows.1), rows.0.max(rows.1));
+    if hh <= 0.0 {
+        return lo;
+    }
+    (rows.0 + (target_y - top_y) / hh).clamp(lo, hi)
+}
+
+/// Every contiguous piece of every region, as `(first, last)` indices into
+/// `provinces`: the province at the top of each piece and the one at its
+/// bottom, ordered down the column.
+///
+/// PURE, unit-tested. The unpooled sentinel is skipped: an absence is not a
+/// region and must not be given a name on the map.
+///
+/// Takes `(pool, row)` **in the model's own order** and sorts internally. That
+/// is deliberate rather than a convenience: `zone.nodes` is ordered by name
+/// hash while a province's row comes from its layout ordinal, so neighbours in
+/// `Continent.provinces` are not neighbours on the ground, and a caller reading
+/// the stored order as map order finds pieces that are not there. Owning the
+/// sort makes that mistake unrepresentable.
+///
+/// **Contiguous means consecutive slots.** Two things break a region: another
+/// pool's province, and a departed node's ghost ground, which sits between them
+/// on screen and so genuinely splits the region in two.
+///
+/// **Every piece is named, not only the largest.** A2's zone-wide ordinals let
+/// pools interleave, so a region is usually in several pieces — measured on the
+/// churn fleet, 4 of 8 are, and a largest piece holds as little as 40% of its
+/// region. Naming only that one leaves most of the pool's ground anonymous at
+/// any zoom close enough to fill the screen with a different piece, which is
+/// the case the name exists for. Repetition does not read as several different
+/// pools, because the fill colour is shared — that is what §3.4.4 means by
+/// identity travelling in the colour rather than in contiguity, and repeating a
+/// name along a large feature is ordinary cartographic practice.
+pub(crate) fn pool_label_pieces(provinces: &[(&str, u16)]) -> Vec<(usize, usize)> {
     use kubernation_core::state::model::DEFAULT_POOL;
-    // Longest run per pool, first-wins on ties so the choice is deterministic
-    // and does not flip between frames when two pieces are the same size.
-    let mut best: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
+    use kubernation_core::state::world::slot_of_row;
+    let slot = |i: usize| slot_of_row(provinces[i].1);
+    let mut order: Vec<usize> = (0..provinces.len()).collect();
+    order.sort_unstable_by_key(|&i| (slot(i), i));
+    let mut out = Vec::new();
     let mut i = 0;
-    while i < pools.len() {
-        let pool = pools[i];
+    while i < order.len() {
+        let pool = provinces[order[i]].0;
         let mut j = i;
-        while j < pools.len() && pools[j] == pool {
+        while j < order.len()
+            && provinces[order[j]].0 == pool
+            && (j == i || slot(order[j]) == slot(order[j - 1]) + 1)
+        {
             j += 1;
         }
         if pool != DEFAULT_POOL {
-            let run = (i, j - i);
-            best.entry(pool)
-                .and_modify(|cur| {
-                    if run.1 > cur.1 {
-                        *cur = run;
-                    }
-                })
-                .or_insert(run);
+            out.push((order[i], order[j - 1]));
         }
         i = j;
     }
-    let mut out: Vec<(usize, usize)> = best.into_values().collect();
-    out.sort_unstable();
     out
 }
 
@@ -1658,14 +1709,8 @@ fn column_mark(letter: &str, note: Option<&str>, cam: &Camera, x: u16, y0: u16, 
     let (_, hh) = cam.cell_px();
     let (py0, py1) = (crate::panels::CHROME_H + 26.0, screen_height());
     let target = (py0 + py1) * 0.5;
-    // Screen y is linear in world y along a fixed x, so solve for the world row
-    // sitting at the viewport's vertical centre rather than searching for it.
     let top = cam.to_land(mid_x, f32::from(y0));
-    let wy = if hh > 0.0 {
-        (f32::from(y0) + (target - top.y) / hh).clamp(f32::from(y0), f32::from(y1))
-    } else {
-        f32::from(y0)
-    };
+    let wy = region_label_row((f32::from(y0), f32::from(y1)), top.y, target, hh);
     let p = cam.to_land(mid_x, wy);
     // Off the play area: draw nothing rather than jam the mark against an edge,
     // where it would appear to label whatever else is there.
@@ -3653,27 +3698,63 @@ mod tests {
     }
     /// One label per region, on its largest piece, and never for an absence.
     #[test]
-    fn pool_label_runs_picks_the_largest_piece_of_each_region() {
+    fn region_label_follows_the_view_but_never_leaves_its_region() {
+        // A band from row 4 to row 11, one row 20px tall, whose first row
+        // projects at screen y = 100. The view's middle is at `target`.
+        let (rows, top_y, hh) = ((4.0f32, 11.0f32), 100.0f32, 20.0f32);
+        // Over the band: the name goes where you are looking, so zooming into a
+        // region or panning along it keeps the name on screen.
+        for (target, want) in [(100.0, 4.0), (200.0, 9.0), (240.0, 11.0)] {
+            assert_eq!(region_label_row(rows, top_y, target, hh), want);
+        }
+        // Past either end: pinned to the band's own ground, not dragged along.
+        assert_eq!(region_label_row(rows, top_y, -900.0, hh), 4.0);
+        assert_eq!(region_label_row(rows, top_y, 9000.0, hh), 11.0);
+        // Continuous across the boundary: no jump as the view crosses it.
+        let a = region_label_row(rows, top_y, 99.0, hh);
+        let b = region_label_row(rows, top_y, 101.0, hh);
+        assert!((a - b).abs() < 0.1);
+        // Total: a degenerate scale yields the band's first row, never a NaN.
+        assert_eq!(region_label_row(rows, top_y, 200.0, 0.0), 4.0);
+        assert!(region_label_row((11.0, 4.0), top_y, 9000.0, hh).is_finite());
+    }
+
+    #[test]
+    fn pool_label_pieces_finds_every_piece_on_the_map_s_own_order() {
         use kubernation_core::state::model::DEFAULT_POOL;
-        // `sys` is in two pieces (2 then 4); the label belongs on the longer.
-        let col = [
-            "sys", "sys", "burst", "burst", "burst", "sys", "sys", "sys", "sys",
-        ];
-        let runs = pool_label_runs(&col);
+        use kubernation_core::state::world::slot_row;
+        // The model stores provinces in name-hash order, so every case is
+        // written SHUFFLED: were the sort dropped, these would find pieces that
+        // are not on the ground.
+        fn at<'a>(v: &[(&'a str, u16)]) -> Vec<(&'a str, u16)> {
+            v.iter().map(|(p, o)| (*p, slot_row(*o))).collect()
+        }
+
+        // Interleaved pools. sys is in two pieces (slots 0-1 and 3-5) and BOTH
+        // are named: at a zoom that fills the screen with the lower piece, the
+        // upper one's name is nowhere on it.
+        let col = at(&[
+            ("sys", 3),
+            ("burst", 2),
+            ("sys", 5),
+            ("sys", 0),
+            ("sys", 4),
+            ("sys", 1),
+        ]);
+        assert_eq!(pool_label_pieces(&col), vec![(3, 5), (1, 1), (0, 2)]);
+
+        // A GHOST between two provinces of one pool splits the region: the
+        // slots are not consecutive, and grey reserved ground sits between them
+        // on screen. Slot 2 has departed, so this is two pieces, not one.
+        let gap = at(&[("sys", 5), ("sys", 0), ("sys", 4), ("sys", 3), ("sys", 1)]);
+        assert_eq!(pool_label_pieces(&gap), vec![(1, 4), (3, 0)]);
+
+        // The unpooled sentinel is never named.
         assert_eq!(
-            runs,
-            vec![(2, 3), (5, 4)],
-            "burst's run, then sys's LARGER run"
+            pool_label_pieces(&at(&[(DEFAULT_POOL, 0), ("a", 1)])),
+            vec![(1, 1)]
         );
-
-        // Ties keep the first, so the choice cannot flip between frames.
-        let tie = ["a", "a", "b", "a", "a"];
-        assert_eq!(pool_label_runs(&tie), vec![(0, 2), (2, 1)]);
-
-        // An absence is not a region and gets no name on the map.
-        let with_gap = [DEFAULT_POOL, DEFAULT_POOL, "sys"];
-        assert_eq!(pool_label_runs(&with_gap), vec![(2, 1)]);
-        assert!(pool_label_runs(&[DEFAULT_POOL]).is_empty());
-        assert!(pool_label_runs(&[]).is_empty());
+        assert!(pool_label_pieces(&at(&[(DEFAULT_POOL, 0)])).is_empty());
+        assert!(pool_label_pieces(&[]).is_empty());
     }
 }
