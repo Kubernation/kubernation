@@ -153,10 +153,19 @@ pub fn draw_node(
     // Pool beside zone: both are standing facts about where this node belongs,
     // and once you have drilled in they are worth having without needing the
     // right overlay turned on — the same argument `substrate_lines` makes.
-    let zone_line = match crate::panels::pool_line(&t.pool, t.pool_source, true) {
+    let mut zone_line = match crate::panels::pool_line(&t.pool, t.pool_source, true) {
         Some((p, _)) => format!("province of {} . {p}", t.zone),
         None => format!("province of {}", t.zone),
     };
+    // How big this province is drawn, when that was a guess. Same authority as
+    // the map (`province_extent`), so the SELECTION box and this window cannot
+    // disagree about whether a size was measured.
+    if let Some((how, _)) =
+        crate::panels::extent_line(kubernation_core::state::world::province_extent(&t.extent).1)
+    {
+        zone_line.push_str(" . ");
+        zone_line.push_str(&how);
+    }
     text(zone_line.as_str(), b.x, y + 12.0, 14.0, PARCHMENT);
     let (hword, hcol) = match t.health {
         NodeHealth::Healthy => ("healthy", INK),

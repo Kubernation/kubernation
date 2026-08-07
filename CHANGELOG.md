@@ -133,6 +133,37 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   callers since the TUI was removed. Documentation only — no behaviour change.
   Full audit in `docs/reports/region-label-ordering.md`.
 
+### Added
+
+- **A province says when its size was a guess.** A node that reports no
+  allocatable memory is still drawn at some size, and until now nothing
+  distinguished that from a measurement — or an instance-type guess from a
+  pure default. The province window and the SELECTION box now say
+  "size from instance type - not measured" or "size not reported - default
+  extent", alongside the existing pool and gauge-source markings. Deliberately
+  words rather than the no-data hatching: the hatch means "this reading has no
+  denominator" and is gated to the ratio overlays, whereas size is drawn under
+  every overlay, so hatching it would put two unrelated meanings on one texture.
+
+### Fixed
+
+- **Terrain is painted back to front.** Under the Relief map style a raised tile
+  extends about 7px north of its own ground, so a southern band has to paint
+  over its northern neighbour. Land and ghost ground were painted in the order
+  the model happened to store them (name hash, and pool-then-slot) and in two
+  separate passes, which put every patch of ghost ground behind every province
+  regardless of where it sat. Both now sort together into one back-to-front
+  sequence. No visible change today — bands only touch at the largest size
+  class, which no test cluster reaches — which is precisely why the order is now
+  asserted by test rather than left to a fleet that happens not to show it.
+
+### Removed
+
+- `WorldModel::province_index_at` and `WorldModel::visible_provinces` — dead
+  since the TUI was removed, and both returned a vector index documented as a
+  map row. A false contract on an unused public helper is a trap for whoever
+  calls it next.
+
 ## [1.9.0] — 2026-08-03
 
 The first release since 1.6.0. It carries the work versioned 1.7.0, 1.7.1, 1.7.2

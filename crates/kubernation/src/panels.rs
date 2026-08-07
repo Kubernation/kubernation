@@ -7,7 +7,7 @@
 use kubernation_core::events::ClusterId;
 use kubernation_core::state::cost::{self, CostBasis, NodeCost};
 use kubernation_core::state::logline::{self, FilterExpr, Level};
-use kubernation_core::state::model::{NodeHealth, PodState, WorkloadRef};
+use kubernation_core::state::model::{ExtentSource, NodeHealth, PodState, WorkloadRef};
 use kubernation_core::state::saturation::{NodeSaturation, SatLevel};
 use kubernation_core::state::world::{CoastKind, Region};
 use macroquad::prelude::*;
@@ -248,6 +248,7 @@ pub fn region_lines(
                         p.tile.pool_source,
                         overlay == Overlay::Pool,
                     ));
+                    lines.extend(extent_line(p.extent_source));
                     lines.extend(fresh_line(sw.fresh.get(&p.tile.name).copied(), new_ground));
                     if overlay == Overlay::Saturation {
                         lines.extend(saturation_lines(&p.tile.saturation));
@@ -281,6 +282,7 @@ pub fn region_lines(
                     lines.extend(grid_ref_line(p.reference.as_ref(), graticule));
                     // Ungated, unlike the three below: fresh ground is tinted under
                     // every overlay, so its explanation must be too.
+                    lines.extend(extent_line(p.extent_source));
                     lines.extend(fresh_line(sw.fresh.get(&p.tile.name).copied(), new_ground));
                     // Under the Saturation overlay, name the binding strain
                     // dimension(s) — the distinguisher the Pressure overlay lacks.
@@ -386,6 +388,40 @@ pub fn draw_frame_note(on: bool) {
     for line in FRAME_DECLARATION {
         text(ascii(line), 12.0, y, fs, crate::theme::GRATICULE_INK);
         y += fs * 1.35;
+    }
+}
+
+/// How a province's SIZE was arrived at — the marking A2's acceptance asked for
+/// ("declared and marked") and which, until now, was declared only.
+///
+/// `None` for a measured size: a province drawn from the node's own reported
+/// memory needs no caveat, exactly as a declared pool needs none (`pool_line`).
+/// The two fallback rungs read differently from each other, which they did not
+/// before — `InstanceType` and `Default` produced the same extent and nothing
+/// distinguished them, or either of them from a genuinely mid-sized node.
+///
+/// **Deliberately a panel line and NOT the v1.6.0 hatch.** Three reasons, in
+/// order of weight. (1) The hatch means *this reading has no denominator*, and
+/// it is gated to the ratio overlays; extent is drawn under **every** overlay,
+/// so hatching it would put two unrelated meanings on one texture — and on a
+/// node that has both (no allocatable at all) they would be indistinguishable.
+/// (2) `ExtentSource`'s own doc says it travels "exactly as `metric_source` and
+/// `pool_source` do", and both of those are named in the panel, not drawn on
+/// the map. (3) Extent carries no cluster state — it is scenery — so a fallback
+/// size misleads about the machine, not about the cluster, which is a
+/// panel-sized claim rather than a terrain-sized one.
+///
+/// The hatch does not cover this case anyway: `province_unmeasured` fires only
+/// when `worst_known(cpu, mem)` is `None`, so a node reporting allocatable cpu
+/// but not memory gets a fallback extent and no hatch at all.
+pub fn extent_line(source: ExtentSource) -> Option<(String, Color)> {
+    match source {
+        ExtentSource::Capacity => None,
+        ExtentSource::InstanceType => Some((
+            "size from instance type - not measured".into(),
+            STONE_INK_DIM,
+        )),
+        ExtentSource::Default => Some(("size not reported - default extent".into(), STONE_INK_DIM)),
     }
 }
 
@@ -1416,6 +1452,26 @@ mod tests {
 
     /// The label half: names the pool, admits when the grouping was inferred,
     /// and refuses to dress an absent label up as a name.
+    #[test]
+    fn extent_line_marks_a_guessed_size_and_stays_quiet_on_a_measured_one() {
+        // A measured size needs no caveat — the `pool_line` rule.
+        assert_eq!(extent_line(ExtentSource::Capacity), None);
+        // Both fallback rungs speak, and they are DISTINGUISHABLE from each
+        // other, which was the gap: they produce the same extent, so without
+        // words they read identically to each other and to a measured node.
+        let (it, _) = extent_line(ExtentSource::InstanceType).expect("marked");
+        let (df, _) = extent_line(ExtentSource::Default).expect("marked");
+        assert_ne!(it, df);
+        assert!(it.contains("instance type"), "{it}");
+        assert!(df.contains("not reported"), "{df}");
+        for m in [&it, &df] {
+            assert!(
+                m.contains("not measured") || m.contains("not reported"),
+                "a fallback size must not read as a measurement: {m}"
+            );
+        }
+    }
+
     #[test]
     fn the_pool_line_names_the_group_and_how_it_was_inferred() {
         use kubernation_core::state::layout::PoolSource;

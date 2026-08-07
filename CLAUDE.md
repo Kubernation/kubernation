@@ -2326,6 +2326,73 @@ what makes the interesting logic unit-testable without a cluster.
   balance + scroll math, and clearing all verified). 294 core + 54 GUI (+1) tests; clippy
   clean. **Deferred:** persisting history across modal close; a stacked-transcript toggle;
   per-page metadata (timestamp/question).
+- **Consolidation — three deferred items, and a stop on the fourth** (2026-08-07,
+  **v1.18.0**; from `docs/kubernation-consolidation-guidance.md`, report in
+  `docs/reports/consolidation.md`): four small fixes, no new features. **Six of
+  eight §0 claims were `[A]`, and two are false** — one because a later phase
+  falsified it, one because I had corrected it the previous day. **(B) The
+  terrain pass sorts back to front.** Under `Relief` a tile's top face is raised
+  by `land_lift` while `fill_prism` fills the cliff down to the sea-level
+  footprint, so a band's paint extends `lift` px **north** of its ground and is
+  flush south — a southern band must paint over its northern neighbour, i.e.
+  ascending `y`. Neither input was in that order (`Continent.provinces` is
+  `fnv1a64(name)`, `Continent.ghosts` a `BTreeMap` keyed `(zone, pool,
+  ordinal)`). **The guidance's "two lines, sort the province loop" was too
+  small**: `draw_ghost_ground` is *also* lifted and ghosts were drawn as a whole
+  separate pass before the land, which puts every ghost behind every province
+  regardless of position — they interleave by slot and must sort together. Pure
+  `draw::terrain_order(province_y, ghost_y) -> Vec<Band>` owns the sort so no
+  caller supplies one (the `pool_label_pieces` discipline). Unobservable today —
+  bands only touch at extent 9, which needs a node above the top memory bound —
+  which is why the ORDER is asserted rather than the occlusion (pixels).
+  **(C) The two dead helpers are deleted** (54 lines): `province_index_at` and
+  `visible_provinces` returned a vector index documented as a map row; claim 4
+  (zero callers) verified over the whole tree first. **(D) `ExtentSource` gets a
+  user-facing marking, and it is a PANEL LINE, not the hatch** — the A2
+  acceptance item ("declared and marked") open since v1.7.0. Three reasons, in
+  weight order: the v1.6.0 hatch means *this reading has no denominator* and is
+  gated to the ratio overlays, whereas extent is drawn under **every** overlay,
+  so hatching it would put two unrelated meanings on one texture and make them
+  indistinguishable on a node that has both; `ExtentSource`'s own doc says it
+  travels "exactly as `metric_source` and `pool_source` do", and both of those
+  are named in the panel; and extent carries no cluster state (it is scenery), so
+  a fallback size misleads about the machine, not the cluster. `panels::
+  extent_line` is silent for `Capacity` (the `pool_line` rule — a measured value
+  needs no caveat) and distinguishes the two fallback rungs in words, which was
+  the real gap: they produce the SAME extent, so nothing separated them from each
+  other or from a genuinely mid-sized node. Found while deciding: the hatch would
+  not have covered it anyway — `province_unmeasured` fires on
+  `worst_known(cpu, mem).is_none()` and `worst_known` returns `Some` when EITHER
+  is known, so a node reporting allocatable cpu but not memory gets a fallback
+  extent and no hatch. **(A) The extent-bounds calibration was STOPPED at §0**,
+  and this is the round's finding. The guidance's preferred fix — "compare against
+  capacity rather than allocatable; capacity *is* the nominal size" — is **refuted
+  by measurement**: kind reports `capacity == allocatable == 15.653 GiB` on a
+  nominally 16 GiB VM, so capacity is below nominal for the same reason
+  allocatable is, and the kubelet reserves nothing on either kind or kwok (the
+  allocatable-vs-capacity gap the item is named for is **zero** on both clusters).
+  Worse, the prescribed acceptance — before/after captures on the churn fleet —
+  **cannot discriminate**: kwok reports exact round numbers, so the current
+  bounds `[32,128,512]` and the proposed `[30,120,480]` yield identical classes
+  for all 100 nodes, and the capture would show zero changed pixels. The item's
+  stated symptom ("the smallest extent is the ordinary case") is also not what
+  the fleet shows — it is 30×class 3, 53×class 5, 16×class 7 — and the thin-ribbon
+  appearance has the *already-recorded* cause that the stride is 9 while extents
+  are 3–7, which no recalibration touches. The underlying defect IS real on real
+  cloud nodes (a ~32 GiB instance reporting 30.9 falls to class 3, contradicting
+  the documented intent), so the recommendation is an explicit named
+  `EXTENT_HEADROOM` (~8%) rather than either guidance option — a midpoint scheme
+  `[24,96,384]` would promote genuinely in-between machines (24, 96 and 384 GiB
+  are all real instance sizes) — verified by a **synthetic boundary node, not a
+  fleet capture**. §1's causal link ("fixing the calibration activates the
+  occlusion") is correct and is now defused in the safe direction: B landed, A did
+  not, so A can later be done alone. **Standing question 7's first outing, and it
+  earned its keep** — asking "which containers does this pass treat as ordered?"
+  surfaces `cont.ghosts` immediately, where "sort the province loop" does not.
+  Recorded honestly: pass 2's `draw_province_features` still iterates in vector
+  order, safe only by *observation* (its marks are sparse and do not tile), not by
+  mechanism. 450 core + 112 GUI tests; gui-smoke 55.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn

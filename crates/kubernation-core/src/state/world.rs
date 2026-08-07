@@ -356,27 +356,6 @@ impl WorldModel {
         self.cities().find(|c| &c.r == r).map(|c| (c.x, c.y))
     }
 
-    /// (continent index, province index) of the province containing a world
-    /// cell — **indices, not columns and rows**.
-    ///
-    /// DEAD: no callers since the TUI was removed, and the "zone col, node row"
-    /// it used to promise stopped being true at A2, when both vectors' order
-    /// stopped tracking position (see [`WorldModel::cities`]). Kept only because
-    /// deleting public API is a separate call; do not build on it.
-    pub fn province_index_at(&self, x: u16, y: u16) -> Option<(usize, usize)> {
-        for (ci, cont) in self.continents.iter().enumerate() {
-            if x < cont.x || x >= cont.x + cont.w {
-                continue;
-            }
-            for (pi, p) in cont.provinces.iter().enumerate() {
-                if y >= p.y && y < p.y + p.h {
-                    return Some((ci, pi));
-                }
-            }
-        }
-        None
-    }
-
     pub fn province_pos(&self, node: &str) -> Option<(u16, u16)> {
         self.continents
             .iter()
@@ -409,39 +388,6 @@ impl WorldModel {
             }
         }
         None
-    }
-
-    /// Which provinces a camera window can see: (first zone col, zone cols,
-    /// first province INDEX, index count).
-    ///
-    /// DEAD, and the last two are indices into a vector whose order has not
-    /// tracked map rows since A2 — the same falsified invariant as
-    /// [`WorldModel::cities`]. The minimap it was written for computes its own
-    /// viewport frame from the zoom. Do not build on it.
-    pub fn visible_provinces(
-        &self,
-        cam: (u16, u16),
-        view: (u16, u16),
-    ) -> (usize, usize, usize, usize) {
-        let (cx, cy) = cam;
-        let (vw, vh) = view;
-        let stride = (PATCH_W + OCEAN_GAP) as usize;
-        let first_col = (cx as usize) / stride;
-        let cols = ((cx + vw) as usize).div_ceil(stride).max(first_col + 1) - first_col;
-        let (mut first_row, mut last_row) = (usize::MAX, 0usize);
-        for cont in &self.continents {
-            for (i, p) in cont.provinces.iter().enumerate() {
-                if p.y < cy + vh && p.y + p.h > cy {
-                    first_row = first_row.min(i);
-                    last_row = last_row.max(i);
-                }
-            }
-        }
-        if first_row == usize::MAX {
-            (first_col, cols, 0, 1)
-        } else {
-            (first_col, cols, first_row, last_row - first_row + 1)
-        }
     }
 }
 

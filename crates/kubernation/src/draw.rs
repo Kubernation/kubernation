@@ -1243,11 +1243,18 @@ pub fn draw_world(
         for prov in &cont.provinces {
             draw_province_shallows(prov, cam, &coasts[ci]);
         }
-        for g in &cont.ghosts {
-            draw_ghost_ground(g, cam, &coasts[ci]);
-        }
-        for prov in &cont.provinces {
-            draw_province_terrain(prov, cam, &coasts[ci], overlay, data);
+        // Land and ghost ground in ONE back-to-front sequence. Both are lifted
+        // under Relief, and both interleave by slot ordinal, so they cannot be
+        // painted as two passes or sorted separately.
+        let py: Vec<u16> = cont.provinces.iter().map(|p| p.y).collect();
+        let gy: Vec<u16> = cont.ghosts.iter().map(|g| g.y).collect();
+        for band in terrain_order(&py, &gy) {
+            match band {
+                Band::Land(i) => {
+                    draw_province_terrain(&cont.provinces[i], cam, &coasts[ci], overlay, data)
+                }
+                Band::Ghost(i) => draw_ghost_ground(&cont.ghosts[i], cam, &coasts[ci]),
+            }
         }
     }
     for &ii in &isl_order {
@@ -1538,6 +1545,46 @@ pub(crate) fn region_label_row(rows: (f32, f32), top_y: f32, target_y: f32, hh: 
         return lo;
     }
     (rows.0 + (target_y - top_y) / hh).clamp(lo, hi)
+}
+
+/// One band of a continent's terrain: an index into its provinces or its ghosts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Band {
+    Land(usize),
+    Ghost(usize),
+}
+
+/// A continent's terrain bands in back-to-front paint order — ascending `y`.
+///
+/// PURE, unit-tested. Takes the two `y` lists in the model's own order and
+/// returns the order to paint them in, so no caller computes one (the
+/// `pool_label_pieces` discipline: a rule got wrong once gets one home).
+///
+/// **Why it must be sorted at all.** Under `Relief` a tile's top face is raised
+/// by `land_lift` while `fill_prism` fills the cliff down to the sea-level
+/// footprint, so a band's painted region extends `lift` px **north** of its own
+/// ground and is flush to the south. A southern band therefore has to paint
+/// over its northern neighbour, which is ascending `y` — and neither input is
+/// in that order: `Continent.provinces` is sorted by `fnv1a64(name)` and
+/// `Continent.ghosts` comes out of a `BTreeMap` keyed `(zone, pool, ordinal)`.
+/// Under `Plain` the lift is zero, bands never overlap, and the order is
+/// therefore unobservable — which is exactly why it is asserted here rather
+/// than left to a fleet that happens not to show it.
+///
+/// **Land and ghosts sort together.** A vacated slot sits between live ones, so
+/// two separate passes paint every ghost either in front of or behind every
+/// province regardless of where it is. On a tie (which disjoint ordinals should
+/// make unreachable) land goes first, for determinism only.
+pub(crate) fn terrain_order(province_y: &[u16], ghost_y: &[u16]) -> Vec<Band> {
+    let mut bands: Vec<Band> = (0..province_y.len())
+        .map(Band::Land)
+        .chain((0..ghost_y.len()).map(Band::Ghost))
+        .collect();
+    bands.sort_by_key(|b| match *b {
+        Band::Land(i) => (province_y[i], 0u8, i),
+        Band::Ghost(i) => (ghost_y[i], 1u8, i),
+    });
+    bands
 }
 
 /// Every contiguous piece of every region, as `(first, last)` indices into
@@ -3717,6 +3764,56 @@ mod tests {
         // Total: a degenerate scale yields the band's first row, never a NaN.
         assert_eq!(region_label_row(rows, top_y, 200.0, 0.0), 4.0);
         assert!(region_label_row((11.0, 4.0), top_y, 9000.0, hh).is_finite());
+    }
+
+    #[test]
+    fn terrain_order_paints_back_to_front_across_land_and_ghosts() {
+        // Both inputs arrive in the model's own order, which is neither's map
+        // order: provinces by name hash, ghosts by (pool, ordinal).
+        let provinces = [28u16, 1, 46, 10];
+        let ghosts = [37u16, 19];
+        let order = terrain_order(&provinces, &ghosts);
+        assert_eq!(
+            order,
+            vec![
+                Band::Land(1),  // y = 1
+                Band::Land(3),  // y = 10
+                Band::Ghost(1), // y = 19  — interleaved, not a separate pass
+                Band::Land(0),  // y = 28
+                Band::Ghost(0), // y = 37
+                Band::Land(2),  // y = 46
+            ]
+        );
+        // The property the occlusion depends on, stated directly: ascending y.
+        let ys: Vec<u16> = order
+            .iter()
+            .map(|b| match *b {
+                Band::Land(i) => provinces[i],
+                Band::Ghost(i) => ghosts[i],
+            })
+            .collect();
+        assert!(
+            ys.windows(2).all(|w| w[0] <= w[1]),
+            "not back-to-front: {ys:?}"
+        );
+
+        // Ghosts are not all-before or all-after: two passes cannot be correct.
+        let ghost_at: Vec<usize> = order
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| matches!(b, Band::Ghost(_)))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(ghost_at, vec![2, 4]);
+
+        assert!(terrain_order(&[], &[]).is_empty());
+        assert_eq!(terrain_order(&[5], &[]), vec![Band::Land(0)]);
+        assert_eq!(terrain_order(&[], &[5]), vec![Band::Ghost(0)]);
+        // Tie: land first, for determinism only.
+        assert_eq!(
+            terrain_order(&[5], &[5]),
+            vec![Band::Land(0), Band::Ghost(0)]
+        );
     }
 
     #[test]
