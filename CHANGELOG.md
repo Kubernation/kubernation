@@ -118,6 +118,21 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   changes KuberNation itself made this session, rather than only as a toast that
   vanishes when you look away.
 
+### Fixed
+
+- **Three false ordering contracts in `state/world.rs`** — an audit prompted by
+  the v1.17.0 region-label defect found the same mistake in three more places.
+  `WorldModel::cities()` promised "west→east, north→south"; both halves were
+  true until A2 moved rows to layout ordinals and continent x to durable
+  first-observed ordinals while the vectors kept their old sort keys
+  (alphabetical, and `fnv1a64(name)`). Verified: with `z-m` observed before
+  `z-a`, the continents vector is `[(z-a, x=30), (z-m, x=0)]` — the first entry
+  is the eastern one. The order is still deterministic, so `]` / `[` cycles
+  every city exactly once; it is just not geographic. `province_index_at` and
+  `visible_provinces` return vector indices documented as rows and have had no
+  callers since the TUI was removed. Documentation only — no behaviour change.
+  Full audit in `docs/reports/region-label-ordering.md`.
+
 ## [1.9.0] — 2026-08-03
 
 The first release since 1.6.0. It carries the work versioned 1.7.0, 1.7.1, 1.7.2

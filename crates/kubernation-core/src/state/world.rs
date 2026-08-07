@@ -329,7 +329,22 @@ impl WorldModel {
         Region::Ocean
     }
 
-    /// Cities in stable exploration order (west→east, north→south).
+    /// Every city, in a deterministic but **non-geographic** order.
+    ///
+    /// This read "west→east, north→south", and was true until A2: continents
+    /// were laid out at `zone_index * stride` over an alphabetically sorted zone
+    /// list, and provinces stacked with `y += h` down `zone.nodes`. A2 moved
+    /// both to durable ordinals — first-observed for a zone, layout slot for a
+    /// node — while the vectors kept their old sort keys (alphabetical, and
+    /// `fnv1a64(name)`). Neither now tracks position: a zone added to an
+    /// existing fleet takes the next ordinal, so it sits east of every zone that
+    /// sorts after it. Verified — with `z-m` observed before `z-a`, the vector
+    /// is `[(z-a, x=30), (z-m, x=0)]`.
+    ///
+    /// It is still stable, so `]` / `[` cycles every city exactly once with no
+    /// flicker; it just is not a geographic sweep. Do not use it to reason about
+    /// adjacency. Making the sail genuinely geographic is a design change, not a
+    /// fix — see `docs/reports/region-label-ordering.md`.
     pub fn cities(&self) -> impl Iterator<Item = &City> {
         self.continents
             .iter()
@@ -341,8 +356,13 @@ impl WorldModel {
         self.cities().find(|c| &c.r == r).map(|c| (c.x, c.y))
     }
 
-    /// (zone col, node row) of the province containing a world cell, for
-    /// the minimap cursor.
+    /// (continent index, province index) of the province containing a world
+    /// cell — **indices, not columns and rows**.
+    ///
+    /// DEAD: no callers since the TUI was removed, and the "zone col, node row"
+    /// it used to promise stopped being true at A2, when both vectors' order
+    /// stopped tracking position (see [`WorldModel::cities`]). Kept only because
+    /// deleting public API is a separate call; do not build on it.
     pub fn province_index_at(&self, x: u16, y: u16) -> Option<(usize, usize)> {
         for (ci, cont) in self.continents.iter().enumerate() {
             if x < cont.x || x >= cont.x + cont.w {
@@ -391,8 +411,13 @@ impl WorldModel {
         None
     }
 
-    /// Which provinces a camera window can see, for the minimap's viewport
-    /// frame: (first zone col, zone cols, first node row, node rows).
+    /// Which provinces a camera window can see: (first zone col, zone cols,
+    /// first province INDEX, index count).
+    ///
+    /// DEAD, and the last two are indices into a vector whose order has not
+    /// tracked map rows since A2 — the same falsified invariant as
+    /// [`WorldModel::cities`]. The minimap it was written for computes its own
+    /// viewport frame from the zoom. Do not build on it.
     pub fn visible_provinces(
         &self,
         cam: (u16, u16),
