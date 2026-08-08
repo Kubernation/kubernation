@@ -506,6 +506,25 @@ pub enum NewGround {
     Since(SystemTime),
 }
 
+/// What the active mode has to say about one slot's ground.
+///
+/// Three of these are "not marked", and they are not interchangeable — see
+/// [`NewGround::state`] for why, and [`ChangeSince`] for the honesty the third
+/// one carries.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GroundState {
+    /// New ground, at this strength (`1.0` down to just above `0.0`).
+    New(f64),
+    /// Not new, and that is a real answer: this slot has a succession record
+    /// and it falls outside what was asked.
+    Settled,
+    /// Not new, and we do not know: no succession is recorded for this slot, so
+    /// it may have changed hands before the record existed. NOT `Settled`.
+    Unknown,
+    /// Nothing is being asked (`Off`).
+    Unasked,
+}
+
 impl NewGround {
     /// How strongly to mark this ground, `1.0` down to just above `0.0`, or
     /// `None` for **do not mark**.
@@ -518,12 +537,42 @@ impl NewGround {
     /// not decay, so there is no age to shade. That difference is the whole
     /// visible distinction between the modes, and it is deliberate.
     pub fn mark(self, occupied_at: Option<SystemTime>, now: SystemTime) -> Option<f64> {
+        match self.state(occupied_at, now) {
+            GroundState::New(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    /// The FULL answer, of which [`NewGround::mark`] is the flattened view.
+    ///
+    /// `mark` collapses everything that is not new into one `None`, which is
+    /// right for the fill — a province is tinted or it is not. It is not right
+    /// for the panel, because two of those states are different claims about
+    /// the ground, and a type that can say "unknown" is no help if every
+    /// consumer flattens it before the answer is used. Both go through here, so
+    /// the fill and the panel cannot disagree about which state a slot is in.
+    ///
+    /// **The modes are asymmetric about `Unknown`, deliberately.** Under
+    /// `Fading` an absent record means "not new", full stop: succession has been
+    /// stamped since the field existed, so anything inside a minutes-to-hours
+    /// window would carry a time. Under `Since` the baseline can reach back past
+    /// the point where this map started keeping records, so an absent record
+    /// genuinely means *we do not know* — which is not the same claim as "it did
+    /// not change", and is why `ChangeSince` has three variants. That both modes
+    /// return an `Option` from `mark` is what made the collapse look symmetric
+    /// and safe; it is not.
+    pub fn state(self, occupied_at: Option<SystemTime>, now: SystemTime) -> GroundState {
         match self {
-            NewGround::Off => None,
-            NewGround::Fading(window) => freshness(occupied_at, now, window),
-            NewGround::Since(base) => {
-                matches!(changed_since(occupied_at, base), ChangeSince::Changed).then_some(1.0)
-            }
+            NewGround::Off => GroundState::Unasked,
+            NewGround::Fading(window) => match freshness(occupied_at, now, window) {
+                Some(f) => GroundState::New(f),
+                None => GroundState::Settled,
+            },
+            NewGround::Since(base) => match changed_since(occupied_at, base) {
+                ChangeSince::Changed => GroundState::New(1.0),
+                ChangeSince::Unchanged => GroundState::Settled,
+                ChangeSince::Unknown => GroundState::Unknown,
+            },
         }
     }
 
@@ -541,7 +590,7 @@ impl NewGround {
 /// Unchanged would let the map report "nothing happened here" about ground it
 /// has no record for, which is the unearned all-clear this codebase refuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChangeSince {
+enum ChangeSince {
     /// A different node took this ground at or after the baseline.
     Changed,
     /// It changed hands, but before the baseline.
@@ -566,7 +615,7 @@ pub enum ChangeSince {
 ///
 /// At-or-after rather than strictly after: a succession stamped in the same
 /// instant the baseline was taken is still a change the operator has not seen.
-pub fn changed_since(occupied_at: Option<SystemTime>, baseline: SystemTime) -> ChangeSince {
+fn changed_since(occupied_at: Option<SystemTime>, baseline: SystemTime) -> ChangeSince {
     match occupied_at {
         None => ChangeSince::Unknown,
         Some(t) if t >= baseline => ChangeSince::Changed,
@@ -589,7 +638,7 @@ pub fn changed_since(occupied_at: Option<SystemTime>, baseline: SystemTime) -> C
 /// A timestamp in the future is treated as "just now" rather than discarded: a
 /// clock that stepped backwards is a reason to be slightly wrong about age, not
 /// a reason to lose the fact that ground changed.
-pub fn freshness(
+pub(crate) fn freshness(
     occupied_at: Option<SystemTime>,
     now: SystemTime,
     window: std::time::Duration,
@@ -1510,6 +1559,58 @@ mod tests {
             "but it did change since the fixed baseline, and still has",
         );
     }
+    /// `mark` is a VIEW over `state`, and the modes are asymmetric about unknown.
+    ///
+    /// The regression this pins: `mark` collapses three answers into `Option`,
+    /// and for a while that `Option` was the only thing the renderer ever saw —
+    /// so a type that says "unknown", and a doc comment defending saying it,
+    /// reached a consumer that could not tell it from "unchanged". The fill is
+    /// still allowed to flatten; the panel is not, so both must come from here.
+    #[test]
+    fn state_keeps_the_three_answers_that_mark_flattens() {
+        use std::time::Duration;
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let now = base + Duration::from_secs(60);
+        let hour = Duration::from_secs(3600);
+
+        let since = NewGround::Since(base);
+        // Under a fixed baseline all three answers survive, and the two
+        // not-marked ones are DIFFERENT claims about the ground.
+        assert_eq!(since.state(Some(now), now), GroundState::New(1.0));
+        assert_eq!(
+            since.state(Some(base - Duration::from_secs(1)), now),
+            GroundState::Settled
+        );
+        assert_eq!(since.state(None, now), GroundState::Unknown);
+        assert_ne!(
+            since.state(None, now),
+            since.state(Some(base - Duration::from_secs(1)), now)
+        );
+
+        // Under a rolling window there is no unknown to lose: an absent record
+        // means "not recently new", which is the same answer as a lapsed one.
+        let fading = NewGround::Fading(hour);
+        assert_eq!(fading.state(None, now), GroundState::Settled);
+        assert_eq!(
+            fading.state(Some(now - Duration::from_secs(7200)), now),
+            GroundState::Settled
+        );
+        assert!(matches!(fading.state(Some(now), now), GroundState::New(_)));
+
+        assert_eq!(NewGround::Off.state(Some(now), now), GroundState::Unasked);
+
+        // mark() agrees with state() everywhere — one authority, not two.
+        for mode in [since, fading, NewGround::Off] {
+            for at in [None, Some(now), Some(base - Duration::from_secs(1))] {
+                let expect = match mode.state(at, now) {
+                    GroundState::New(f) => Some(f),
+                    _ => None,
+                };
+                assert_eq!(mode.mark(at, now), expect, "{mode:?} {at:?}");
+            }
+        }
+    }
+
     /// One entry point, two modes — and the divergence that justifies keeping
     /// both.
     ///

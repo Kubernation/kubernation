@@ -28,7 +28,7 @@ use kubernation_core::state::charter::{self, Charter};
 use kubernation_core::state::cost::{self, CostRates, CostReport};
 use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::harden;
-use kubernation_core::state::layout::NewGround;
+use kubernation_core::state::layout::{GroundState, NewGround};
 use kubernation_core::state::model::{Models, WorkloadRef, WorkloadRow, build_workloads};
 use kubernation_core::state::netpol;
 use kubernation_core::state::observed::ObservedWorld;
@@ -224,7 +224,7 @@ pub struct WorldSnap {
     /// inside a 60fps draw would be O(slots x provinces) — 10,000 comparisons a
     /// frame on a hundred-node fleet. Same reason `substrate` and `posture` are
     /// precomputed and borrowed for a frame.
-    pub fresh: Arc<HashMap<String, f64>>,
+    pub fresh: Arc<HashMap<String, GroundState>>,
     /// Upkeep (cost cartography), computed once per tick — the overlay + advisor
     /// tab read this (the overlay does a by-node lookup every frame, never a scan).
     pub cost: CostReport,
@@ -1251,9 +1251,10 @@ fn build_carrying(
 /// holds: a `Province` carries its `NodeTile`, not the slot it sits in. Doing
 /// the join here means the draw path reads a value instead of searching for one.
 ///
-/// A node with no entry is not marked — which covers every do-not-mark state at
-/// once, in EITHER mode, so the draw site has a single rule and cannot fall
-/// through to a default that marks.
+/// Carries the FULL state, not just the marked nodes: the fill wants one bit
+/// and the panel wants three, and shipping two maps for one fact is what this
+/// function's own existence argues against. The draw site still has a single
+/// rule — only `New` tints — so it cannot fall through to a default that marks.
 ///
 /// One map for one fact: the fading and since modes both answer "is this ground
 /// new", and shipping them as two maps in two colours was measured to be a
@@ -1262,16 +1263,13 @@ fn marking_by_node(
     layout: &kubernation_core::state::layout::Layout,
     now: SystemTime,
     mode: NewGround,
-) -> HashMap<String, f64> {
+) -> HashMap<String, GroundState> {
     if mode.is_off() {
         return HashMap::new();
     }
     layout
         .occupied()
-        .filter_map(|(k, occ)| {
-            mode.mark(layout.occupied_at(k), now)
-                .map(|f| (occ.node.clone(), f))
-        })
+        .map(|(k, occ)| (occ.node.clone(), mode.state(layout.occupied_at(k), now)))
         .collect()
 }
 

@@ -485,42 +485,49 @@ pub fn grid_ref_line(
     })
 }
 
-/// PURE draw-decision fn: the SELECTION/tooltip line for ground that recently
-/// changed hands. `None` for settled ground. Unit-tested.
+/// PURE draw-decision fn: the SELECTION/tooltip line for new ground. Unit-tested.
 ///
-/// This is the panel half of fresh ground, and it exists for the reason the
-/// Substrate overlay's does: the map answers *where* in a colour the operator
-/// has no way to interpret, so something must answer *what happened*. Unlike the
-/// overlay-gated lines below it, this one is NOT gated — fresh ground is tinted
-/// under every overlay, so the explanation has to be available under every one
-/// too, or the colour is unexplained exactly where it is most surprising.
+/// The panel half of the succession mark. The map says *which* ground; without
+/// this it raises a question it cannot answer (A5-render §3.3), and the wording
+/// has to be true in BOTH modes — under `Since` ground stays marked
+/// indefinitely, so "just changed hands" would be a lie there.
 ///
-/// The wording is bucketed by `theme::fresh_tier` — the SAME authority the
-/// colour uses — so the words and the paint cannot describe different ages.
-///
-/// It also has to say WHICH question is being answered. The two modes make
-/// different claims about the same tint: fading says *how recently*, since says
-/// *whether, against a moment you fixed*. A single wording for both would let
-/// the panel imply a recency the since mode never measured.
+/// **It speaks the unknown state, which the fill deliberately does not.** Under
+/// `Since` the three answers are different claims and all three are said:
+/// changed, unchanged, or *no record*, which is not the same as unchanged (see
+/// [`kubernation_core::state::layout::GroundState`]). Under `Fading` there is no
+/// unknown to lose — an absent record means "not recently new", full stop — so
+/// settled ground stays silent there rather than repeating a non-answer on every
+/// hover.
 pub fn fresh_line(
-    freshness: Option<f64>,
+    state: Option<kubernation_core::state::layout::GroundState>,
     mode: kubernation_core::state::layout::NewGround,
 ) -> Option<(String, Color)> {
-    use kubernation_core::state::layout::NewGround;
-    let f = freshness?;
-    let words = match mode {
-        NewGround::Off => return None,
+    use kubernation_core::state::layout::{GroundState, NewGround};
+    let words = match (mode, state?) {
+        (NewGround::Off, _) | (_, GroundState::Unasked) => return None,
         // A fixed baseline does not decay, so there is no age to report — only
         // that this ground is on the changed side of the line.
-        NewGround::Since(_) => "new ground . changed since the baseline",
+        (NewGround::Since(_), GroundState::New(_)) => "new ground . changed since the baseline",
+        // The informative one: the map HAS a record for this ground and it
+        // predates the baseline. Worth saying, because it is the case the
+        // reader would otherwise have to assume.
+        (NewGround::Since(_), GroundState::Settled) => "unchanged since the baseline",
+        // The caveat: an absent record is not evidence of absence. A baseline
+        // can reach back past the point this map began keeping records.
+        (NewGround::Since(_), GroundState::Unknown) => "no succession on record",
         // Deliberately relative, not a timestamp: freshness is a fraction of the
         // ageing window, and reconstructing a duration from it would state a
         // precision the fraction doesn't carry.
-        NewGround::Fading(_) => match crate::theme::fresh_tier(f, crate::theme::FRESH_STEPS) {
-            3 => "new ground . just changed hands",
-            2 => "new ground . changed hands recently",
-            _ => "new ground . settling",
-        },
+        (NewGround::Fading(_), GroundState::New(f)) => {
+            match crate::theme::fresh_tier(f, crate::theme::FRESH_STEPS) {
+                3 => "new ground . just changed hands",
+                2 => "new ground . changed hands recently",
+                _ => "new ground . settling",
+            }
+        }
+        // No unknown to lose under a rolling window — see `NewGround::state`.
+        (NewGround::Fading(_), GroundState::Settled | GroundState::Unknown) => return None,
     };
     Some((words.into(), STONE_INK_DIM))
 }
@@ -1381,7 +1388,7 @@ mod tests {
     use crate::draw::scene;
     use crate::net::{Snapshot, WorldSnap};
     use kubernation_core::state::fixtures as fx;
-    use kubernation_core::state::layout::NewGround;
+    use kubernation_core::state::layout::{GroundState, NewGround};
     use kubernation_core::state::model::Models;
     use std::sync::Arc;
 
@@ -1496,6 +1503,44 @@ mod tests {
         assert!(none_at_all.contains("not grouped"), "{none_at_all:?}");
     }
 
+    /// The panel speaks all three answers under a fixed baseline.
+    ///
+    /// This is the assertion that was missing when the merge collapsed three
+    /// states into `Option<f64>`: the core test
+    /// `changed_since_separates_unknown_from_unchanged` kept passing, because it
+    /// pins the core function, not what reaches the operator. An absent
+    /// succession record is not evidence that nothing happened, and under a
+    /// fixed baseline the panel is the only place that says so.
+    #[test]
+    fn the_panel_distinguishes_no_record_from_unchanged() {
+        let since = NewGround::Since(std::time::SystemTime::UNIX_EPOCH);
+        let say = |g| fresh_line(Some(g), since).map(|(t, _)| t);
+
+        let new = say(GroundState::New(1.0)).expect("marked ground speaks");
+        let settled = say(GroundState::Settled).expect("unchanged ground speaks");
+        let unknown = say(GroundState::Unknown).expect("unknown ground speaks");
+
+        assert_ne!(settled, unknown, "an absent record is not 'unchanged'");
+        assert_ne!(new, settled);
+        assert!(unknown.contains("no succession on record"), "{unknown}");
+        assert!(settled.contains("unchanged"), "{settled}");
+        // Under a fixed baseline nothing decays, so no wording may claim an age.
+        for w in [&new, &settled, &unknown] {
+            assert!(!w.contains("recently") && !w.contains("just"), "{w}");
+        }
+
+        // A rolling window has no unknown to lose, so it stays quiet rather
+        // than repeating a non-answer on every hover.
+        let fading = NewGround::Fading(std::time::Duration::from_secs(3600));
+        assert!(fresh_line(Some(GroundState::Unknown), fading).is_none());
+        assert!(fresh_line(Some(GroundState::Settled), fading).is_none());
+
+        // Off says nothing in either shape, and an unlisted node says nothing.
+        assert!(fresh_line(Some(GroundState::New(1.0)), NewGround::Off).is_none());
+        assert!(fresh_line(Some(GroundState::Unasked), since).is_none());
+        assert!(fresh_line(None, since).is_none());
+    }
+
     /// Settled ground says nothing; fresh ground says something at every tier.
     ///
     /// The load-bearing half is the second assertion: the words must change at
@@ -1507,17 +1552,17 @@ mod tests {
     fn fresh_wording_changes_where_the_colour_does() {
         assert!(
             fresh_line(
-                None,
+                Some(GroundState::Settled),
                 NewGround::Fading(std::time::Duration::from_secs(3600))
             )
             .is_none(),
-            "settled ground says nothing"
+            "settled ground says nothing under a rolling window"
         );
 
         // Every tier produces a line, and adjacent tiers produce different ones.
         let at = |f: f64| {
             fresh_line(
-                Some(f),
+                Some(GroundState::New(f)),
                 NewGround::Fading(std::time::Duration::from_secs(3600)),
             )
             .expect("fresh ground speaks")

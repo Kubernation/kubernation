@@ -2393,6 +2393,49 @@ what makes the interesting logic unit-testable without a cluster.
   order, safe only by *observation* (its marks are sparse and do not tile), not by
   mechanism. 450 core + 112 GUI tests; gui-smoke 55.
 
+- **A5/T1 merge — verification pass** (2026-08-07, **v1.19.0**; from
+  `docs/kubernation-a5-t1-merge-verification-guidance.md`, report in
+  `docs/reports/a5-t1-merge-verification.md`): the merge's removal is
+  **complete** (zero `Overlay::Changed` / `changed_land_pair` / `changed_line` /
+  `change_baseline`; `--changed-since` correctly ALIASED to `NewGround::Since`,
+  not removed), and its one regression was **half real**. **What was lost:**
+  `mark()` collapsed `ChangeSince`'s three states into `Option<f64>`, so
+  `Unchanged` and `Unknown` were indistinguishable to every consumer — no hatch
+  (`province_unmeasured` is gated to Pressure/Saturation) and a silent panel.
+  `changed_since_separates_unknown_from_unchanged` passed throughout because it
+  pins the core fn, not the feature. **What was correctly dropped, and the
+  measurement that settles it:** the guidance prefers restoring the third state
+  through the draw path; that is **refuted** — `occupied_at` is stamped only on a
+  change of hands, so **82 of 100** churn-fleet provinces have none (and 100% of
+  a never-churned fleet), and because this mark draws BENEATH every overlay a
+  hatch would fire on all of them under terrain/pressure/cost/pool/walls/
+  substrate the moment a baseline is set, *and* collide with
+  `province_unmeasured`'s hatch (two meanings, one texture — the v1.18.0 item-D
+  argument). v1.13.0's recorded rationale ("a single channel makes one positive
+  claim") is therefore right about the FILL and silent about the PANEL, which is
+  the half that was wrong. **Shipped:** `GroundState{New(f64), Settled, Unknown,
+  Unasked}` + `NewGround::state()` as the full answer, with `mark()`
+  reimplemented as a **view over it** so fill and panel cannot disagree; the fill
+  matches `New` only (documented as a deliberate flatten, with both reasons); the
+  panel speaks all three under `Since` (`changed since the baseline` /
+  `unchanged since the baseline` / `no succession on record`). ONE map, richer
+  value — `marking_by_node`'s own doc argues against two maps for one fact. **The
+  Fading/Since asymmetry is the load-bearing doc**: under `Fading` an absent
+  record means "not recently new" (succession has been stamped since the field
+  existed, so anything inside the window would carry a time), under `Since` the
+  baseline can reach back past the point the map began recording — both modes
+  returning an `Option` is what made the collapse look symmetric and safe.
+  **§3 dead-`pub` audit:** `changed_since` + `ChangeSince` → private,
+  `freshness` → `pub(crate)`, `is_off` kept (one external caller); the honesty
+  `ChangeSince`'s doc carried now lives on the public `GroundState::Unknown`.
+  **§2.1 checked live** (the item flagged as untestable): a seeded stale
+  `overlay = "changed"` pref launches without panic, falls back to the default,
+  disturbs no other setting, and self-heals on the next normal exit. Mode +
+  parameter switch at runtime; the `Since` baseline is captured at click time and
+  NOT persisted (only the fading window is, so reopening lands in Fading/Off — a
+  defined behaviour). Three mutations caught. 451 core + 113 GUI tests;
+  gui-smoke 55.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn

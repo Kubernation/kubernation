@@ -210,7 +210,7 @@ pub struct OverlayData<'a> {
     ///
     /// A node absent from the map is not marked, which is how all three of
     /// `freshness`'s do-not-mark states arrive at one rule here.
-    pub fresh: Option<&'a HashMap<String, f64>>,
+    pub fresh: Option<&'a HashMap<String, kubernation_core::state::layout::GroundState>>,
     /// Draw the reference frame. A plain bool rather than an `Overlay` variant:
     /// the graticule is orthogonal to what the terrain is coloured by, and
     /// making it a radio option would force the operator to give up their view
@@ -367,8 +367,17 @@ fn overlay_pair(overlay: Overlay, prov: &Province, data: OverlayData) -> (Color,
     // overlay is measuring — an operator reading pressure still wants to see
     // the wave crossing it. It wins the fill because it is transient by
     // construction: it fades, and the overlay comes back.
-    if let Some(f) = data.fresh.and_then(|m| m.get(&prov.tile.name)) {
-        return fresh_land_pair(*f, FRESH_STEPS);
+    // ONLY `New` tints. `Unknown` — no succession on record — is deliberately
+    // NOT hatched here, though the type distinguishes it and the panel says it.
+    // Two reasons, both fatal to hatching it: this mark is drawn beneath EVERY
+    // overlay, so a hatch would fire on 82% of the churn fleet (and 100% of a
+    // fleet that has never churned) under terrain, pressure, cost, pool, walls
+    // and substrate alike; and `province_unmeasured` already hatches, meaning
+    // "this reading has no denominator", so a second meaning on the same
+    // texture would be indistinguishable on a node that has both.
+    use kubernation_core::state::layout::GroundState;
+    if let Some(GroundState::New(f)) = data.fresh.and_then(|m| m.get(&prov.tile.name)).copied() {
+        return fresh_land_pair(f, FRESH_STEPS);
     }
     match overlay {
         Overlay::Terrain => iso_terrain_pair(prov.tile.health),
@@ -458,7 +467,7 @@ pub struct SceneWorld<'a> {
     pub label: String,
     /// Per-node succession freshness for this world, computed once per tick by
     /// the net thread. Empty for warm, which never marks.
-    pub fresh: &'a HashMap<String, f64>,
+    pub fresh: &'a HashMap<String, kubernation_core::state::layout::GroundState>,
 }
 
 pub fn scene(snap: &Snapshot) -> Vec<SceneWorld<'_>> {

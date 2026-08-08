@@ -188,6 +188,21 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   one, because the original script collapsed vacated slots out instead of letting
   them break a run. Full account in `docs/reports/t1-shape-rederivation.md`.
 
+### Fixed
+
+- **The map says when it has no record of a change, instead of staying quiet.**
+  Under a fixed baseline ("new ground since …"), an unmarked province could mean
+  two different things — it genuinely did not change, or nothing was ever
+  recorded for it — and the panel said neither. It now distinguishes "unchanged
+  since the baseline" from "no succession on record", because an absent record
+  is not evidence that nothing happened. The rolling-window mode is unaffected:
+  there, an absent record honestly means "not recently new".
+
+  The map's *colour* deliberately still treats both as unmarked. Marking them
+  would tint 82% of a churned fleet — and every province of one that has never
+  churned — under every overlay at once, and would reuse the texture that
+  already means "this reading has no denominator".
+
 ## [1.9.0] — 2026-08-03
 
 The first release since 1.6.0. It carries the work versioned 1.7.0, 1.7.1, 1.7.2
