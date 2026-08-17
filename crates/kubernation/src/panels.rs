@@ -416,7 +416,7 @@ pub fn draw_frame_note(on: bool) {
 /// but not memory gets a fallback extent and no hatch at all.
 pub fn extent_line(source: ExtentSource) -> Option<(String, Color)> {
     match source {
-        ExtentSource::Capacity => None,
+        ExtentSource::Allocatable => None,
         ExtentSource::InstanceType => Some((
             "size from instance type - not measured".into(),
             STONE_INK_DIM,
@@ -1462,7 +1462,7 @@ mod tests {
     #[test]
     fn extent_line_marks_a_guessed_size_and_stays_quiet_on_a_measured_one() {
         // A measured size needs no caveat — the `pool_line` rule.
-        assert_eq!(extent_line(ExtentSource::Capacity), None);
+        assert_eq!(extent_line(ExtentSource::Allocatable), None);
         // Both fallback rungs speak, and they are DISTINGUISHABLE from each
         // other, which was the gap: they produce the same extent, so without
         // words they read identically to each other and to a measured node.

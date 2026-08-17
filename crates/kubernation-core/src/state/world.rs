@@ -483,11 +483,35 @@ const EXTENT_CLASSES: [u16; 4] = [3, 5, 7, 9];
 /// bound gets the (N+1)th height.
 const EXTENT_BOUNDS_GIB: [f64; 3] = [32.0, 128.0, 512.0];
 
+/// How far a node's REPORTED memory runs below its nominal machine size.
+///
+/// `EXTENT_BOUNDS_GIB` is written in nominal sizes; `node_allocatable` reports
+/// what the kubelet publishes, which is always lower — firmware and reserved
+/// RAM, plus any kubelet reservation. So the reported figure is scaled up by
+/// this headroom before comparison. Otherwise a node sold as 32 GiB reports
+/// ~30.9, fails `>= 32.0`, and takes the class BELOW the one the bounds' own
+/// doc comment promises it.
+///
+/// Scaling the value rather than shifting the bounds is deliberate: the bounds
+/// stay readable as machine sizes, and the correction sits where the two
+/// quantities actually differ, with a name on it. Bounds of `[30, 120, 480]`
+/// would encode the same fudge somewhere a later reader rounds back.
+///
+/// **The firmware term is measured; the reservation term is not.** kind reports
+/// 15.653 GiB on a nominal 16 GiB VM (2.2% short) and reserves nothing, as does
+/// kwok; managed clouds reserve a tiered fraction on top of that, and no such
+/// node has been measured here. 8% is deliberately at the small end of
+/// plausible: too small leaves the original defect, too large promotes genuine
+/// in-between machines — 24, 96 and 384 GiB are all real instance sizes, and a
+/// 24 GiB node would need 33% to be wrongly promoted. The tripwire is a node
+/// whose nominal size is known and whose class is wrong.
+const EXTENT_HEADROOM: f64 = 0.08;
+
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
 /// The extent a province gets, and which rung of the fallback chain produced it.
 ///
-/// PURE. Capacity (memory — incompressible) → instance type → a DECLARED
+/// PURE. Allocatable memory (incompressible) → instance type → a DECLARED
 /// default. The default is not a silent zero: an unmeasurable node gets a
 /// middle-of-the-road extent and `ExtentSource::Default`, because a node that
 /// cannot be measured must not render as a genuinely tiny one (v1.6.0).
@@ -496,12 +520,15 @@ pub fn province_extent(
 ) -> (u16, crate::state::model::ExtentSource) {
     use crate::state::model::{ExtentInput, ExtentSource};
     match input {
-        ExtentInput::Capacity(mem) => {
+        ExtentInput::Allocatable(mem) => {
             let gib = mem / GIB;
-            let class = EXTENT_BOUNDS_GIB.iter().filter(|b| gib >= **b).count();
-            (EXTENT_CLASSES[class], ExtentSource::Capacity)
+            let class = EXTENT_BOUNDS_GIB
+                .iter()
+                .filter(|b| gib * (1.0 + EXTENT_HEADROOM) >= **b)
+                .count();
+            (EXTENT_CLASSES[class], ExtentSource::Allocatable)
         }
-        // No capacity, but a declared machine size. Coarse — the type string is
+        // No allocatable memory, but a declared machine size. Coarse — the type string is
         // not parsed into a size — so every instance type shares one class until
         // a table earns its keep. Still better than the default: it is at least
         // evidence the node exists as a real machine.
@@ -1294,6 +1321,67 @@ mod tests {
             .map(|p| (p.x, p.y, p.w, p.h))
     }
 
+    /// A node gaining an extent class must not move a city to another province.
+    ///
+    /// `EXTENT_HEADROOM` promotes nodes across class boundaries, and `Province.h`
+    /// feeds `rows`, which A3's `city_dy` hashes into modulo. So a class change
+    /// DOES move a city within its province — that is the design, and this pins
+    /// that it is the only thing it does. `SLOT_STRIDE` is the largest class, so
+    /// no province moves either (v1.7.0's stride claim, exercised from the
+    /// consumer side rather than restated).
+    #[test]
+    fn a_class_change_keeps_a_city_on_its_own_province() {
+        use crate::state::fixtures as fx;
+        let build = |mem: &str| {
+            let (world, mut s) = fx::world();
+            let mut n = fx::node("big", Some("z-a"));
+            n.status.as_mut().unwrap().allocatable =
+                Some(fx::quantities(&[("cpu", "8"), ("memory", mem)]));
+            s.node(n);
+            s.deployment(fx::deployment("demo", "app", 1, 1));
+            s.replicaset(fx::replicaset("demo", "app-rs", "app"));
+            s.pod(fx::pod_owned(
+                fx::pod("demo", "app-rs-1", Some("big")),
+                "ReplicaSet",
+                "app-rs",
+            ));
+            Models::build(&world)
+        };
+
+        // Either side of the 32 GiB bound, as the headroom now draws it.
+        let small = build("24Gi");
+        let large = build("30900Mi");
+
+        let prov = |m: &Models| {
+            m.world
+                .continents
+                .iter()
+                .flat_map(|c| &c.provinces)
+                .find(|p| p.tile.name == "big")
+                .expect("the province")
+                .clone()
+        };
+        let (a, b) = (prov(&small), prov(&large));
+        assert!(b.h > a.h, "the larger node should have gained a class");
+        assert_eq!((a.x, a.y), (b.x, b.y), "the province itself must not move");
+
+        // The city stays on THIS province, on both sides of the boundary.
+        for p in [&a, &b] {
+            let c = p.cities.first().expect("app is sited here");
+            assert!(
+                c.y >= p.y && c.y < p.y + p.h,
+                "city at {} escaped province rows {}..{}",
+                c.y,
+                p.y,
+                p.y + p.h
+            );
+            assert!(
+                c.x >= p.x && c.x < p.x + p.w,
+                "city escaped the province columns"
+            );
+        }
+    }
+
     /// THE EXTENT CLAIM: adding a workload to a node must not resize its terrain
     /// or move anything. `h` used to be `(2 + 2*cities.len()).max(3)`, so every
     /// workload landing on a node shifted every province below it.
@@ -1934,20 +2022,60 @@ mod tests {
         }
     }
 
-    /// Extent comes from capacity, in classes, with a marked fallback.
+    /// A node AT a nominal boundary gets the class its size implies.
+    ///
+    /// The defect, as a test: the bounds are nominal machine sizes and the value
+    /// compared against them is a reported figure that is always lower, so a
+    /// node sold as 32 GiB reported ~30.9, failed `>= 32.0`, and took the class
+    /// below — the opposite of what the bounds' doc comment promises.
+    ///
+    /// Both directions matter, which is why the promotion guards are here too:
+    /// the headroom's job is to sit between two failure modes, and a constant
+    /// large enough to fix the first would start promoting genuine in-between
+    /// machines. 24, 96 and 384 GiB are all real instance sizes.
     #[test]
-    fn extent_is_capacity_derived_quantised_and_marked() {
+    fn a_node_at_a_nominal_boundary_gets_the_class_its_size_implies() {
+        use crate::state::model::ExtentInput;
+        let gib = |g: f64| ExtentInput::Allocatable(g * 1024.0 * 1024.0 * 1024.0);
+        let class_of = |g: f64| province_extent(&gib(g)).0;
+
+        // The boundary cases the fix exists for — reported below a nominal bound.
+        assert_eq!(class_of(30.9), EXTENT_CLASSES[1], "a nominal 32 GiB node");
+        assert_eq!(class_of(123.0), EXTENT_CLASSES[2], "a nominal 128 GiB node");
+        assert_eq!(class_of(493.0), EXTENT_CLASSES[3], "a nominal 512 GiB node");
+
+        // The promotion guards — genuinely in-between machines stay put.
+        assert_eq!(class_of(24.0), EXTENT_CLASSES[0], "a genuine 24 GiB node");
+        assert_eq!(class_of(96.0), EXTENT_CLASSES[1], "a genuine 96 GiB node");
+        assert_eq!(class_of(384.0), EXTENT_CLASSES[2], "a genuine 384 GiB node");
+
+        // Exactly-nominal values are unchanged from before the headroom existed.
+        assert_eq!(class_of(32.0), EXTENT_CLASSES[1]);
+        assert_eq!(class_of(128.0), EXTENT_CLASSES[2]);
+        assert_eq!(class_of(512.0), EXTENT_CLASSES[3]);
+        assert_eq!(class_of(16.0), EXTENT_CLASSES[0]);
+
+        // Totality: no panic, no out-of-range index at either extreme.
+        assert_eq!(class_of(0.0), EXTENT_CLASSES[0]);
+        assert_eq!(class_of(f64::MAX), EXTENT_CLASSES[3]);
+        assert_eq!(class_of(-1.0), EXTENT_CLASSES[0]);
+    }
+
+    /// Extent comes from allocatable memory, in classes, with a marked fallback.
+    #[test]
+    fn extent_is_allocatable_derived_quantised_and_marked() {
         use crate::state::model::{ExtentInput, ExtentSource};
-        let gib = |g: f64| ExtentInput::Capacity(g * 1024.0 * 1024.0 * 1024.0);
+        let gib = |g: f64| ExtentInput::Allocatable(g * 1024.0 * 1024.0 * 1024.0);
 
         // Same class → same extent; a much larger node → more.
         assert_eq!(province_extent(&gib(8.0)).0, province_extent(&gib(16.0)).0);
         assert!(province_extent(&gib(256.0)).0 > province_extent(&gib(8.0)).0);
-        // Small variation inside a class does not resize anything.
-        assert_eq!(
-            province_extent(&gib(33.0)).0,
-            province_extent(&gib(120.0)).0
-        );
+        // Small variation inside a class does not resize anything. The upper
+        // example used to be 120 GiB, which `EXTENT_HEADROOM` now promotes to
+        // the 128 class ON PURPOSE — a nominal 128 GiB machine reports about
+        // that after firmware and a kubelet reservation. The property still
+        // holds; the example had encoded the boundary defect.
+        assert_eq!(province_extent(&gib(33.0)).0, province_extent(&gib(96.0)).0);
 
         // The fallbacks are DECLARED, and neither is the smallest class — an
         // unmeasurable node must not read as a genuinely tiny one.
@@ -1960,6 +2088,6 @@ mod tests {
             "unmeasured is not the smallest"
         );
         assert_eq!(h_it, h_un);
-        assert_eq!(province_extent(&gib(8.0)).1, ExtentSource::Capacity);
+        assert_eq!(province_extent(&gib(8.0)).1, ExtentSource::Allocatable);
     }
 }

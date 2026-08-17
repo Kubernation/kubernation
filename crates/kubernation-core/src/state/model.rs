@@ -430,8 +430,15 @@ impl MapModel {}
 /// can hold (plan §3.4.1).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExtentInput {
-    /// The node reports `allocatable.memory`, in bytes.
-    Capacity(f64),
+    /// The node reports `status.allocatable["memory"]`, in bytes.
+    ///
+    /// Named for the field it actually reads. It was `Capacity`, which names a
+    /// DIFFERENT Kubernetes field (`status.capacity`) that nothing here
+    /// consults and that reports a larger number — a name asserting a quantity
+    /// the value is not. That drift is not hypothetical: it led a guidance
+    /// document to recommend "compare against capacity" as a fix, on the
+    /// strength of the variant name alone.
+    Allocatable(f64),
     /// No allocatable, but the node declares an instance type.
     InstanceType(String),
     /// Neither. The province gets the default extent and is MARKED — an
@@ -444,7 +451,9 @@ pub enum ExtentInput {
 /// `pool_source` do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtentSource {
-    Capacity,
+    /// Measured from the node's reported allocatable memory. (Was `Capacity`;
+    /// see [`ExtentInput::Allocatable`] for why the name moved.)
+    Allocatable,
     InstanceType,
     /// The declared default — the province is sized but **not measured**.
     Default,
@@ -454,7 +463,7 @@ pub enum ExtentSource {
 /// else nothing.
 pub fn node_extent_input(node: &Node) -> ExtentInput {
     if let Some(mem) = node_allocatable(node, "memory").filter(|m| *m > 0.0) {
-        return ExtentInput::Capacity(mem);
+        return ExtentInput::Allocatable(mem);
     }
     match node
         .metadata
@@ -2905,11 +2914,11 @@ mod tests {
     /// so a node that reports capacity could have silently been sized as an
     /// unmeasurable one, or the reverse, with every test still green.
     #[test]
-    fn extent_input_prefers_capacity_then_instance_type_then_nothing() {
+    fn extent_input_prefers_allocatable_then_instance_type_then_nothing() {
         // Rung 1: the node reports its own memory.
         let n = fx::node("measured", Some("z-a")); // 8Gi in the fixture
         match node_extent_input(&n) {
-            ExtentInput::Capacity(b) => assert!(
+            ExtentInput::Allocatable(b) => assert!(
                 (b - 8.0 * 1024.0 * 1024.0 * 1024.0).abs() < 1.0,
                 "expected 8Gi, got {b}"
             ),

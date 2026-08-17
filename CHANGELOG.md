@@ -203,6 +203,30 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   churned — under every overlay at once, and would reuse the texture that
   already means "this reading has no denominator".
 
+### Fixed
+
+- **A node at a nominal size boundary now gets the province size its machine
+  implies.** The size classes are written in nominal memory sizes (32, 128,
+  512 GiB) but compared against what the node *reports*, which is always lower —
+  firmware and reserved RAM, plus any kubelet reservation. So a machine sold as
+  32 GiB reports about 30.9, missed the threshold, and was drawn one class too
+  small; the same at every boundary. A named `EXTENT_HEADROOM` now scales the
+  reported figure before the comparison, so the thresholds stay readable as
+  machine sizes. Genuinely in-between machines — 24, 96 and 384 GiB are all real
+  instance sizes — are unaffected, and there are tests in both directions.
+
+  No visible change on kind or on the kwok test fleet, which report exact round
+  numbers; this only moves on real cloud nodes.
+
+### Changed
+
+- `ExtentInput::Capacity` and `ExtentSource::Capacity` are now **`Allocatable`**,
+  because that is the field they read. `status.capacity` is a different
+  Kubernetes field, reports a different number, and is never consulted — a
+  mismatch that had already misled one design proposal. This changes the
+  `extent_source` value emitted by the `--dump-positions` developer flag from
+  `"Capacity"` to `"Allocatable"`; nothing persisted is affected.
+
 ## [1.9.0] — 2026-08-03
 
 The first release since 1.6.0. It carries the work versioned 1.7.0, 1.7.1, 1.7.2

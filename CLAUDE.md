@@ -2393,6 +2393,51 @@ what makes the interesting logic unit-testable without a cluster.
   order, safe only by *observation* (its marks are sparse and do not tile), not by
   mechanism. 450 core + 112 GUI tests; gui-smoke 55.
 
+- **Item A — extent headroom; and the Relief hazard, seen at last** (2026-08-07,
+  **v1.20.0**; from `docs/kubernation-item-a-extent-headroom-guidance.md` rev 2,
+  report in `docs/reports/extent-headroom.md`): closes the consolidation item I
+  had STOPPED at §0. `EXTENT_BOUNDS_GIB` is written in **nominal** machine sizes
+  and compared against a **reported** figure that is always lower, so a nominal
+  32 GiB node reporting ~30.9 took the class below — contradicting the bounds'
+  own doc comment. Fixed with a named `EXTENT_HEADROOM = 0.08` **scaling the
+  reported value rather than shifting the bounds**, so the bounds stay readable
+  as machine sizes and the correction sits where the two quantities differ, named.
+  The firmware term is measured (kind: 15.653 GiB on a nominal 16 GiB VM); the
+  managed-cloud kubelet reservation is **not measured here** and the constant's
+  doc says so. Both refuted alternatives are recorded so they are not
+  re-proposed. **§2.1 rename taken:** `ExtentInput::Capacity` /
+  `ExtentSource::Capacity` → **`Allocatable`** at all six sites including the
+  test name — the drift is not cosmetic, it caused the guidance's own first
+  revision to recommend "compare against capacity". `--dump-positions` emits the
+  variant via `{:?}`, so the JSON value changed and
+  `hack/churn/positions-selftest.py` (which matched the literal `"Capacity"`) was
+  updated in the same commit; nothing persisted carries it. **Gate:** synthetic
+  boundary nodes, **no fleet capture** — checked arithmetically FIRST that the
+  fleet cannot discriminate (kwok reports exact round numbers, so every candidate
+  bound set gives identical classes on all 100 nodes). Mutation floor in **both**
+  directions: `0.0` fails the nominal-32 case, `0.35` fails the genuine-24 guard.
+  A pre-existing test asserting 33 and 120 GiB share a class **failed and was
+  right to** — 120 is now promoted to the 128 class on purpose; the property
+  survived, the example had encoded the defect (standing question 4, landing on a
+  test). **§0 claim 8 was mine and was wrong:** the fleet is 30/**54**/16, not
+  30/53/16 — my consolidation figures summed to 99, the missing node being the
+  no-allocatable one whose `InstanceType` fallback also lands on class 5. Third
+  consecutive session in which question 5 caught a number I narrated rather than
+  one an instrument emitted. **THE FINDING:** class 9 became reachable, so
+  `hack/churn/bigmem.sh` (a reversible scenario, deliberately NOT part of `up.sh`
+  — the 100-node fleet is the reference state every recorded measurement is
+  judged against) adds two nominal-512 GiB nodes in a NEW pool in ONE zone, which
+  appends them at **consecutive ordinals** so their 9-row bands **touch** (gap 0).
+  That is the Relief occlusion precondition, and it had never existed on any
+  fleet. Rebuilding with `terrain_order`'s sort removed and comparing the same
+  frame gives **924 differing pixels at the seam** — so the hazard was **real**,
+  not hypothetical, and v1.18.0's item B (landed while unobservable, on the
+  argument that fixing the calibration would activate it) **defuses it**. The
+  consolidation guidance's §1 causal link and its "sort first" ordering are both
+  confirmed empirically. Not done: §4.3's managed-cloud check — no such node is
+  available, so the reservation term stays unmeasured and stated. 453 core + 113
+  GUI tests.
+
 - **A5/T1 merge — verification pass** (2026-08-07, **v1.19.0**; from
   `docs/kubernation-a5-t1-merge-verification-guidance.md`, report in
   `docs/reports/a5-t1-merge-verification.md`): the merge's removal is

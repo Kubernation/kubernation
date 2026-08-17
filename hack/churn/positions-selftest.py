@@ -36,7 +36,7 @@ POSITIONS = os.path.join(HERE, "positions.py")
 def prov(tick, node, x, y, zone="z-a", pool="p", ordinal=0):
     return {
         "tick": tick, "kind": "province", "node": node, "zone": zone, "pool": pool,
-        "ordinal": ordinal, "x": x, "y": y, "w": 26, "h": 5, "extent_source": "Capacity",
+        "ordinal": ordinal, "x": x, "y": y, "w": 26, "h": 5, "extent_source": "Allocatable",
     }
 
 
