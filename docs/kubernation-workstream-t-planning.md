@@ -60,7 +60,7 @@ The nearest thing to A5's fresh ground, and it reuses that machinery: a timestam
 
 **Gate:** show a change that the Annals reports, and one it does not. If everything T1 shows is already a line in the Annals, T1 is a prettier list.
 
-### T2 — Fault-line marking
+### T2 — Fault-line marking · **REFUTED 2026-08-07 — do not build**
 
 **Put the Annals' existing conclusion on the map.** `timeline.rs` already identifies the suspect change before a failure; T2 marks *where* it happened.
 
@@ -69,6 +69,71 @@ The nearest thing to A5's fresh ground, and it reuses that machinery: a timestam
 - Risk: if fault lines are rare, the feature is invisible most of the time. Worth measuring frequency on a real cluster before building
 
 **Gate:** a fault line whose *spatial* pattern says something the Annals line does not.
+
+---
+
+#### Outcome — the premise does not hold, and the salvage has shipped
+
+Measured before scoping, in three rounds. The gate above was never reached,
+because the claim it tests turned out to be false one level down: **the failures
+do not cluster spatially in the first place.**
+
+**Round 1 — which dimension do failures cluster in?**
+(`docs/reports/t2-pre-failure-clustering.md`, v1.20.1.) Four failure shapes
+induced separately on kind, each with its expectation stated in advance:
+
+| Shape | node | workload |
+|---|---|---|
+| crash-looper | 3 groups, **P=0.2465** | 1 group, **P=0.0000** |
+| bad rollout | 3 groups, **P=0.7240** | 1 group, **P=0.0020** |
+| unbindable PVC | **not attributable** | 1 group, **P=0.0000** |
+| node down | **no failing pods at all** | — |
+
+Every constructible pod-level failure was workload-clustered and
+node-**scattered**. The observed node distributions were 3/3/3 and 2/2/1 — as
+even as the counts allow, so low power is not hiding a cluster. Two findings the
+plan did not anticipate: **unschedulable pods have no `nodeName`**, so a whole
+class of trouble has no position on any geography; and the one genuinely
+node-shaped failure produced **zero failing pods**, at T+90s and past the
+eviction timeout, because pods keep the status the dead kubelet last reported.
+Its entire signal is the node's own condition — which the map already renders.
+
+**Round 2 — the pool dimension, on a fleet that has pools.**
+(`docs/reports/t2-pre-pool-gap.md`, v1.20.2.) kind cannot express `pool` at all,
+so this was re-run on the 100-node churn fleet. A failure confined to **100% of
+one nodepool** — `pool` P=**0.0000**, `node` P=1.0000 — renders as **8
+disconnected pieces across 3 columns**, largest holding 40–67%. The
+workload-shaped contrast arm gives 14 pieces across 4 zones, so pool-shaped is
+2.7 pieces per zone against 3.5: modestly more contiguous, and both are scatter.
+The cause is A2's zone-wide ordinals interleaving pools — the same fragmentation
+T1 §3.1 found, confirmed from the failure side.
+
+And worse than "not a shape": those 29 failures **drew no trouble mark at all**,
+because `node-agent` is a DaemonSet and DaemonSets are roads, not cities. The
+alternative is no better — a Deployment pinned to a pool sites its city at the
+*plurality* node, so thirty spread failures would read as one troubled city.
+
+**Round 3 — what was actually missing.** (v1.21.0.) Neither surface named the
+pool: the map could not draw it, and the queue correctly aggregated to one
+**workload**-grouped concern reading `×29`. So the gap was never a rendering
+problem. `attention::pool_confinement` now appends the fact to the concern —
+`ds churn/node-agent — CrashLoopBackOff ×29 · all 29 placed on pool sys` — pure,
+unit-tested, and riding the three surfaces that already show `detail`.
+
+**The risk named above was the wrong one.** The entry worried that fault lines
+might be *rare*. Frequency was never the binding constraint; **shape** was. A
+pool-confined failure is neither rare nor invisible — it is simply not a shape,
+once laid on a zone-organised geography.
+
+**What this does not settle:** whether real-world failures *tend* to be
+pool-shaped. That is unanswerable on any test cluster, since every failure here
+is induced. It does not change the conclusion, because the finding is about
+**rendering**, which is fixture-independent: even granting the most favourable
+possible frequency, the map still does not draw it as a shape.
+
+**`region ← pool ∩ zone` is not the missing prerequisite.** It shipped in
+v1.14.0–v1.17.0 (pool colour, region labels, the POOLS legend) and did not help,
+because there is no mark on the provinces for a pool tint to group.
 
 ### T3 — Small multiples
 
@@ -97,7 +162,7 @@ Rule 3 is flagged as the one most likely to be dropped for space and the one tha
 T0  (history substrate)  ─────→ required by T3, probably by T1
                                  
 T1  (change-since)  ────────────→ cheapest; validates the thesis early
-T2  (fault lines)   ────────────→ needs no new substrate; reuses timeline.rs
+T2  (fault lines)   ────────────→ REFUTED 2026-08-07 — failures are not spatial; §3
 T3  (small multiples) ──────────→ needs T0; most expensive; most striking
 ```
 
@@ -131,7 +196,7 @@ That may mean the gate is human, like A6's. If so, say it up front rather than d
 
 1. **T0 — measure the history substrate.** Half a day. It determines everything else, and every previous round where measurement came first shrank the phase that followed.
 2. **T1 — change-since overlay.** Cheapest expression, on an axis that already exists, gated against the Annals. If it fails that gate, the workstream's thesis is in question and it cost a day to find out.
-3. **T2 — fault lines.** Reuses a finished computation; the strongest claim; measure fault-line frequency first.
+3. ~~**T2 — fault lines.** Reuses a finished computation; the strongest claim; measure fault-line frequency first.~~ **Measured and refuted, 2026-08-07 — see the T2 outcome in §3.** Failures cluster by workload, not by location; the one spatial signal that exists is node condition, which the map already shows. The salvage — naming the nodepool a workload's failures are confined to — shipped in v1.21.0 as a sentence in the concern, not a map feature.
 4. **T3 — small multiples.** Only if T0 says the substrate supports it and T1 says spatial change reads.
 
 ---
