@@ -2564,6 +2564,35 @@ what makes the interesting logic unit-testable without a cluster.
   (`NodeTile.pool` beside each failing pod's node) and which belongs in the
   concern beside the existing `×29`.
 
+- **Pool confinement in the concern** (2026-08-07, **v1.21.0**, user "add the
+  pool-confinement sentence to the concern" — the one thing T2-pre's pool-gap
+  round said survives): a workload concern now names the nodepool its failures
+  are confined to. `attention::pool_confinement` is PURE + unit-tested and is
+  appended to the concern's `detail`, so it rides the three surfaces that already
+  render it — the sidebar ATTENTION row, the Oracle bundle, and the postmortem.
+  **Why it exists, measured rather than assumed:** `docs/reports/t2-pre-pool-gap.md`
+  induced a failure confined to 100% of one nodepool and found NEITHER surface
+  named it — the map renders it as 8 disconnected pieces (A2's zone-wide ordinals
+  interleave pools) and in that case drew no trouble mark at all (a DaemonSet is a
+  road, not a city), while the queue correctly aggregated to one workload concern
+  reading `×29` with no mention of where. **Four refusals, each a claim the data
+  does not support:** fewer than two placed pods (one pod is trivially in one
+  pool); more than one pool (not confined); the `unpooled` sentinel (an absence is
+  not a pool — the `pool_line` rule); and a single-pool fleet (true but vacuous —
+  the DEGENERATE case `hack/churn/pieces.py` refuses, now in the product).
+  **Unplaced pods are excluded and change the wording** to `all N placed on pool
+  X`, because an unschedulable pod has no node and so no pool (T2-pre §2.1) and
+  must not be claimed onto the pool the others landed in. `Agg` gained
+  `pools`/`placed`/`unplaced`, with `placed` COUNTED rather than derived from the
+  per-reason tallies — those double-count a crash-looper past the restart
+  threshold, so their sum is not a pod count. Aggregation is unchanged: still one
+  concern per workload. Mutation floor exercised four ways (drop the single-pool
+  guard, admit the sentinel, count an unplaced pod as placed, never append) —
+  the third initially SURVIVED because the end-to-end fixture had no unplaced pod,
+  which is exactly the churn fleet's real case; closed by adding one. Verified
+  live: `‼ ds churn/node-agent — CrashLoopBackOff ×29 — 99/100 ready · rollout
+  Progressing · all 29 placed on pool sys`. 455 core + 113 GUI tests.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn

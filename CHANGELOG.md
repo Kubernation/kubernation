@@ -248,6 +248,21 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   one pool", which is the actual gap and is a sentence rather than a map feature.
   Report in `docs/reports/t2-pre-pool-gap.md`; no product change.
 
+### Added
+
+- **A concern now says when a workload's failures are confined to one
+  nodepool** — `... CrashLoopBackOff ×29 · all 29 on pool sys`. A bad node image
+  rolled to a single nodepool is a common incident and was, until now, unnamed
+  on every surface: the map scatters it (nodes are laid out by zone, so one
+  pool's provinces interleave with the rest) and the queue aggregates it by
+  workload, which is right but says only how many, never where.
+
+  It stays silent unless the claim is real: one failing pod is trivially in one
+  pool, a fleet with only one pool makes the sentence vacuous, an unresolvable
+  pool label is an absence rather than a group, and pods that were never
+  scheduled have no pool at all — those are excluded and change the wording to
+  "all N placed on pool X" rather than being counted in.
+
 ## [1.9.0] — 2026-08-03
 
 The first release since 1.6.0. It carries the work versioned 1.7.0, 1.7.1, 1.7.2

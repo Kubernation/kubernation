@@ -2,7 +2,7 @@
 //! per workload/node so the operator sees "city in trouble", not a hundred
 //! identical pod alarms. This is 4X's "next unit needs orders" loop.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use k8s_openapi::jiff;
 
@@ -132,6 +132,63 @@ struct Agg {
     /// A representative log-worthy pod for this workload (first seen, but a
     /// crash-looper takes precedence so `previous` lands on the last words).
     probe: Option<LogProbe>,
+    /// Which nodepools the failing pods landed in, and how many landed nowhere.
+    ///
+    /// T2-pre measured that pod-level failures cluster by WORKLOAD and scatter
+    /// across the map's geography, so a pool-confined incident — a bad node
+    /// image rolled to one nodepool — is invisible on the map AND unnamed in the
+    /// queue, which aggregates by workload. This is the fact that was missing;
+    /// see [`pool_confinement`].
+    pools: BTreeSet<String>,
+    /// Failing pods WITH a node, and without. Counted rather than derived from
+    /// the per-reason tallies above: those can double-count one pod (a
+    /// crash-looper past the restart threshold increments `crash` and
+    /// `flapping`), so a sum of them is not a pod count.
+    placed: u32,
+    unplaced: u32,
+}
+
+/// "all N on pool X" — when that is a real claim about a real grouping.
+///
+/// PURE, unit-tested. The queue aggregates a workload's failing pods into one
+/// concern, which is right ("city in trouble, not 40 pod alarms") but drops the
+/// one thing a pool-confined incident is recognisable by. T2-pre measured a
+/// failure confined to 100% of one nodepool and found NEITHER surface named it:
+/// the map scatters it (zone-wide ordinals interleave pools, so it renders as 8
+/// disconnected pieces) and the concern reads `ds churn/node-agent —
+/// CrashLoopBackOff ×29` with no mention of where. This is that sentence.
+///
+/// `None` — say nothing — in four cases, because each would be a claim the data
+/// does not support:
+///
+/// - **fewer than two placed pods.** One pod is trivially in one pool.
+/// - **more than one pool.** Not confined.
+/// - **the unpooled sentinel.** An absence is not a pool, so "all on pool
+///   unpooled" would dress a missing label as a grouping (the `pool_line` rule).
+/// - **a single-pool fleet.** True but vacuous: every node is in it, so the
+///   sentence carries no information. This is the DEGENERATE refusal the
+///   measuring instrument makes, in the product.
+///
+/// Unplaced pods (unschedulable, so no node and no pool) are excluded from the
+/// claim and change its wording, because "all" must range over something real.
+pub(crate) fn pool_confinement(
+    pools: &BTreeSet<String>,
+    placed: u32,
+    unplaced: u32,
+    fleet_pools: usize,
+) -> Option<String> {
+    if placed < 2 || fleet_pools < 2 {
+        return None;
+    }
+    let only = match pools.iter().next() {
+        Some(p) if pools.len() == 1 && p != crate::state::model::DEFAULT_POOL => p,
+        _ => return None,
+    };
+    Some(if unplaced > 0 {
+        format!("all {placed} placed on pool {only}")
+    } else {
+        format!("all {placed} on pool {only}")
+    })
 }
 
 impl Agg {
@@ -202,6 +259,19 @@ pub fn build(
     filter: &NamespaceFilter,
 ) -> Vec<Concern> {
     let idx = OwnerIndex::build(world);
+    // Where each node sits, and how many pools the fleet has at all — the
+    // second is what makes "all on pool X" informative rather than vacuous.
+    let pool_of: HashMap<&str, &str> = map
+        .zones
+        .iter()
+        .flat_map(|z| &z.nodes)
+        .map(|t| (t.name.as_str(), t.pool.as_str()))
+        .collect();
+    let fleet_pools = pool_of
+        .values()
+        .filter(|p| **p != crate::state::model::DEFAULT_POOL)
+        .collect::<BTreeSet<_>>()
+        .len();
     let mut concerns: Vec<Concern> = Vec::new();
     // One snapshot for the whole pass — Store::state() clones a Vec per call.
     let pods = world.pods.state();
@@ -316,6 +386,18 @@ pub fn build(
                         e.probe = Some(p);
                     }
                 }
+                match pod.spec.as_ref().and_then(|s| s.node_name.as_deref()) {
+                    Some(n) => {
+                        e.placed += 1;
+                        if let Some(pool) = pool_of.get(n) {
+                            e.pools.insert((*pool).to_string());
+                        }
+                    }
+                    // Unschedulable: no node, so no pool. T2-pre §2.1 — this
+                    // class has no position at all, and must not be folded into
+                    // whatever pool the others landed in.
+                    None => e.unplaced += 1,
+                }
             }
             None => {
                 // Bare pod, or Job-owned. A pod whose Job already has its own
@@ -389,6 +471,11 @@ pub fn build(
         if !row.note.is_empty() {
             detail.push_str(&format!(" ({})", row.note));
         }
+        if let Some(a) = &agg
+            && let Some(c) = pool_confinement(&a.pools, a.placed, a.unplaced, fleet_pools)
+        {
+            detail.push_str(&format!(" · {c}"));
+        }
         covered_workloads.insert((row.r.namespace.clone(), row.r.name.clone()));
         concerns.push(Concern {
             cluster: ClusterId::Hot,
@@ -411,7 +498,8 @@ pub fn build(
                 cluster: ClusterId::Hot,
                 severity,
                 title: format!("{r} — {msg}"),
-                detail: String::new(),
+                detail: pool_confinement(&agg.pools, agg.placed, agg.unplaced, fleet_pools)
+                    .unwrap_or_default(),
                 probe: agg.probe,
                 key: format!("w:{}/{}/{}", r.kind, r.namespace, r.name),
                 target: Target::Workload(r),
@@ -771,6 +859,124 @@ pub fn severity_counts(concerns: &[Concern]) -> HashMap<Severity, usize> {
 
 #[cfg(test)]
 mod tests {
+    /// The four refusals, and the one thing it does say.
+    ///
+    /// Each `None` is a claim the data does not support, and each has bitten
+    /// somewhere in this project already: the unpooled sentinel is `pool_line`'s
+    /// rule, and the single-pool fleet is the DEGENERATE case the measuring
+    /// instrument refuses (a fleet where every node is in one pool makes "all on
+    /// pool X" true of everything, which is not information).
+    #[test]
+    fn pool_confinement_only_claims_a_real_grouping() {
+        let one = |p: &str| BTreeSet::from([p.to_string()]);
+
+        assert_eq!(
+            pool_confinement(&one("sys"), 29, 0, 4).as_deref(),
+            Some("all 29 on pool sys")
+        );
+        // Unplaced pods are excluded from the claim AND change its wording —
+        // "all" has to range over something real. This is the churn fleet's
+        // actual case: 29 agents on sys, 1 unschedulable with no node at all.
+        assert_eq!(
+            pool_confinement(&one("sys"), 29, 1, 4).as_deref(),
+            Some("all 29 placed on pool sys")
+        );
+
+        // One pod is trivially in one pool.
+        assert_eq!(pool_confinement(&one("sys"), 1, 0, 4), None);
+        // Two pools is not confinement.
+        let two = BTreeSet::from(["sys".to_string(), "mem".to_string()]);
+        assert_eq!(pool_confinement(&two, 9, 0, 4), None);
+        // An absence is not a pool.
+        assert_eq!(
+            pool_confinement(&one(crate::state::model::DEFAULT_POOL), 9, 0, 4),
+            None
+        );
+        // A single-pool fleet: true, and vacuous.
+        assert_eq!(pool_confinement(&one("sys"), 9, 0, 1), None);
+        // Nothing placed at all.
+        assert_eq!(pool_confinement(&BTreeSet::new(), 0, 9, 4), None);
+    }
+
+    /// End to end: the sentence that T2-pre found missing.
+    ///
+    /// A DaemonSet whose pods crash-loop on every node of ONE pool. The queue
+    /// correctly aggregates them into one workload concern; before this, that
+    /// concern said only how many, never where — and the map does not show it
+    /// either, because the failures scatter across zone-wide ordinals.
+    #[test]
+    fn a_pool_confined_failure_says_so_in_the_concern() {
+        use crate::state::fixtures as fx;
+        let (world, mut s) = fx::world();
+        for i in 0..4 {
+            s.node(fx::node_in_pool(
+                fx::node(&format!("sys{i}"), Some("z-a")),
+                "sys",
+            ));
+            s.node(fx::node_in_pool(
+                fx::node(&format!("mem{i}"), Some("z-b")),
+                "mem",
+            ));
+        }
+        s.daemonset(fx::daemonset("infra", "agent", 8, 4));
+        // Crash-looping on every sys node; healthy on the mem nodes.
+        for i in 0..4 {
+            s.pod(fx::pod_owned(
+                fx::pod_waiting(
+                    fx::pod("infra", &format!("agent-sys{i}"), Some(&format!("sys{i}"))),
+                    "CrashLoopBackOff",
+                ),
+                "DaemonSet",
+                "agent",
+            ));
+            s.pod(fx::pod_owned(
+                fx::pod("infra", &format!("agent-mem{i}"), Some(&format!("mem{i}"))),
+                "DaemonSet",
+                "agent",
+            ));
+        }
+        let map = crate::state::model::build_map(&world);
+        let wl = crate::state::model::build_workloads(&world);
+        let cs = build(&world, &map, &wl, &NamespaceFilter::All);
+        let c = cs
+            .iter()
+            .find(|c| c.title.contains("agent"))
+            .expect("the daemonset is flagged");
+        assert!(
+            c.detail.contains("all 4 on pool sys"),
+            "the concern must name the pool the failures are confined to: {:?}",
+            c.detail
+        );
+
+        // Now add an UNSCHEDULABLE pod of the same workload: no node, so no
+        // pool. It must not be folded into the pool the others landed in — the
+        // churn fleet's real case, where one agent cannot be placed at all.
+        s.pod(fx::pod_owned(
+            fx::pod_unschedulable(fx::pod("infra", "agent-nowhere", None)),
+            "DaemonSet",
+            "agent",
+        ));
+        let map = crate::state::model::build_map(&world);
+        let wl = crate::state::model::build_workloads(&world);
+        let cs = build(&world, &map, &wl, &NamespaceFilter::All);
+        let c = cs
+            .iter()
+            .find(|c| c.title.contains("agent"))
+            .expect("still flagged");
+        assert!(
+            c.detail.contains("all 4 placed on pool sys"),
+            "an unplaced pod must not be claimed onto a pool: {:?}",
+            c.detail
+        );
+        // And it stays ONE concern — naming the pool must not undo the
+        // "city in trouble, not 40 pod alarms" aggregation.
+        assert_eq!(
+            cs.iter().filter(|c| c.title.contains("agent")).count(),
+            1,
+            "still one concern per workload"
+        );
+    }
+
     use super::*;
     use crate::state::fixtures as fx;
     use crate::state::model::{WorkloadKind, build_map, build_workloads};
