@@ -227,6 +227,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   `extent_source` value emitted by the `--dump-positions` developer flag from
   `"Capacity"` to `"Allocatable"`; nothing persisted is affected.
 
+### Documentation
+
+- Measured which dimension pod failures actually cluster in, before scoping a
+  feature around the assumption that they cluster by location. On the dev
+  cluster they cluster by **workload** in every failure shape that could be
+  induced, and scatter evenly across nodes; unschedulable pods have no node at
+  all, so no map can place them; and a node going down produced no failing pods
+  whatsoever — that signal lives in the node's own condition, which the map
+  already shows. Report in `docs/reports/t2-pre-failure-clustering.md`; no
+  product change.
+
 ## [1.9.0] — 2026-08-03
 
 The first release since 1.6.0. It carries the work versioned 1.7.0, 1.7.1, 1.7.2

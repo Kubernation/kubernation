@@ -2481,6 +2481,48 @@ what makes the interesting logic unit-testable without a cluster.
   defined behaviour). Three mutations caught. 451 core + 113 GUI tests;
   gui-smoke 55.
 
+- **T2-pre — which dimension do failures cluster in?** (2026-08-07, **v1.20.1**;
+  from `docs/kubernation-t2-pre-failure-clustering-guidance.md`, report in
+  `docs/reports/t2-pre-failure-clustering.md`): a measurement session, no product
+  change, run before T2 was scoped against its own premise. **Answer: workload,
+  in every shape that could be constructed** — T2's "failures cluster spatially,
+  and only the map shows that" is **not supported**. Four shapes induced
+  separately on a quiesced kind cluster via the reversible
+  `hack/kind-failures.sh`, expectations stated in the script before each run:
+  crash-looper (workload **P=0.0000** / node P=0.2465), bad rollout (workload
+  **P=0.0020** / node P=0.7240), unbindable PVC (workload **P=0.0000**, node/zone/
+  pool **not attributable**), node down (**no failing pods at all**). Three
+  findings, two of them unanticipated: (1) every constructible pod-level failure
+  was workload-clustered and node-SCATTERED — the observed node distributions
+  were 3/3/3 and 2/2/1, i.e. as even as the counts allow, so low power is not
+  hiding a cluster; (2) **unschedulable pods have no `nodeName`, so they have no
+  position on the map at all** — a geography cannot show a class of trouble the
+  scheduler has not placed; (3) **the one genuinely node-shaped failure produced
+  ZERO failing pods** at T+90s and T+390s (past the eviction timeout) — pods keep
+  the status the dead kubelet last reported — so its whole signal is the node's
+  own condition, which the map ALREADY renders (verified from the app's own
+  output: `‼ node kubernation-worker2 — NotReady — zone z-b · 4 pods`). So the
+  failures that cluster spatially are node-condition failures the map already
+  shows, and the pod-level failures cluster by workload, which the map's
+  zone-organised geography scatters. **Per §6 this is the "T2 shrinks
+  substantially" branch**; what may survive is marking *where* a workload's
+  failures landed, which needs no clustering machinery. **§3.1 — a defect in my
+  own instrument, found by real data:** shape 3's first run reported "zone: 1
+  group, 100%, P=0.0000 clusters beyond chance", because a missing `nodeName`
+  defaulted to a `"?"` placeholder that nine pods then shared — a measurement of
+  the sentinel, not the fleet, and it would have argued FOR T2. Fixed (no node ⇒
+  no zone and no pool; missing values excluded and counted; the control draws
+  from the attributable population only) and pinned by five self-tests. Standing
+  question 2, landing on the instrument rather than the product. **Honest limits:**
+  kind cannot express `pool` at all (no pool label, no instance-type ⇒ every node
+  `unpooled`) and `zone ≡ node` (one worker per zone); memory-pressure eviction is
+  not constructible (all four nodes share one Docker VM), so a node STOP was
+  substituted; three of four shapes were workload-shaped by construction, as the
+  guidance warned; and no environment available here has BOTH real pools and real
+  failures — the churn fleet has pools but kwok emits none. `hack/churn/pieces.py`
+  gained a `--failures` mode (grouping + contiguity + per-dimension shuffle
+  control, totals asserted against the population) with 12 new self-tests.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn
