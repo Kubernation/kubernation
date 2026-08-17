@@ -193,6 +193,15 @@ and needs no new clustering machinery.
   them, but kwok emits no real failures (claim 7). **No environment available
   here has both.** That is the single biggest gap in this result.
 
+  > **Closed 2026-08-07** — `docs/reports/t2-pre-pool-gap.md`. The gap was two
+  > questions: whether real failures *tend* to be pool-shaped (not answerable on
+  > any test cluster, since every failure here is induced) and whether a
+  > pool-shaped failure *renders as a shape* (answerable, and the one that
+  > decides T2). The second was measured on the churn fleet: a failure confined
+  > to 100% of one nodepool, `P=0.0000` on the pool dimension, renders as **8
+  > disconnected pieces across 3 columns** — and produced no trouble marking on
+  > the map at all. T2's premise fails in its own best case.
+
 ---
 
 ## 5. §7 — standing questions

@@ -238,6 +238,16 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   already shows. Report in `docs/reports/t2-pre-failure-clustering.md`; no
   product change.
 
+### Documentation
+
+- Closed the measurement gap the previous round flagged: whether a failure
+  confined to a single nodepool reads as a shape on the map. It does not — 100%
+  of one nodepool renders as eight disconnected pieces across three columns, and
+  in the case measured it produced no trouble marking on the map at all. Neither
+  the map nor the attention queue currently says "these failures are confined to
+  one pool", which is the actual gap and is a sentence rather than a map feature.
+  Report in `docs/reports/t2-pre-pool-gap.md`; no product change.
+
 ## [1.9.0] — 2026-08-03
 
 The first release since 1.6.0. It carries the work versioned 1.7.0, 1.7.1, 1.7.2

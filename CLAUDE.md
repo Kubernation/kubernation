@@ -2523,6 +2523,47 @@ what makes the interesting logic unit-testable without a cluster.
   gained a `--failures` mode (grouping + contiguity + per-dimension shuffle
   control, totals asserted against the population) with 12 new self-tests.
 
+- **T2-pre — the pools-and-failures gap, closed** (2026-08-07, **v1.20.2**;
+  follows `docs/reports/t2-pre-failure-clustering.md` §4.1, report in
+  `docs/reports/t2-pre-pool-gap.md`): T2-pre could not measure the POOL dimension
+  — kind has no pools, the churn fleet has pools but kwok emits no failures.
+  **The gap was two questions wearing one name:** (a) do real failures *tend* to
+  be pool-shaped — **not answerable on any test cluster**, since every failure is
+  induced and a bigger fleet does not help; (b) IF they are, does the map render
+  them as a **shape** — answerable, and the one that decides T2. Only (b) was ever
+  closable, and it needs real PLACEMENT, not real causes. **Mechanism:** kwok has
+  no failure stage and adding one needs `kwokctl --enable-crds=Stage`, i.e.
+  recreating the cluster and discarding the layout store carrying T1's
+  18-succession record — so instead a patch to the pod **status subresource**
+  (verified to stick past kwok's reconcile) writes a real crash-loop's API state
+  onto pods **the real scheduler placed**; `hack/churn/failures.sh` is reversible
+  and touches no nodes (confirmed after restore: 100 nodes, 18 changed slots, 3 of
+  8 regions — identical). The cause is synthetic, which is fine for (b) and
+  useless for (a); stated. **THE ANSWER:** a failure confined to 100% of one
+  nodepool (`pool` P=**0.0000**, `node` P=1.0000 — maximally scattered across 29
+  nodes) renders as **8 disconnected pieces across 3 columns**, largest holding
+  40–67%; the workload-shaped contrast arm gives 14 pieces across 4 zones, so
+  pool-shaped is 2.7 pieces/zone against 3.5 — **modestly more contiguous, and
+  both are scatter**. The cause is A2's zone-wide ordinals interleaving pools, the
+  same fragmentation T1 §3.1 found, now confirmed from the failure side.
+  **Discrimination proven:** the same dimension reads P=0.0000 in one arm and
+  P=1.0000 in the other, so pool is genuinely measurable on this fleet — the gap
+  is closed as a capability, not only as a result. **Worse than "not a shape":**
+  the 29 failures produced **no trouble marking at all** — `node-agent` is a
+  DaemonSet, and DaemonSets are roads, not cities; a Deployment pinned to a pool
+  is no better, since its city sites at the **plurality** node, so 30 spread
+  failures would read as one troubled city. **And the list does not name the pool
+  either** — the queue correctly aggregates to one workload-grouped concern
+  (`‼ ds churn/node-agent — CrashLoopBackOff ×29`). So for the incident class most
+  favourable to T2, NEITHER surface says "confined to one nodepool".
+  **T2's premise fails in its own best case**, and §6's third branch is answered:
+  `region ← pool ∩ zone` already shipped (v1.14.0–v1.17.0) and did not help,
+  because there is no mark on the provinces for the pool tint to group. **What
+  survives is a sentence, not a map feature** — nothing says "these failures are
+  confined to one pool", a property the app already has the data for
+  (`NodeTile.pool` beside each failing pod's node) and which belongs in the
+  concern beside the existing `×29`.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn
