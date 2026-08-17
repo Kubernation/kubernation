@@ -6,6 +6,40 @@ Governing doc: `kubernation-enabling-plan.md` §7 (What A unlocks: time), §7.1 
 
 ---
 
+## 0. Status — CLOSED, 2026-08-07
+
+The workstream ran to its declared kill point and stopped there. §6 named T1's
+gate as the point of death; **it fired**, and T2 was then refuted independently.
+
+| Phase | Status | Evidence |
+|---|---|---|
+| **T0** history substrate | **done** 2026-08-04, no code | `docs/reports/t0-history-substrate.md` |
+| **T-pre** fault-line frequency | **done** 2026-08-04 — and found a live defect | `docs/reports/t-pre-fault-line-frequency.md` |
+| **T-fix / T-fix-2** that defect | **shipped** v1.11.2 | `docs/reports/t-fix-onset-fault-lines.md`, `t-fix-2-correlation-rule.md` |
+| **T1** change-since | **gate mixed-to-negative**; merged into A5 as `NewGround`, v1.13.0 | `docs/reports/t1-change-since.md` |
+| **T2** fault-line marking | **REFUTED** — §3 | `docs/reports/t2-pre-failure-clustering.md`, `t2-pre-pool-gap.md` |
+| **T3** small multiples | **blocked — both preconditions failed** — §3 | — |
+
+**The question in §1 is answered: no, on the evidence available.** Putting change
+on the map did not beat the list that already exists — for the change axes that
+could be tested. That is a real answer, it was reached cheaply, and it is what
+the workstream was set up to find out.
+
+**What shipped anyway**, which is more than §6's "salvage if it dies" expected:
+
+- **T-fix + T-fix-2** — the Annals' fault line was anchoring on the wrong
+  timestamp and its correlation rule compared incommensurable sides. Real defects
+  in shipped behaviour, found by measuring for T2 and fixed independently of it.
+- **T1, merged rather than shipped** — `NewGround{Off, Fading, Since}` gave A5's
+  fresh ground a fixable baseline. One feature with two modes instead of a ninth
+  overlay; the merge was T1's own recommendation after its gate.
+- **The pool sentence** (v1.21.0) — what T2's measurement identified as actually
+  missing, which was words in a concern rather than marks on a map.
+- **The instruments** — `hack/churn/pieces.py` (three modes, self-tested),
+  `--dump-positions`, and the reversible failure scripts for both clusters.
+
+---
+
 ## 1. Why this is the plan's destination, and the one hard question
 
 Plan §1's competitive claim rests on four question shapes. Three are settled:
@@ -15,7 +49,7 @@ Plan §1's competitive claim rests on four question shapes. Three are settled:
 | What is the state of X? | lists — K9s wins, and that is fine |
 | What is the shape of the whole? | the map, since v1.0 |
 | What is unusual here? | overlays — substrate is the proof |
-| **What changed, and where?** | **nothing yet** |
+| **What changed, and where?** | **the Annals, mostly** — and the map for exactly one axis: A5's `NewGround`, succession. Settled by this workstream; see §0 |
 
 `timeline.rs` already computes the temporal analysis — `Annals`, fault lines, `annals_lines_flags_suspect_change_before_failure`. **And renders it as lines**, which is exactly what K9s or Freelens would do. The analysis is finished; the map has never been used for it.
 
@@ -48,7 +82,7 @@ That suggests the cheapest first phase is not the most impressive one.
 
 ## 3. Candidate phases
 
-### T1 — Change-since overlay
+### T1 — Change-since overlay · **GATED MIXED-TO-NEGATIVE — merged, not shipped**
 
 **Colour provinces by what changed since a chosen moment**, rather than by current level.
 
@@ -59,6 +93,33 @@ The nearest thing to A5's fresh ground, and it reuses that machinery: a timestam
 - The obvious question it must answer: **change in what?** Health, saturation, cost, pod count, and "occupant" are all candidates, and picking one is the phase's real content
 
 **Gate:** show a change that the Annals reports, and one it does not. If everything T1 shows is already a line in the Annals, T1 is a prettier list.
+
+---
+
+#### Outcome — the kill point fired
+
+(`docs/reports/t1-change-since.md`, v1.12.0.) Built as a ninth overlay, gated,
+and **the discrimination check is what settled it**: T1 marked 288,027 px, while
+A5's fresh ground — already shipped — marked 292,811 px on the same provinces,
+within 2%. A control with fresh ground disabled confirmed T1 was rendering its
+own answer rather than bleeding through. The answer simply coincided.
+
+Against the **Annals** the verdict was mixed rather than negative: the map wins
+on *what did not change* and on immunity to the list's 80-entry cap, while the
+list wins on naming the thing that changed, because node names carry the pool.
+Neither dominates.
+
+T1's real contribution turned out to be **reach**, not a different fact — and
+reach was already a setting on fresh ground's ageing window. Hence its own
+recommendation, taken in v1.13.0: **merge, do not multiply.** `Overlay::Changed`
+and its machinery were deleted and `NewGround{Off, Fading, Since}` took their
+place, one feature with two modes. Verified complete in v1.19.0, which also
+restored the one thing the merge had dropped — the panel saying *"no succession
+on record"*, which is not the same claim as *"unchanged"*.
+
+The shape evidence T1 published was re-derived in v1.18.1
+(`docs/reports/t1-shape-rederivation.md`): the method was sound, one of four
+columns was wrong, and the conclusion held.
 
 ### T2 — Fault-line marking · **REFUTED 2026-08-07 — do not build**
 
@@ -135,7 +196,7 @@ possible frequency, the map still does not draw it as a shape.
 v1.14.0–v1.17.0 (pool colour, region labels, the POOLS legend) and did not help,
 because there is no mark on the provinces for a pool tint to group.
 
-### T3 — Small multiples
+### T3 — Small multiples · **BLOCKED — both preconditions failed**
 
 **The last N polls as a strip**, identical classing, so change is seen rather than read.
 
@@ -156,17 +217,35 @@ Rule 3 is flagged as the one most likely to be dropped for space and the one tha
 
 ---
 
+#### Outcome — not built, and its gate was never reached
+
+§5 made T3 conditional: *"only if T0 says the substrate supports it and T1 says
+spatial change reads."* **Both conditions failed.**
+
+- **T0 says the substrate is not there.** Persisted world states "do not exist,
+  in any form"; what exists is persisted *summaries*, for exactly one fact — the
+  layout's `occupied_at`. T3 needs N retained world states to redraw past frames,
+  and T0 established that building that store is the phase, not a prerequisite to
+  it.
+- **T1 did not say spatial change reads.** Its gate came back mixed-to-negative.
+
+So T3 would have meant building a history store first, to feed a strip whose
+premise the cheapest phase had already failed to support. That is precisely the
+sequencing §6 was written to prevent.
+
+---
+
 ## 4. Sequencing, and the two prerequisites nobody has costed
 
 ```
-T0  (history substrate)  ─────→ required by T3, probably by T1
+T0  (history substrate)  ─────→ ANSWERED — no persisted world states exist
                                  
-T1  (change-since)  ────────────→ cheapest; validates the thesis early
-T2  (fault lines)   ────────────→ REFUTED 2026-08-07 — failures are not spatial; §3
-T3  (small multiples) ──────────→ needs T0; most expensive; most striking
+T1  (change-since)  ────────────→ GATED, merged into A5 as NewGround
+T2  (fault lines)   ────────────→ REFUTED — failures are not spatial; §3
+T3  (small multiples) ──────────→ BLOCKED — needs T0's store, and T1's answer
 ```
 
-### T0 — the unasked question
+### T0 — the unasked question · **ANSWERED 2026-08-04**
 
 **How much history does KuberNation keep, and where?**
 
@@ -182,7 +261,17 @@ Three shapes, each with a different cost:
 
 Recommend: **measure what exists before scoping anything.** This is the same move that shrank A3 from "city slots" to two lines.
 
-### T-pre — the instrument
+**Answer** (`docs/reports/t0-history-substrate.md`): of the three shapes above,
+**in-session only** describes metrics, SLO and operator actions; **persisted
+world states do not exist, in any form**; and **persisted summaries already
+exist, for exactly one fact** — the layout's `occupied_at`, which is the only
+persisted per-entity change timestamp in the product.
+
+That decided the workstream's shape. It is why T1 was scoped on the *occupant*
+axis — the one axis whose baseline can precede app launch and survive restart —
+and why T3 was left conditional. Measuring first was worth it, again.
+
+### T-pre — the instrument · **RUN 2026-08-04, and it found a defect**
 
 Every gate above is comparative and perceptual, which is the combination this project has repeatedly failed to measure honestly. Six instruments have emitted a plausible number for the wrong reason.
 
@@ -190,18 +279,29 @@ The gate here is *"is the spatial expression better than the Annals?"* — and t
 
 That may mean the gate is human, like A6's. If so, say it up front rather than discovering it at the end.
 
+**What happened** (`docs/reports/t-pre-fault-line-frequency.md`): the frequency
+question T2's risk note asked was **the wrong question**. Fault lines are common.
+What is not common is the *correlation* T2 wanted to draw — it was suppressed on
+any cluster carrying a chronic failure, which is most real clusters. A defect in
+shipped behaviour, found while measuring for a feature that was never built, and
+fixed in v1.11.2 (T-fix) and after (T-fix-2).
+
+The human-gate warning also held: T1's decisive evidence came from a
+**discrimination check against the map's own existing feature**, not from a
+usability judgement, and T1's report declined to claim a usability verdict alone.
+
 ---
 
 ## 5. Recommended order
 
-1. **T0 — measure the history substrate.** Half a day. It determines everything else, and every previous round where measurement came first shrank the phase that followed.
-2. **T1 — change-since overlay.** Cheapest expression, on an axis that already exists, gated against the Annals. If it fails that gate, the workstream's thesis is in question and it cost a day to find out.
+1. ~~**T0 — measure the history substrate.**~~ **Done 2026-08-04.** It determined everything else, exactly as expected — see the T0 outcome in §4.
+2. ~~**T1 — change-since overlay.**~~ **Built and gated 2026-08-06; mixed against the Annals, negative against the map's own fresh ground.** Merged into A5 as `NewGround` rather than shipped as a ninth overlay. It cost about a day to find out, which is what the sequencing was for.
 3. ~~**T2 — fault lines.** Reuses a finished computation; the strongest claim; measure fault-line frequency first.~~ **Measured and refuted, 2026-08-07 — see the T2 outcome in §3.** Failures cluster by workload, not by location; the one spatial signal that exists is node condition, which the map already shows. The salvage — naming the nodepool a workload's failures are confined to — shipped in v1.21.0 as a sentence in the concern, not a map feature.
-4. **T3 — small multiples.** Only if T0 says the substrate supports it and T1 says spatial change reads.
+4. ~~**T3 — small multiples.** Only if T0 says the substrate supports it and T1 says spatial change reads.~~ **Neither condition held** — see the T3 outcome in §3. Not built.
 
 ---
 
-## 6. Where this workstream dies
+## 6. Where this workstream dies — **it did, and here is how**
 
 Named up front, per the discipline A2's guidance established and A4 §8.1 settled.
 
@@ -213,15 +313,48 @@ That would not invalidate Workstream A: stability is what makes the *current* ma
 
 ---
 
+### How it actually went, 2026-08-07
+
+**The kill point fired, and the prediction above was accurate but incomplete.**
+
+T1's gate did settle it, and the honest response — *stop rather than build T2 and
+T3 on a thesis the cheapest phase refuted* — is what happened. T2 was measured
+before scoping rather than taken on trust, and was refuted on its own terms too,
+so the stop rests on two independent findings rather than one.
+
+**Where the prediction was incomplete:** it treated the salvage as consolation.
+It was not. Measuring for a feature that was never built found and fixed **two
+real defects in shipped behaviour** (T-fix, T-fix-2), produced a merge that made
+an existing feature better (`NewGround`), and identified the one thing genuinely
+missing — which turned out to be a sentence in a concern, not a mark on a map
+(v1.21.0). Four shipped improvements, from a workstream whose headline feature
+was never built.
+
+**What is settled, and what is not.** Plan §7 is settled negatively **for the
+change axes that could be tested**: occupant succession (T1) and failure location
+(T2). It is not a claim that no temporal expression could ever beat a list — only
+that these two did not, on this product, measured against the list that already
+exists. Anyone reopening it should read T1 §3.3 and `t2-pre-pool-gap.md` §4
+first, because both refutations are specific and both name what would have to
+change.
+
+**The map's advantage stands where it already was**, which §6 named correctly:
+shape and anomaly. The overlays, the attention queue and A5's fresh ground are
+that advantage; nothing here reduces it.
+
+---
+
 ## 7. Method — carried forward
 
-Standing questions, now five, with A5's and A6's sharpenings:
+Standing questions, now **seven** — five here, plus two the T and post-T rounds earned:
 
 1. Where does a summing step precede a comparing step?
 2. Does every reducer over a possibly-empty input express unknown, or fabricate?
 3. Where do two sections constrain the same behaviour — and is there a fixture where they diverge?
 4. What existing consumers depend on the old meaning of a value this change redefines?
 5. Which claims are inherited rather than verified — and **does the state each describes actually occur?**
+6. When a change moves one side of a comparison, does the other side still mean the same thing? *(earned by T-fix-2: `first_trouble` moved to onset while the change side stayed on `when`.)*
+7. Where does the code treat neighbouring entries in a container as neighbouring things in the world — and what guarantees that? *(earned by the region-label defect: `Continent.provinces` is name-hash order, not map order.)*
 
 Plus the rule A6 made explicit, now six instances deep:
 
@@ -229,6 +362,8 @@ Plus the rule A6 made explicit, now six instances deep:
 
 And the standing gate requirement:
 
-> **Every gate needs a discrimination check** — run it against a build with the mechanism disabled and confirm the result moves. Seven instruments have now failed this way; it is the only defence that has worked.
+> **Every gate needs a discrimination check** — run it against a build with the mechanism disabled and confirm the result moves. Seven instruments had failed this way when this was written, and at least two more have since: the "4 of 8" region figure, narrated from a breakdown rather than emitted, and `pieces.py` fabricating a shared `"?"` group for pods that have no node. It is still the only defence that has worked.
+>
+> **And its sharper form, from T1:** check whether the instrument *can* discriminate **before** running it, not after seeing the result. T1's gate was decided by a control against the map's own existing feature; the extent-headroom round declined to capture a fleet at all, having established arithmetically that the fleet could not tell the candidates apart.
 
 Claims in every guidance doc are tagged `[V]` verified-this-round or `[A]` asserted-from-a-report.

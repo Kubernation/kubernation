@@ -2593,6 +2593,32 @@ what makes the interesting logic unit-testable without a cluster.
   live: `‼ ds churn/node-agent — CrashLoopBackOff ×29 — 99/100 ready · rollout
   Progressing · all 29 placed on pool sys`. 455 core + 113 GUI tests.
 
+- **Workstream T closed** (2026-08-07, planning artifact only, no version bump —
+  `docs/kubernation-workstream-t-planning.md` §0): the workstream ran to its
+  declared kill point and stopped there. **T0** answered (2026-08-04): persisted
+  world states "do not exist, in any form"; persisted *summaries* exist for
+  exactly one fact, the layout's `occupied_at` — which is why T1 was scoped on the
+  occupant axis and T3 left conditional. **T-pre** found the frequency question
+  was the wrong question and turned up a live defect, fixed as **T-fix/T-fix-2**
+  (v1.11.2). **T1** built (v1.12.0) and gated **mixed against the Annals, negative
+  against the map's own fresh ground** — 288,027 marked px versus 292,811 on the
+  same provinces — so it was **merged into A5** as `NewGround` (v1.13.0) rather
+  than shipped as a ninth overlay; verified complete in v1.19.0. **T2 refuted**
+  (v1.20.1–v1.20.2): failures cluster by workload, not location, and even a
+  100%-pool-confined failure renders as 8 disconnected pieces and drew no mark at
+  all. **T3 blocked** — §5 made it conditional on T0 supporting the substrate and
+  T1 saying spatial change reads, and **both failed**. So plan §7 is settled
+  **negatively for the two change axes that could be tested**, which is narrower
+  than "no temporal expression could beat a list" and is recorded that way.
+  **The salvage was not consolation**: measuring for features that were never
+  built shipped four improvements — the two Annals defects, the `NewGround` merge,
+  and the pool-confinement sentence (v1.21.0). §7's method record updated: the
+  standing questions are now **seven** (6 earned by T-fix-2, 7 by the region-label
+  defect), and the discrimination-check rule gained its sharper form — *check
+  whether the instrument CAN discriminate before running it*, which is how T1's
+  gate was decided and why the extent-headroom round declined to capture a fleet
+  at all.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn
