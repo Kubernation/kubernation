@@ -266,9 +266,6 @@ where
     })
 }
 
-/// Events are high-churn and mostly noise after the fact; rather than a full
-/// reflector store we keep a bounded ring of the most recent ones, deduped
-/// by (kind, ns, name, reason).
 /// Reflector loop for a projected custom resource (DynamicObject needs an
 /// explicit ApiResource dyntype, so it can't share `spawn_reflector`).
 fn spawn_dynamic(
@@ -301,6 +298,17 @@ fn spawn_dynamic(
     })
 }
 
+/// Events are high-churn and mostly noise after the fact; rather than a full
+/// reflector store we keep a bounded ring of the most recent ones, deduped by
+/// (kind, ns, name, reason) — `retain` drops any earlier entry for a key before
+/// the new one is pushed, so the ring holds each key's LATEST occurrence and its
+/// count, never the intermediate timestamps.
+///
+/// **It is a bounded latest-state set, not a history**, and the bound binds:
+/// measured on the 4-node dev cluster, 180 short-lived pods produce 724 distinct
+/// keys against `CAP` = 500, so ordinary batch work evicts. Eviction is by
+/// recency of last touch, not by age of onset. Anything wanting a time series
+/// needs its own store — see `docs/reports/t0-history-substrate.md`.
 fn spawn_events(
     api: Api<Event>,
     id: ClusterId,

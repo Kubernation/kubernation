@@ -1,41 +1,54 @@
 # Reports
 
-Session reports written for planning: what was built, what the governing guidance
-got wrong, and what needs a decision. One per round, newest first.
+One file per measurement or phase. **A phase is not done until its report is
+here** — the T0 round cost a session partly because a report that existed could
+not be found, and a guidance doc was written on the premise that it did not.
 
-They are kept here — in the repo, in markdown — rather than as hosted links, so they
-are diffable, greppable, and survive alongside the code they describe.
+Read this before assuming a question is unanswered.
 
-**Start here for planning:** [Workstream A — open decisions](open-decisions.md)
-consolidates what still needs deciding across every round below, so they do not
-have to be read in sequence.
+## Workstream A — layout stability (closed, A1–A6)
 
-| Report | Date | Outcome |
-|---|---|---|
-| [A5 — succession (core)](a5-succession-core.md) | 2026-08-03 | Core landed; **cataclysm is a record**; rendering deferred |
-| [A4 — persistence](a4-persistence.md) | 2026-08-03 | **Gate passed** — 70/70 hold, vs 55/70 without |
-| [A4 — verification, stopped at §0](a4-verification.md) | 2026-08-03 | Superseded by rev2 — claim 10 was false |
-| [A3 — interior stability](a3-interior-stability.md) | 2026-08-03 | **Gate passed** — 3 of 3 incumbents moved, now 0 |
-| [A3-pre — an instrument that can see assignment](a3-pre-instrument.md) | 2026-08-03 | Baseline taken; **A3 is smaller than scoped** |
-| [Measurement session](measurement-session.md) | 2026-08-03 | Instruments committed; **A3 next**, on a measured trigger |
-| [A2 — wire the layout in](a2-wire-layout.md) | 2026-08-02 | **Gate passed** — the map holds still |
-| [A1 — the layout engine](a1-layout-engine.md) | 2026-08-02 | Shipped, unversioned (consumer-less) |
-| [Unmeasurable capacity must not read as idle](unmeasurable-capacity.md) | 2026-08-02 | Shipped as v1.6.0 |
-| [A-pre — the churn harness](a-pre-churn-harness.md) | 2026-08-02 | Shipped, unversioned (test asset) |
-| [A0 — pod resource data in the map model](a0-pod-resource-data.md) | 2026-07-31 | Shipped, unversioned (gated prerequisite) |
-| [Substrate overlay — DaemonSet coverage gaps](substrate-overlay.md) | 2026-07-30 | Shipped as v1.5.0 |
-| [The cutaway fork](cutaway-fork.md) | 2026-07-30 | Stopped at gate 2; the finding transfers |
+| Report | Answers |
+|---|---|
+| `a2-wire-layout.md` | the gate: do provinces hold still? (92.7% pixel-identical across a 30-node refresh) |
+| `measurement-session.md` | the pixel gate cannot see a permutation; instruments + the reshuffle measure |
+| `a3-pre-instrument.md` | `--dump-positions`, and the pre-A3 city baseline |
+| `a3-interior-stability.md` | the gate: 3 of 3 incumbents moved before, 0 after |
+| `a4-persistence.md` | the gate: 70 of 70 provinces held across a refresh performed while closed |
+| `a4-verification.md` | rev1 stopped at §0 |
+| `a5-succession-core.md` | `occupied_at` — succession, not arrival |
+| `a5-render.md` | the wave gate, and why the ageing window had to be a setting |
+| `a6-graticule.md` | the reference frame; the one defect no test could catch |
+
+## Workstream T — time on the map (**CLOSED** — see `../kubernation-workstream-t-planning.md` §0)
+
+| Report | Answers |
+|---|---|
+| `t0-history-substrate.md` | **what history exists, where, and for how long** |
+| `t0-consolidation.md` | T0's missing number: the event ring's cap **binds** (724 keys vs 500) |
+| `t-pre-fault-line-frequency.md` | frequency was the wrong question — and a live defect |
+| `t-fix-verification.md` | rev1 stopped at §0 (claim 8 false) |
+| `t-fix-onset-fault-lines.md` | fault lines anchor on onset |
+| `t-fix-2-correlation-rule.md` | the correlation rule's two sides |
+| `t1-change-since.md` | **the kill point** — gate mixed vs the Annals, negative vs fresh ground |
+| `t1-shape-rederivation.md` | how T1's diagram was made; one column was wrong |
+| `a5-t1-merge-verification.md` | the merge is complete; the panel half was the real loss |
+| `t2-pre-failure-clustering.md` | **failures cluster by workload, not location** |
+| `t2-pre-pool-gap.md` | a 100%-pool-confined failure renders as 8 disconnected pieces |
+
+## Consolidation and defects
+
+| Report | Answers |
+|---|---|
+| `consolidation.md` | four deferred items; item A stopped at §0 |
+| `extent-headroom.md` | item A closed; and the Relief hazard, seen at last |
+| `region-label-ordering.md` | `Continent.provinces` is not in map order |
 
 ## Conventions
 
-- **Verification first.** Every guidance doc so far has contained one or two wrong
-  mechanism claims. Each report records which claims were checked and what was false —
-  that section is the one that feeds back into how the next phase gets specified.
-- **Findings carry their evidence.** A claim about Kubernetes semantics is verified
-  against a live API server; a claim about test coverage is verified by a mutation.
-- **Decisions for the room** at the end: the things that genuinely need a human call,
-  not a summary of what was already decided.
-
-Detailed engineering rationale lives in the decision log in `CLAUDE.md`. These are the
-planning-facing summaries; the gate documents (`../cutaway-gate-*.md`) are the raw
-round-by-round notes behind one of them.
+- **Every guidance doc's §0 claims are verified before building.** If one is
+  false, stop and report rather than adapting around it.
+- **Reports state what was measured and what was not.** "Could not be
+  constructed here" is a result.
+- **Every gate needs a discrimination check** — and check whether the instrument
+  *can* discriminate before running it.
