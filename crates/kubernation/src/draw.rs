@@ -802,13 +802,31 @@ impl Camera {
     }
     /// Glide so `cell`'s diamond center sits at the screen middle.
     pub fn fly_to(&mut self, cell: (u16, u16)) {
+        self.fly_to_within(cell, Rect::new(0.0, 0.0, screen_width(), screen_height()));
+    }
+    /// Fly so `cell` lands in the centre of `view`, a screen rect, rather than
+    /// the centre of the screen.
+    ///
+    /// D1: with a drill-down docked over the right of the play area, centring on
+    /// the screen puts the subject under the panel. The acceptance criterion is
+    /// that the subject stays VISIBLE, so the aim point is the visible strip.
+    /// `fly_to` is this against the whole screen, and both go through one
+    /// projection so they cannot disagree about where a cell is.
+    pub fn fly_to_within(&mut self, cell: (u16, u16), view: Rect) {
         let (hw, hh) = self.cell_px();
         let (cx, cy) = (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5);
         let proj = vec2((cx - cy) * hw, (cx + cy) * hh); // pre-`pos`
-        self.target = Some(proj - vec2(screen_width() / 2.0, screen_height() / 2.0));
+        self.target = Some(proj - vec2(view.x + view.w / 2.0, view.y + view.h / 2.0));
     }
+
     pub fn jump_to(&mut self, cell: (u16, u16)) {
-        self.fly_to(cell);
+        self.jump_to_within(cell, Rect::new(0.0, 0.0, screen_width(), screen_height()));
+    }
+
+    /// [`Camera::jump_to`], aimed at `view` rather than the whole screen — the
+    /// instant form of [`Camera::fly_to_within`].
+    pub fn jump_to_within(&mut self, cell: (u16, u16), view: Rect) {
+        self.fly_to_within(cell, view);
         if let Some(t) = self.target.take() {
             self.pos = t;
         }

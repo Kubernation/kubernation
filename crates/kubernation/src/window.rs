@@ -76,24 +76,88 @@ pub struct WinAction {
 /// `derive_qos`, `worst_level`, `changed_hands`, `fresh_tier`, `slot_of_row`,
 /// `terrain_order`): when two consumers must agree about a derived value, the
 /// derivation gets a name and one home.
-pub fn window_rect(size: Vec2, sw: f32, sh: f32) -> Rect {
+/// Where a window sits. Centred is the default and what twelve of the fourteen
+/// windows use; only the two drill-downs dock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    /// Centred over the whole screen, with a dimming scrim. Right for a window
+    /// that is not about a map location — the Almanac, About, the Charter.
+    Centred,
+    /// Against the right edge of the PLAY AREA, leaving map to its west and the
+    /// docked column to its east. No scrim: the point is to keep the map
+    /// legible, and dimming it would give back most of what docking bought.
+    DockRightOfMap,
+}
+
+/// The placement authority: the ONE home for where a window lands.
+pub fn window_rect_at(size: Vec2, sw: f32, sh: f32, place: Place) -> Rect {
     let w = size.x.min(sw - 40.0);
     let h = size.y.min(sh - 40.0);
-    Rect::new(((sw - w) / 2.0).floor(), ((sh - h) / 2.0).floor(), w, h)
+    match place {
+        Place::Centred => Rect::new(((sw - w) / 2.0).floor(), ((sh - h) / 2.0).floor(), w, h),
+        Place::DockRightOfMap => {
+            // Right edge flush with the play area, so the docked column stays
+            // visible — it is the other context surface, and hiding it to show
+            // the map would just move the problem.
+            let play_w = crate::panels::play_width(sw);
+            let w = w.min(play_w);
+            let top = crate::panels::CHROME_H + 8.0;
+            let h = h.min(sh - top - 8.0);
+            Rect::new((play_w - w).floor().max(0.0), top.floor(), w, h)
+        }
+    }
 }
+
+/// The map strip left west of a docked drill-down, as a screen rect.
+///
+/// D1's acceptance criterion is that the SUBJECT stays visible, so the camera
+/// centres on this rather than on the play area — a province centred in the play
+/// area would sit under the panel, which moves the keyhole rather than removing
+/// it. Returns `None` when the strip is too narrow to be worth aiming at, so a
+/// small window degrades to not panning rather than to panning somewhere absurd.
+pub fn map_strip(sw: f32, sh: f32) -> Option<Rect> {
+    let r = window_rect_at(
+        crate::panels::panel_size(sw, sh),
+        sw,
+        sh,
+        Place::DockRightOfMap,
+    );
+    let top = crate::panels::CHROME_H;
+    (r.x >= MIN_STRIP).then(|| Rect::new(0.0, top, r.x, (sh - top).max(0.0)))
+}
+
+/// Below this the strip shows too little to locate anything in, which is one of
+/// D1 §7.2's stated failure criteria — so we decline to aim at it.
+const MIN_STRIP: f32 = 220.0;
 
 /// Draw the scrim, frame, title bar (with icon), and bottom button row;
 /// return the hit regions. `active` highlights that button as the current
 /// tab (pass `usize::MAX` for none).
 pub fn draw_window(title: &str, size: Vec2, buttons: &[&str], active: usize) -> WinLayout {
-    draw_rectangle(
-        0.0,
-        0.0,
-        screen_width(),
-        screen_height(),
-        Color::new(0.0, 0.0, 0.0, 0.5),
-    );
-    let frame = window_rect(size, screen_width(), screen_height());
+    draw_window_at(title, size, buttons, active, Place::Centred)
+}
+
+/// [`draw_window`], with the placement chosen. Only the two drill-downs pass
+/// anything but [`Place::Centred`].
+pub fn draw_window_at(
+    title: &str,
+    size: Vec2,
+    buttons: &[&str],
+    active: usize,
+    place: Place,
+) -> WinLayout {
+    // The scrim belongs to a MODAL. A docked drill-down deliberately has none:
+    // dimming the map would give back most of what docking it bought.
+    if place == Place::Centred {
+        draw_rectangle(
+            0.0,
+            0.0,
+            screen_width(),
+            screen_height(),
+            Color::new(0.0, 0.0, 0.0, 0.5),
+        );
+    }
+    let frame = window_rect_at(size, screen_width(), screen_height(), place);
     let (x, y, w, h) = (frame.x, frame.y, frame.w, frame.h);
     let mp = Vec2::from(mouse_position());
 

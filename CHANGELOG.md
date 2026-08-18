@@ -263,6 +263,23 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   scheduled have no pool at all — those are excluded and change the wording to
   "all N placed on pool X" rather than being counted in.
 
+### Changed
+
+- **The map stays visible while you read a city or a province.** Both drill-down
+  windows used to open centred, at up to 1100px wide with a dimming wash over
+  everything else — which covered essentially the whole map, so the overview you
+  clicked from vanished the moment you drilled into it.
+
+  They now dock beside the map rather than over it, and the camera moves once, on
+  open, so the province you clicked stays in the visible strip rather than
+  sliding under the panel. No dimming wash: the point is to keep the map
+  readable. The other twelve windows — the Almanac, About, the Charter and so on
+  — are unchanged, because they are not about a place on the map.
+
+  Pod rows now fit their column rather than a fixed character count, so the
+  narrower panel shortens a pod's name-hash instead of running its text under the
+  hover buttons. Every field on the row survives.
+
 ## [1.9.0] — 2026-08-03
 
 The first release since 1.6.0. It carries the work versioned 1.7.0, 1.7.1, 1.7.2

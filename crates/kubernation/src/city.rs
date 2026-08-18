@@ -30,7 +30,7 @@ use crate::panels::{
 };
 use crate::text::{text, text_bold, text_size};
 use crate::theme::*;
-use crate::window::{ForwardBtn, WinAction, draw_window};
+use crate::window::{ForwardBtn, Place, WinAction, draw_window_at};
 
 /// Draw the city window for `r` and resolve this frame's clicks. `auto_log`
 /// (headless verification) opens the first pod's logs without a click.
@@ -55,11 +55,12 @@ pub fn draw_city(
         _ => "",
     };
     let title = format!("{} {}/{}{tag}", r.kind, r.namespace, r.name);
-    let win = draw_window(
+    let win = draw_window_at(
         &ascii(&title),
         panel_size(screen_width(), screen_height()),
         &[],
         usize::MAX,
+        Place::DockRightOfMap,
     );
     let b = win.body;
 
@@ -503,14 +504,20 @@ pub fn draw_city(
                 .usage
                 .map(|u| format!(" . {}", format_usage(u.cpu, u.mem)))
                 .unwrap_or_default();
-            let label = format!(
-                "{}{} . r{} . {}{}",
-                truncate_str(&p.name, 22),
+            // Give the informative tail (state, restarts, age, usage) its space
+            // and spend what is left on the name — the hash half of a pod name
+            // is the least useful part of the row to keep.
+            let tail = format!(
+                "{} . r{} . {}{}",
                 reason,
                 p.restarts,
                 format_age_opt(p.age.as_ref()),
                 use_suffix
             );
+            let name_chars = crate::panels::row_char_budget(left_w, 14.0)
+                .saturating_sub(tail.chars().count())
+                .clamp(8, 22);
+            let label = format!("{}{}", truncate_str(&p.name, name_chars), tail);
             let col = if p.state == kubernation_core::state::model::PodState::Failing {
                 CRIT
             } else {

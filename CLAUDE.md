@@ -2619,6 +2619,45 @@ what makes the interesting logic unit-testable without a cluster.
   gate was decided and why the extent-headroom round declined to capture a fleet
   at all.
 
+- **D1 — de-modalise the drill-down** (2026-08-07, **v1.22.0**; from
+  `docs/kubernation-d1-demodalise-guidance.md`, report in
+  `docs/reports/d1-demodalise.md`): the city and province windows **dock beside
+  the map instead of covering it**, and the camera aims once at the subject so it
+  stays visible. Occlusion of the play area falls from **~100%** (a 1100px centred
+  panel plus a full-screen scrim) to **66.6%** (758px docked, no scrim), leaving a
+  **358px** map strip. Shape chosen by the user from §4's three candidates.
+  **§2 first, and it is the durable half:** `window::window_rect_at(size, sw, sh,
+  Place)` is the ONE home for placement — `draw_window`, `panel_frame` and
+  `panel_split_x` all consult it, where the latter two each re-derived the same
+  clamp-and-centre with doc comments saying they "mirror" it and nothing
+  enforcing it. Scope held to the two drill-downs; the other twelve windows are
+  pinned unchanged by concrete rect. **§1 claim 5 is FALSE** (reported, not
+  adapted around): `panel_size` returns a *size*, centres nothing, and does not
+  claim to mirror — placement lived in three places, not four. **Two things the
+  gate would have got wrong.** (1) `--inspect`, the dev flag used to *photograph*
+  the gate, called `cam.jump_to`, which centres on the whole screen and so parked
+  the subject **under the docked panel** — §7.2's first failure criterion,
+  produced by the instrument that captures the gate; both open paths now go
+  through one `aim_for_drilldown`, and `Camera::fly_to` is reimplemented as
+  `fly_to_within`'s whole-screen case. (2) §7.1's pixel figure (99.4% → 88.1%)
+  **is not occlusion**: decomposed, the visible strip changed 72.3% because the
+  camera *panned* and the panel area 95.5% — so the honest figure is the geometric
+  66.6%, and quoting 88.1% would have been a plausible number measuring something
+  else. **§4.1's content cost was real, not hypothetical:** at 758px the left
+  column is 402px and the fwd/yaml/evict strip is a FIXED 156px, leaving 246px
+  against a ~329px row — the text ran under the buttons. Fixed by deriving the
+  budget from the column (`panels::row_char_budget`, pure + unit-tested) and
+  spending it on the pod NAME, so the state/restarts/age/usage tail survives
+  intact; applied to CITIZENS and GARRISON alike. **§6's stated mutation is aimed
+  backwards** — if placement has one home, changing it moves everything
+  consistently; the mutation that detects a re-introduced mirror is changing a
+  CONSUMER. Both run, plus the button-strip one. All three first reported as
+  surviving because `cargo fmt` had reflowed the target and the replacement
+  matched nothing — they now assert they applied. Pointer gates (click, hover,
+  tooltip) key on *being over the panel*, not on one being open; **keyboard gates
+  deliberately still treat it as modal**, which is a separate question D1 §5 says
+  not to answer here. 455 core + 115 GUI tests; gui-smoke 55. **Unblocks D2–D4.**
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn

@@ -30,7 +30,7 @@ use crate::panels::{
 };
 use crate::text::{text, text_bold, text_size};
 use crate::theme::*;
-use crate::window::{ForwardBtn, WinAction, draw_window};
+use crate::window::{ForwardBtn, Place, WinAction, draw_window_at};
 
 /// Draw the province (node) window and resolve this frame's clicks. `scroll_l` /
 /// PURE draw-decision fn: the SUBSTRATE section's lines — the node's DaemonSet
@@ -120,11 +120,12 @@ pub fn draw_node(
         (true, ClusterId::Warm) => " — WARM",
         _ => "",
     };
-    let win = draw_window(
+    let win = draw_window_at(
         &ascii(&format!("{name}{tag}")),
         panel_size(screen_width(), screen_height()),
         &[],
         usize::MAX,
+        Place::DockRightOfMap,
     );
     let b = win.body;
     let close_hit = |a: &mut WinAction| {
@@ -364,12 +365,14 @@ pub fn draw_node(
                 .usage
                 .map(|u| format!("  {}", format_usage(u.cpu, u.mem)))
                 .unwrap_or_default();
-            let label = format!(
-                "{}/{}{}",
-                p.namespace,
-                truncate_str(&p.name, 28 - p.namespace.len().min(16)),
-                use_suffix
-            );
+            // Same budget as the city's CITIZENS rows: D1's narrower docked
+            // column made the fixed button strip large enough to run text under.
+            let ns = truncate_str(&p.namespace, 16);
+            let fixed = ns.chars().count() + 1 + use_suffix.chars().count();
+            let name_chars = crate::panels::row_char_budget(left_w, 13.0)
+                .saturating_sub(fixed)
+                .clamp(8, 28);
+            let label = format!("{}/{}{}", ns, truncate_str(&p.name, name_chars), use_suffix);
             let col = if p.state == PodState::Failing {
                 CRIT
             } else {

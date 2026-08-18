@@ -37,7 +37,16 @@ pub fn sidebar_rect() -> Rect {
 /// The play area to the left of the column (where the map lives, now full
 /// height — the attention queue moved into the column's ATTENTION section).
 pub fn map_width() -> f32 {
-    (screen_width() - COL_W).max(0.0)
+    play_width(screen_width())
+}
+
+/// The play area's width on a screen of `sw` — the map, less the docked column.
+///
+/// PURE. `map_width` is this against the live screen; anything that is handed an
+/// `sw` must use THIS, or it silently ignores its own argument and cannot be
+/// tested at a size other than the one the window happens to be.
+pub fn play_width(sw: f32) -> f32 {
+    (sw - COL_W).max(0.0)
 }
 
 /// A cartographic title cartouche centered over the top of the play area —
@@ -892,8 +901,12 @@ pub(crate) fn fit_width(s: &str, size: f32, max_w: f32) -> String {
 /// caps to screen − 40), clamped to a sane band.
 pub(crate) fn panel_size(sw: f32, sh: f32) -> Vec2 {
     vec2(
-        (sw - 80.0).clamp(900.0, 1100.0),
-        (sh - 80.0).clamp(560.0, 1000.0),
+        // Narrower than the old centred window (900–1100): the panel now shares
+        // the play area with the map instead of covering it. 760 keeps the pod
+        // rows intact — the left column is 0.55·body and 156px of it is the
+        // fixed evict/yaml/fwd cluster, leaving ~247px for a 22-char name.
+        (play_width(sw) * 0.68).floor().clamp(560.0, 760.0),
+        (sh - CHROME_H - 16.0).clamp(560.0, 1000.0),
     )
 }
 
@@ -913,7 +926,32 @@ pub(crate) fn panel_split_x(sw: f32, sh: f32) -> f32 {
 /// Derived from [`window::window_rect`] rather than re-centred here, so hit
 /// testing and scroll routing cannot disagree with what was drawn.
 pub(crate) fn panel_frame(sw: f32, sh: f32) -> Rect {
-    crate::window::window_rect(panel_size(sw, sh), sw, sh)
+    crate::window::window_rect_at(
+        panel_size(sw, sh),
+        sw,
+        sh,
+        crate::window::Place::DockRightOfMap,
+    )
+}
+
+/// How many characters of a pod row fit in a column of `col_w`, once the
+/// hover-revealed button strip is reserved.
+///
+/// PURE draw-decision fn, unit-tested. D1 docked the drill-down, taking the left
+/// column from ~590px to ~402px — at which point the FIXED 156px fwd/yaml/evict
+/// cluster stopped being a rounding error. A full row (name + state + restarts +
+/// age + usage, ~47 chars ≈ 329px) had 246px of clear space, so the text ran
+/// under the buttons on hover. That is D1 §7.2's second failure criterion, and
+/// it is why the budget is derived from the column instead of being a constant.
+///
+/// Deliberately an ESTIMATE from an average advance rather than a measurement:
+/// the alternative needs `text_size`, which needs the font, which cannot be
+/// called from a unit test. A conservative advance under-fills slightly, which
+/// errs toward whitespace rather than toward a collision.
+pub(crate) fn row_char_budget(col_w: f32, font_px: f32) -> usize {
+    const BUTTONS_PX: f32 = 156.0 + 10.0; // the three buttons, plus a gap
+    let advance = (font_px * 0.52).max(1.0);
+    (((col_w - BUTTONS_PX).max(0.0)) / advance).floor() as usize
 }
 
 /// Clamp a scroll offset to its content/view heights.
@@ -1396,9 +1434,37 @@ mod tests {
     /// and agreed by convention — so moving the geometry was a three-way edit
     /// with nothing enforcing the third. Now all of them go through
     /// `window::window_rect`, and this pins that they still do.
+    /// The row budget shrinks with the column, and never runs under the buttons.
+    ///
+    /// The number that matters: at D1's docked width the left column is ~402px,
+    /// and the fwd/yaml/evict strip is a FIXED 156px. A budget that ignored the
+    /// column would let a full row (~47 chars) draw straight through them.
+    #[test]
+    fn row_budget_reserves_the_button_strip() {
+        // The old centred window's column had room for a whole row.
+        let wide = row_char_budget(590.0, 14.0);
+        // D1's docked column does not, and the budget says so.
+        let docked = row_char_budget(402.0, 14.0);
+        assert!(wide > docked, "{wide} vs {docked}");
+        assert!(docked >= 8, "still enough to identify a pod: {docked}");
+
+        // The budget never claims space the buttons occupy.
+        for col_w in [402.0f32, 500.0, 590.0, 760.0] {
+            let px = row_char_budget(col_w, 14.0) as f32 * 14.0 * 0.52;
+            assert!(
+                px <= col_w - 156.0,
+                "budget {px}px overruns the button strip in a {col_w}px column"
+            );
+        }
+        // A column narrower than the buttons yields nothing, not a negative.
+        assert_eq!(row_char_budget(100.0, 14.0), 0);
+        assert_eq!(row_char_budget(0.0, 14.0), 0);
+    }
+
     #[test]
     fn placement_has_one_authority() {
-        use crate::window::window_rect;
+        use crate::window::{Place, window_rect_at};
+        let centred = |sz, sw, sh| window_rect_at(sz, sw, sh, Place::Centred);
 
         // CONCRETE, on the default window. `panel_frame == window_rect(..)` is
         // a tautology once panel_frame delegates, so it cannot detect the
@@ -1406,19 +1472,19 @@ mod tests {
         // this is what tells you, deliberately.
         assert_eq!(
             panel_frame(1380.0, 860.0),
-            Rect::new(140.0, 40.0, 1100.0, 780.0),
-            "the drill-down's placement on the default window"
+            Rect::new(358.0, 40.0, 758.0, 812.0),
+            "the drill-down docks right of the map on the default window"
         );
         // Two of the twelve windows D1 does not touch, pinned at today's values.
         assert_eq!(
-            window_rect(vec2(640.0, 800.0), 1380.0, 860.0),
+            centred(vec2(640.0, 800.0), 1380.0, 860.0),
             Rect::new(370.0, 30.0, 640.0, 800.0),
-            "About"
+            "About — one of the twelve D1 does not touch"
         );
         assert_eq!(
-            window_rect(vec2(720.0, 600.0), 1380.0, 860.0),
+            centred(vec2(720.0, 600.0), 1380.0, 860.0),
             Rect::new(330.0, 130.0, 720.0, 600.0),
-            "Inspector"
+            "Inspector — likewise"
         );
         for (sw, sh) in [
             (1380.0, 860.0),  // the default window
@@ -1427,7 +1493,7 @@ mod tests {
             (1000.0, 1000.0),
             (2560.0, 1440.0),
         ] {
-            let want = window_rect(panel_size(sw, sh), sw, sh);
+            let want = window_rect_at(panel_size(sw, sh), sw, sh, Place::DockRightOfMap);
             assert_eq!(panel_frame(sw, sh), want, "panel_frame at {sw}x{sh}");
 
             // The split lies strictly inside the frame, and moves with it.
@@ -1441,9 +1507,16 @@ mod tests {
                 "split stopped tracking the authority at {sw}x{sh}"
             );
 
-            // The frame is on screen and within the margin the authority caps to.
+            // On screen, and it leaves the docked column alone: the panel's
+            // right edge is the play area's, never the screen's.
             assert!(want.x >= 0.0 && want.y >= 0.0);
             assert!(want.w <= sw - 40.0 && want.h <= sh - 40.0);
+            assert!(
+                (want.x + want.w - play_width(sw)).abs() < 0.51,
+                "panel right edge {} != play edge {} at {sw}x{sh}",
+                want.x + want.w,
+                play_width(sw)
+            );
         }
     }
 
@@ -1460,8 +1533,22 @@ mod tests {
         let (ty2, th2) = scroll_thumb(10.0, 100.0, 400.0, 300.0).unwrap(); // max offset
         assert!((ty2 + th2 - 110.0).abs() < 1e-3); // thumb bottom flush with view bottom
         // panel_size: clamps small up, big down.
-        assert_eq!(panel_size(400.0, 400.0), vec2(900.0, 560.0));
-        assert_eq!(panel_size(4000.0, 4000.0), vec2(1100.0, 1000.0));
+        // D1: the drill-down docks beside the map instead of covering it, so
+        // the band is narrower than the old centred window's 900–1100 and is a
+        // share of the PLAY area, not of the screen.
+        assert_eq!(panel_size(400.0, 400.0), vec2(560.0, 560.0));
+        assert_eq!(panel_size(4000.0, 4000.0), vec2(760.0, 1000.0));
+        // A window too small to leave a usable strip: the panel is clamped to
+        // the play area and no aim point is offered, so the camera declines to
+        // pan rather than panning at a sliver (§7.2's "too small to locate
+        // anything in", refused rather than rendered).
+        assert!(panel_frame(400.0, 400.0).w <= play_width(400.0));
+        assert!(crate::window::map_strip(400.0, 400.0).is_none());
+        // The default window leaves a real strip, and it is what the camera aims at.
+        let strip = crate::window::map_strip(1380.0, 860.0).expect("a usable strip");
+        assert_eq!(strip.x, 0.0);
+        assert_eq!(strip.w, 358.0);
+        assert!(strip.w + panel_frame(1380.0, 860.0).w == play_width(1380.0));
         // panel_split_x sits between the columns (≈0.565 of the body).
         let sx = panel_split_x(1380.0, 860.0);
         assert!(sx > 600.0 && sx < 800.0);

@@ -656,6 +656,28 @@ fn window_conf() -> Conf {
     }
 }
 
+/// Aim the camera at a drill-down's subject, given that the panel DOCKS over the
+/// right of the play area.
+///
+/// One home for this, because the two ways a drill-down opens — a click, and the
+/// `--inspect` dev flag that captures the gate — must agree. They did not: the
+/// flag called `jump_to`, which centres on the whole screen and therefore parked
+/// the subject *underneath* the panel. That is D1 §7.2's first failure criterion,
+/// produced by the instrument used to photograph the gate, which would have
+/// recorded a failure as a pass.
+///
+/// Falls back to the whole screen when the strip is too narrow to aim at, so a
+/// small window declines to pan rather than panning at a sliver.
+fn aim_for_drilldown(cam: &mut draw::Camera, cell: (u16, u16), instant: bool) {
+    let view = window::map_strip(screen_width(), screen_height())
+        .unwrap_or_else(|| Rect::new(0.0, 0.0, screen_width(), screen_height()));
+    if instant {
+        cam.jump_to_within(cell, view);
+    } else {
+        cam.fly_to_within(cell, view);
+    }
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
     let args = Args::parse();
@@ -1108,6 +1130,16 @@ async fn main() {
         // Every drill-down (city or node) is a centered modal window: it
         // suspends map nav like the picker.
         let panel_modal = panel.is_some();
+        // D1: the drill-down is DOCKED, not modal, so the map west of it stays
+        // live. Pointer gates therefore ask "is the pointer over the panel",
+        // not "is a panel open" — one derivation, so the click gate, the hover
+        // marker and the tooltip cannot disagree about the panel's edge.
+        //
+        // Keyboard gates deliberately still use `panel_modal`: which shortcuts
+        // should belong to an open panel is a separate question, and D1 §5 says
+        // this phase changes no behaviour beyond the geometry it has to.
+        let over_panel =
+            panel.is_some() && panels::panel_frame(screen_width(), screen_height()).contains(mouse);
         // Track a panel opened by *this frame's* click so the window doesn't
         // read that same click as a click-outside dismiss.
         let mut panel_just_opened = false;
@@ -2060,6 +2092,7 @@ async fn main() {
                 // a drill-down window.
                 if is_mouse_button_pressed(MouseButton::Left)
                     && !ml.frame.contains(mouse)
+                    && !over_panel
                     && mouse.y > panels::CHROME_H
                     && mouse.x < panels::map_width()
                 {
@@ -2072,6 +2105,18 @@ async fn main() {
                     if selected.is_some() {
                         panel = panels::panel_for(&worlds, hit);
                         panel_just_opened = panel.is_some();
+                        // D1: the drill-down docks over the right of the play
+                        // area, so a subject that was under the pointer may now
+                        // be under the panel. Aim the camera at the map strip
+                        // that is still visible — ONCE, on open. Re-aiming every
+                        // frame would take the camera away from the operator,
+                        // which is worse than the occlusion it fixes.
+                        if panel_just_opened
+                            && let Some(cell) = selected
+                            && let Some(strip) = window::map_strip(screen_width(), screen_height())
+                        {
+                            cam.fly_to_within(cell, strip);
+                        }
                     }
                 }
 
@@ -2083,7 +2128,7 @@ async fn main() {
                             if c.r.name.contains(needle.as_str()) {
                                 let global = (c.x + sw.off, c.y);
                                 selected = Some(global);
-                                cam.jump_to(global);
+                                aim_for_drilldown(&mut cam, global, true);
                                 panel = Some(Panel::City(sw.id, c.r.clone()));
                                 break 'outer;
                             }
@@ -2093,7 +2138,7 @@ async fn main() {
                                 if p.tile.name.contains(needle.as_str()) {
                                     let global = (p.x + sw.off + 2, p.y + 1);
                                     selected = Some(global);
-                                    cam.jump_to(global);
+                                    aim_for_drilldown(&mut cam, global, true);
                                     panel = Some(Panel::Node(sw.id, p.tile.name.clone()));
                                     break 'outer;
                                 }
@@ -2498,7 +2543,7 @@ async fn main() {
                     && workloads.is_none()
                     && chaos.is_none()
                     && browser.is_none()
-                    && !panel_modal
+                    && !over_panel
                     && !plan_open
                     && !log_open
                     && open_menu.is_none()
