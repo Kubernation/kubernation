@@ -62,6 +62,26 @@ pub struct WinAction {
     pub slo_target: Option<(kubernation_core::state::model::WorkloadRef, Option<f64>)>,
 }
 
+/// **The placement authority.** Where a window of `size` lands on a `sw` x `sh`
+/// screen: capped to the screen less a margin, then centred.
+///
+/// PURE, unit-tested, and the ONE home for this derivation. Drawing, hit-testing
+/// and scroll routing all have to agree about where a window's edge is, and
+/// before this they agreed by convention — `panel_frame` and `panel_split_x`
+/// each re-derived the same clamp-and-centre, with doc comments saying they
+/// "mirror" `draw_window`. Nothing enforced the mirroring, so moving the
+/// geometry meant a three-way edit that a reader had to know to make.
+///
+/// That is the shape this codebase has paid for repeatedly (`resolve_region`,
+/// `derive_qos`, `worst_level`, `changed_hands`, `fresh_tier`, `slot_of_row`,
+/// `terrain_order`): when two consumers must agree about a derived value, the
+/// derivation gets a name and one home.
+pub fn window_rect(size: Vec2, sw: f32, sh: f32) -> Rect {
+    let w = size.x.min(sw - 40.0);
+    let h = size.y.min(sh - 40.0);
+    Rect::new(((sw - w) / 2.0).floor(), ((sh - h) / 2.0).floor(), w, h)
+}
+
 /// Draw the scrim, frame, title bar (with icon), and bottom button row;
 /// return the hit regions. `active` highlights that button as the current
 /// tab (pass `usize::MAX` for none).
@@ -73,11 +93,8 @@ pub fn draw_window(title: &str, size: Vec2, buttons: &[&str], active: usize) -> 
         screen_height(),
         Color::new(0.0, 0.0, 0.0, 0.5),
     );
-    let w = size.x.min(screen_width() - 40.0);
-    let h = size.y.min(screen_height() - 40.0);
-    let x = ((screen_width() - w) / 2.0).floor();
-    let y = ((screen_height() - h) / 2.0).floor();
-    let frame = Rect::new(x, y, w, h);
+    let frame = window_rect(size, screen_width(), screen_height());
+    let (x, y, w, h) = (frame.x, frame.y, frame.w, frame.h);
     let mp = Vec2::from(mouse_position());
 
     draw_rectangle(x, y, w, h, PANEL);

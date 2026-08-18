@@ -898,26 +898,22 @@ pub(crate) fn panel_size(sw: f32, sh: f32) -> Vec2 {
 }
 
 /// The x boundary between the left (garrison/citizens) and right (terrain/…)
-/// columns, for routing the scroll wheel by hover. Mirrors `draw_window`'s
-/// centering + PAD and the windows' inter-column gutter (left ends ~0.55·body,
-/// right starts ~0.58·body).
+/// columns, for routing the scroll wheel by hover. Takes the frame from
+/// [`window::window_rect`] — the placement authority — and adds the windows'
+/// inter-column gutter (left ends ~0.55·body, right starts ~0.58·body).
 pub(crate) fn panel_split_x(sw: f32, sh: f32) -> f32 {
-    let w = panel_size(sw, sh).x.min(sw - 40.0);
-    let x = ((sw - w) / 2.0).floor();
-    let body_x = x + 14.0; // window PAD
-    let body_w = w - 28.0; // PAD * 2
+    let f = panel_frame(sw, sh);
+    let body_x = f.x + 14.0; // window PAD
+    let body_w = f.w - 28.0; // PAD * 2
     body_x + body_w * 0.565 // midway through the gutter
 }
 
-/// The centered drill-down window frame (mirrors `draw_window`'s screen clamp +
-/// centering), for gating the scroll wheel to the actual window bounds.
+/// The drill-down window's frame, for gating the scroll wheel to its bounds.
+///
+/// Derived from [`window::window_rect`] rather than re-centred here, so hit
+/// testing and scroll routing cannot disagree with what was drawn.
 pub(crate) fn panel_frame(sw: f32, sh: f32) -> Rect {
-    let sz = panel_size(sw, sh);
-    let w = sz.x.min(sw - 40.0);
-    let h = sz.y.min(sh - 40.0);
-    let x = ((sw - w) / 2.0).floor();
-    let y = ((sh - h) / 2.0).floor();
-    Rect::new(x, y, w, h)
+    crate::window::window_rect(panel_size(sw, sh), sw, sh)
 }
 
 /// Clamp a scroll offset to its content/view heights.
@@ -1391,6 +1387,65 @@ mod tests {
     use kubernation_core::state::layout::{GroundState, NewGround};
     use kubernation_core::state::model::Models;
     use std::sync::Arc;
+
+    /// Drawing, hit-testing and scroll routing agree about the window's edge.
+    ///
+    /// They have to: `draw_window` paints the frame, `panel_frame` gates the
+    /// scroll wheel to it, and `panel_split_x` routes the wheel between the two
+    /// columns inside it. Before D1 each re-derived the same clamp-and-centre
+    /// and agreed by convention — so moving the geometry was a three-way edit
+    /// with nothing enforcing the third. Now all of them go through
+    /// `window::window_rect`, and this pins that they still do.
+    #[test]
+    fn placement_has_one_authority() {
+        use crate::window::window_rect;
+
+        // CONCRETE, on the default window. `panel_frame == window_rect(..)` is
+        // a tautology once panel_frame delegates, so it cannot detect the
+        // geometry moving; only a stated rect can. Change the placement and
+        // this is what tells you, deliberately.
+        assert_eq!(
+            panel_frame(1380.0, 860.0),
+            Rect::new(140.0, 40.0, 1100.0, 780.0),
+            "the drill-down's placement on the default window"
+        );
+        // Two of the twelve windows D1 does not touch, pinned at today's values.
+        assert_eq!(
+            window_rect(vec2(640.0, 800.0), 1380.0, 860.0),
+            Rect::new(370.0, 30.0, 640.0, 800.0),
+            "About"
+        );
+        assert_eq!(
+            window_rect(vec2(720.0, 600.0), 1380.0, 860.0),
+            Rect::new(330.0, 130.0, 720.0, 600.0),
+            "Inspector"
+        );
+        for (sw, sh) in [
+            (1380.0, 860.0),  // the default window
+            (800.0, 600.0),   // smaller than the clamp band
+            (3840.0, 2160.0), // larger than it
+            (1000.0, 1000.0),
+            (2560.0, 1440.0),
+        ] {
+            let want = window_rect(panel_size(sw, sh), sw, sh);
+            assert_eq!(panel_frame(sw, sh), want, "panel_frame at {sw}x{sh}");
+
+            // The split lies strictly inside the frame, and moves with it.
+            let split = panel_split_x(sw, sh);
+            assert!(
+                split > want.x && split < want.x + want.w,
+                "split {split} outside frame {want:?} at {sw}x{sh}"
+            );
+            assert!(
+                (split - (want.x + 14.0 + (want.w - 28.0) * 0.565)).abs() < 0.01,
+                "split stopped tracking the authority at {sw}x{sh}"
+            );
+
+            // The frame is on screen and within the margin the authority caps to.
+            assert!(want.x >= 0.0 && want.y >= 0.0);
+            assert!(want.w <= sw - 40.0 && want.h <= sh - 40.0);
+        }
+    }
 
     #[test]
     fn panel_scroll_and_size_helpers() {
