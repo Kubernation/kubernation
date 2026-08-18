@@ -224,10 +224,16 @@ spatial change reads."* **Both conditions failed.**
 
 - **T0 says the substrate is not there.** Persisted world states "do not exist,
   in any form"; what exists is persisted *summaries*, for exactly one fact — the
-  layout's `occupied_at`. T3 needs N retained world states to redraw past frames,
-  and T0 established that building that store is the phase, not a prerequisite to
-  it.
-- **T1 did not say spatial change reads.** Its gate came back mixed-to-negative.
+  layout's `occupied_at`. T3 needs N retained states to redraw past frames, and
+  none are kept: `snapshot` holds exactly one, the current.
+  **Not because a store would be expensive** — T0 §3 costed it at ~23 KiB for a
+  six-frame strip at 100 nodes, needing no persistence at all, since "the last N
+  polls" is inherently a recent window. The blocker is *absence*, not cost, and
+  the store is a phase the plan never listed. (Corrected 2026-08-07: this entry
+  first read as though storage were the obstacle, which T0 explicitly refutes —
+  see `docs/reports/t0-consolidation.md` §5.)
+- **T1 did not say spatial change reads.** Its gate came back mixed-to-negative,
+  and that — not the storage question — is what removed the reason to build T3.
 
 So T3 would have meant building a history store first, to feed a strip whose
 premise the cheapest phase had already failed to support. That is precisely the
