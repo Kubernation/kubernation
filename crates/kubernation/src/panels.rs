@@ -151,6 +151,18 @@ pub fn panel_for(worlds: &[SceneWorld], hit: crate::draw::Hit) -> Option<Panel> 
     }
 }
 
+/// The panel an IMPACT row opens, for a world-local cell in a known world.
+///
+/// Beside `panel_for` because it answers the same question — *what window does
+/// this open?* — but it cannot BE `panel_for`: its caller has already resolved
+/// the world and holds a local cell, where `panel_for` takes a two-plane `Hit`.
+///
+/// Cities only; `draw::city_at` carries the unreachability argument for every
+/// other region, and the reason a coast row deliberately opens nothing.
+pub fn impact_panel(sw: &SceneWorld, local: (u16, u16)) -> Option<Panel> {
+    crate::draw::city_at(sw, local).map(|(id, r)| Panel::City(id, r))
+}
+
 // --- hover tooltip ------------------------------------------------------
 
 /// The text lines describing whatever is at `local` in `sw` — shared by the
@@ -1812,7 +1824,7 @@ mod tests {
     }
 
     /// Build the fixture scene the resolver tests share.
-    fn probe_fixture() -> (Snapshot, (u16, u16)) {
+    fn world_snap() -> (WorldSnap, (u16, u16)) {
         let (world, mut s) = fx::world();
         // Several nodes in one zone: `Coast::new` gives a SINGLE-node continent
         // only a gentle wobble, so a one-node world may contain no sea-inside-
@@ -1837,6 +1849,14 @@ mod tests {
             "a-long-workload-name",
             &[("app", "a-long-workload-name")],
         ));
+        // A workload with NO pods is sited as an island encampment — a
+        // `Region::Structure`. It is here because that is where `subject_at` and
+        // `panel_for` diverge a second time: the panel resolver opens the
+        // workload's window from a structure, the identity resolver is silent.
+        // Without one in the fixture, adding a `Structure` arm to the identity
+        // conversion changes nothing observable and the mutation floor cannot
+        // see the exact drift D2's gate used.
+        s.deployment(fx::deployment("demo", "encamped", 1, 0));
         let models = Arc::new(Models::build(&world));
         let city = {
             let c = models.world.cities().next().expect("a city was sited");
@@ -1847,21 +1867,229 @@ mod tests {
             &world,
             &kubernation_core::state::cost::CostRates::default(),
         );
+        let snap = WorldSnap {
+            models,
+            observed: world,
+            slo: Arc::new(std::collections::HashMap::new()),
+            posture,
+            cost,
+            opencost_note: None,
+            fresh: Arc::new(std::collections::HashMap::new()),
+        };
+        (snap, city)
+    }
+
+    fn probe_fixture() -> (Snapshot, (u16, u16)) {
+        let (hot, city) = world_snap();
         let snap = Snapshot {
-            hot: WorldSnap {
-                models,
-                observed: world,
-                slo: Arc::new(std::collections::HashMap::new()),
-                posture,
-                cost,
-                opencost_note: None,
-                fresh: Arc::new(std::collections::HashMap::new()),
-            },
+            hot,
             warm: None,
             pair: None,
             attention: Arc::new(Vec::new()),
         };
         (snap, city)
+    }
+
+    /// The same world twice, hot and warm — the only way to exercise a rule that
+    /// keys on `ClusterId`. A single-world scene cannot distinguish "warm is
+    /// refused" from "there was no warm world to refuse".
+    fn paired_fixture() -> (Snapshot, (u16, u16)) {
+        let (hot, city) = world_snap();
+        let (warm, _) = world_snap();
+        let snap = Snapshot {
+            hot,
+            warm: Some(warm),
+            pair: None,
+            attention: Arc::new(Vec::new()),
+        };
+        (snap, city)
+    }
+
+    /// D2-fix: the blast subject's PRECEDENCE, and that it defers to the one
+    /// conversion rather than carrying its own.
+    ///
+    /// Fails if the function is bypassed in the sense that matters: it is the
+    /// only statement anywhere of what the overlay points at when the selection,
+    /// a running drill and the queue disagree. That order lived in `main.rs`,
+    /// where nothing could assert it.
+    #[test]
+    fn blast_subject_prefers_the_selection_then_the_raid_then_the_queue() {
+        use crate::draw::{blast_subject, subject_at};
+        use kubernation_core::state::attention::{Concern, Severity, Target};
+        use kubernation_core::state::blast::Subject;
+
+        let (snap, city) = probe_fixture();
+        let worlds = scene(&snap);
+
+        let raid: (ClusterId, Subject) = (ClusterId::Hot, Subject::Node("raided".into()));
+        let concern = Concern {
+            severity: Severity::Critical,
+            title: "t".into(),
+            detail: String::new(),
+            target: Target::Node("queued".into()),
+            probe: None,
+            key: "k".into(),
+            cluster: ClusterId::Hot,
+        };
+        let queue = vec![concern.clone()];
+
+        // 1. A selection wins over both, and agrees with the one conversion.
+        let picked = blast_subject(&worlds, Some(city), Some(&raid), &queue, 0);
+        assert_eq!(
+            picked,
+            subject_at(&worlds, city),
+            "the selected cell must resolve through `subject_at`, not a second rule"
+        );
+        assert!(
+            matches!(picked, Some((_, Subject::Workload(_)))),
+            "the fixture's city cell must name a workload, or this proves nothing"
+        );
+
+        // 2. No selection: the running drill.
+        assert_eq!(
+            blast_subject(&worlds, None, Some(&raid), &queue, 0),
+            Some(raid.clone())
+        );
+
+        // 3. Neither: the focused concern.
+        assert_eq!(
+            blast_subject(&worlds, None, None, &queue, 0),
+            Some((ClusterId::Hot, Subject::Node("queued".into())))
+        );
+
+        // 4. An out-of-range index clamps to the last concern rather than panicking.
+        let mut two = queue.clone();
+        two.push(Concern {
+            target: Target::Node("last".into()),
+            ..concern.clone()
+        });
+        assert_eq!(
+            blast_subject(&worlds, None, None, &two, 99),
+            Some((ClusterId::Hot, Subject::Node("last".into())))
+        );
+
+        // 5. An EMPTY queue expresses "no subject" — it does not index 0 and it
+        // does not panic. (`len() - 1` on an empty slice would have.)
+        assert_eq!(blast_subject(&worlds, None, None, &[], 0), None);
+
+        // 6. A concern that names a LIST names no single entity to trace.
+        let listy = vec![Concern {
+            target: Target::WorkloadList,
+            ..concern.clone()
+        }];
+        assert_eq!(blast_subject(&worlds, None, None, &listy, 0), None);
+
+        // 7. Open sea with nothing else to fall back on is not a subject.
+        assert_eq!(blast_subject(&worlds, Some((0, 0)), None, &[], 0), None);
+    }
+
+    /// D2-fix: the Oracle scope is hot-only, asserted on `ClusterId` and not on
+    /// coordinates.
+    ///
+    /// The rule used to hold by arithmetic — a warm cell's `x` lies past the hot
+    /// world's width, so `region_at` on the hot world found no continent. This
+    /// pins the rule itself, on a scene that actually HAS a warm world, so it
+    /// would survive two worlds of equal width.
+    #[test]
+    fn selected_scope_is_hot_only_by_cluster_not_by_arithmetic() {
+        use crate::draw::{locate, selected_scope, subject_at};
+        use kubernation_core::state::oracle::Scope;
+
+        let (snap, city) = paired_fixture();
+        let worlds = scene(&snap);
+        assert_eq!(
+            worlds.len(),
+            2,
+            "the fixture must actually have a warm world"
+        );
+
+        // The hot city yields a scope.
+        assert!(
+            matches!(selected_scope(&worlds, city), Some(Scope::Workload(_))),
+            "a hot city must be consultable"
+        );
+
+        // The SAME cell in the warm world does not — and it is genuinely the
+        // same place: `subject_at` still names an entity there, so the refusal
+        // is the cluster rule and not an empty cell.
+        let warm_cell = (city.0 + worlds[1].off, city.1);
+        assert!(
+            matches!(subject_at(&worlds, warm_cell), Some((ClusterId::Warm, _))),
+            "the mirrored cell must resolve to a WARM entity, or the refusal below is vacuous"
+        );
+        assert!(
+            selected_scope(&worlds, warm_cell).is_none(),
+            "a warm selection has no consult scope"
+        );
+        assert_eq!(
+            locate(&worlds, warm_cell).map(|(sw, _)| sw.id),
+            Some(ClusterId::Warm)
+        );
+    }
+
+    /// D2-fix: the IMPACT-row conversion opens a city and nothing else — and the
+    /// omission is an unreachability argument, not a preference.
+    ///
+    /// Province and Structure are pinned as silent so that if the blast core
+    /// ever reaches one, this fails rather than a row flying somewhere and
+    /// opening nothing.
+    #[test]
+    fn impact_panel_opens_cities_and_is_silent_everywhere_else() {
+        use crate::draw::{Resolved, locate, resolve_region};
+        use kubernation_core::state::world::Region;
+
+        let (snap, city) = probe_fixture();
+        let worlds = scene(&snap);
+        let (sw, local) = locate(&worlds, city).expect("the city cell is in a world");
+
+        assert!(
+            matches!(impact_panel(sw, local), Some(Panel::City(..))),
+            "an IMPACT row on a city must open that city"
+        );
+
+        // Sweep for a province cell and a coast marker, and assert both are
+        // silent. Guarded so a fixture that stopped producing them fails loudly
+        // instead of passing vacuously.
+        let (bw, bh) = (snap.hot.models.world.width, snap.hot.models.world.height);
+        let (mut saw_province, mut saw_coast, mut saw_structure) = (false, false, false);
+        for x in 0..bw {
+            for y in 0..bh {
+                let Some((sw, local)) = locate(&worlds, (x, y)) else {
+                    continue;
+                };
+                if let Resolved::Coast(_) = resolve_region(sw, local) {
+                    saw_coast = true;
+                    assert!(
+                        impact_panel(sw, local).is_none(),
+                        "a harbour has no window of its own — the SELECTION box describes it"
+                    );
+                }
+                match sw.world.region_at(local.0, local.1) {
+                    Region::Province(_) => {
+                        saw_province = true;
+                        assert!(
+                            impact_panel(sw, local).is_none(),
+                            "no `Affected` resolves to bare province land; if one now does, \
+                             the IMPACT row would fly there and open nothing"
+                        );
+                    }
+                    // A zero-pod workload's encampment. `Affected::Workload`
+                    // comes only from `workloads_on_node`, which reads pods'
+                    // `node_name`, so an affected workload always has a pod and
+                    // is sited as a city — never here. If that ever stops being
+                    // true this fails, rather than a row flying to an island and
+                    // opening nothing.
+                    Region::Structure(..) => {
+                        saw_structure = true;
+                        assert!(impact_panel(sw, local).is_none());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(saw_province, "the fixture produced no province cell");
+        assert!(saw_coast, "the fixture produced no coast marker");
+        assert!(saw_structure, "the fixture produced no island structure");
     }
 
     /// D2 step 2: the cell→identity conversion has one home, and the one thing
@@ -1877,8 +2105,9 @@ mod tests {
     /// because a test that only checked agreement would license the fold.
     #[test]
     fn subject_at_is_the_one_conversion_and_panel_for_is_not_it() {
-        use crate::draw::{Hit, subject_at};
+        use crate::draw::{Hit, Resolved, locate, resolve_region, subject_at};
         use kubernation_core::state::blast::Subject;
+        use kubernation_core::state::world::Region;
         let (snap, _) = probe_fixture();
         let worlds = scene(&snap);
         let (bw, bh) = (snap.hot.models.world.width, snap.hot.models.world.height);
@@ -1886,6 +2115,7 @@ mod tests {
         let mut saw_city = false;
         let mut saw_province = false;
         let mut saw_coast_divergence = false;
+        let mut saw_structure_divergence = false;
         let mut saw_carved_divergence = false;
 
         for y in 0..bh {
@@ -1904,9 +2134,31 @@ mod tests {
                         assert_eq!(n, pn, "province at {cell:?}");
                         saw_province = true;
                     }
-                    // A coast marker: `panel_for` resolves it, `subject_at` does
-                    // not. Intended — see `subject_at`'s doc.
-                    (None, Some(Panel::City(..))) => saw_coast_divergence = true,
+                    // `panel_for` resolves TWO things `subject_at` does not, and
+                    // they are counted separately because they are separate
+                    // claims — a flag that fired for either would let one of
+                    // them vanish from the fixture unnoticed.
+                    //
+                    //   * a COAST marker — a harbour opens the city it serves
+                    //   * an island STRUCTURE — a zero-pod workload's encampment
+                    //
+                    // The structure case is the exact arm D2's §3.4 gate used as
+                    // its drift. Adding it to the identity conversion would make
+                    // this cell agree, which is why the divergence is asserted
+                    // rather than merely tolerated.
+                    (None, Some(Panel::City(..))) => {
+                        let (sw, local) = locate(&worlds, cell).expect("in a world");
+                        match resolve_region(sw, local) {
+                            Resolved::Coast(_) => saw_coast_divergence = true,
+                            Resolved::Region(Region::Structure(..)) => {
+                                saw_structure_divergence = true
+                            }
+                            _ => panic!(
+                                "a cell where only `panel_for` names something must be a \
+                                 coast marker or an island structure; {cell:?} is neither"
+                            ),
+                        }
+                    }
                     // The other direction, and the more interesting one:
                     // `region_at` tests a province's RECTANGLE while
                     // `resolve_region` applies the coast carving, so a cell the
@@ -1935,6 +2187,11 @@ mod tests {
             saw_coast_divergence,
             "the fixture never produced a coast marker — the divergence this \
              test exists to pin was never exercised"
+        );
+        assert!(
+            saw_structure_divergence,
+            "the fixture never produced an island structure — the drift D2's \
+             gate used would be invisible to the mutation floor"
         );
     }
 

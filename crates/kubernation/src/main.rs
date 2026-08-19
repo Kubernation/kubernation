@@ -63,7 +63,6 @@ use kubernation_core::state::model::WorkloadRef;
 use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::oracle::Scope as OracleScope;
 use kubernation_core::state::slo;
-use kubernation_core::state::world::Region;
 use macroquad::prelude::*;
 use menu::{MenuAction, MenuCtx};
 use net::{EvictReq, ForwardReq, LogReq};
@@ -467,19 +466,10 @@ fn oracle_scopes(
     {
         out.push(OracleScope::Concern(c.clone()));
     }
-    // Hot-only, and now EXPLICITLY so. This used to run `region_at` on the hot
-    // world with a scene-global cell, which excluded warm selections only by
-    // coordinate arithmetic — a warm cell's x is past the hot world's width, so
-    // no continent matched and it fell through. Same outcome, stated reason.
-    let worlds = scene(s);
-    if let Some(cell) = selected
-        && let Some((id, subject)) = draw::subject_at(&worlds, cell)
-        && id == ClusterId::Hot
-    {
-        match subject {
-            Subject::Workload(r) => out.push(OracleScope::Workload(r)),
-            Subject::Node(n) => out.push(OracleScope::Node(n)),
-        }
+    // Hot-only; the rule and its reason live with the decision, in
+    // `draw::selected_scope`.
+    if let Some(scope) = selected.and_then(|cell| draw::selected_scope(&scene(s), cell)) {
+        out.push(scope);
     }
     out
 }
@@ -2459,20 +2449,13 @@ async fn main() {
                 // column section beside the on-map flash.
                 let mut blast_view: Option<sidebar::BlastView> = None;
                 if blast_on || raid_subject.is_some() {
-                    let subject: Option<(ClusterId, Subject)> = selected
-                        .and_then(|cell| draw::subject_at(&worlds, cell))
-                        .or_else(|| raid_subject.clone())
-                        .or_else(|| {
-                            (!s.attention.is_empty())
-                                .then(|| &s.attention[concern_idx.min(s.attention.len() - 1)])
-                                .and_then(|c| match &c.target {
-                                    Target::Workload(wr) => {
-                                        Some((c.cluster, Subject::Workload(wr.clone())))
-                                    }
-                                    Target::Node(n) => Some((c.cluster, Subject::Node(n.clone()))),
-                                    Target::WorkloadList => None,
-                                })
-                        });
+                    let subject: Option<(ClusterId, Subject)> = draw::blast_subject(
+                        &worlds,
+                        selected,
+                        raid_subject.as_ref(),
+                        &s.attention,
+                        concern_idx,
+                    );
                     let mut affected = None;
                     if let Some((cid, subj)) = &subject {
                         // Memoize the (expensive-ish) topology walk: recompute
@@ -2625,8 +2608,8 @@ async fn main() {
                     && let Some(sw) = worlds.iter().find(|sw| sw.id == cid)
                 {
                     cam.fly_to((local.0 + sw.off, local.1));
-                    if let Region::City(_, c) = sw.world.region_at(local.0, local.1) {
-                        panel = Some(Panel::City(cid, c.r.clone()));
+                    if let Some(p) = panels::impact_panel(sw, local) {
+                        panel = Some(p);
                     }
                 }
 

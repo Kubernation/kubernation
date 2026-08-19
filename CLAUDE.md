@@ -2705,6 +2705,53 @@ what makes the interesting logic unit-testable without a cluster.
   session in which re-examining one of my own statements changed the work. 430
   core + 116 GUI tests.
 
+- **D2-fix — the selection decisions move somewhere testable** (2026-08-19,
+  **v1.22.2**; from `docs/kubernation-d2-fix-testable-decisions-guidance.md`,
+  report in `docs/reports/d2-fix-testable-decisions.md`): the half-day D2's §3.4
+  gate protected, spent on foundation. Four decisions left `main.rs` —
+  `draw::blast_subject` (the selection → raid → focused-concern precedence),
+  `draw::selected_scope` (the Oracle's hot-only rule), `draw::city_at` (§3.2's
+  third hand-rolled conversion) and its `Panel`-shaped wrapper
+  `panels::impact_panel`. **The compiler supplied the evidence:** `main.rs` no
+  longer imports `Region` — the file that converted cells to entities no longer
+  knows what a region is. **The load-bearing change is to the FIXTURE, not the
+  code:** `probe_fixture` had no island structure, so adding a `Region::Structure`
+  arm — *exactly the drift D2's gate 3b used* — changed nothing observable and no
+  test could see it; a zero-pod workload now sits there, making the structure case
+  a second asserted divergence between `subject_at` and `panel_for`, counted
+  separately from the coast case (one flag for both would let either vanish
+  unnoticed). Five mutations now fail (`Structure` arm at `subject_at` and at
+  `city_at`; precedence inverted; the empty-queue guard removed; a warm selection
+  made consultable) where **none of that logic had any test at all** before. Two
+  rules got sharper without changing behaviour: the hot-only rule is an exhaustive
+  `ClusterId` match (it used to hold by arithmetic and would not survive two worlds
+  of equal width), and the empty queue is `checked_sub(1)?` rather than a
+  `len() - 1` safe only because a separate `is_empty()` stood in front of it.
+  **§4's backstop** is `hack/check-conversion-authorities.sh` (in `make lint` + CI,
+  beside the miniquad and license-drift guards): every production `region_at` call
+  is now in `draw.rs`, so the sanctioned list is **one file, not a list of
+  functions** — and framed as *confinement to files that are under test*, so drift
+  inside is behaviourally catchable and a copy outside is what the lint catches.
+  **THE GATE, re-run: 3a and 3b in `main.rs` are caught by the guard and NOT by any
+  test — and §5's diagnosis ("§2 did not move enough") does not hold.** The hazard
+  is two things wearing one name: *drift* (someone edits the conversion) is now
+  caught behaviourally, and *re-mirror* (someone writes a second copy in the
+  untested file) **cannot be caught behaviourally by any arrangement** — a test
+  cannot observe code in a file with no tests, and the call must live in the render
+  loop, so moving more only relocates which line gets re-mirrored. Both readings
+  reported rather than the flattering one. **Claim 4's reason was mine and was an
+  inference:** I had written that the IMPACT handler drops the `Province` arm
+  "deliberately", but the comment only ever explained the *coast* case; the real
+  reason is an unreachability argument with three cases — no `Affected` resolves to
+  bare province land, `Affected::Workload` comes only from `workloads_on_node` (so
+  it always has a pod and is sited as a city, making `affected_cell`'s
+  `structure_pos` fallback presently unreachable), and coast is reachable and
+  correctly silent. All three are now pinned, so a blast core that ever reaches a
+  structure fails a test instead of flying a row to an island that opens nothing.
+  Sixth consecutive session in which re-examining one of my own statements changed
+  the work — this time a claim hours old, which is the useful part: recency is not
+  verification. 430 core + 119 GUI tests; gui-smoke 55.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn

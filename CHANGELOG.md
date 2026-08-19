@@ -9,6 +9,12 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Changed
+- **The map's selection decisions are now covered by tests.** Which node or
+  workload the blast radius points at, which one the Oracle will consult, and
+  which window an impact row opens were all decided in the one file the test
+  suite cannot reach — so a wrong answer there could only be found by using the
+  app. They moved somewhere testable, and five deliberate breakages of them now
+  fail the build. Nothing about how they behave changed.
 - **One home for turning a map cell into the thing it names.** Two places
   converted a selected cell into a workload-or-node identity with the same ten
   lines; they now share `subject_at`. The test written to pin it against the

@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 
 use kubernation_core::events::ClusterId;
-use kubernation_core::state::attention::Severity;
+use kubernation_core::state::attention::{Concern, Severity, Target};
 use kubernation_core::state::blast::{Affected, BlastRadius, Subject};
 use kubernation_core::state::cost::{CostReport, IDLE_NOTABLE};
 use kubernation_core::state::model::{NodeHealth, WorkloadRef};
@@ -519,6 +519,87 @@ pub fn subject_at(
     match sw.world.region_at(local.0, local.1) {
         Region::City(_, c) => Some((sw.id, Subject::Workload(c.r.clone()))),
         Region::Province(p) => Some((sw.id, Subject::Node(p.tile.name.clone()))),
+        _ => None,
+    }
+}
+
+/// The blast overlay's SUBJECT: the selected tile, else a live raid's target,
+/// else the focused concern's.
+///
+/// A decision, not rendering, and it lives here for the reason D2's §3.4 gate
+/// established: `main.rs` has no test modules by the GUI testability policy, so
+/// a decision that lives there cannot be protected against a re-mirror — not
+/// even one that behaves differently. Moved out so the drift surface in that
+/// file is a call rather than fifteen lines.
+///
+/// Precedence is load-bearing: an explicit selection outranks a running drill,
+/// which outranks the queue, so clicking somewhere always wins.
+pub fn blast_subject(
+    worlds: &[SceneWorld],
+    selected: Option<(u16, u16)>,
+    raid: Option<&(ClusterId, Subject)>,
+    attention: &[Concern],
+    concern_idx: usize,
+) -> Option<(ClusterId, Subject)> {
+    selected
+        .and_then(|cell| subject_at(worlds, cell))
+        .or_else(|| raid.cloned())
+        .or_else(|| {
+            // An empty queue has no focused concern — express that, rather than
+            // clamping to index 0 and naming whatever happens to be first.
+            let last = attention.len().checked_sub(1)?;
+            let c = attention.get(concern_idx.min(last))?;
+            match &c.target {
+                Target::Workload(wr) => Some((c.cluster, Subject::Workload(wr.clone()))),
+                Target::Node(n) => Some((c.cluster, Subject::Node(n.clone()))),
+                // A list-targeting concern names no single entity to trace.
+                Target::WorkloadList => None,
+            }
+        })
+}
+
+/// The Oracle consult SCOPE for the selected tile. **Hot cluster only** — the
+/// advisors, the Charter and the SLO map are all hot-only, and a warm selection
+/// has no consult.
+///
+/// The exhaustive match on `ClusterId` is the point: this rule used to hold
+/// because a warm cell's `x` lies past the hot world's width, so `region_at` on
+/// the hot world found no continent and fell through. Same outcome; now it is a
+/// stated rule that a second world of equal width could not break.
+pub fn selected_scope(
+    worlds: &[SceneWorld],
+    cell: (u16, u16),
+) -> Option<kubernation_core::state::oracle::Scope> {
+    use kubernation_core::state::oracle::Scope;
+    match subject_at(worlds, cell)? {
+        (ClusterId::Hot, Subject::Workload(r)) => Some(Scope::Workload(r)),
+        (ClusterId::Hot, Subject::Node(n)) => Some(Scope::Node(n)),
+        (ClusterId::Warm, _) => None,
+    }
+}
+
+/// The workload whose CITY sits at a world-local cell, for callers that already
+/// hold a `SceneWorld` and a local cell and so cannot go through
+/// `panels::panel_for` (which takes a two-plane `Hit`).
+///
+/// Only cities. The omission of every other region is not a preference — it is
+/// an unreachability argument about the one caller, the IMPACT row list, whose
+/// cells come from `affected_cell`:
+///
+/// * **Province** — no `Affected` resolves to bare province land.
+/// * **Structure** — `Affected::Workload` arises only from `workloads_on_node`,
+///   which reads pods' `node_name`, so the workload has a pod and is sited as a
+///   city; `affected_cell`'s `structure_pos` fallback is defensive and the blast
+///   core cannot presently reach it.
+/// * **Coast** — reachable, and correctly yields nothing: a harbour or gate has
+///   no window of its own, and the SELECTION box describes it.
+///
+/// Pinned by test, so that if the blast core ever does reach a structure the
+/// silence becomes a visible failure rather than a row that flies and opens
+/// nothing.
+pub fn city_at(sw: &SceneWorld, local: (u16, u16)) -> Option<(ClusterId, WorkloadRef)> {
+    match sw.world.region_at(local.0, local.1) {
+        Region::City(_, c) => Some((sw.id, c.r.clone())),
         _ => None,
     }
 }

@@ -73,6 +73,15 @@ jobs:
       # silently IGNORE the [patch.crates-io] entry (a warning + [[patch.unused]]
       # only) — CI would stay green while both macOS crash fixes vanish. Fail
       # loudly instead.
+      # D2's gate showed a second copy of the map's cell -> identity conversion
+      # can be re-introduced in `main.rs` — even one that behaves differently —
+      # with the whole suite green, because that file has no test module by the
+      # GUI testability policy. Behavioural tests cover the conversion where it
+      # now lives; this keeps it from moving back.
+      - name: Assert the cell -> identity conversion stays in one tested home
+        shell: bash
+        run: ./hack/check-conversion-authorities.sh
+
       - name: Assert the vendored miniquad patch is active
         shell: bash
         # `[/\\]`: cargo tree prints the path with backslashes on Windows.

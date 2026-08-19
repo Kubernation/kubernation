@@ -108,10 +108,11 @@ churn-reset:
 churn-down:
 	hack/churn/down.sh
 
-## lint: formatting + clippy, the same gate as CI
+## lint: formatting + clippy + the structural guards, the same gate as CI
 lint:
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
+	./hack/check-conversion-authorities.sh
 
 ## test: unit tests (core logic + GUI render helpers)
 test:
