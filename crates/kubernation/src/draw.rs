@@ -496,6 +496,33 @@ pub fn scene_size(worlds: &[SceneWorld]) -> (u16, u16) {
     (w.max(1), h.max(1))
 }
 
+/// The ENTITY at a scene cell: which cluster, and which workload or node.
+///
+/// **The one home for cell → identity.** Two consumers used to carry this
+/// verbatim — the Oracle's scope list and the blast subject — and a third,
+/// `panels::panel_for`, looks similar and is deliberately NOT the same: it takes
+/// a two-plane `Hit` through `resolve_region`, so it resolves coast markers (a
+/// harbour opens the city it serves) and island structures, which this does not.
+/// Folding them together would silently give the Oracle and the blast radius a
+/// resolution they have never had. **A coast cell is the fixture where the two
+/// rules diverge**, and it is asserted as such.
+///
+/// Returns the `ClusterId` because the caller usually needs it and a bare cell
+/// cannot carry it: a warm-world cell is only distinguishable by arithmetic on
+/// the hot world's width. `None` for open sea, and for anything with no entity.
+pub fn subject_at(
+    worlds: &[SceneWorld],
+    cell: (u16, u16),
+) -> Option<(ClusterId, kubernation_core::state::blast::Subject)> {
+    use kubernation_core::state::blast::Subject;
+    let (sw, local) = locate(worlds, cell)?;
+    match sw.world.region_at(local.0, local.1) {
+        Region::City(_, c) => Some((sw.id, Subject::Workload(c.r.clone()))),
+        Region::Province(p) => Some((sw.id, Subject::Node(p.tile.name.clone()))),
+        _ => None,
+    }
+}
+
 /// Which world a scene cell falls in, with the world-local cell.
 pub fn locate<'a, 'b>(
     worlds: &'b [SceneWorld<'a>],

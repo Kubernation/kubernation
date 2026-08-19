@@ -467,11 +467,18 @@ fn oracle_scopes(
     {
         out.push(OracleScope::Concern(c.clone()));
     }
-    if let Some((x, y)) = selected {
-        match s.hot.models.world.region_at(x, y) {
-            Region::City(_, c) => out.push(OracleScope::Workload(c.r.clone())),
-            Region::Province(p) => out.push(OracleScope::Node(p.tile.name.clone())),
-            _ => {}
+    // Hot-only, and now EXPLICITLY so. This used to run `region_at` on the hot
+    // world with a scene-global cell, which excluded warm selections only by
+    // coordinate arithmetic — a warm cell's x is past the hot world's width, so
+    // no continent matched and it fell through. Same outcome, stated reason.
+    let worlds = scene(s);
+    if let Some(cell) = selected
+        && let Some((id, subject)) = draw::subject_at(&worlds, cell)
+        && id == ClusterId::Hot
+    {
+        match subject {
+            Subject::Workload(r) => out.push(OracleScope::Workload(r)),
+            Subject::Node(n) => out.push(OracleScope::Node(n)),
         }
     }
     out
@@ -2453,14 +2460,7 @@ async fn main() {
                 let mut blast_view: Option<sidebar::BlastView> = None;
                 if blast_on || raid_subject.is_some() {
                     let subject: Option<(ClusterId, Subject)> = selected
-                        .and_then(|cell| locate(&worlds, cell))
-                        .and_then(|(sw, local)| match sw.world.region_at(local.0, local.1) {
-                            Region::City(_, c) => Some((sw.id, Subject::Workload(c.r.clone()))),
-                            Region::Province(p) => {
-                                Some((sw.id, Subject::Node(p.tile.name.clone())))
-                            }
-                            _ => None,
-                        })
+                        .and_then(|cell| draw::subject_at(&worlds, cell))
                         .or_else(|| raid_subject.clone())
                         .or_else(|| {
                             (!s.attention.is_empty())

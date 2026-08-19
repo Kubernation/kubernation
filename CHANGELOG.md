@@ -8,6 +8,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+- **One home for turning a map cell into the thing it names.** Two places
+  converted a selected cell into a workload-or-node identity with the same ten
+  lines; they now share `subject_at`. The test written to pin it against the
+  richer panel resolver found a divergence nobody had named: a cell inside a
+  province's rectangle that the shoreline carving turned to water is *ocean* to
+  the tooltip and *a node* to the blast radius. Recorded, not yet fixed — the
+  selection rework that dissolves it did not clear its gate.
+
 ### Fixed
 - **A deploy and the failure it caused in the same second are now connected.**
   Kubernetes timestamps only go down to the second and a kubelet rejects a bad

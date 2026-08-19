@@ -1822,10 +1822,20 @@ mod tests {
         }
         s.deployment(fx::deployment("demo", "a-long-workload-name", 1, 1));
         s.replicaset(fx::replicaset("demo", "rs", "a-long-workload-name"));
-        s.pod(fx::pod_owned(
-            fx::pod("demo", "rs-1", Some("n1")),
-            "ReplicaSet",
-            "rs",
+        let mut p = fx::pod_owned(fx::pod("demo", "rs-1", Some("n1")), "ReplicaSet", "rs");
+        p.metadata
+            .labels
+            .get_or_insert_with(Default::default)
+            .insert("app".into(), "a-long-workload-name".into());
+        s.pod(p);
+        // A Service selecting that pod moors a HARBOUR on the coast. Without one
+        // the sweep contains no coast marker, and the divergence between
+        // `subject_at` and `panel_for` that this fixture exists to exercise
+        // would go unexercised — the guard-the-guard assertion catches that.
+        s.service(fx::service(
+            "demo",
+            "a-long-workload-name",
+            &[("app", "a-long-workload-name")],
         ));
         let models = Arc::new(Models::build(&world));
         let city = {
@@ -1852,6 +1862,80 @@ mod tests {
             attention: Arc::new(Vec::new()),
         };
         (snap, city)
+    }
+
+    /// D2 step 2: the cell→identity conversion has one home, and the one thing
+    /// that looks like it is deliberately not it.
+    ///
+    /// `subject_at` is what the Oracle's scope list and the blast subject both
+    /// use. `panel_for` looks like the same conversion and is richer: it goes
+    /// through `resolve_region`, so a **coast marker** opens the city it serves,
+    /// which `subject_at` does not see at all. Folding them together would give
+    /// the Oracle and the blast radius a resolution they have never had.
+    ///
+    /// So this asserts BOTH halves — agreement on land, divergence on the coast —
+    /// because a test that only checked agreement would license the fold.
+    #[test]
+    fn subject_at_is_the_one_conversion_and_panel_for_is_not_it() {
+        use crate::draw::{Hit, subject_at};
+        use kubernation_core::state::blast::Subject;
+        let (snap, _) = probe_fixture();
+        let worlds = scene(&snap);
+        let (bw, bh) = (snap.hot.models.world.width, snap.hot.models.world.height);
+
+        let mut saw_city = false;
+        let mut saw_province = false;
+        let mut saw_coast_divergence = false;
+        let mut saw_carved_divergence = false;
+
+        for y in 0..bh {
+            for x in 0..bw {
+                let cell = (x, y);
+                let subj = subject_at(&worlds, cell);
+                let panel = panel_for(&worlds, Hit::at(cell));
+
+                match (&subj, &panel) {
+                    // On land the two must name the same entity.
+                    (Some((_, Subject::Workload(r))), Some(Panel::City(_, pr))) => {
+                        assert_eq!(r, pr, "city at {cell:?}");
+                        saw_city = true;
+                    }
+                    (Some((_, Subject::Node(n))), Some(Panel::Node(_, pn))) => {
+                        assert_eq!(n, pn, "province at {cell:?}");
+                        saw_province = true;
+                    }
+                    // A coast marker: `panel_for` resolves it, `subject_at` does
+                    // not. Intended — see `subject_at`'s doc.
+                    (None, Some(Panel::City(..))) => saw_coast_divergence = true,
+                    // The other direction, and the more interesting one:
+                    // `region_at` tests a province's RECTANGLE while
+                    // `resolve_region` applies the coast carving, so a cell the
+                    // shoreline made sea is a node to one and ocean to the
+                    // other (the v1.3.0 finding, from the other side).
+                    //
+                    // Pre-existing and preserved here: steps 1-2 change no
+                    // behaviour. §3.3's inversion dissolves it — an identity is
+                    // a node or it is not, and no ambiguous cell survives to
+                    // disagree about.
+                    (Some((_, Subject::Node(_))), None) => saw_carved_divergence = true,
+                    (None, None) => {}
+                    other => panic!("subject_at and panel_for disagree at {cell:?}: {other:?}"),
+                }
+            }
+        }
+
+        // Guard the guard: without these the sweep could be vacuous.
+        assert!(saw_city, "the fixture never produced a city");
+        assert!(saw_province, "the fixture never produced a province");
+        assert!(
+            saw_carved_divergence,
+            "the fixture never produced a carved-sea cell inside a province rect"
+        );
+        assert!(
+            saw_coast_divergence,
+            "the fixture never produced a coast marker — the divergence this \
+             test exists to pin was never exercised"
+        );
     }
 
     /// THE anti-drift test: the tooltip must never NAME something the click

@@ -2658,6 +2658,53 @@ what makes the interesting logic unit-testable without a cluster.
   deliberately still treat it as modal**, which is a separate question D1 §5 says
   not to answer here. 455 core + 115 GUI tests; gui-smoke 55. **Unblocks D2–D4.**
 
+- **D2 §3.4 — the gate ran, and the phase stopped there** (2026-08-19,
+  **v1.22.1**; from `docs/kubernation-d2-brushing-guidance-rev2.md` §3.4, which
+  the user added to that revision; report in `docs/reports/d2-gate.md`): D2 would
+  invert `selected` from a *position* to an *identity*. §3.4 staged it — collapse
+  the cell→identity conversion, write the agreement test, **run the re-mirror
+  mutation, and if the suite stays green, stop** — so that a failure costs half a
+  day rather than a day and a half. **It stayed green, so the inversion was not
+  started.** **Shipped:** `draw::subject_at` as the one home, with the blast
+  subject and `oracle_scopes` routed through it (the latter also gained an
+  explicit `id == ClusterId::Hot`, where it had excluded warm selections only by
+  coordinate arithmetic — a warm cell's `x` is past the hot world's width, so no
+  continent matched and it fell through; same outcome, stated reason). **The
+  agreement test earned its keep before the gate did:** sweeping every cell
+  against `panel_for` it found the documented coast-marker divergence AND an
+  unanticipated one — `region_at` tests a province's **rectangle** while
+  `resolve_region` applies the coast carving, so a cell the shoreline carved to
+  water is **ocean to the tooltip and a node to the blast subject**. That is the
+  v1.3.0 finding from the other side, it is live today (`selected` is a raw
+  `hit.land` cell), and **§3.3's inversion would have dissolved it for free** —
+  an identity is a node or it is not. Preserved, not fixed: steps 1–2 change no
+  behaviour. **THE GATE, run in two forms, each asserted applied per §3.4.1 —
+  present and compiling, not a string replaced:** a *verbatim* re-mirror is green
+  (reported because it proves nothing alone — an identical copy is
+  behaviourally identical, so no behavioural test *could* catch it), and then the
+  strong form, a **drifting** copy carrying a `Region::Structure` arm lifted from
+  `panel_for` that genuinely changes behaviour — **also green.** So not merely
+  "an identical copy goes unnoticed" but "a copy that behaves differently goes
+  unnoticed". **The reason is structural, not a flaw in the collapse:** `main.rs`
+  has **zero `#[cfg(test)]` modules** by the v0.66.0 testability policy
+  (macroquad is immediate-mode + GL), both consumers live there, and **no
+  behavioural test can catch a re-mirror in a file with no tests to go red** —
+  the agreement test pins the *authority*, and nothing pins that the *consumers*
+  call it. **The gate also turned up that the collapse folded two of three
+  sites**: `main.rs:2628`'s IMPACT-row click still hand-rolls `Region::City →
+  Panel::City` — `panel_for`-shaped, taking an already-`locate`d local cell so it
+  cannot call it — which I did not know was there until the gate forced a caller
+  enumeration. **Recommendation, stated not taken** (§3.4 says stop): move the
+  blast-subject chain out of `main.rs` into a pure tested fn so there is nothing
+  left to mirror (the project's own policy, and it folds the third site), with a
+  structural caller assertion as a cheap backstop — it would have caught both
+  mutations, and there is precedent (the `cargo tree -p miniquad` CI check, the
+  license-drift guard). **A correction to my own draft:** §3.1 called `panel_for`
+  "a third variant of the same conversion" — **false**; it resolves coast markers
+  and island structures and answers a different question. Fifth consecutive
+  session in which re-examining one of my own statements changed the work. 430
+  core + 116 GUI tests.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn

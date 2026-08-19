@@ -94,9 +94,18 @@ match world.region_at(x, y) {          match sw.world.region_at(local.0, local.1
   Region::Province(p)   => p.tile.name Region::Province(p) => Subject::Node(p.tile.name)
 ```
 
-`panel_for` performs a third variant of the same conversion, and `sidebar_sel`
-does `locate` then `region_lines`. **Only `draw_selection` genuinely wants a
-cell.**
+`sidebar_sel` does `locate` then `region_lines`. **Only `draw_selection`
+genuinely wants a cell.**
+
+> **Corrected during step 1.** This section first said `panel_for` was "a third
+> variant of the same conversion". It is not, and the difference is load-bearing:
+> `panel_for` takes a two-plane `Hit` and goes through `resolve_region`, so it
+> resolves **coast markers** (a harbour opens the city it serves) and **island
+> structures**, neither of which the other two see. Folding it into the collapse
+> would silently give the Oracle scope and the blast subject a resolution they do
+> not have today — a behaviour change §5 forbids. **Collapse the two that are
+> verbatim identical; document why `panel_for` differs.** The coast cell is the
+> fixture where they diverge (§8 q3).
 
 So the state is stored as a position and consumed as an identity by most of its
 readers, through a conversion that has no home.
@@ -131,7 +140,45 @@ shifted scene resolves through the current `off`.
 - **`draw_selection` takes the derived position**, and must handle `None` — a
   selected workload that has left the cluster has no position. See §8 q2.
 
-### 3.4 Hover and commit
+### 3.4 Gate the collapse before building on it
+
+§3.3's inversion rests entirely on the conversion having one home. If it does
+not, the inversion is a five-way edit wearing the shape of a small change — and
+that failure is silent, because everything still compiles and every view still
+works.
+
+So the collapse is its own gate, roughly half a day in, at the point where the
+argument is cheapest to falsify:
+
+| | |
+|---|---|
+| **1** | Collapse the conversion into `subject_at` |
+| **2** | Write the agreement test — the Oracle scope, the blast subject and `panel_for` all equal for the same cell |
+| **3** | **Run the re-mirror mutation now**, not at the end |
+| **4** | Only then invert the representation |
+
+**Step 3 is the gate.** Re-introduce a second copy of the cell→identity
+conversion in one consumer. **If the suite stays green, stop** — the collapse did
+not take, §3.3's foundation is absent, and continuing would build the inversion on
+a mirror that will drift.
+
+Note the ordering constraint: this mutation cannot be run before step 1, because
+there is nothing to duplicate until the conversion has a home.
+
+#### 3.4.1 Assert the mutation applied
+
+This is the mutation shape most likely to report a **false survival**, and this
+session has produced four already — `cargo fmt` reflowing the target so the
+replacement matched nothing, and the suite reporting `ok` for a mutation that was
+never in the tree.
+
+For a re-mirror, *applied* means the duplicate conversion is genuinely present
+and compiling — not that a string was replaced. Verify that before reading the
+result, or a false green here refutes nothing and licenses the rest of the phase.
+
+---
+
+### 3.5 Hover and commit
 
 Rev 1 §3.2 is right that these differ, and half of it exists: `hovered` is already
 a separate value (`main.rs:2559`, `sidebar_sel = selected…or(hovered)`). Keep two
@@ -246,6 +293,7 @@ same derivation.
 
 - [ ] §2 recorded as refuted; no namespace swatches shipped as part of this
 - [ ] The cell→identity conversion collapsed to one home **before** the representation changed
+- [ ] §3.4's gate run at step 3 — the re-mirror mutation, asserted applied, **before** the inversion was started
 - [ ] Selection is an identity; position derived per frame
 - [ ] Both staleness sources tested (§6)
 - [ ] Hover and commit distinguished; no third level
@@ -268,3 +316,7 @@ the marks themselves are small. Rev 1's "half a day for §2" is withdrawn.
 
 **Do not start with the marks.** They are the visible part and the smallest; the
 model is where this phase can go wrong quietly.
+
+**§3.4's gate falls at roughly half a day.** If it fails, the phase stops there
+having spent half a day rather than a day and a half — which is the point of
+putting it before the inversion rather than after.
