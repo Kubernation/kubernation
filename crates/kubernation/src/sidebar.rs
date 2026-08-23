@@ -338,6 +338,7 @@ pub fn draw_sidebar(
     cam: &Camera,
     snap: &Snapshot,
     sel: Option<(&SceneWorld, (u16, u16))>,
+    departed: Option<&crate::draw::Selection>,
     ns_filter: &NamespaceFilter,
     ml: &MinimapLayout,
     overlay: Overlay,
@@ -745,9 +746,15 @@ pub fn draw_sidebar(
     y += 20.0;
     // Compute the lines first so an empty result (e.g. open sea in a single
     // cluster) falls back to the placeholder rather than a bare header.
-    let lines = sel
-        .map(|(sw, local)| region_lines(sw, local, snap, overlay, graticule, new_ground))
-        .unwrap_or_default();
+    // A departed selection outranks the hover fallback, exactly as a live one
+    // does — a rule that changed with liveness would be harder to predict than
+    // the box occasionally holding a tombstone.
+    let lines = match departed {
+        Some(s) => panels::departed_lines(s, snap.warm.is_some()),
+        None => sel
+            .map(|(sw, local)| region_lines(sw, local, snap, overlay, graticule, new_ground))
+            .unwrap_or_default(),
+    };
     if lines.is_empty() {
         text("click a tile to inspect", x, y, 13.0, STONE_INK_DIM);
     } else {

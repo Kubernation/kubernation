@@ -454,7 +454,7 @@ fn build_chaos_run(
 /// hot-only, like the advisors).
 fn oracle_scopes(
     snap: Option<&net::Snapshot>,
-    selected: Option<(u16, u16)>,
+    selected: Option<&draw::Selection>,
     concern_idx: usize,
 ) -> Vec<OracleScope> {
     let mut out = vec![OracleScope::Realm];
@@ -468,7 +468,7 @@ fn oracle_scopes(
     }
     // Hot-only; the rule and its reason live with the decision, in
     // `draw::selected_scope`.
-    if let Some(scope) = selected.and_then(|cell| draw::selected_scope(&scene(s), cell)) {
+    if let Some(scope) = selected.and_then(draw::selected_scope) {
         out.push(scope);
     }
     out
@@ -504,10 +504,35 @@ fn dump_positions(
     path: &std::path::Path,
     tick: u64,
     models: &kubernation_core::state::model::Models,
+    selection: Option<(&draw::Selection, Option<(u16, u16)>)>,
 ) {
     use std::io::Write;
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let mut out = String::new();
+    // The selection, as an IDENTITY plus where it currently resolves. The gate
+    // compares what it POINTS AT across a reschedule, which a before/after image
+    // cannot show: the mark is supposed to move, and the question is whether it
+    // moved to the right place.
+    if let Some((sel, pos)) = selection {
+        let (kind, name) = match sel {
+            draw::Selection::Workload(_, r) => (
+                "workload",
+                format!("{:?} {}/{}", r.kind, r.namespace, r.name),
+            ),
+            draw::Selection::Node(_, n) => ("node", n.clone()),
+        };
+        out.push_str(&format!(
+            "{{\"tick\":{},\"kind\":\"selection\",\"subject_kind\":\"{}\",\"subject\":\"{}\",\
+             \"cluster\":\"{:?}\",\"x\":{},\"y\":{},\"placed\":{}}}\n",
+            tick,
+            kind,
+            esc(&name),
+            sel.cluster(),
+            pos.map_or(-1, |p| i64::from(p.0)),
+            pos.map_or(-1, |p| i64::from(p.1)),
+            pos.is_some(),
+        ));
+    }
     for cont in &models.world.continents {
         for p in &cont.provinces {
             let slot = models.layout.slot_of(&p.tile.name);
@@ -615,7 +640,7 @@ fn focus_concern(
     worlds: &[SceneWorld],
     attention: &[Concern],
     concern_idx: &mut usize,
-    selected: &mut Option<(u16, u16)>,
+    selected: &mut Option<draw::Selection>,
     cam: &mut Camera,
     panel: &mut Option<Panel>,
 ) {
@@ -623,23 +648,27 @@ fn focus_concern(
         return;
     };
     *concern_idx = idx;
-    if let Some(sw) = worlds.iter().find(|w| w.id == concern.cluster) {
-        let local = match &concern.target {
-            Target::Workload(r) => sw.world.city_pos(r).or_else(|| sw.world.structure_pos(r)),
-            Target::Node(name) => sw.world.province_pos(name),
-            Target::WorkloadList => None,
-        };
-        if let Some(p) = local {
-            let global = (p.0 + sw.off, p.1);
-            *selected = Some(global);
-            cam.fly_to(global);
-            *panel = match &concern.target {
-                Target::Workload(r) => Some(Panel::City(sw.id, r.clone())),
-                Target::Node(name) => Some(Panel::Node(sw.id, name.clone())),
-                Target::WorkloadList => None,
-            };
-        }
-    }
+    // The concern already NAMES its subject — it never needed a cell. It used
+    // to derive one anyway (and, for a node, one that resolved to open sea).
+    let sel = match &concern.target {
+        Target::Workload(r) => Some(draw::Selection::Workload(concern.cluster, r.clone())),
+        Target::Node(name) => Some(draw::Selection::Node(concern.cluster, name.clone())),
+        // A concern about a LIST names nothing on the map to park on.
+        Target::WorkloadList => None,
+    };
+    let Some(sel) = sel else { return };
+    // Only park on it if it is actually placed: a workload with no city and no
+    // encampment, or a node from the other member of the pair while unpaired,
+    // has nowhere to fly.
+    let Some(global) = draw::selection_pos(worlds, &sel) else {
+        return;
+    };
+    cam.fly_to(global);
+    *panel = Some(match &sel {
+        draw::Selection::Workload(id, r) => Panel::City(*id, r.clone()),
+        draw::Selection::Node(id, n) => Panel::Node(*id, n.clone()),
+    });
+    *selected = Some(sel);
 }
 
 fn window_conf() -> Conf {
@@ -797,7 +826,9 @@ async fn main() {
     }
 
     let mut cam = Camera::new();
-    let mut selected: Option<(u16, u16)> = None;
+    // An IDENTITY, not a position (see `draw::Selection`). Its cell is
+    // derived per frame and never stored.
+    let mut selected: Option<draw::Selection> = None;
     let mut panel: Option<Panel> = None;
     // Per-column scroll for the city/node drill-down windows (left = citizens/
     // garrison, right = improvements/terrain+conditions+annals). Reset when the
@@ -1002,7 +1033,15 @@ async fn main() {
             let id = std::sync::Arc::as_ptr(&s.hot.models) as usize;
             if id != dumped_snap {
                 dumped_snap = id;
-                dump_positions(path, dump_tick, &s.hot.models);
+                let sc = scene(s);
+                dump_positions(
+                    path,
+                    dump_tick,
+                    &s.hot.models,
+                    selected
+                        .as_ref()
+                        .map(|sel| (sel, draw::selection_pos(&sc, sel))),
+                );
                 dump_tick += 1;
             }
         }
@@ -1896,7 +1935,8 @@ async fn main() {
                     if args.oracle_arm {
                         net.arm_oracle_egress();
                     }
-                    let mut v = OracleView::new(oracle_scopes(Some(s), selected, concern_idx));
+                    let mut v =
+                        OracleView::new(oracle_scopes(Some(s), selected.as_ref(), concern_idx));
                     v.focus_kind(want);
                     if args.oracle_ask {
                         v.force_preview();
@@ -2035,9 +2075,15 @@ async fn main() {
 
                 if is_key_pressed(KeyCode::RightBracket) || is_key_pressed(KeyCode::LeftBracket) {
                     // All cities across the scene, in archipelago order.
-                    let cities: Vec<(u16, u16)> = worlds
+                    // Sail city to city. The cursor is the workload, not its
+                    // cell — the fly target is derived from it like any other.
+                    let cities: Vec<draw::Selection> = worlds
                         .iter()
-                        .flat_map(|sw| sw.world.cities().map(move |c| (c.x + sw.off, c.y)))
+                        .flat_map(|sw| {
+                            sw.world
+                                .cities()
+                                .map(move |c| draw::Selection::Workload(sw.id, c.r.clone()))
+                        })
                         .collect();
                     if !cities.is_empty() {
                         if is_key_pressed(KeyCode::RightBracket) {
@@ -2045,8 +2091,11 @@ async fn main() {
                         } else {
                             city_idx = (city_idx + cities.len() - 1) % cities.len();
                         }
-                        selected = Some(cities[city_idx]);
-                        cam.fly_to(cities[city_idx]);
+                        let sel = cities[city_idx].clone();
+                        if let Some(g) = draw::selection_pos(&worlds, &sel) {
+                            cam.fly_to(g);
+                        }
+                        selected = Some(sel);
                     }
                 }
                 if is_key_pressed(KeyCode::N) && !s.attention.is_empty() {
@@ -2061,10 +2110,16 @@ async fn main() {
                         &mut panel,
                     );
                 }
+                // Enter opens what is selected. The selection already IS the
+                // identity a panel holds, so this no longer round-trips through
+                // a cell and cannot open something else.
                 if is_key_pressed(KeyCode::Enter)
-                    && let Some(sel) = selected
+                    && let Some(sel) = &selected
                 {
-                    panel = panels::panel_for(&worlds, draw::Hit::at(sel));
+                    panel = Some(match sel {
+                        draw::Selection::Workload(id, r) => Panel::City(*id, r.clone()),
+                        draw::Selection::Node(id, n) => Panel::Node(*id, n.clone()),
+                    });
                 }
 
                 // Minimap navigation: click or drag to recenter the main view
@@ -2098,8 +2153,13 @@ async fn main() {
                     // resolver picks per feature so a sea-moored harbour still
                     // opens its city.
                     let hit = cam.hit(mouse, bounds);
-                    selected = hit.land;
-                    if selected.is_some() {
+                    // The one writer whose natural input is a position, so it
+                    // converts through the one authority. A cell with no entity
+                    // — open sea, a carved-away cell inside a province's
+                    // rectangle, a harbour — selects nothing, which is what the
+                    // tooltip says about the same pixel.
+                    selected = hit.land.and_then(|cell| draw::selection_at(&worlds, cell));
+                    if hit.land.is_some() {
                         panel = panels::panel_for(&worlds, hit);
                         panel_just_opened = panel.is_some();
                         // D1: the drill-down docks over the right of the play
@@ -2110,6 +2170,8 @@ async fn main() {
                         // which is worse than the occlusion it fixes.
                         if panel_just_opened
                             && let Some(cell) = selected
+                                .as_ref()
+                                .and_then(|s| draw::selection_pos(&worlds, s))
                             && let Some(strip) = window::map_strip(screen_width(), screen_height())
                         {
                             cam.fly_to_within(cell, strip);
@@ -2124,7 +2186,7 @@ async fn main() {
                         for c in sw.world.cities() {
                             if c.r.name.contains(needle.as_str()) {
                                 let global = (c.x + sw.off, c.y);
-                                selected = Some(global);
+                                selected = Some(draw::Selection::Workload(sw.id, c.r.clone()));
                                 aim_for_drilldown(&mut cam, global, true);
                                 panel = Some(Panel::City(sw.id, c.r.clone()));
                                 break 'outer;
@@ -2133,9 +2195,11 @@ async fn main() {
                         for cont in &sw.world.continents {
                             for p in &cont.provinces {
                                 if p.tile.name.contains(needle.as_str()) {
-                                    let global = (p.x + sw.off + 2, p.y + 1);
-                                    selected = Some(global);
-                                    aim_for_drilldown(&mut cam, global, true);
+                                    let sel = draw::Selection::Node(sw.id, p.tile.name.clone());
+                                    if let Some(g) = draw::selection_pos(&worlds, &sel) {
+                                        aim_for_drilldown(&mut cam, g, true);
+                                    }
+                                    selected = Some(sel);
                                     panel = Some(Panel::Node(sw.id, p.tile.name.clone()));
                                     break 'outer;
                                 }
@@ -2183,7 +2247,7 @@ async fn main() {
                                 && let Some(p0) = city.pods.first()
                             {
                                 let global = (c.x + sw.off, c.y);
-                                selected = Some(global);
+                                selected = Some(draw::Selection::Workload(sw.id, c.r.clone()));
                                 cam.jump_to(global);
                                 panel = Some(Panel::City(sw.id, c.r.clone()));
                                 pending_evict =
@@ -2211,7 +2275,7 @@ async fn main() {
                                 && let Some(p0) = city.pods.first()
                             {
                                 let global = (c.x + sw.off, c.y);
-                                selected = Some(global);
+                                selected = Some(draw::Selection::Workload(sw.id, c.r.clone()));
                                 cam.jump_to(global);
                                 net.request_forward(ForwardReq {
                                     cluster: sw.id,
@@ -2235,9 +2299,11 @@ async fn main() {
                         for cont in &sw.world.continents {
                             for p in &cont.provinces {
                                 if p.tile.name.contains(needle.as_str()) {
-                                    let global = (p.x + sw.off, p.y);
-                                    selected = Some(global);
-                                    cam.jump_to(global);
+                                    let sel = draw::Selection::Node(sw.id, p.tile.name.clone());
+                                    if let Some(g) = draw::selection_pos(&worlds, &sel) {
+                                        cam.jump_to(g);
+                                    }
+                                    selected = Some(sel);
                                     break 'bl;
                                 }
                             }
@@ -2247,9 +2313,8 @@ async fn main() {
                         'bc: for sw in &worlds {
                             for c in sw.world.cities() {
                                 if c.r.name.contains(needle.as_str()) {
-                                    let global = (c.x + sw.off, c.y);
-                                    selected = Some(global);
-                                    cam.jump_to(global);
+                                    selected = Some(draw::Selection::Workload(sw.id, c.r.clone()));
+                                    cam.jump_to((c.x + sw.off, c.y));
                                     break 'bc;
                                 }
                             }
@@ -2424,8 +2489,15 @@ async fn main() {
                     };
                     draw_world(sw.world, &wc, banner, s.pair.as_deref(), overlay, data);
                 }
-                if let Some(sel) = selected {
-                    draw_selection(&cam, sel);
+                // Derived HERE, every frame, from the current worlds — never
+                // stored on the selection. `None` means the subject has left the
+                // cluster; there is nowhere to draw, and the SELECTION box says
+                // so rather than this marking a stale cell.
+                let sel_pos = selected
+                    .as_ref()
+                    .and_then(|s| draw::selection_pos(&worlds, s));
+                if let Some(p) = sel_pos {
+                    draw_selection(&cam, p);
                 }
 
                 // Flip-watch: while a Game Day raid is announced in the queue
@@ -2450,8 +2522,7 @@ async fn main() {
                 let mut blast_view: Option<sidebar::BlastView> = None;
                 if blast_on || raid_subject.is_some() {
                     let subject: Option<(ClusterId, Subject)> = draw::blast_subject(
-                        &worlds,
-                        selected,
+                        selected.as_ref(),
                         raid_subject.as_ref(),
                         &s.attention,
                         concern_idx,
@@ -2539,7 +2610,12 @@ async fn main() {
                 if hover_ok && let Some((sw, local)) = hovered {
                     draw::draw_hover(sw, local, &cam.shifted(sw.off));
                 }
-                let sidebar_sel = selected.and_then(|cell| locate(&worlds, cell)).or(hovered);
+                let sidebar_sel = sel_pos.and_then(|cell| locate(&worlds, cell)).or(hovered);
+                // A selection whose subject has left the cluster is STALE, not
+                // absent. It keeps the box (as a live one would) and says what
+                // happened, instead of vanishing or marking a position that is
+                // no longer its own.
+                let departed = selected.as_ref().filter(|_| sel_pos.is_none());
                 // The FORWARDS section's stop buttons act only when no modal is
                 // up (the column is dimmed behind a scrim otherwise).
                 let forwards = net.forwards();
@@ -2569,6 +2645,7 @@ async fn main() {
                     &cam,
                     s,
                     sidebar_sel,
+                    departed,
                     &ns_filter_now,
                     &ml,
                     overlay,
@@ -3018,7 +3095,7 @@ async fn main() {
             Some(MenuAction::OracleConsult) => {
                 oracle_view = Some(OracleView::new(oracle_scopes(
                     snap.as_deref(),
-                    selected,
+                    selected.as_ref(),
                     concern_idx,
                 )));
                 oracle_just_opened = true;
@@ -3171,7 +3248,13 @@ async fn main() {
                 // Cross-reference: fly to a live example, then close.
                 Some(AlmanacAction::Locate(cell)) => {
                     cam.fly_to(cell);
-                    selected = Some(cell);
+                    // Fly always; MARK only what is an entity. A harbour, a gate
+                    // or an island structure has a place on the map but is not
+                    // something the selection can name, so those cross-references
+                    // now fly without marking rather than storing a cell.
+                    if let Some(s) = snap.as_deref() {
+                        selected = draw::selection_at(&scene(s), cell);
+                    }
                     almanac = None;
                 }
                 _ => {}

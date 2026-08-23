@@ -8,7 +8,30 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **Jumping to a node that needs attention no longer lands you in the sea.**
+  Pressing `N` to park on a node concern put the marker on open water just west
+  of the province and left the SELECTION panel blank, because the position it
+  jumped to was computed without reference to the coastline the map actually
+  draws. The blast radius drew its ring there too. Every province measured was
+  affected. The map now works out where a node's land is the same way it works
+  out what you are pointing at, so the two cannot disagree.
+
 ### Changed
+- **What you have selected now survives the cluster changing under you.** The
+  map remembered a *place*, so a workload rescheduled to another node left the
+  selection quietly pointing at whatever was on the old ground — and, in a
+  hot/warm pair, adding a zone to the hot cluster shifted every warm selection
+  onto a different cluster's node entirely. It now remembers *what* you picked
+  and works out where that is each frame. Measured on a live cluster: a
+  workload moved across continents and the selection followed it; a warm
+  selection stayed put while the cell it used to occupy was swallowed by a
+  newly added hot zone.
+- **A selected workload that gets deleted says so** instead of disappearing or
+  leaving a mark on ground that is no longer its own.
+- **Clicking water no longer selects a node.** Where the shoreline cut into a
+  province's rectangle, a click could give you a selection the tooltip called
+  ocean and the blast radius called a node.
 - **The map's selection decisions are now covered by tests.** Which node or
   workload the blast radius points at, which one the Oracle will consult, and
   which window an impact row opens were all decided in the one file the test

@@ -151,6 +151,35 @@ pub fn panel_for(worlds: &[SceneWorld], hit: crate::draw::Hit) -> Option<Panel> 
     }
 }
 
+/// The SELECTION box for a selection whose subject has left the cluster.
+///
+/// **§5's decision: tombstone, not clear and not silence.** A workload vanishing
+/// while you have it selected is itself information, and clearing hides it. The
+/// two silent options — the selection disappearing, or persisting as a mark on
+/// a position that is no longer its own — are wrong in the same way, and this
+/// codebase has refused that shape repeatedly (`SubstrateReport` falling back to
+/// terrain, `GroundState::Unknown` reaching the panel, `extent_line` speaking a
+/// guessed size).
+///
+/// So the box keeps the selection, says what happened, and says how to dismiss
+/// it. Nothing is drawn on the map, because there is no longer anywhere to draw.
+pub fn departed_lines(sel: &crate::draw::Selection, paired: bool) -> Vec<(String, Color)> {
+    let mut out = Vec::new();
+    // In a paired session the live box leads with HOT/WARM, so the tombstone
+    // must too — otherwise a departed workload does not say which cluster lost
+    // it, which is most of what the operator wants to know.
+    if paired {
+        let (tag, color) = cluster_tag(sel.cluster());
+        out.push((tag.to_string(), color));
+    }
+    out.extend([
+        (sel.label(), STONE_INK),
+        ("departed - nothing left to mark".into(), STONE_WARN),
+        ("click elsewhere to dismiss".into(), STONE_INK_DIM),
+    ]);
+    out
+}
+
 /// The panel an IMPACT row opens, for a world-local cell in a known world.
 ///
 /// Beside `panel_for` because it answers the same question — *what window does
@@ -1824,17 +1853,26 @@ mod tests {
     }
 
     /// Build the fixture scene the resolver tests share.
+    /// Four nodes in one zone, with the demo workload's pod on `n1`.
+    ///
+    /// Several nodes because `Coast::new` gives a SINGLE-node continent only a
+    /// gentle wobble, so a one-node world may contain no sea-inside-the-
+    /// rectangle cell at all and the interesting case would go untested.
     fn world_snap() -> (WorldSnap, (u16, u16)) {
+        world_snap_cfg(
+            &[("n1", "z-a"), ("n2", "z-a"), ("n3", "z-a"), ("n4", "z-a")],
+            "n1",
+        )
+    }
+
+    fn world_snap_cfg(nodes: &[(&str, &str)], pod_node: &str) -> (WorldSnap, (u16, u16)) {
         let (world, mut s) = fx::world();
-        // Several nodes in one zone: `Coast::new` gives a SINGLE-node continent
-        // only a gentle wobble, so a one-node world may contain no sea-inside-
-        // the-rectangle cell at all and the interesting case would go untested.
-        for n in ["n1", "n2", "n3", "n4"] {
-            s.node(fx::node(n, Some("z-a")));
+        for (n, z) in nodes {
+            s.node(fx::node(n, Some(z)));
         }
         s.deployment(fx::deployment("demo", "a-long-workload-name", 1, 1));
         s.replicaset(fx::replicaset("demo", "rs", "a-long-workload-name"));
-        let mut p = fx::pod_owned(fx::pod("demo", "rs-1", Some("n1")), "ReplicaSet", "rs");
+        let mut p = fx::pod_owned(fx::pod("demo", "rs-1", Some(pod_node)), "ReplicaSet", "rs");
         p.metadata
             .labels
             .get_or_insert_with(Default::default)
@@ -1905,21 +1943,17 @@ mod tests {
         (snap, city)
     }
 
-    /// D2-fix: the blast subject's PRECEDENCE, and that it defers to the one
-    /// conversion rather than carrying its own.
-    ///
-    /// Fails if the function is bypassed in the sense that matters: it is the
-    /// only statement anywhere of what the overlay points at when the selection,
-    /// a running drill and the queue disagree. That order lived in `main.rs`,
-    /// where nothing could assert it.
+    /// D2-fix: the blast subject's PRECEDENCE, and that a selection is taken as
+    /// the identity it now is.
     #[test]
     fn blast_subject_prefers_the_selection_then_the_raid_then_the_queue() {
-        use crate::draw::{blast_subject, subject_at};
+        use crate::draw::{Selection, blast_subject};
         use kubernation_core::state::attention::{Concern, Severity, Target};
         use kubernation_core::state::blast::Subject;
 
         let (snap, city) = probe_fixture();
         let worlds = scene(&snap);
+        let picked_sel = crate::draw::selection_at(&worlds, city).expect("the city cell is one");
 
         let raid: (ClusterId, Subject) = (ClusterId::Hot, Subject::Node("raided".into()));
         let concern = Concern {
@@ -1933,27 +1967,25 @@ mod tests {
         };
         let queue = vec![concern.clone()];
 
-        // 1. A selection wins over both, and agrees with the one conversion.
-        let picked = blast_subject(&worlds, Some(city), Some(&raid), &queue, 0);
+        // 1. A selection wins over both, and names its own subject.
         assert_eq!(
-            picked,
-            subject_at(&worlds, city),
-            "the selected cell must resolve through `subject_at`, not a second rule"
+            blast_subject(Some(&picked_sel), Some(&raid), &queue, 0),
+            Some((picked_sel.cluster(), picked_sel.subject()))
         );
         assert!(
-            matches!(picked, Some((_, Subject::Workload(_)))),
+            matches!(picked_sel, Selection::Workload(..)),
             "the fixture's city cell must name a workload, or this proves nothing"
         );
 
         // 2. No selection: the running drill.
         assert_eq!(
-            blast_subject(&worlds, None, Some(&raid), &queue, 0),
+            blast_subject(None, Some(&raid), &queue, 0),
             Some(raid.clone())
         );
 
         // 3. Neither: the focused concern.
         assert_eq!(
-            blast_subject(&worlds, None, None, &queue, 0),
+            blast_subject(None, None, &queue, 0),
             Some((ClusterId::Hot, Subject::Node("queued".into())))
         );
 
@@ -1964,35 +1996,32 @@ mod tests {
             ..concern.clone()
         });
         assert_eq!(
-            blast_subject(&worlds, None, None, &two, 99),
+            blast_subject(None, None, &two, 99),
             Some((ClusterId::Hot, Subject::Node("last".into())))
         );
 
         // 5. An EMPTY queue expresses "no subject" — it does not index 0 and it
         // does not panic. (`len() - 1` on an empty slice would have.)
-        assert_eq!(blast_subject(&worlds, None, None, &[], 0), None);
+        assert_eq!(blast_subject(None, None, &[], 0), None);
 
         // 6. A concern that names a LIST names no single entity to trace.
         let listy = vec![Concern {
             target: Target::WorkloadList,
             ..concern.clone()
         }];
-        assert_eq!(blast_subject(&worlds, None, None, &listy, 0), None);
-
-        // 7. Open sea with nothing else to fall back on is not a subject.
-        assert_eq!(blast_subject(&worlds, Some((0, 0)), None, &[], 0), None);
+        assert_eq!(blast_subject(None, None, &listy, 0), None);
     }
 
-    /// D2-fix: the Oracle scope is hot-only, asserted on `ClusterId` and not on
-    /// coordinates.
+    /// D2-fix: the Oracle scope is hot-only, asserted on `ClusterId`.
     ///
-    /// The rule used to hold by arithmetic — a warm cell's `x` lies past the hot
-    /// world's width, so `region_at` on the hot world found no continent. This
-    /// pins the rule itself, on a scene that actually HAS a warm world, so it
-    /// would survive two worlds of equal width.
+    /// The rule has now held three ways: by arithmetic (a warm cell's `x` lies
+    /// past the hot world's width), then by an explicit check on a converted
+    /// cell, and now by the cluster travelling with the identity. This pins the
+    /// rule itself, so no arrangement of scenes can break it.
     #[test]
     fn selected_scope_is_hot_only_by_cluster_not_by_arithmetic() {
-        use crate::draw::{locate, selected_scope, subject_at};
+        use crate::draw::{Selection, selected_scope};
+        use kubernation_core::state::model::WorkloadRef;
         use kubernation_core::state::oracle::Scope;
 
         let (snap, city) = paired_fixture();
@@ -2003,28 +2032,331 @@ mod tests {
             "the fixture must actually have a warm world"
         );
 
-        // The hot city yields a scope.
-        assert!(
-            matches!(selected_scope(&worlds, city), Some(Scope::Workload(_))),
-            "a hot city must be consultable"
-        );
+        let hot = crate::draw::selection_at(&worlds, city).expect("a hot entity");
+        assert!(matches!(selected_scope(&hot), Some(Scope::Workload(_))));
 
-        // The SAME cell in the warm world does not — and it is genuinely the
-        // same place: `subject_at` still names an entity there, so the refusal
-        // is the cluster rule and not an empty cell.
+        // The SAME entity in the warm world does not — and it is genuinely the
+        // same place, so the refusal is the cluster rule and not an empty cell.
         let warm_cell = (city.0 + worlds[1].off, city.1);
+        let warm = crate::draw::selection_at(&worlds, warm_cell).expect("a warm entity");
+        assert_eq!(warm.cluster(), ClusterId::Warm);
         assert!(
-            matches!(subject_at(&worlds, warm_cell), Some((ClusterId::Warm, _))),
-            "the mirrored cell must resolve to a WARM entity, or the refusal below is vacuous"
-        );
-        assert!(
-            selected_scope(&worlds, warm_cell).is_none(),
+            selected_scope(&warm).is_none(),
             "a warm selection has no consult scope"
         );
-        assert_eq!(
-            locate(&worlds, warm_cell).map(|(sw, _)| sw.id),
-            Some(ClusterId::Warm)
+
+        // And for a node, which takes the other arm.
+        let wr = WorkloadRef {
+            kind: kubernation_core::state::model::WorkloadKind::Deployment,
+            namespace: "demo".into(),
+            name: "x".into(),
+        };
+        assert!(selected_scope(&Selection::Node(ClusterId::Warm, "n1".into())).is_none());
+        assert!(selected_scope(&Selection::Workload(ClusterId::Warm, wr)).is_none());
+    }
+
+    /// D2 §4, source 1: **a selected workload whose city moves resolves to the
+    /// new position, not the old.**
+    ///
+    /// This is the reason for the phase. A city sites at its pods' plurality
+    /// node, so a reschedule moves it; a stored cell would quietly go on
+    /// pointing at whatever now occupies the old ground.
+    #[test]
+    fn a_selection_follows_its_subject_when_the_city_moves() {
+        use crate::draw::{Selection, selection_pos};
+        let nodes = [("n1", "z-a"), ("n2", "z-a"), ("n3", "z-a"), ("n4", "z-a")];
+
+        let (before, _) = world_snap_cfg(&nodes, "n1");
+        let (after, _) = world_snap_cfg(&nodes, "n3");
+        let snap_b = Snapshot {
+            hot: before,
+            warm: None,
+            pair: None,
+            attention: Arc::new(Vec::new()),
+        };
+        let snap_a = Snapshot {
+            hot: after,
+            warm: None,
+            pair: None,
+            attention: Arc::new(Vec::new()),
+        };
+        let (wb, wa) = (scene(&snap_b), scene(&snap_a));
+
+        let city = snap_b.hot.models.world.cities().next().expect("a city");
+        let sel = Selection::Workload(ClusterId::Hot, city.r.clone());
+        let pos_b = selection_pos(&wb, &sel).expect("placed before");
+        let pos_a = selection_pos(&wa, &sel).expect("placed after");
+
+        // Guard the guard: if the reschedule did not move the city there is
+        // nothing here to detect, and the test would pass vacuously.
+        assert_ne!(pos_b, pos_a, "the fixture did not actually move the city");
+
+        // The derived position is the city's CURRENT one in each world.
+        for (w, snap, p) in [(&wb, &snap_b, pos_b), (&wa, &snap_a, pos_a)] {
+            let want = snap
+                .hot
+                .models
+                .world
+                .city_pos(&sel_ref(&sel))
+                .expect("sited");
+            assert_eq!(p, (want.0 + w[0].off, want.1));
+        }
+    }
+
+    fn sel_ref(sel: &crate::draw::Selection) -> kubernation_core::state::model::WorkloadRef {
+        match sel {
+            crate::draw::Selection::Workload(_, r) => r.clone(),
+            crate::draw::Selection::Node(..) => panic!("not a workload"),
+        }
+    }
+
+    /// D2 §4, source 2 — the less obvious one: **a warm selection survives the
+    /// hot world growing a zone.**
+    ///
+    /// A warm cell is `local + off`, and `off` is the hot world's width. Adding
+    /// a zone to the HOT cluster therefore moved every stored WARM cell, with
+    /// no error and no clue.
+    #[test]
+    fn a_warm_selection_survives_the_hot_world_growing_a_zone() {
+        use crate::draw::{locate, selection_at, selection_pos};
+        let small = [("n1", "z-a"), ("n2", "z-a"), ("n3", "z-a"), ("n4", "z-a")];
+        let grown = [
+            ("n1", "z-a"),
+            ("n2", "z-a"),
+            ("n3", "z-a"),
+            ("n4", "z-a"),
+            ("m1", "z-b"),
+            ("m2", "z-b"),
+        ];
+
+        let paired = |hot: &[(&str, &str)]| {
+            let (h, _) = world_snap_cfg(hot, "n1");
+            let (w, _) = world_snap_cfg(&small, "n1");
+            Snapshot {
+                hot: h,
+                warm: Some(w),
+                pair: None,
+                attention: Arc::new(Vec::new()),
+            }
+        };
+        let (snap_b, snap_a) = (paired(&small), paired(&grown));
+        let (wb, wa) = (scene(&snap_b), scene(&snap_a));
+
+        // Guard the guard: the hot world must actually have grown, or the
+        // offset does not move and there is nothing to survive.
+        assert!(
+            wa[1].off > wb[1].off,
+            "adding a zone did not widen the hot world"
         );
+
+        // Select a WARM city, the way a click would.
+        let wc = snap_b
+            .warm
+            .as_ref()
+            .unwrap()
+            .models
+            .world
+            .cities()
+            .next()
+            .unwrap();
+        let before_cell = (wc.x + wb[1].off, wc.y);
+        let sel = selection_at(&wb, before_cell).expect("a warm entity");
+        assert_eq!(sel.cluster(), ClusterId::Warm);
+
+        // The identity still resolves, to the SAME warm entity, at a cell that
+        // has moved with the scene.
+        let after_cell = selection_pos(&wa, &sel).expect("still placed");
+        assert_ne!(after_cell, before_cell, "the scene did not shift");
+        assert_eq!(selection_at(&wa, after_cell).as_ref(), Some(&sel));
+
+        // The discrimination check, in unit form: the STORED CELL — what the
+        // pre-inversion selection held — no longer names the same thing. If it
+        // did, this case was never broken.
+        let stale = selection_at(&wa, before_cell);
+        assert_ne!(
+            stale.as_ref(),
+            Some(&sel),
+            "the old cell still resolves to the same entity — this staleness \
+             source is not real and the fix should not be credited for it"
+        );
+        assert_eq!(
+            locate(&wa, before_cell).map(|(sw, _)| sw.id),
+            Some(ClusterId::Hot),
+            "the stored warm cell should now fall inside the HOT world"
+        );
+    }
+
+    /// D2 §0's free dissolution: **a click on carved-away sea selects the same
+    /// thing the tooltip says is there — nothing.**
+    ///
+    /// `region_at` tests a province's rectangle while `resolve_region` applies
+    /// the shoreline carving, so a stored cell could be ocean to the tooltip and
+    /// a node to the blast subject. An identity cannot hold both.
+    #[test]
+    fn a_click_on_carved_sea_selects_what_the_tooltip_says() {
+        use crate::draw::{Hit, Resolved, locate, resolve_region, selection_at, subject_at};
+        let (snap, _) = probe_fixture();
+        let worlds = scene(&snap);
+        let (bw, bh) = (snap.hot.models.world.width, snap.hot.models.world.height);
+
+        let mut saw = false;
+        for x in 0..bw {
+            for y in 0..bh {
+                let Some((sw, local)) = locate(&worlds, (x, y)) else {
+                    continue;
+                };
+                // The interesting cell: the MODEL calls it province (its
+                // rectangle covers it) and the VIEW calls it sea (the shoreline
+                // carved it away). Identified from the model, deliberately —
+                // asking `subject_at` which cells are interesting would make the
+                // test unable to see the very answer it is checking.
+                let carved = matches!(resolve_region(sw, local), Resolved::Ocean)
+                    && matches!(
+                        sw.world.region_at(local.0, local.1),
+                        kubernation_core::state::world::Region::Province(_)
+                    );
+                if !carved {
+                    continue;
+                }
+                saw = true;
+                assert!(
+                    subject_at(&worlds, (x, y)).is_none(),
+                    "the conversion still names an entity on water at {:?}",
+                    (x, y)
+                );
+                assert!(
+                    selection_at(&worlds, (x, y)).is_none(),
+                    "clicking carved-away water at {:?} must select nothing, as the \
+                     tooltip and the panel resolver both already say",
+                    (x, y)
+                );
+                assert!(panel_for(&worlds, Hit::at((x, y))).is_none());
+            }
+        }
+        assert!(
+            saw,
+            "the fixture produced no carved-away cell inside a province rect — \
+             the divergence this test exists to dissolve was never exercised"
+        );
+    }
+
+    /// D2 §5: a subject that has left the cluster resolves to `None` and is
+    /// **said**, not drawn at a stale position.
+    #[test]
+    fn a_departed_subject_has_no_position_and_the_box_says_so() {
+        use crate::draw::{Selection, selection_pos};
+        use kubernation_core::state::model::{WorkloadKind, WorkloadRef};
+        let (snap, _) = probe_fixture();
+        let worlds = scene(&snap);
+
+        let gone = Selection::Workload(
+            ClusterId::Hot,
+            WorkloadRef {
+                kind: WorkloadKind::Deployment,
+                namespace: "demo".into(),
+                name: "deleted-while-you-watched".into(),
+            },
+        );
+        assert!(selection_pos(&worlds, &gone).is_none());
+        let lines = departed_lines(&gone, false);
+        let joined = lines
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(joined.contains("deleted-while-you-watched"), "{joined}");
+        assert!(joined.contains("departed"), "{joined}");
+        assert!(joined.contains("dismiss"), "{joined}");
+
+        // A node that has left takes the other arm.
+        let node_gone = Selection::Node(ClusterId::Hot, "drained-worker".into());
+        assert!(selection_pos(&worlds, &node_gone).is_none());
+        assert!(
+            departed_lines(&node_gone, false)[0]
+                .0
+                .contains("drained-worker")
+        );
+
+        // Paired: the tombstone must name the cluster, as the live box does —
+        // otherwise a departed workload never says which side lost it.
+        let warm_gone = Selection::Node(ClusterId::Warm, "w9".into());
+        let unpaired = departed_lines(&warm_gone, false);
+        let paired = departed_lines(&warm_gone, true);
+        assert_eq!(paired.len(), unpaired.len() + 1);
+        assert_eq!(paired[0].0, "WARM");
+        assert_eq!(departed_lines(&gone, true)[0].0, "HOT");
+
+        // And a selection for a cluster that is not in the scene at all — a
+        // warm selection surviving into an unpaired session.
+        let warm = Selection::Node(ClusterId::Warm, "n1".into());
+        assert!(selection_pos(&worlds, &warm).is_none());
+    }
+
+    /// The derivation and the resolver must agree, or a selection marks water
+    /// and blanks its own box.
+    ///
+    /// `WorldModel::province_pos` does NOT agree — measured on this fixture,
+    /// every province's `province_pos` cell resolves to `Resolved::Ocean`,
+    /// because core cannot consult the `Coast` the view carves. That is pinned
+    /// here so the two claims stay visibly separate.
+    #[test]
+    fn a_derived_position_resolves_back_to_the_thing_it_was_derived_from() {
+        use crate::draw::{Resolved, locate, province_land_cell, resolve_region};
+        use kubernation_core::state::world::Region;
+        let (snap, _) = probe_fixture();
+        let worlds = scene(&snap);
+        let w = &snap.hot.models.world;
+
+        let mut model_coord_failures = 0;
+        for cont in &w.continents {
+            for p in &cont.provinces {
+                let name = &p.tile.name;
+
+                // The land-aware derivation round-trips — asserted through
+                // `selection_pos`, the CONSUMER, not through the helper alone.
+                // A mutation swapping `selection_pos` back to the model
+                // coordinate survived a test that only pinned the helper: the
+                // authority was covered and nothing said the caller used it.
+                let sel = crate::draw::Selection::Node(ClusterId::Hot, name.clone());
+                let land = crate::draw::selection_pos(&worlds, &sel)
+                    .expect("a placed node has a position");
+                assert_eq!(
+                    Some(land),
+                    province_land_cell(w, name),
+                    "selection_pos must derive a node's cell through the land test"
+                );
+                let (sw, local) = locate(&worlds, land).expect("in a world");
+                assert!(
+                    matches!(resolve_region(sw, local),
+                        Resolved::Region(Region::Province(q)) if &q.tile.name == name),
+                    "province_land_cell({name}) at {land:?} did not resolve back to it"
+                );
+
+                // The model coordinate does not — recorded, not asserted away.
+                let pos = w.province_pos(name).expect("a model coordinate");
+                let (sw2, l2) = locate(&worlds, pos).expect("in a world");
+                if !matches!(resolve_region(sw2, l2),
+                    Resolved::Region(Region::Province(q)) if &q.tile.name == name)
+                {
+                    model_coord_failures += 1;
+                }
+            }
+        }
+        assert!(
+            model_coord_failures > 0,
+            "province_pos now round-trips too; if the carving changed, the \
+             land-aware derivation may no longer be earning its keep"
+        );
+
+        // Cities are safe by construction (the CITY_MARGIN keep-out bulges the
+        // shore to keep settlements on dry land) — pinned so a change there is
+        // visible rather than silently moving selections into the sea.
+        for c in w.cities() {
+            let pos = w.city_pos(&c.r).expect("sited");
+            let (sw, local) = locate(&worlds, pos).expect("in a world");
+            assert!(matches!(resolve_region(sw, local),
+                Resolved::Region(Region::City(_, q)) if q.r == c.r));
+        }
     }
 
     /// D2-fix: the IMPACT-row conversion opens a city and nothing else — and the
@@ -2116,7 +2448,6 @@ mod tests {
         let mut saw_province = false;
         let mut saw_coast_divergence = false;
         let mut saw_structure_divergence = false;
-        let mut saw_carved_divergence = false;
 
         for y in 0..bh {
             for x in 0..bw {
@@ -2159,17 +2490,12 @@ mod tests {
                             ),
                         }
                     }
-                    // The other direction, and the more interesting one:
-                    // `region_at` tests a province's RECTANGLE while
-                    // `resolve_region` applies the coast carving, so a cell the
-                    // shoreline made sea is a node to one and ocean to the
-                    // other (the v1.3.0 finding, from the other side).
-                    //
-                    // Pre-existing and preserved here: steps 1-2 change no
-                    // behaviour. §3.3's inversion dissolves it — an identity is
-                    // a node or it is not, and no ambiguous cell survives to
-                    // disagree about.
-                    (Some((_, Subject::Node(_))), None) => saw_carved_divergence = true,
+                    // There is deliberately NO arm for `(Some(Node), None)`.
+                    // That was the carved-sea divergence — `region_at` testing a
+                    // province's rectangle while `resolve_region` applies the
+                    // shoreline — and it is gone, because `subject_at` now
+                    // shares the one land test. Its absence is enforced by the
+                    // catch-all below, which is why no flag is needed for it.
                     (None, None) => {}
                     other => panic!("subject_at and panel_for disagree at {cell:?}: {other:?}"),
                 }
@@ -2179,10 +2505,6 @@ mod tests {
         // Guard the guard: without these the sweep could be vacuous.
         assert!(saw_city, "the fixture never produced a city");
         assert!(saw_province, "the fixture never produced a province");
-        assert!(
-            saw_carved_divergence,
-            "the fixture never produced a carved-sea cell inside a province rect"
-        );
         assert!(
             saw_coast_divergence,
             "the fixture never produced a coast marker — the divergence this \

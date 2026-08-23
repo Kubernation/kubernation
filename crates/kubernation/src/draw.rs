@@ -510,17 +510,125 @@ pub fn scene_size(worlds: &[SceneWorld]) -> (u16, u16) {
 /// Returns the `ClusterId` because the caller usually needs it and a bare cell
 /// cannot carry it: a warm-world cell is only distinguishable by arithmetic on
 /// the hot world's width. `None` for open sea, and for anything with no entity.
+///
+/// **It shares the land test with the tooltip**, via `resolve_region`. It did
+/// not always: it used to call `region_at` directly, which tests a province's
+/// RECTANGLE, while the tooltip applies the shoreline carving — so a click on
+/// visible water inside that rectangle produced a subject the tooltip called
+/// ocean. D2 §0 expected the selection inversion to dissolve that "for free";
+/// it does not, because the ambiguity is in the CONVERSION, not in what the
+/// selection stores. This is the deliberate change that dissolves it.
 pub fn subject_at(
     worlds: &[SceneWorld],
     cell: (u16, u16),
 ) -> Option<(ClusterId, kubernation_core::state::blast::Subject)> {
     use kubernation_core::state::blast::Subject;
     let (sw, local) = locate(worlds, cell)?;
-    match sw.world.region_at(local.0, local.1) {
-        Region::City(_, c) => Some((sw.id, Subject::Workload(c.r.clone()))),
-        Region::Province(p) => Some((sw.id, Subject::Node(p.tile.name.clone()))),
+    match resolve_region(sw, local) {
+        Resolved::Region(Region::City(_, c)) => Some((sw.id, Subject::Workload(c.r.clone()))),
+        Resolved::Region(Region::Province(p)) => Some((sw.id, Subject::Node(p.tile.name.clone()))),
         _ => None,
     }
+}
+
+/// What the map selection points at. **An identity, not a position.**
+///
+/// A stored scene cell goes stale silently in two independent ways: a city
+/// sites at its pods' plurality node, so a reschedule moves it; and a warm
+/// cell is `local + off` where `off` is the hot world's width, so **adding a
+/// zone to the hot cluster moves every stored warm cell**. Neither raises an
+/// error — the selection just starts pointing at a different province.
+///
+/// Carrying the identity makes both dissolve: the position is derived from the
+/// current world every frame (`selection_pos`), so a moved city resolves to
+/// where it moved and a shifted scene resolves through the current `off`.
+#[derive(Clone, PartialEq, Debug)]
+pub enum Selection {
+    Workload(ClusterId, WorkloadRef),
+    Node(ClusterId, String),
+}
+
+impl Selection {
+    pub fn cluster(&self) -> ClusterId {
+        match self {
+            Selection::Workload(id, _) | Selection::Node(id, _) => *id,
+        }
+    }
+
+    /// The blast/Oracle view of the same identity.
+    pub fn subject(&self) -> Subject {
+        match self {
+            Selection::Workload(_, r) => Subject::Workload(r.clone()),
+            Selection::Node(_, n) => Subject::Node(n.clone()),
+        }
+    }
+
+    /// For the tombstone line when the subject has left the cluster.
+    pub fn label(&self) -> String {
+        match self {
+            Selection::Workload(_, r) => format!("workload {}/{}", r.namespace, r.name),
+            Selection::Node(_, n) => format!("node {n}"),
+        }
+    }
+}
+
+/// The identity at a scene cell, for the one writer whose natural input is a
+/// position — the map click. Routes through [`subject_at`], the one authority.
+///
+/// A cell with no entity (open sea, carved-away water inside a province's
+/// rectangle, a coast marker, an island structure) selects NOTHING. That is the
+/// point: a click on carved sea used to store a cell the tooltip called ocean
+/// and the blast subject called a node, and an identity cannot hold both.
+pub fn selection_at(worlds: &[SceneWorld], cell: (u16, u16)) -> Option<Selection> {
+    match subject_at(worlds, cell)? {
+        (id, Subject::Workload(r)) => Some(Selection::Workload(id, r)),
+        (id, Subject::Node(n)) => Some(Selection::Node(id, n)),
+    }
+}
+
+/// Where a selection IS, in scene coordinates, right now.
+///
+/// **Derived every frame; never stored.** Caching it reintroduces exactly the
+/// staleness the inversion removes, one layer up — and a cached position looks
+/// like an optimisation in review and behaves correctly until something moves.
+///
+/// `None` means the subject is no longer on the map. That is a state the
+/// SELECTION box SAYS (see `panels::departed_lines`); it is not a silent
+/// nothing.
+pub fn selection_pos(worlds: &[SceneWorld], sel: &Selection) -> Option<(u16, u16)> {
+    let sw = worlds.iter().find(|s| s.id == sel.cluster())?;
+    let local = match sel {
+        // A workload with no pods anywhere is an island encampment, not a city.
+        Selection::Workload(_, r) => sw.world.city_pos(r).or_else(|| sw.world.structure_pos(r))?,
+        Selection::Node(_, n) => province_land_cell(sw.world, n)?,
+    };
+    Some((local.0 + sw.off, local.1))
+}
+
+/// A cell that is genuinely on a province's LAND.
+///
+/// `WorldModel::province_pos` returns `(p.x + 2, p.y)` — a model coordinate
+/// that takes no account of the shoreline the VIEW carves, because core cannot
+/// consult `Coast` (the v1.3.0 decision: procedural noise stays out of the
+/// world model). Measured: on the probe fixture **every** province's
+/// `province_pos` cell resolves to `Resolved::Ocean`, and nudging the row does
+/// not help — the west inset simply exceeds two cells.
+///
+/// So this runs the SAME `land_span` test [`resolve_region`] applies, from the
+/// province's middle row, which is what makes a derived position resolve back
+/// to the province it was derived from. Three sites hand-rolled `+2` variants
+/// of this before it existed.
+pub fn province_land_cell(w: &WorldModel, node: &str) -> Option<(u16, u16)> {
+    let (cont, p) = w.continents.iter().find_map(|c| {
+        c.provinces
+            .iter()
+            .find(|p| p.tile.name == node)
+            .map(|p| (c, p))
+    })?;
+    let mid_y = p.y + p.h / 2;
+    let coast = Coast::new(cont);
+    let (li, span) = coast.land_span(mid_y as i32, cont.w as f32);
+    (span > 0.0).then(|| (cont.x + (li + span * 0.5) as u16, mid_y))
 }
 
 /// The blast overlay's SUBJECT: the selected tile, else a live raid's target,
@@ -535,14 +643,13 @@ pub fn subject_at(
 /// Precedence is load-bearing: an explicit selection outranks a running drill,
 /// which outranks the queue, so clicking somewhere always wins.
 pub fn blast_subject(
-    worlds: &[SceneWorld],
-    selected: Option<(u16, u16)>,
+    selected: Option<&Selection>,
     raid: Option<&(ClusterId, Subject)>,
     attention: &[Concern],
     concern_idx: usize,
 ) -> Option<(ClusterId, Subject)> {
     selected
-        .and_then(|cell| subject_at(worlds, cell))
+        .map(|s| (s.cluster(), s.subject()))
         .or_else(|| raid.cloned())
         .or_else(|| {
             // An empty queue has no focused concern — express that, rather than
@@ -562,19 +669,17 @@ pub fn blast_subject(
 /// advisors, the Charter and the SLO map are all hot-only, and a warm selection
 /// has no consult.
 ///
-/// The exhaustive match on `ClusterId` is the point: this rule used to hold
-/// because a warm cell's `x` lies past the hot world's width, so `region_at` on
-/// the hot world found no continent and fell through. Same outcome; now it is a
-/// stated rule that a second world of equal width could not break.
-pub fn selected_scope(
-    worlds: &[SceneWorld],
-    cell: (u16, u16),
-) -> Option<kubernation_core::state::oracle::Scope> {
+/// The exhaustive match on `ClusterId` is the point. The rule first held by
+/// arithmetic (a warm cell's `x` lies past the hot world's width, so `region_at`
+/// on the hot world found no continent), then by an explicit cluster check on a
+/// converted cell. Now the cluster travels WITH the identity, so there is no
+/// scene to be wrong about at all.
+pub fn selected_scope(sel: &Selection) -> Option<kubernation_core::state::oracle::Scope> {
     use kubernation_core::state::oracle::Scope;
-    match subject_at(worlds, cell)? {
-        (ClusterId::Hot, Subject::Workload(r)) => Some(Scope::Workload(r)),
-        (ClusterId::Hot, Subject::Node(n)) => Some(Scope::Node(n)),
-        (ClusterId::Warm, _) => None,
+    match sel {
+        Selection::Workload(ClusterId::Hot, r) => Some(Scope::Workload(r.clone())),
+        Selection::Node(ClusterId::Hot, n) => Some(Scope::Node(n.clone())),
+        Selection::Workload(ClusterId::Warm, _) | Selection::Node(ClusterId::Warm, _) => None,
     }
 }
 
@@ -598,8 +703,13 @@ pub fn selected_scope(
 /// silence becomes a visible failure rather than a row that flies and opens
 /// nothing.
 pub fn city_at(sw: &SceneWorld, local: (u16, u16)) -> Option<(ClusterId, WorkloadRef)> {
-    match sw.world.region_at(local.0, local.1) {
-        Region::City(_, c) => Some((sw.id, c.r.clone())),
+    // Through the same resolver as everything else. A city sits on land by
+    // construction, so the carving cannot change this answer — which is exactly
+    // why uniformity is cheap here, and why leaving a second land test in the
+    // file on the strength of "it provably cannot matter" would be the trade
+    // that goes wrong when the construction changes.
+    match resolve_region(sw, local) {
+        Resolved::Region(Region::City(_, c)) => Some((sw.id, c.r.clone())),
         _ => None,
     }
 }
@@ -1612,7 +1722,10 @@ pub fn draw_blast(cam: &Camera, sw: &SceneWorld, blast: &BlastRadius) -> Option<
     let on_sea = |p: (u16, u16)| cam.to_screen(p.0 as f32 + 0.5, p.1 as f32 + 0.5);
     let src = match &blast.subject {
         Subject::Workload(wr) => w.city_pos(wr).or_else(|| w.structure_pos(wr)),
-        Subject::Node(n) => w.province_pos(n),
+        // The land-aware derivation, not `province_pos` — the latter is a model
+        // coordinate that ignores the shoreline this very function draws, so the
+        // crisis ring used to sit on open water west of its province.
+        Subject::Node(n) => province_land_cell(w, n),
     };
     let src = src?;
     // A blast subject is always a workload or a node — both stand on land.

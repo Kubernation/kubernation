@@ -2752,6 +2752,63 @@ what makes the interesting logic unit-testable without a cluster.
   the work — this time a claim hours old, which is the useful part: recency is not
   verification. 430 core + 119 GUI tests; gui-smoke 55.
 
+- **D2 §3.3 — the inversion: the selection is an identity** (2026-08-19,
+  **v1.23.0**; from `docs/kubernation-d2-inversion-guidance.md`, report in
+  `docs/reports/d2-inversion.md`): `selected` was a scene CELL and went stale
+  silently two ways — a city sites at its pods' plurality node, so a reschedule
+  moved it; and a warm cell is `local + off` where `off` is the hot world's
+  width, so **adding a zone to the hot cluster moved every stored warm cell**.
+  It is now `draw::Selection{Workload(ClusterId, WorkloadRef), Node(ClusterId,
+  String)}` with the position derived per frame by `selection_pos` and **never
+  cached** (a cached position looks like an optimisation in review and behaves
+  correctly until something moves — pinned by a mutation). **Ten of twelve
+  writers already held the identity and were throwing it away to store a cell**;
+  the compiler enumerated every site, and `main.rs` is left holding calls.
+  `selected_scope` and `blast_subject` stopped taking a scene at all — the
+  cluster travels with the identity, so the hot-only rule has no scene to be
+  wrong about. **§0's third dissolution was NOT free, and the test said so on its
+  first run:** the carved-sea divergence lives in the CONVERSION, not in what the
+  selection stores — `subject_at` called `region_at` (a province's RECTANGLE)
+  while the tooltip calls `resolve_region` (the shoreline carving) — so
+  `subject_at` and `city_at` now resolve through `resolve_region`, sharing the
+  one land test, and the D2-fix agreement test's carved arm is deleted with its
+  absence enforced by that test's catch-all. **THE FINDING, and it was live:**
+  `WorldModel::province_pos` returns `(p.x + 2, p.y)`, and **every province
+  measured resolves to `Resolved::Ocean`** there — core cannot consult `Coast`
+  (the v1.3.0 decision), so a model coordinate cannot know where the view put the
+  shore. Three sites hand-rolled `+2` variants (`province_pos`, the `--inspect`
+  node arm at `+2/+1` — so someone already knew the top row was wrong and fixed it
+  *there* — and `almanac::locate`). Consequence: pressing **`N`** onto a node
+  concern, the app's spine, selected open water — marker on the sea, SELECTION box
+  **empty** — and `draw_blast` drew its crisis ring there too. `draw::
+  province_land_cell` is now the one authority, running the SAME `land_span` test
+  `resolve_region` applies. **§5 decided: TOMBSTONE** — a departed subject keeps
+  the box, says "departed - nothing left to mark", and says how to dismiss it;
+  vanishing and marking-a-stale-cell are wrong in the same way, the shape this
+  codebase has refused since `SubstrateReport`. **Accepted losses, stated:** a
+  coast marker and an island structure are not selectable, so clicking a harbour
+  opens its city (unchanged) without storing the sea cell, and an almanac
+  cross-reference to one flies without marking. **THE GATE, live, both passing
+  with discrimination** (`hack/d2-selection-gate.sh` + `.py`, committed): a
+  workload re-pinned `a1`→`b2` moved across continents and the selection sat on it
+  at every one of 23 ticks, while the cell a pre-inversion selection would hold
+  still names province `a1`; and with a WARM city selected, adding zone `z-c` to
+  HOT grew the extent 56→86 and moved the selection by **exactly** 30, while the
+  cell it used to occupy is now **hot province `c1` in the new zone**. **Four
+  process findings.** (1) Mutation M-D SURVIVED at first — the round-trip test
+  pinned `province_land_cell`, the *authority*, and nothing said `selection_pos`
+  used it: D2-fix's own lesson recurring one level down. (2) The gate's own
+  precondition check caught a **false pass** — a leftover cluster already had
+  zone `z-c`, so extent went 86→86 while every other assertion still held. (3)
+  Gate A then failed with "the city never moved": the assertion was right and the
+  *wait* was wrong, so it now waits on pods landing, not on the clock. (4) I
+  recorded that the churn fleet could not be started (kwokctl 0.7 vs 0.8,
+  "component etcd does not exist") and that recreating it would destroy T1's
+  succession record — **false**: the container runtime was simply not running, and
+  starting it brought the fleet back at 100 nodes untouched. Diagnosed from an
+  error message rather than the substrate under it. 430 core + 124 GUI tests;
+  gui-smoke 55.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn
