@@ -9,6 +9,8 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **The field guide's "node" and "road" cross-references now land on the
+  province they name**, instead of on the water just west of it.
 - **Jumping to a node that needs attention no longer lands you in the sea.**
   Pressing `N` to park on a node concern put the marker on open water just west
   of the province and left the SELECTION panel blank, because the position it

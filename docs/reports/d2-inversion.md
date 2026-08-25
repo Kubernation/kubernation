@@ -103,7 +103,17 @@ put its crisis ring there too.
 `draw::province_land_cell` is now the one authority, running the **same
 `land_span` test `resolve_region` applies**, from the province's middle row —
 which is what makes a derived position resolve back to the province it came
-from. All four consumers route through it.
+from.
+
+**Correction, found while reviewing this report.** It first said all four
+consumers route through it. They did not: `almanac::locate`'s **Node** and
+**Road** arms still held `(p.x + 2, p.y)`, so those cross-references flew to
+open water — and, once the selection became an identity, arrived there and
+marked *nothing*, where before the inversion they at least marked the sea cell.
+Fixed in the same round; `WorldModel::province_pos` now carries a doc warning
+that it is not a hit-testable cell, and has no production callers left. Seventh
+consecutive session in which re-examining one of my own statements changed the
+work.
 
 Confirmed on the live kind cluster, not only on the fixture. Selecting node
 `kubernation-worker2`, whose province occupies `x=60..86, y=1..4`:

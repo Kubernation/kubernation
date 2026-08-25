@@ -356,6 +356,15 @@ impl WorldModel {
         self.cities().find(|c| &c.r == r).map(|c| (c.x, c.y))
     }
 
+    /// A province's model coordinate, nudged two columns in from its western
+    /// edge.
+    ///
+    /// **Not a hit-testable cell.** The view carves a shoreline this cannot see
+    /// (core does not consult `Coast` — the v1.3.0 decision), and the inset
+    /// routinely exceeds two columns: measured, *every* province on the probe
+    /// fixture resolves to open water here. A caller that needs a cell the
+    /// resolver agrees is this province wants `draw::province_land_cell`, which
+    /// runs the same land test the tooltip does.
     pub fn province_pos(&self, node: &str) -> Option<(u16, u16)> {
         self.continents
             .iter()

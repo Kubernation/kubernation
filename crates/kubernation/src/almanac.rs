@@ -89,10 +89,16 @@ fn locate(w: &WorldModel, loc: Locator) -> Option<(u16, u16)> {
     match loc {
         Locator::City => w.cities().next().map(|c| (c.x, c.y)),
         Locator::Granary => w.cities().find(|c| c.storage.is_some()).map(|c| (c.x, c.y)),
-        Locator::Node => provinces().next().map(|p| (p.x + 2, p.y)),
+        // Through the land test, not `(p.x + 2, p.y)`. That model coordinate
+        // sits inside the west coast inset on every province measured, so these
+        // cross-references used to fly to open water — and, once the selection
+        // became an identity, arrive there and mark nothing.
+        Locator::Node => provinces()
+            .next()
+            .and_then(|p| crate::draw::province_land_cell(w, &p.tile.name)),
         Locator::Road => provinces()
             .find(|p| !p.infra.is_empty())
-            .map(|p| (p.x + 2, p.y)),
+            .and_then(|p| crate::draw::province_land_cell(w, &p.tile.name)),
         Locator::Harbor => w
             .continents
             .iter()

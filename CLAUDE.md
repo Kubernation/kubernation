@@ -2782,7 +2782,11 @@ what makes the interesting logic unit-testable without a cluster.
   concern, the app's spine, selected open water — marker on the sea, SELECTION box
   **empty** — and `draw_blast` drew its crisis ring there too. `draw::
   province_land_cell` is now the one authority, running the SAME `land_span` test
-  `resolve_region` applies. **§5 decided: TOMBSTONE** — a departed subject keeps
+  `resolve_region` applies; `province_pos` is left with a doc warning that it is
+  not a hit-testable cell and no production callers. (A review of the report
+  caught that `almanac::locate`'s Node/Road arms had NOT been routed through it
+  as the report claimed — so those cross-references flew to water and, post-
+  inversion, marked nothing; fixed in v1.23.1.) **§5 decided: TOMBSTONE** — a departed subject keeps
   the box, says "departed - nothing left to mark", and says how to dismiss it;
   vanishing and marking-a-stale-cell are wrong in the same way, the shape this
   codebase has refused since `SubstrateReport`. **Accepted losses, stated:** a
