@@ -59,6 +59,8 @@ STATES=(
   "opencost-degrade|--opencost --overlay cost"
   "colorblind|--colorblind"
   "workloads|--workloads"
+  # The brushed row: a selection made first, then the table opened over it.
+  "workloads-brushed|--inspect web --workloads"
   "concern-logs|--concern-logs"
   "namespace-scope|--namespace kubernation-demo"
   "forward|--forward web"

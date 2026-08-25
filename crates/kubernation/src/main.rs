@@ -842,6 +842,11 @@ async fn main() {
     // selected tile (else the focused concern's subject). Toggled with `B`.
     let mut blast_on = args.blast.is_some();
     let mut blast_armed = args.blast.is_some();
+    // `--workloads` alone opens the table from the first-snapshot arm above.
+    // With `--inspect` that arm is skipped entirely (it is guarded on
+    // `inspect.is_none()`), so the table is armed here instead — AFTER the
+    // inspect has set the selection, which is the state worth capturing.
+    let mut workloads_armed = args.workloads && args.inspect.is_some();
     let mut chaos_armed = args.chaos.is_some();
     // Memoized blast radius: (cluster, subject, result), recomputed only when
     // the subject or the snapshot changes (keyed by the snapshot's Arc pointer).
@@ -2016,6 +2021,20 @@ async fn main() {
                     }
                 }
             }
+            // Dev: open the workload table over an existing selection, so the
+            // brushed row (D2) is capturable. The first-snapshot arm above is
+            // guarded on `inspect.is_none()`, so with `--inspect` it never runs
+            // — and `--inspect` itself lives inside the nav-suspend block that
+            // an open table would suspend. Hence: here, outside both, once
+            // `inspected` says the selection is set.
+            if workloads_armed && inspected {
+                workloads_armed = false;
+                // `--inspect` opened a panel on its way to the selection; drop
+                // it so the table is the visible modal.
+                panel = None;
+                workloads = Some(workloads::Workloads::new());
+            }
+
             // Dev: exercise the concern→logs `L` jump once attention lands.
             if args.concern_logs && !concern_logs_armed && !s.attention.is_empty() {
                 if let Some((i, cluster, probe)) = s
@@ -3365,11 +3384,23 @@ async fn main() {
             let click = is_mouse_button_pressed(MouseButton::Left) && !workloads_just_opened;
             let action = workloads
                 .as_mut()
-                .map(|w| w.draw(snap.as_deref(), mouse, click));
+                .map(|w| w.draw(snap.as_deref(), selected.as_ref(), mouse, click));
             match action {
                 Some(workloads::WorkloadsAction::Close) => workloads = None,
-                Some(workloads::WorkloadsAction::Open(cid, r)) => {
-                    panel = Some(Panel::City(cid, r));
+                Some(workloads::WorkloadsAction::Open { cluster, r, select }) => {
+                    // BRUSHING, the write direction: acting in the list moves
+                    // the map's mark. Deliberately NO camera movement — marking
+                    // is not navigation (that is D4), and this path does not set
+                    // `panel_just_opened`, so D1's aim-on-open does not fire.
+                    //
+                    // An unplaced row (a DaemonSet is a road, not a settlement)
+                    // opens its window without claiming a position, and LEAVES
+                    // any existing selection alone: silently clearing it would
+                    // be a side effect the row's own note does not describe.
+                    if let Some(s) = select {
+                        selected = Some(s);
+                    }
+                    panel = Some(Panel::City(cluster, r));
                     workloads = None;
                 }
                 _ => {}

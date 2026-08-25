@@ -19,6 +19,14 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   affected. The map now works out where a node's land is the same way it works
   out what you are pointing at, so the two cannot disagree.
 
+### Added
+- **The workload list and the map now point at the same thing.** The row you
+  have selected on the map is marked in the Workloads table, and picking a row
+  there marks it on the map — without moving the camera, so you keep your place.
+  Rows the map has nowhere to put say so: a DaemonSet is drawn as a road across
+  the provinces it runs on, never a settlement, so its row reads "road - not a
+  settlement" instead of quietly failing to highlight.
+
 ### Changed
 - **What you have selected now survives the cluster changing under you.** The
   map remembered a *place*, so a workload rescheduled to another node left the

@@ -2813,6 +2813,47 @@ what makes the interesting logic unit-testable without a cluster.
   error message rather than the substrate under it. 430 core + 124 GUI tests;
   gui-smoke 55.
 
+- **D2 — brushing: the list and the map agree** (2026-08-19, **v1.24.0**; from
+  `docs/kubernation-d2-brushing-guidance-rev2.md` §5–§6, the half its test list
+  and mutation floor still named after §3.3 landed; report in
+  `docs/reports/d2-brushing.md`): the inversion made the selection a *shareable*
+  identity and **nothing shared it** — `workloads.rs`, `charter.rs` and
+  `timeline.rs` held zero references. Now the **workload table** marks the map's
+  current selection (`row_is_selected` + `theme::SEL_ROW`, a state cue argued
+  like `HOVER`: deliberately not `CRIT`/`WARN`/`good()`, and outside the
+  colour-blind funnel since it encodes no cluster state), and clicking a row
+  makes that workload the selection — **with no camera movement**, since marking
+  is not navigation (D4) and this path never sets `panel_just_opened`.
+  **Scope was decided from each view's row type, not the plan's prose:** the
+  Charter's rows are capability probes and the advisors' are text lines, so
+  neither is an entity list; IMPACT holds a subject's *dependents*, never the
+  subject; ATTENTION already writes the selection via `focus_concern`. **The
+  Annals is deferred with its reason** — its `subject` is a stringly
+  `(ns, name, kind)` triple over pods/events/RS revisions, so brushing it needs
+  an `oracle_investigate::validate`-style resolver and would cover only the
+  Deploy subset. **§5's visible refusal is the ordinary case, not a corner:** a
+  **DaemonSet has no map position by design** (`world.rs:656` excludes it from
+  city siting — it is a road; the island-encampment fallback at `world.rs:875` is
+  for zero-pod workloads only), so three of nine rows on the dev cluster read
+  `road - not a settlement` — the honest reason, not a generic one — and clicking
+  one opens its window without claiming a position or disturbing an existing
+  selection. **One source for "is this on the map":** `WlRow.placed` uses the
+  same `city_pos().or(structure_pos())` pair `selection_pos` derives from, with a
+  test sweeping every row asserting the two agree in both directions. The click
+  carries `select: Option<Selection>` already decided by the pure
+  `row_selection`, rather than a `placed` flag `main.rs` would have to interpret —
+  D2-fix's finding applied before it bit. **Mutation floor: five, all caught**
+  (list ignores the selection; refusal silent; every row claims a place; `placed`
+  asks a *different* question; a click always claims one) — two first reported
+  NOT APPLIED because `cargo fmt` had reflowed the target, the sixth such catch
+  this session. **Dev-flag finding:** `--inspect X --workloads` rendered neither,
+  and twice I diagnosed it by reasoning about control flow instead of reading it —
+  the block that opens the table sits inside `if !had_snap && inspect.is_none()`,
+  so it is skipped whenever `--inspect` is given, and my first fix added a
+  condition *inside* that block (dead code); the table is now armed like
+  `--blast` and fired outside both gates. 430 core + 126 GUI tests; gui-smoke 56.
+  **Still open in D:** D3 (visual momentum) and D4 (reverse indexing).
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn
