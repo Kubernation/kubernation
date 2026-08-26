@@ -2854,6 +2854,43 @@ what makes the interesting logic unit-testable without a cluster.
   `--blast` and fired outside both gates. 430 core + 126 GUI tests; gui-smoke 56.
   **Still open in D:** D3 (visual momentum) and D4 (reverse indexing).
 
+- **D3/D4 pre-check — D3 closed, D4 is a decision** (2026-08-19, planning
+  artifact only, no version bump; from
+  `docs/kubernation-d3-d4-precheck-guidance.md` rev 2, report in
+  `docs/reports/d3-d4-precheck.md`): a behavioural inventory run before either
+  phase was scoped, on the principle that has shrunk or killed four phases here.
+  **D3 as written is CLOSED** — its stated problem ("working in a list or panel
+  loses your place on the map") was solved by D1's docking plus D2's
+  identity-derived mark; verified live at a **settled** camera (a single-shot
+  capture catches `aim_for_drilldown`'s lerp mid-flight and would have shown the
+  subject elsewhere). **D4 is a decision, not a capability gap:** the two
+  connected surfaces are exact inverses — **IMPACT flies but does not mark**
+  (touching `selected` would silently re-root the blast subject, D1's review) and
+  **the workload table marks but does not fly** (marking is not navigation,
+  D2-brushing §5) — so the only question is whether a list click should move the
+  camera, applied to two surfaces that each already answered it the other way for
+  a stated reason. **The gap nobody had listed:** the Oracle's CONSULT NEXT links
+  are the ONLY surface with genuine entity rows that neither flies nor marks —
+  `jump_to_scope` moves the Oracle's own scope cursor and never touches
+  `selected` (intentional for that phase, but it leaves the most explicitly
+  identity-carrying list disconnected). Plus §2.1's confirmed regression (almanac
+  coast/gate/structure cross-references fly and mark nothing) and a **stale doc**
+  — `SidebarHit.focus_impact` still says "fly to + *select*", the opposite of what
+  D2's inversion left; recorded, not fixed, per §8. **THE FINDING, and it is
+  neither phase:** `CityPod.node` exists for every pod and `city.rs` renders it
+  nowhere, while a city sites at the **plurality** node — measured on the churn
+  fleet, the city for `churn/api` sits on a node holding **5 of its 120 pods
+  (4%)**; `cache` 12%, `batch` 8%. So the settlement on the map represents a few
+  percent of where a spread workload actually runs, the panel lists every pod
+  without saying where any is, and the model already holds the answer. That is a
+  question about what the map can EXPRESS, not about preserving context, and it
+  is flagged to be scoped on its own terms rather than relabelled as D3 — with
+  the hazard stated, since per-pod hover marking is exactly the strobing map D2
+  named as a failure criterion. Unmeasured and recorded as such: hover/scroll
+  inside any list (no pointer under `--screenshot`; answered from source as a
+  fact about *whether* anything fires, not how it reads), the Oracle links (need
+  an endpoint), and the Annals rows (no click handler exists).
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn
