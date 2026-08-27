@@ -2928,6 +2928,51 @@ what makes the interesting logic unit-testable without a cluster.
   D3 (closed by the pre-check), and nothing about plurality siting — the
   pre-check's larger finding remains its own item.
 
+- **Plurality siting — pre-check** (2026-08-19, planning artifact only, no version
+  bump; from `docs/kubernation-plurality-siting-precheck.md`, report in
+  `docs/reports/plurality-siting-precheck.md`): the item four rounds had hit the
+  consequences of without naming. **§2.3's decisive question is YES — two
+  surfaces let a user conclude something false**, and one of them is a sentence
+  the field guide contradicts three pages later. **Threshold stated before any
+  number was looked at** (plurality <50% with ≥3 placed pods; sharp band <20%) —
+  which turned out to be *exactly the falsity condition of a documented claim*,
+  and would have looked convenient if chosen afterwards. **Distribution:** kind
+  **0 of 1** eligible, churn **7 of 7**, all in the sharp band (worker 3.3%, api
+  4.2%, web 5.0%, batch 8.3%, store 8.3%, cache 12.5%, ingest 12.5%). The
+  determinant is **arithmetic, not the fixture** — the scheduler spreads, so a
+  workload lands on `k ≈ min(replicas, nodes)` nodes and the plurality share is
+  about `1/k`; any fleet with more nodes than replicas produces this. Both
+  clusters are synthetic in opposite directions and a real cluster with
+  bin-packing was NOT measured; what generalises is the arithmetic. **Kinds:**
+  only Deployment and StatefulSet are sited as cities (`WorkloadKind` has exactly
+  three variants, so Jobs/CronJobs are not `WorkloadRow`s and the guidance's
+  Job/CronJob row is moot), and they behave **identically** — `churn/store`, a
+  StatefulSet, sits mid-pack at 8.3% — so the warned-of "helps Deployments,
+  breaks StatefulSets" hazard is not live. **THE TWO FALSE CLAIMS, found by
+  reading the rendering code:** (1) the almanac Legend says a city is *"sited on
+  the province holding **most** of its pods"* while its own World page says
+  *"plurality"* — the code implements plurality, so the Legend is false for every
+  spread workload; (2) **stronger** — selecting a city appends the *province's*
+  node attributes (grid ref, pool, extent, freshness, and under the active
+  overlay strain/upkeep/substrate) to the SELECTION box, under a comment reading
+  "show its **host node's** strain / upkeep too": for `churn/api` that is the
+  strain and cost of a node running **2 of its 120 pods**, presented as the
+  workload's context. **What is NOT wrong, also by reading:** province surfaces
+  report the *physical* pod census (`tile.pods`), GARRISON lists actual pods,
+  blast resolves each affected workload to its own city wherever that is, and the
+  city drill-down asserts no node at all. **§7 q3's inverse check:** `city_home`
+  and `workloads_on_node` disagree by construction and **nothing relies on them
+  agreeing** — the finding is the borrowed *province* attributes, not either
+  function. **§3's cheap escape hatch DOES NOT FIT, measured:** `row_char_budget`
+  gives 32 chars at the docked width, today's tail already costs 28, and the pod
+  name is already pinned at its `clamp(8,22)` floor — a node name would put the
+  tail 14–18 chars into the fixed 156px button strip (D1 §7.2's second failure
+  criterion). That constrains every other option. **Candidates recorded, none
+  chosen**; the "do nothing — a city is a label, not a location claim" row is
+  *weakened but not dead* and is now the interesting one, because the map turned
+  out to be honest almost everywhere and the dishonesty is concentrated in one
+  sentence and one panel behaviour — both far cheaper to fix than any geometry.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn
