@@ -3122,6 +3122,31 @@ what makes the interesting logic unit-testable without a cluster.
   question 4's consumer list (`slot_row`, `slot_of_row`, the graticule, the
   minimap, `province_ring`) is its real cost.
 
+- **Plurality siting — CLOSED** (2026-08-19, **v1.28.1**; closes
+  `docs/reports/plurality-siting-precheck.md` §5 and the last residual of
+  `docs/reports/plurality-residual.md`): the item that four rounds had hit the
+  consequences of is finished, **without a map change**. The last of the two
+  residuals: `--dump-positions` labelled a city's province `"node"`, which reads
+  as *where the workload runs* — it is where the city is *drawn*, often a node
+  holding a few percent of the pods, and **this project's own measurements read
+  it that way**, which is how the item surfaced at all. Renamed to
+  `plurality_node` with the reason at the emitter; `hack/churn/positions.py` and
+  its self-tests follow, and `classify`'s doc now states that FOLLOWED means *the
+  plurality moved*, not *the workload moved*. **Province records keep `node`,
+  where it is correct** — the rename is scoped to the record that was wrong.
+  Verified end-to-end on the 100-node fleet, not just by self-test. **And the
+  pre-check's four map-shaped candidates are closed as unneeded:** correcting two
+  sentences (v1.26.0), one Oracle section (v1.27.0) and one field name was
+  sufficient, established by *enumerating every surface that could assert a
+  workload's location and reading the code* rather than by assumption. Nothing
+  that remains would be improved by changing where a city is drawn. **The
+  pre-check's last row is now true: a city is a label for a workload, not a claim
+  about its location** — every surface either says so or says what it actually
+  means. One accepted cost recorded so it is not mistaken for an oversight: the
+  concentrated case under-claims (`3 pods on 1 node` / `on province X` rather
+  than "all of it runs here"), which is the price of refusing spread-conditional
+  wording.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn

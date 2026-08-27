@@ -7,13 +7,19 @@
 (node facts folded into a workload's context with nothing saying how many nodes
 there are), and both narrower. One of them **publishes off-laptop**.
 
+> **BOTH RESIDUALS CLOSED — the item is finished.**
+>
 > **Residual 1 closed 2026-08-19 (v1.27.0).** The Oracle's node lens now opens
 > with `node_share_line`: *"this node runs 5 of churn/api's 120 placed pods; the
 > other 115 are on 64 other nodes."* Fed by `model::workload_pods_by_node`, the
 > inverse of `blast::workloads_on_node`, pinned equal to `build_world`'s siting
 > census by test. Verified live — the byte-identical preview at
 > `workload churn/api` goes 2901 → 3163 bytes with the lens folded.
-> **Residual 2 (`--dump-positions`) stands.**
+> **Residual 2 closed 2026-08-19 (v1.28.1).** The city record's field is now
+> `plurality_node`, not `node`, with the reason at the emitter;
+> `hack/churn/positions.py` and its self-tests follow, and `classify`'s doc now
+> says FOLLOWED means *the plurality moved*, not *the workload moved*. Province
+> records keep `node`, where it is correct.
 
 Done by the method that found the original two: enumerate every surface, **read
 the code**, and record what could not be exercised.
@@ -27,7 +33,7 @@ the code**, and record what could not be exercised.
 | SELECTION / tooltip | yes | **fixed** in v1.26.0 |
 | Almanac Legend + World | yes | **fixed** in v1.26.0 (§4) |
 | Oracle bundle — `WidenNode` lens | yes | **CLOSED v1.27.0** — §2 |
-| **`--dump-positions` city record** | **yes** | **RESIDUAL — §3** |
+| `--dump-positions` city record | yes | **CLOSED v1.28.1** — §3 |
 | Attention concerns | one, `pool_confinement` | honest — §5.1 |
 | Annals / timeline | no | node text is `TimelineScope::Node`'s own filter |
 | Postmortem | no | `nodes` is a cluster census; the Scope caveat already says so |
@@ -170,12 +176,14 @@ Recorded rather than reported as absent:
 
 The pre-check's last row — *the city is a label, not a location claim* — is
 **closer to true, but not yet true**. The map itself is honest; both
-operator-facing false claims are fixed; the Oracle lens has since been closed
-(v1.27.0); and what remains is (b) alone — a dev instrument's field name.
+operator-facing false claims are fixed; and both residuals have since been closed
+(v1.27.0, v1.28.1). **Nothing remains.**
 
 **Neither is a map problem.** So the four map-shaped candidates the pre-check
 recorded remain unchosen and, on this evidence, unneeded: nothing found here
 would be fixed by changing where a city is drawn.
 
-If a phase is scoped from this, it is now one line: rename one JSON field. The
-Oracle half was done directly (v1.27.0).
+No phase is scoped from this. The pre-check's four map-shaped candidates are
+closed as unneeded (`plurality-siting-precheck.md` §5.1): the map turned out to be
+honest, and everything that was not has been corrected in wording, in one panel
+behaviour, in one Oracle section and in one field name — no geometry.

@@ -182,19 +182,46 @@ do not choose.
 
 ## 5. §4 — candidate directions, recorded, none chosen
 
-| Shape | Status after this pre-check |
-|---|---|
-| Say it in the panel (node column) | **Ruled out as stated** — does not fit (§4). A narrower variant is uncosted |
-| Say it on the city (spread count/mark) | Open. Adds ink; would address §3.2 only indirectly |
-| Say it on the provinces (road treatment, generalised) | Open. Roads were judged a compromise once already |
-| Change siting (no plurality → no city) | Open, and §4's own note stands: a 4%-plurality workload is exactly what an operator wants to find, and removing its city hides it |
-| **Nothing — a city is a label, not a location claim** | **Weakened but not dead.** §3.3 shows most surfaces are honest; §3.1 and §3.2 show two are not. Fixing those two is a smaller change than any map work, and would make this row true |
+> **CLOSED 2026-08-19.** The last row won. Every other candidate is closed as
+> unneeded — see §5.1. No map change was made, and none is proposed.
 
-**The last row is now the interesting one.** The pre-check went looking for a map
-problem and found that most of the map is honest — the dishonesty is concentrated
-in one sentence and one panel behaviour. Whether correcting those two is
-*sufficient* is the question a scoping phase should answer first, because it is
-far cheaper than any geometry.
+| Shape | Status after this pre-check | Final |
+|---|---|---|
+| Say it in the panel (node column) | **Ruled out as stated** — does not fit (§4). A narrower variant is uncosted | closed |
+| Say it on the city (spread count/mark) | Open. Adds ink; would address §3.2 only indirectly | **closed — §5.1** |
+| Say it on the provinces (road treatment, generalised) | Open. Roads were judged a compromise once already | **closed — §5.1** |
+| Change siting (no plurality → no city) | Open, and §4's own note stands: a 4%-plurality workload is exactly what an operator wants to find, and removing its city hides it | **closed — §5.1** |
+| **Nothing — a city is a label, not a location claim** | **Weakened but not dead.** §3.3 shows most surfaces are honest; §3.1 and §3.2 show two are not. Fixing those two is a smaller change than any map work, and would make this row true | **TAKEN — and now true** |
+
+**The last row was the interesting one, and it held.** The pre-check went looking
+for a map problem and found that most of the map is honest — the dishonesty was
+concentrated in one sentence and one panel behaviour.
+
+### 5.1 Why the three map-shaped candidates are closed
+
+Correcting the two false claims was sufficient, and this was established by
+enumeration rather than by assumption:
+
+- **v1.26.0** fixed both (`plurality-false-claims.md`): the field guide now
+  states the plurality rule once, and a city's SELECTION box states its real
+  footprint and attributes the province's readings to the province.
+- **The §7 enumeration** (`plurality-residual.md`) then read *every* surface that
+  could assert a workload's location and found two residuals, both narrower and
+  neither a map problem. **Both are now fixed** — v1.27.0 gave the Oracle's node
+  lens the workload's footprint, and v1.28.1 renamed `--dump-positions`'
+  misleading `node` field to `plurality_node`.
+
+So nothing that remains would be improved by changing *where a city is drawn*.
+The three map-shaped candidates were answers to a problem that turned out to live
+in wording and in one panel behaviour, not in geometry. **A city is a label for a
+workload, not a claim about its location** — and every surface now either says so
+or says what it actually means.
+
+**One accepted cost, recorded so it is not mistaken for an oversight:** the
+concentrated case under-claims. A workload whose pods all run on one node reads
+`3 pods on 1 node` / `on province X` rather than "all of it runs here". That is
+the price of refusing spread-conditional wording, and the footprint line supplies
+what a reader needs.
 
 ---
 

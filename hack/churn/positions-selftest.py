@@ -42,7 +42,7 @@ def prov(tick, node, x, y, zone="z-a", pool="p", ordinal=0):
 
 def city(tick, ref, node, px, py, ox, oy, zone="z-a"):
     return {
-        "tick": tick, "kind": "city", "workload": ref, "node": node, "zone": zone,
+        "tick": tick, "kind": "city", "workload": ref, "plurality_node": node, "zone": zone,
         "x": px + ox, "y": py + oy, "ox": ox, "oy": oy,
     }
 

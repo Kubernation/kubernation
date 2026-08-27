@@ -20,6 +20,10 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   out what you are pointing at, so the two cannot disagree.
 
 ### Changed
+- **A development diagnostic no longer calls the plurality node "the node".**
+  `--dump-positions` labelled each city's province `node`, which reads as where
+  the workload runs; it is where the city is *drawn*, often on a node holding a
+  few percent of the pods. It is now `plurality_node`. Nothing user-facing.
 - **The map stopped drawing sea over ground it has reserved.** Every node's plot
   is the same size so that adding or replacing a node never shifts the world
   around it, but most nodes are smaller than that — and the unused part of each

@@ -554,7 +554,14 @@ fn dump_positions(
             ));
             for c in &p.cities {
                 out.push_str(&format!(
-                    "{{\"tick\":{},\"kind\":\"city\",\"workload\":\"{:?} {}/{}\",\"node\":\"{}\",\
+                    // `plurality_node`, NOT `node`: a city is drawn on the
+                    // province holding the PLURALITY of its pods, which at fleet
+                    // scale is a small minority — 5 of 120 across 65 nodes. The
+                    // field was called `node` and this project's own measurements
+                    // read it as "where the workload runs", which is how the
+                    // plurality item was found in the first place. The name now
+                    // says what it is.
+                    "{{\"tick\":{},\"kind\":\"city\",\"workload\":\"{:?} {}/{}\",\"plurality_node\":\"{}\",\
                      \"zone\":\"{}\",\"x\":{},\"y\":{},\"ox\":{},\"oy\":{}}}\n",
                     tick,
                     c.r.kind,

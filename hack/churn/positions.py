@@ -66,12 +66,17 @@ def load(path):
 
 
 def classify(a, b, prov_a, prov_b):
-    """One city's fate between two ticks."""
-    if a["node"] != b["node"]:
+    """One city's fate between two ticks.
+
+    `plurality_node` is where the city is DRAWN — the node holding the plurality
+    of the workload's pods, often a small minority of them. FOLLOWED therefore
+    means "the plurality moved", not "the workload moved".
+    """
+    if a["plurality_node"] != b["plurality_node"]:
         return "FOLLOWED"
     if (a["ox"], a["oy"]) != (b["ox"], b["oy"]):
         return "MOVED-WITHIN"
-    pa, pb = prov_a.get(a["node"]), prov_b.get(b["node"])
+    pa, pb = prov_a.get(a["plurality_node"]), prov_b.get(b["plurality_node"])
     if pa and pb and (pa["x"], pa["y"]) != (pb["x"], pb["y"]):
         return "CARRIED"
     return "HELD"
@@ -116,12 +121,12 @@ def compare(ticks, t0, t1, verbose=False):
     if verbose or rows:
         for cls, ref, x, y in rows:
             if cls == "FOLLOWED":
-                print(f"  {cls:<13} {ref}  {x['node']} -> {y['node']}")
+                print(f"  {cls:<13} {ref}  {x['plurality_node']} -> {y['plurality_node']}")
             else:
-                print(f"  {cls:<13} {ref}  on {x['node']}  "
+                print(f"  {cls:<13} {ref}  on {x['plurality_node']}  "
                       f"offset ({x['ox']},{x['oy']}) -> ({y['ox']},{y['oy']})")
         for ref in arrived:
-            print(f"  {'ARRIVED':<13} {ref}  on {b['cities'][ref]['node']}")
+            print(f"  {'ARRIVED':<13} {ref}  on {b['cities'][ref]['plurality_node']}")
         for ref in departed:
             print(f"  {'DEPARTED':<13} {ref}  was on {a['cities'][ref]['node']}")
     return 0
