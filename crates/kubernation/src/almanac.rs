@@ -76,6 +76,32 @@ fn mark_locator(m: Mark) -> Option<Locator> {
 
 /// The hot world's first live instance of `loc`, as a scene cell (hot is at
 /// offset 0, so a hot-world cell is already a scene cell).
+/// The siting rule, stated ONCE.
+///
+/// Two pages of this document made different claims about it — the Legend said
+/// a city sits on the province holding *most* of its pods, the World page said
+/// *plurality*, and the code does plurality. "Most" is false whenever no node
+/// holds a majority, which at fleet scale is every spread workload (measured:
+/// 7 of 7 eligible, the worst at 3.3%). They diverged because nothing compared
+/// them; sharing the phrase is what makes comparing them unnecessary.
+pub(crate) const SITING_CLAIM: &str = "sited on the province holding the plurality of its pods";
+
+/// The Legend's City entry. Built here so a test can read it.
+pub(crate) fn city_legend_text() -> String {
+    format!(
+        "A workload (Deployment or StatefulSet), {SITING_CLAIM} - often a small \
+         minority of them, since the scheduler spreads. The city marks where the \
+         workload is DRAWN, not where it runs; its SELECTION box gives the real \
+         footprint. Its size grows with ready replicas; it migrates only when its \
+         pods do."
+    )
+}
+
+/// The World page's summary of the same rule.
+pub(crate) fn world_siting_text() -> String {
+    format!("Workloads are cities, {SITING_CLAIM}. DaemonSets are roads instead of cities.")
+}
+
 fn locate(w: &WorldModel, loc: Locator) -> Option<(u16, u16)> {
     let structure = |glyph: char| {
         w.islands.iter().find_map(|isl| {
@@ -387,11 +413,7 @@ fn wrap(s: &str, max_w: f32, size: f32) -> Vec<String> {
 fn page_legend(cx: &mut Ctx) {
     cx.para("Entries marked  >  have a live example — click to fly there.");
     cx.heading("Land & settlements");
-    cx.entry(
-        Mark::City,
-        "City",
-        "A workload (Deployment or StatefulSet), sited on the province holding most of its pods. Its size grows with ready replicas; it migrates only when its pods do.",
-    );
+    cx.entry(Mark::City, "City", &city_legend_text());
     cx.entry(
         Mark::Road,
         "Road",
@@ -498,9 +520,7 @@ fn page_world(cx: &mut Ctx) {
     cx.para(
         "Nodes are provinces — patches of health-textured terrain. A zone's nodes stack into one landmass with an irregular, noise-carved coastline.",
     );
-    cx.para(
-        "Workloads are cities, sited on the province hosting the plurality of their pods. DaemonSets are roads instead of cities.",
-    );
+    cx.para(&world_siting_text());
     cx.para(
         "A city's network exposure is moored on its east coast (Service harbors, Ingress gates); its persistent storage sits inland (PVC granaries).",
     );

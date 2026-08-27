@@ -2973,6 +2973,48 @@ what makes the interesting logic unit-testable without a cluster.
   out to be honest almost everywhere and the dishonesty is concentrated in one
   sentence and one panel behaviour — both far cheaper to fix than any geometry.
 
+- **Plurality siting — the two false claims** (2026-08-19, **v1.26.0**; from
+  `docs/kubernation-plurality-false-claims-guidance.md`, report in
+  `docs/reports/plurality-false-claims.md`): the two surfaces the pre-check found
+  letting a user conclude something false. **Not a map change** — no new mark, no
+  siting change. **(1) The field guide.** The Legend said a city is "sited on the
+  province holding **most** of its pods" while the World page said "plurality",
+  and the code does plurality. Rather than the anti-drift test §5 asked for, both
+  pages are now built from one `almanac::SITING_CLAIM` so they *cannot* disagree;
+  the test still exists and names the specific falsehood so it cannot return by
+  paraphrase. **§2's second question decided deliberately:** the entry states what
+  the position IS — *"the city marks where the workload is DRAWN, not where it
+  runs; its SELECTION box gives the real footprint"* — rather than naming the hash
+  tie-break's arbitrariness, because the tie-break is about *which* node wins
+  among equals while the misleading part is that the position means anything about
+  location at all. **(2) The borrowed attributes.** Selecting a city appended the
+  province's grid ref, pool, extent, freshness, strain, upkeep and substrate gaps
+  unattributed. They are **qualified, not dropped** (they correctly describe the
+  province, and dropping them would lose the concentrated case): a pure
+  `panels::spread_qualifier` prints `on province {node}` before them, and a pure
+  `panels::spread_line` prints the footprint above them. **The footprint's source
+  is the load-bearing choice:** the guidance suggested `CityPod.node`, but the
+  SELECTION box holds the map's `City`, so that would mean running `build_city` in
+  a tooltip — instead `City.spread` is computed in `build_world` from
+  `pods_by_workload_node`, **the very census that chooses the plurality**, so the
+  city's position and the footprint it stands for cannot disagree. Both wordings
+  are **unconditional** — never keyed on how spread a workload is. **THE GATE,
+  live, both halves:** `churn/api` (120 pods / 65 nodes, plurality holding 5)
+  reads `120 pods across 65 nodes` / `on province churn-edge-g1-013` / `grid D2`,
+  with nothing readable as "runs on this node"; and the §6.1 discrimination check
+  on a concentrated workload reads `3 pods on 1 node` / `on province
+  kubernation-worker` in the same shape, proving the fix is not conditional. All
+  four §6.2 failure criteria were stated before the run and none occurred.
+  **Mutation M4 SURVIVED at first** — the GUI test pinned the line's *shape*
+  against a fixture whose city has one pod on one node, so a wrong source
+  coincided with the truth; the same shape as D2's M-D one phase earlier. Closed
+  with a **core** test using `desired 3, ready 1` and 3 pods across 2 nodes, so
+  neither `ready` nor a hardcoded `1` can stand in. **§7's question is posed and
+  deliberately unanswered:** with both claims corrected, does anything still let a
+  user conclude something false about where a workload runs? The pre-check's four
+  map-shaped candidates stay recorded and unchosen. 431 core + 133 GUI tests;
+  gui-smoke 56.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn

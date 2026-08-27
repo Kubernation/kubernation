@@ -9,7 +9,7 @@ use kubernation_core::state::cost::{self, CostBasis, NodeCost};
 use kubernation_core::state::logline::{self, FilterExpr, Level};
 use kubernation_core::state::model::{ExtentSource, NodeHealth, PodState, WorkloadRef};
 use kubernation_core::state::saturation::{NodeSaturation, SatLevel};
-use kubernation_core::state::world::{CoastKind, Region};
+use kubernation_core::state::world::{CitySpread, CoastKind, Region};
 use macroquad::prelude::*;
 
 use crate::draw::{Overlay, SceneWorld};
@@ -290,8 +290,14 @@ pub fn region_lines(
                     {
                         lines.push((st.describe(sw.id), sync_on_stone(st)));
                     }
-                    // The city sits on the tinted province — show its host node's
-                    // strain / upkeep too, so the distinguisher isn't lost on the settlement.
+                    // What the city stands for, BEFORE any province attribute —
+                    // a settlement is drawn on the plurality node, which at
+                    // fleet scale holds a small minority of the pods.
+                    lines.extend(spread_line(c.spread));
+                    // The lines below describe the PROVINCE, not the workload.
+                    // They used to be appended unattributed, which presented a
+                    // node running 2 of 120 pods as the workload's own context.
+                    lines.push(spread_qualifier(&p.tile.name));
                     lines.extend(grid_ref_line(p.reference.as_ref(), graticule));
                     lines.extend(pool_line(
                         &p.tile.pool,
@@ -464,6 +470,41 @@ pub fn draw_frame_note(on: bool) {
 /// The hatch does not cover this case anyway: `province_unmeasured` fires only
 /// when `worst_known(cpu, mem)` is `None`, so a node reporting allocatable cpu
 /// but not memory gets a fallback extent and no hatch at all.
+/// What a city actually stands for: its placed pods, and how many nodes they
+/// are on. PURE.
+///
+/// The city is drawn on the province holding the PLURALITY of those pods, which
+/// at fleet scale is a small minority — measured, 5 of 120 across 65 nodes. This
+/// line is what makes the position interpretable, and what stops the province
+/// attributes beside it (`spread_qualifier`) from reading as the workload's own.
+///
+/// A city always has at least one placed pod (`city_home` needs one to site it),
+/// but an empty spread is expressed rather than printed as `0 pods across 0
+/// nodes`, which would read as a measurement of nothing.
+pub fn spread_line(spread: CitySpread) -> Option<(String, Color)> {
+    match (spread.pods, spread.nodes) {
+        (0, _) | (_, 0) => Some(("footprint not known".into(), STONE_INK_DIM)),
+        (p, 1) => Some((format!("{p} pods on 1 node"), STONE_INK_DIM)),
+        (p, n) => Some((format!("{p} pods across {n} nodes"), STONE_INK_DIM)),
+    }
+}
+
+/// Whose the following lines are.
+///
+/// A city's SELECTION box used to append the province's grid reference, pool,
+/// extent, freshness, strain, upkeep and substrate gaps with no attribution, and
+/// a comment calling it "its host node's". For a workload spread over 65 nodes
+/// that presented the strain and cost of a node running two of its pods as the
+/// workload's own context.
+///
+/// The lines are not wrong — they correctly describe the province — so they are
+/// attributed rather than dropped, which keeps them useful when a workload IS
+/// concentrated. **Unconditional**: the wording must not depend on how spread a
+/// workload is, or it would only read correctly on a spread fleet.
+pub fn spread_qualifier(node: &str) -> (String, Color) {
+    (format!("on province {node}"), STONE_INK_DIM)
+}
+
 pub fn extent_line(source: ExtentSource) -> Option<(String, Color)> {
     match source {
         ExtentSource::Allocatable => None,
@@ -1941,6 +1982,119 @@ mod tests {
             attention: Arc::new(Vec::new()),
         };
         (snap, city)
+    }
+
+    /// The two almanac pages make the SAME claim about siting.
+    ///
+    /// They disagreed for long enough that nothing was comparing them: the
+    /// Legend said a city sits on the province holding *most* of its pods while
+    /// the World page said *plurality*, and the code does plurality. "Most" is
+    /// false for every spread workload — 7 of 7 eligible on the churn fleet.
+    #[test]
+    fn the_field_guide_makes_one_claim_about_where_a_city_sits() {
+        use crate::almanac::{SITING_CLAIM, city_legend_text, world_siting_text};
+        let legend = city_legend_text();
+        let world = world_siting_text();
+        assert!(legend.contains(SITING_CLAIM), "{legend}");
+        assert!(world.contains(SITING_CLAIM), "{world}");
+        // The specific falsehood, named so it cannot come back by paraphrase.
+        for t in [&legend, &world] {
+            assert!(
+                !t.contains("most of its pods") && !t.contains("most of their pods"),
+                "the majority claim is back: {t}"
+            );
+        }
+        // And the claim itself says plurality, not majority.
+        assert!(SITING_CLAIM.contains("plurality"), "{SITING_CLAIM}");
+    }
+
+    /// What a city's SELECTION box says it stands for, and whose the lines
+    /// beside it are.
+    #[test]
+    fn a_city_reports_its_footprint_and_attributes_the_province() {
+        use kubernation_core::state::world::CitySpread;
+
+        // The spread line is the fact that makes the city's position readable.
+        assert_eq!(
+            spread_line(CitySpread {
+                pods: 120,
+                nodes: 65
+            })
+            .map(|(t, _)| t),
+            Some("120 pods across 65 nodes".to_string())
+        );
+        // A concentrated workload reads correctly too — the wording is not
+        // conditional on being spread.
+        assert_eq!(
+            spread_line(CitySpread { pods: 3, nodes: 1 }).map(|(t, _)| t),
+            Some("3 pods on 1 node".to_string())
+        );
+        // An empty footprint is SAID, not printed as a measurement of nothing.
+        let empty = spread_line(CitySpread { pods: 0, nodes: 0 }).map(|(t, _)| t);
+        assert_eq!(empty, Some("footprint not known".to_string()));
+        assert!(!empty.unwrap().contains('0'));
+
+        // The province's lines are attributed to the province.
+        let (q, _) = spread_qualifier("worker2");
+        assert!(q.contains("province") && q.contains("worker2"), "{q}");
+    }
+
+    /// End to end: selecting a city says what it stands for and never asserts a
+    /// host node for the workload.
+    #[test]
+    fn a_city_selection_never_claims_the_workload_runs_on_one_node() {
+        use crate::draw::{Hit, locate_hit};
+        let (snap, city) = probe_fixture();
+        let worlds = scene(&snap);
+        let (sw, local) = locate_hit(&worlds, Hit::at(city)).expect("in a world");
+        let lines = region_lines(
+            sw,
+            local,
+            &snap,
+            Overlay::Terrain,
+            true,
+            kubernation_core::state::layout::NewGround::Off,
+        );
+        let joined = lines
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            joined.contains("pods on 1 node") || joined.contains("pods across"),
+            "no footprint line: {joined}"
+        );
+        assert!(
+            joined.contains("on province "),
+            "the province's lines are unattributed: {joined}"
+        );
+        // The grid reference is a province attribute and must come AFTER the
+        // qualifier, or the attribution does not cover it.
+        let qi = joined.find("on province ").expect("qualifier");
+        if let Some(gi) = joined.find("grid ") {
+            assert!(gi > qi, "grid ref precedes its attribution: {joined}");
+        }
+    }
+
+    /// The new line must not push a pod row over budget — §4's lesson is that
+    /// this panel has no spare room and estimates about it have been wrong.
+    ///
+    /// The SELECTION box is not the pod list, so the budget is untouched; this
+    /// asserts that rather than assuming it.
+    #[test]
+    fn the_footprint_line_does_not_touch_the_pod_row_budget() {
+        assert_eq!(row_char_budget(402.0, 14.0), 32);
+        // The longest footprint line is well inside the 264px column at 14px.
+        let longest = spread_line(CitySpread {
+            pods: 99_999,
+            nodes: 99_999,
+        })
+        .map(|(t, _)| t)
+        .unwrap();
+        assert!(
+            longest.chars().count() as f32 * 14.0 * 0.52 < 264.0 - 12.0,
+            "{longest} overruns the column"
+        );
     }
 
     /// D4 item 1: a CONSULT NEXT link names a map selection, and only the two

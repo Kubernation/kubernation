@@ -3205,6 +3205,7 @@ mod tests {
             desired: 1,
             severity: None,
             storage: None,
+            spread: Default::default(),
             x: 0,
             y: 0,
         }
@@ -3917,6 +3918,7 @@ mod tests {
             desired,
             severity: sev,
             storage: None,
+            spread: Default::default(),
             x: 0,
             y: 0,
         }

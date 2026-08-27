@@ -19,6 +19,18 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   affected. The map now works out where a node's land is the same way it works
   out what you are pointing at, so the two cannot disagree.
 
+### Fixed
+- **The map no longer implies a workload runs on one node.** A city is drawn on
+  the node holding the most of its pods, which for a spread workload is a small
+  minority — one 120-pod workload's city sat on a node running five of them —
+  and selecting it went on to show that node's strain, cost and pool as though
+  they were the workload's. The panel now states the real footprint ("120 pods
+  across 65 nodes") and says the readings beside it belong to the province.
+- **The field guide said a city sits where *most* of its pods are.** It does
+  not, and the same document said so correctly two pages later. Both now come
+  from one sentence, and it explains that a city marks where a workload is
+  drawn rather than where it runs.
+
 ### Added
 - **Following an Oracle "consult next" link now marks that object on the map**,
   so when you close the Oracle the selection panel is describing the thing you

@@ -34,9 +34,25 @@ pub struct City {
     /// Persistent storage the workload mounts, shown as a granary inland of
     /// the city. `None` when it mounts no PVCs.
     pub storage: Option<CityStorage>,
+    /// How many placed pods the workload has, and across how many nodes.
+    ///
+    /// The city is drawn on the province holding the PLURALITY of those pods,
+    /// which at fleet scale is a small minority: measured, a 120-pod workload
+    /// spread over 65 nodes has its city on a node holding 5 of them. Carried
+    /// here so a surface describing the city can say what it actually stands
+    /// for, from the very census that sited it.
+    pub spread: CitySpread,
     /// Absolute world cell of the city glyph (label sits on the row below).
     pub x: u16,
     pub y: u16,
+}
+
+/// A workload's placed-pod footprint: the fact that makes a city's position
+/// interpretable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CitySpread {
+    pub pods: usize,
+    pub nodes: usize,
 }
 
 /// A city's persistent storage at a glance: how many PVCs it mounts and how
@@ -699,12 +715,22 @@ pub fn build_world(
                     .get(*r)
                     .map(|w| (w.ready, w.desired))
                     .unwrap_or((0, 0));
+                // From the SAME census that chose `home`, so the city's
+                // position and the footprint it stands for cannot disagree.
+                let spread = pods_by_workload_node
+                    .get(*r)
+                    .map(|by_node| CitySpread {
+                        pods: by_node.values().sum(),
+                        nodes: by_node.len(),
+                    })
+                    .unwrap_or_default();
                 cities.push(City {
                     r: (*r).clone(),
                     ready,
                     desired,
                     severity: severity.get(r).copied(),
                     storage: storage_by.get(*r).copied(),
+                    spread,
                     x: 0,
                     y: 0,
                 });
@@ -1045,6 +1071,45 @@ mod tests {
         // Elsewhere on the patch is the province; far off is ocean.
         assert!(matches!(w.region_at(cont.x, cont.y), Region::Province(_)));
         assert!(matches!(w.region_at(w.width - 1, 0), Region::Ocean));
+    }
+
+    /// A city carries the footprint it actually stands for, from the SAME
+    /// census that sited it.
+    ///
+    /// The city is drawn on the plurality node, which at fleet scale holds a
+    /// small minority — measured, 5 of 120 pods across 65 nodes. The panel says
+    /// so, and it can only say so honestly if this number comes from
+    /// `pods_by_workload_node` rather than from anything that merely correlates
+    /// with it on a small fixture.
+    #[test]
+    fn a_city_knows_how_many_pods_and_nodes_it_stands_for() {
+        let m = world_with(|s| {
+            // desired 3, ready 1: so `ready` cannot stand in for the pod count.
+            s.deployment(fx::deployment("demo", "web", 3, 1));
+            s.replicaset(fx::replicaset("demo", "web-abc", "web"));
+            for (i, node) in ["n-alpha", "n-alpha", "n-bravo"].iter().enumerate() {
+                s.pod(fx::pod_owned(
+                    fx::pod("demo", &format!("web-abc-{i}"), Some(node)),
+                    "ReplicaSet",
+                    "web-abc",
+                ));
+            }
+        });
+        let city = m.world.cities().next().unwrap();
+        assert_eq!(city.spread, CitySpread { pods: 3, nodes: 2 });
+
+        // Guard the guard: the fixture must be able to tell the census apart
+        // from the things that would otherwise coincide with it.
+        assert_ne!(
+            city.spread.pods, city.ready as usize,
+            "ready would stand in for the pod count on this fixture"
+        );
+        assert!(
+            city.spread.nodes > 1,
+            "a single-node fixture cannot detect a spread that is not measured"
+        );
+        // And the city sits on the plurality of THAT census, not elsewhere.
+        assert!(city.spread.nodes < city.spread.pods, "not actually spread");
     }
 
     /// The city's clickable region must match what is DRAWN — its own cell plus
