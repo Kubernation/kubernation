@@ -3009,11 +3009,36 @@ what makes the interesting logic unit-testable without a cluster.
   against a fixture whose city has one pod on one node, so a wrong source
   coincided with the truth; the same shape as D2's M-D one phase earlier. Closed
   with a **core** test using `desired 3, ready 1` and 3 pods across 2 nodes, so
-  neither `ready` nor a hardcoded `1` can stand in. **§7's question is posed and
-  deliberately unanswered:** with both claims corrected, does anything still let a
-  user conclude something false about where a workload runs? The pre-check's four
-  map-shaped candidates stay recorded and unchosen. 431 core + 133 GUI tests;
-  gui-smoke 56.
+  neither `ready` nor a hardcoded `1` can stand in. **§7's question, answered in a follow-up**
+  (`docs/reports/plurality-residual.md`, same day, no product change): every
+  surface that could assert a workload's location enumerated by READING —
+  Oracle bundle, Annals, attention concerns, the workload table, postmortem,
+  advisors, chaos, blast/IMPACT, both drill-downs, inspector, minimap. **Two
+  residuals remain, both the same shape and both narrower.** (1) The Oracle's
+  **`WidenNode` deepen lens** folds one node's full context into a
+  workload-scoped bundle, and the node is the *alphabetically first pod's*
+  (`build_city` sorts by name) — not even the plurality node — with nothing
+  saying it is one of 65; **it publishes off-laptop** on an armed remote
+  endpoint, which makes it the strongest. It is narrower than the fixed two:
+  opt-in, labelled "widen to node" singular, claiming no totality — what is
+  missing is the *quantity*, which `City.spread` now computes and the bundle
+  does not carry. (2) **`--dump-positions`** labels the plurality province
+  `"node"` with no qualifier — not user-facing, but this project's own
+  measurements consume it and **I read that field as "where api runs" during the
+  D3/D4 pre-check**, which is how the item was found at all. **Not residuals,
+  verified by reading:** `pool_confinement` is a *pool* claim guarded four ways
+  and says "placed"; the advisors' `median_node_alloc_cpu` is a unit
+  (node-equivalents), not a place; everything else names no node for a workload.
+  **No third almanac page describes siting** — and the Road entry (*"paved across
+  every province its pods run on"*) is a **true and complete** location claim,
+  the contrast that shows what a city cannot say. **The concentrated case DOES
+  under-claim, deliberately:** "on province X" understates a workload whose pods
+  all run there, which is the accepted cost of §3.2's refusal of spread-conditional
+  wording — the footprint line above supplies what a reader needs. **Verdict:**
+  the pre-check's "a city is a label, not a location claim" row is closer to true
+  but not yet true; neither residual is a map problem, so the four map-shaped
+  candidates remain unchosen and, on this evidence, unneeded. 431 core + 133 GUI
+  tests; gui-smoke 56.
 
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
