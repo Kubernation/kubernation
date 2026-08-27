@@ -300,7 +300,7 @@ impl Ctx<'_> {
             for (i, l) in lines.iter().enumerate() {
                 text(l, text_x, top + 13.0 + (i as f32 + 1.0) * LINE, 14.0, DIM);
             }
-            if target.is_some() {
+            if let Some(cell) = target {
                 // A chevron marks a live, clickable cross-reference.
                 let col = if hot {
                     PARCHMENT
@@ -308,6 +308,26 @@ impl Ctx<'_> {
                     darker(PARCHMENT, 0.7)
                 };
                 text(">", self.body.x + self.body.w - 16.0, top + 13.0, 16.0, col);
+                // A harbour, a gate or an island structure has a place on the
+                // map but is not something the SELECTION can name — it is not a
+                // workload and not a node. The click still flies there, which is
+                // what the header promises; say that it will not also mark,
+                // rather than leaving the SELECTION box quietly describing
+                // whatever was selected before the jump.
+                if self
+                    .world
+                    .is_some_and(|w| !crate::draw::markable_in(w, cell))
+                {
+                    let note = "flies, no marker";
+                    let w = text_size(note, 11.0).width;
+                    text(
+                        note,
+                        self.body.x + self.body.w - 24.0 - w,
+                        top + 13.0,
+                        11.0,
+                        darker(DIM, 0.9),
+                    );
+                }
             }
         }
         if hot && self.click {

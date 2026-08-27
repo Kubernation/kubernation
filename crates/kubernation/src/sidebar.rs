@@ -53,8 +53,14 @@ pub struct SidebarHit {
     /// An ATTENTION row was clicked → focus this concern (index into
     /// `snap.attention`), flying to it + opening its drill-down (same as `N`).
     pub focus_concern: Option<usize>,
-    /// An IMPACT row was clicked → fly to + select this (local) cell (the
-    /// affected resource's map position). Open the city if it's a workload.
+    /// An IMPACT row was clicked → fly to this (local) cell and open the city
+    /// if it's a workload.
+    ///
+    /// **It deliberately does NOT select.** The blast subject is re-derived from
+    /// `selected` every frame, so marking a dependent would silently re-root the
+    /// radius onto it — you would stop walking the cascade and start a new one.
+    /// Leaving the selection alone is what anchors the subject and its highlight
+    /// on the troubled source while you go down the list row by row.
     pub focus_impact: Option<(u16, u16)>,
 }
 

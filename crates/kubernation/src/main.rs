@@ -3322,6 +3322,9 @@ async fn main() {
                 .map(|o| o.draw(snap.as_deref(), &net, mouse, click));
             match action {
                 Some(OracleAction::Close) => oracle_view = None,
+                // A CONSULT NEXT link jumped the consult to another object; the
+                // map marks it too. No camera move — see the variant's doc.
+                Some(OracleAction::Select(sel)) => selected = Some(sel),
                 Some(OracleAction::Stage(iv)) => {
                     // The model proposed it; it passed validation; the operator
                     // clicked Stage. It enters the planning turn like any staged

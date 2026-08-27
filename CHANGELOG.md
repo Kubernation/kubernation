@@ -20,6 +20,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   out what you are pointing at, so the two cannot disagree.
 
 ### Added
+- **Following an Oracle "consult next" link now marks that object on the map**,
+  so when you close the Oracle the selection panel is describing the thing you
+  just drilled into. The camera deliberately stays put: drilling into a suspect
+  is speculative and you often come back, and a mark is replaced by the next one
+  while a camera position is not.
+- **The field guide says which cross-references it can mark.** Clicking a legend
+  entry flies you to a live example; harbours, gates and island structures are
+  not things the selection can name, so those entries now read "flies, no
+  marker" instead of leaving the selection panel describing something else.
 - **The workload list and the map now point at the same thing.** The row you
   have selected on the map is marked in the Workloads table, and picking a row
   there marks it on the map — without moving the camera, so you keep your place.

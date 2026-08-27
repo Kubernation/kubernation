@@ -51,6 +51,30 @@ pub enum OracleAction {
     Copy(String),
     /// Export the consult (header + raw reply) to a local file (main toasts the path).
     Export(String),
+    /// A CONSULT NEXT link was followed: make its target the map's selection.
+    ///
+    /// **Marks without flying**, deliberately. A consult link is speculative —
+    /// you drill from the realm to a suspect and often come back (which is what
+    /// the reply carousel is for), so flying on each jump would leave the camera
+    /// wherever the last guess landed with nothing to restore it. A mark is one
+    /// identity and is replaced by the next one; a camera position is not.
+    /// That also matches the workload table, the other directory-shaped surface,
+    /// rather than IMPACT, which is a cascade you walk.
+    Select(crate::draw::Selection),
+}
+
+/// The map selection a consult scope names, if any. PURE.
+///
+/// `Realm` and `Concern` name no single entity — a concern's *target* does, but
+/// that is the attention queue's own jump (`N`), not this one. The Oracle is
+/// hot-only, like the advisors and the Charter, so the cluster is not in doubt.
+pub fn scope_selection(scope: &Scope) -> Option<crate::draw::Selection> {
+    use kubernation_core::events::ClusterId;
+    match scope {
+        Scope::Workload(r) => Some(crate::draw::Selection::Workload(ClusterId::Hot, r.clone())),
+        Scope::Node(n) => Some(crate::draw::Selection::Node(ClusterId::Hot, n.clone())),
+        Scope::Realm | Scope::Concern(_) => None,
+    }
 }
 
 /// Theme role for a rendered line (no GL — mapped to a colour at draw time).
@@ -2358,11 +2382,17 @@ impl OracleView {
                 }
             }
             // A CONSULT NEXT link → jump the scope to that validated target +
-            // consult. (Purely Oracle-internal — the map `selected` is untouched.)
+            // consult, AND make it the map's selection: the target is already the
+            // same identity the selection holds, and this was the one surface
+            // with real entity rows that connected to neither the map nor the
+            // camera (D4 item 1).
             for (scope, r) in &consult_btns {
                 if r.contains(mouse) {
                     self.jump_to_scope(scope.clone(), snap, net);
-                    return OracleAction::None;
+                    return match scope_selection(scope) {
+                        Some(sel) => OracleAction::Select(sel),
+                        None => OracleAction::None,
+                    };
                 }
             }
             if self.scopes.len() > 1 && (prev.contains(mouse) || next.contains(mouse)) {

@@ -586,6 +586,24 @@ pub fn selection_at(worlds: &[SceneWorld], cell: (u16, u16)) -> Option<Selection
     }
 }
 
+/// Whether a cell in the hot world could become a selection at all, for callers
+/// that hold a bare [`WorldModel`] rather than a scene — the almanac's legend.
+///
+/// A **view over** [`selection_at`], not a second rule: the answer must be the
+/// one the click will actually produce, or the almanac would promise a mark the
+/// map then refuses (or vice versa).
+pub fn markable_in(world: &WorldModel, cell: (u16, u16)) -> bool {
+    let fresh = HashMap::new();
+    let sw = SceneWorld {
+        id: ClusterId::Hot,
+        off: 0,
+        world,
+        label: String::new(),
+        fresh: &fresh,
+    };
+    selection_at(&[sw], cell).is_some()
+}
+
 /// Where a selection IS, in scene coordinates, right now.
 ///
 /// **Derived every frame; never stored.** Caching it reintroduces exactly the

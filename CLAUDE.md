@@ -2891,6 +2891,43 @@ what makes the interesting logic unit-testable without a cluster.
   fact about *whether* anything fires, not how it reads), the Oracle links (need
   an endpoint), and the Annals rows (no click handler exists).
 
+- **D4 — reverse indexing** (2026-08-19, **v1.25.0**; from
+  `docs/kubernation-d4-brief.md`, report in
+  `docs/reports/d4-reverse-indexing.md`): the three items the pre-check reduced
+  D4 to. **(1) The Oracle's CONSULT NEXT links now mark the map** —
+  `OracleAction::Select`, produced by the pure `oracle::scope_selection` (Realm
+  and Concern name no single entity → `None`); it was the only surface with
+  genuine entity rows connected to neither map nor camera. **The fly/no-fly call,
+  recorded: mark without flying**, and for a reason the brief did not give — a
+  consult jump is *speculative* (you drill from realm to suspect and come back,
+  which is what the reply carousel exists for), so flying would leave the camera
+  wherever the last guess landed with nothing to restore it, whereas **a mark is
+  one identity replaced by the next**. **(2) The almanac's unmarkable references
+  now say so** — settled by *rendering* the almanac, which showed its own header
+  already promises "click to fly there", so harbour/gate/structure references
+  meet the stated contract and D2 §5.1's "regression" was measured against a
+  capability never advertised (and which formerly worked by storing a *sea
+  cell*). So: declare it. Those entries read `flies, no marker`; City/Road/
+  Province/Granary keep the plain chevron. The real cost of silence was the
+  SELECTION box going on describing whatever preceded the jump. **`draw::
+  markable_in` is a VIEW over `selection_at`**, not a table keyed on the legend
+  entry's kind — three lines shorter and exactly the drift this project keeps
+  paying for — so the note and the click cannot disagree, and if structures ever
+  become selectable the note disappears on its own. **(3) The stale doc**:
+  `SidebarHit.focus_impact` said "fly to + *select*"; it now states that it
+  deliberately does not, and why (the blast subject is re-derived from `selected`
+  each frame, so marking a dependent would re-root the radius). **§0's
+  non-conformity is PINNED by test** — IMPACT flies but does not mark, the table
+  marks but does not fly, and two surfaces deliberately differing is what a
+  future refactor "fixes"; asserted via the *payload shapes* (IMPACT's is a
+  `Panel` with no selection in it, the table's a `Selection` with no camera
+  target), since both call sites are in the untested `main.rs`. Four mutations,
+  all caught. Selection write sites re-enumerated: **fourteen**, not twelve; no
+  reader consumes the writer set. 430 core + 129 GUI tests; gui-smoke 56.
+  **Not done, deliberately:** no camera-move sweep, no third selection level, no
+  D3 (closed by the pre-check), and nothing about plurality siting — the
+  pre-check's larger finding remains its own item.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn

@@ -1943,6 +1943,139 @@ mod tests {
         (snap, city)
     }
 
+    /// D4 item 1: a CONSULT NEXT link names a map selection, and only the two
+    /// scopes that name a single entity do.
+    #[test]
+    fn a_consult_scope_becomes_a_selection_only_when_it_names_one_thing() {
+        use crate::draw::Selection;
+        use crate::oracle::scope_selection;
+        use kubernation_core::state::attention::{Concern, Severity, Target};
+        use kubernation_core::state::model::{WorkloadKind, WorkloadRef};
+        use kubernation_core::state::oracle::Scope;
+
+        let wr = WorkloadRef {
+            kind: WorkloadKind::Deployment,
+            namespace: "demo".into(),
+            name: "web".into(),
+        };
+        assert_eq!(
+            scope_selection(&Scope::Workload(wr.clone())),
+            Some(Selection::Workload(ClusterId::Hot, wr))
+        );
+        assert_eq!(
+            scope_selection(&Scope::Node("n1".into())),
+            Some(Selection::Node(ClusterId::Hot, "n1".into()))
+        );
+        // The realm is not a thing on the map, and a concern is the attention
+        // queue's own jump (`N`), not this one.
+        assert_eq!(scope_selection(&Scope::Realm), None);
+        assert_eq!(
+            scope_selection(&Scope::Concern(Concern {
+                severity: Severity::Warning,
+                title: "t".into(),
+                detail: String::new(),
+                target: Target::Node("n1".into()),
+                probe: None,
+                key: "k".into(),
+                cluster: ClusterId::Hot,
+            })),
+            None
+        );
+    }
+
+    /// D4 item 2: which almanac cross-references can also be MARKED.
+    ///
+    /// The answer is a view over `selection_at`, not a second rule keyed on the
+    /// legend entry's kind — so the note the almanac prints and the mark the
+    /// click produces cannot disagree.
+    #[test]
+    fn the_almanac_can_only_mark_what_the_selection_can_name() {
+        use crate::draw::{Resolved, locate, markable_in, resolve_region};
+        use kubernation_core::state::world::Region;
+        let (snap, city) = probe_fixture();
+        let worlds = scene(&snap);
+        let w = &snap.hot.models.world;
+
+        // A city and a province: markable, so those references also select.
+        assert!(markable_in(w, city), "a city reference must mark");
+        let node = w
+            .continents
+            .iter()
+            .flat_map(|c| c.provinces.iter())
+            .next()
+            .expect("a province");
+        let land = crate::draw::province_land_cell(w, &node.tile.name).expect("land");
+        assert!(markable_in(w, land), "a node reference must mark");
+
+        // A coast marker and an island structure: NOT markable — a selection is
+        // a workload or a node, and neither of these is either.
+        let (mut saw_coast, mut saw_structure) = (false, false);
+        for x in 0..w.width {
+            for y in 0..w.height {
+                let Some((sw, local)) = locate(&worlds, (x, y)) else {
+                    continue;
+                };
+                match resolve_region(sw, local) {
+                    Resolved::Coast(_) => {
+                        saw_coast = true;
+                        assert!(!markable_in(w, (x, y)), "a harbour is not selectable");
+                    }
+                    Resolved::Region(Region::Structure(..)) => {
+                        saw_structure = true;
+                        assert!(!markable_in(w, (x, y)), "a structure is not selectable");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(saw_coast, "the fixture produced no coast marker");
+        assert!(saw_structure, "the fixture produced no island structure");
+    }
+
+    /// §0's NON-CONFORMITY, pinned. These two surfaces deliberately behave
+    /// differently and a later tidy-up must not quietly unify them:
+    ///
+    /// * **IMPACT flies but does not mark** — marking a dependent would re-root
+    ///   the blast subject, which is re-derived from `selected` each frame.
+    /// * **The workload table marks but does not fly** — marking is not
+    ///   navigation.
+    ///
+    /// Both call sites live in `main.rs`, which has no test module, so this
+    /// asserts the SHAPES that make each possible: the IMPACT handler is handed
+    /// a panel and a cell and no selection, and the table's click carries a
+    /// selection and no camera target.
+    #[test]
+    fn impact_and_the_table_answer_the_camera_question_differently() {
+        use crate::workloads::{WorkloadsAction, row_selection};
+        let (snap, city) = probe_fixture();
+        let worlds = scene(&snap);
+        let (sw, local) = crate::draw::locate(&worlds, city).expect("in a world");
+
+        // IMPACT's payload is a PANEL. There is no selection in it to set, which
+        // is what keeps the blast subject anchored.
+        assert!(matches!(impact_panel(sw, local), Some(Panel::City(..))));
+
+        // The table's payload is a SELECTION. There is no camera target in it.
+        let rows = crate::workloads::table_rows(
+            &snap.hot.models.workloads,
+            &snap.hot.models.workload_severity,
+            &snap.hot.models.world,
+            crate::workloads::WlSort::Name,
+            "",
+        );
+        let placed = rows.iter().find(|r| r.placed).expect("a placed row");
+        assert!(row_selection(placed).is_some());
+        let action = WorkloadsAction::Open {
+            cluster: ClusterId::Hot,
+            r: placed.r.clone(),
+            select: row_selection(placed),
+        };
+        match action {
+            WorkloadsAction::Open { select, .. } => assert!(select.is_some()),
+            _ => panic!("expected Open"),
+        }
+    }
+
     /// D2-fix: the blast subject's PRECEDENCE, and that a selection is taken as
     /// the identity it now is.
     #[test]
