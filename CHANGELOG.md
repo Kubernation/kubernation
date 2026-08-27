@@ -19,6 +19,16 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   affected. The map now works out where a node's land is the same way it works
   out what you are pointing at, so the two cannot disagree.
 
+### Changed
+- **The map stopped drawing sea over ground it has reserved.** Every node's plot
+  is the same size so that adding or replacing a node never shifts the world
+  around it, but most nodes are smaller than that — and the unused part of each
+  plot was being drawn as open water. About a quarter of the world was ocean
+  that no ship could ever sail. It now shows as bare reserved ground, so a
+  continent reads as land with structure rather than stripes in a sea, and each
+  node's own size is still legible: the built part is green and, in the relief
+  style, stands proudly above its unbuilt remainder.
+
 ### Fixed
 - **Asking the Oracle to "widen to node" now says how much of the workload is
   actually on that node.** It folded one node's health and strain into a

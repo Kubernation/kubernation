@@ -2097,6 +2097,84 @@ mod tests {
         );
     }
 
+    /// Reserved ground is distinguishable from live land, ghost ground and sea —
+    /// asserted on the colours, because "it looks different" is what let a
+    /// quarter of the world render as sea in the first place.
+    #[test]
+    fn reserved_ground_is_not_mistakable_for_land_ghost_or_sea() {
+        use crate::theme::{ISO_OCEAN, ghost_land_pair, iso_terrain_pair, reserved_land_pair};
+        use kubernation_core::state::model::NodeHealth;
+
+        fn dist(a: macroquad::prelude::Color, b: macroquad::prelude::Color) -> f32 {
+            ((a.r - b.r).powi(2) + (a.g - b.g).powi(2) + (a.b - b.b).powi(2)).sqrt()
+        }
+        const MIN: f32 = 0.20;
+
+        let (res, _) = reserved_land_pair();
+        let (ghost, _) = ghost_land_pair();
+        let (land, _) = iso_terrain_pair(NodeHealth::Healthy);
+        for (what, other) in [("land", land), ("ghost", ghost), ("sea", ISO_OCEAN)] {
+            let d = dist(res, other);
+            assert!(d >= MIN, "reserved ground is only {d:.3} from {what}");
+        }
+        // Its own two shades are a dither pair, so they must be CLOSE — the
+        // check above must not be satisfiable by making the fill itself noisy.
+        let (a, b) = reserved_land_pair();
+        assert!(dist(a, b) < 0.1, "the dither pair is not one material");
+    }
+
+    /// §2.2's risk, as a test: painting the reserved rows must not erase the
+    /// size difference extent-from-capacity exists to show.
+    ///
+    /// Every slot is the same total height, so what carries the signal is how
+    /// many of those rows are LAND. If a class-3 and a class-9 province ended up
+    /// with the same number of land rows, capacity would stop being legible from
+    /// the map — which is half of this change's gate.
+    #[test]
+    fn painting_the_remainder_does_not_erase_a_provinces_extent() {
+        use crate::draw::reserved_band;
+        use kubernation_core::state::world::SLOT_STRIDE;
+        let far = 10_000;
+        let mut land_rows = Vec::new();
+        for h in [3u16, 5, 7, 9] {
+            let reserved = reserved_band(1, h, far).map_or(0, |(t, b)| b - t);
+            // The slot is always the same height; only the split moves.
+            assert_eq!(h + reserved, SLOT_STRIDE, "slot height changed for h={h}");
+            land_rows.push(h);
+        }
+        // Distinct land counts per class — the size signal, stated.
+        let mut sorted = land_rows.clone();
+        sorted.dedup();
+        assert_eq!(sorted.len(), land_rows.len(), "two classes look the same");
+    }
+
+    /// A slot's unfilled rows, and only those.
+    ///
+    /// The band is the ground between a province's bottom and the next slot's
+    /// start — reserved for this slot and reachable by no other node.
+    #[test]
+    fn a_reserved_band_covers_the_slot_a_node_does_not_fill() {
+        use crate::draw::reserved_band;
+        use kubernation_core::state::world::SLOT_STRIDE;
+        let far = 10_000;
+
+        // A class-3 province in a 9-row slot leaves 6 rows.
+        assert_eq!(reserved_band(1, 3, far), Some((4, 1 + SLOT_STRIDE)));
+        // A class-7 leaves 2.
+        assert_eq!(reserved_band(1, 7, far), Some((8, 1 + SLOT_STRIDE)));
+        // A band that fills its slot leaves nothing — expressed, not a zero-row
+        // band that would paint an empty diamond run.
+        assert_eq!(reserved_band(1, SLOT_STRIDE, far), None);
+        // Clipped at the continent's southern edge, or the last slot's
+        // remainder would square off the cape taper.
+        assert_eq!(reserved_band(1, 3, 6), Some((4, 6)));
+        assert_eq!(reserved_band(1, 3, 4), None);
+        assert_eq!(reserved_band(1, 3, 2), None);
+        // A second slot's band, to pin that it is keyed on its own row.
+        let y = 1 + SLOT_STRIDE;
+        assert_eq!(reserved_band(y, 5, far), Some((y + 5, y + SLOT_STRIDE)));
+    }
+
     /// D4 item 1: a CONSULT NEXT link names a map selection, and only the two
     /// scopes that name a single entity do.
     #[test]

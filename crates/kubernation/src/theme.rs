@@ -304,6 +304,27 @@ pub fn ghost_land_pair() -> (Color, Color) {
     )
 }
 
+/// A slot's ground that its node is too small to fill.
+///
+/// Every slot is `SLOT_STRIDE` rows tall so that a province's ground never
+/// depends on its neighbours' size (Workstream A's invariant), but most nodes
+/// take 3, 5 or 7 of those 9 rows. The remainder is spoken for — no other node
+/// can ever occupy it — and it used to render as open sea, which is a quarter
+/// of the world claiming to be navigable water over ground that is reserved.
+///
+/// Distinct from `ghost_land_pair` because it is a different fact: a ghost says
+/// *a node was here*, this says *this plot is bigger than its node*. Cooler and
+/// darker than the ghost's warm earth, and well clear of `ISO_OCEAN`.
+///
+/// Outside the meaning palette and outside the colour-blind funnel, for the same
+/// reason ghost ground is: it carries no severity, pressure or coverage.
+pub fn reserved_land_pair() -> (Color, Color) {
+    (
+        Color::new(0.39, 0.44, 0.46, 1.0),
+        Color::new(0.42, 0.47, 0.49, 1.0),
+    )
+}
+
 /// The graticule — rules, row numbers and column letters.
 ///
 /// **Scenery, not instrumentation.** It encodes no cluster state, so unlike

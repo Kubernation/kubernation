@@ -176,16 +176,58 @@ def load(path, tmpdir):
 # --- classes ----------------------------------------------------------------
 
 
+# A slot's ground its node is too small to fill (`theme::reserved_land_pair`).
+#
+# The renderer does NOT paint the pair flat: `land_diamond` picks a shade by
+# checkerboard and then adds `theme::cell_jitter` as (d, 1.3d, d). So the class
+# is 2 shades x 5 jitter values = 10 exact colours, ENUMERATED from the same
+# constants rather than sampled from a frame or approximated by a range —
+# sampling would drift the moment the palette moved, and a range would start
+# catching ghost grey.
+#
+# Written out because it is the discrimination trap of §5.2 one level down: the
+# first version of this classifier listed only the two base shades and caught
+# about a fifth of the ground it was measuring.
+_RESERVED_BASE = ((0.39, 0.44, 0.46), (0.42, 0.47, 0.49))
+_JITTER = (-0.030, -0.012, 0.0, 0.018, 0.034)  # theme::cell_jitter
+RESERVED = frozenset(
+    _c8(min(max(r + d, 0.0), 1.0), min(max(g + d * 1.3, 0.0), 1.0), min(max(b + d, 0.0), 1.0))
+    for (r, g, b) in _RESERVED_BASE
+    for d in _JITTER
+)
+
+
+def is_reserved(r, g, b):
+    """Reserved in-slot ground — its own class, and it has to be.
+
+    `is_land` is `g > b`, and reserved ground is a cool grey whose blue EXCEEDS
+    its green, so without this it counts as sea and a change that paints it
+    would appear to do nothing. That is the discrimination trap §5.2 names: the
+    metric must be able to see the thing before it is used to judge it.
+    """
+    return (r, g, b) in RESERVED
+
+
 def is_land(r, g, b):
-    """Terrain, sand and ghost grey, but not sea."""
-    return g > b
+    """Terrain, sand and ghost grey, but not sea and not reserved ground."""
+    return g > b and not is_reserved(r, g, b)
+
+
+def is_ground(r, g, b):
+    """Anything the layout has spoken for: land, ghost or reserved."""
+    return is_land(r, g, b) or is_reserved(r, g, b)
 
 
 def is_settlement(r, g, b):
     return (r, g, b) == POP_CALM
 
 
-CLASSES = {"land": is_land, "settlement": is_settlement}
+CLASSES = {
+    "land": is_land,
+    "reserved": is_reserved,
+    "ground": is_ground,
+    "settlement": is_settlement,
+}
 
 
 # --- comparison -------------------------------------------------------------

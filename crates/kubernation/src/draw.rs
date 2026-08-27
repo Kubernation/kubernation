@@ -21,7 +21,8 @@ use kubernation_core::state::netpol::Coverage;
 use kubernation_core::state::pair::PairSync;
 use kubernation_core::state::substrate::SubstrateReport;
 use kubernation_core::state::world::{
-    City, CoastKind, CoastMarker, Continent, GhostGround, Island, Province, Region, WorldModel,
+    City, CoastKind, CoastMarker, Continent, GhostGround, Island, Province, Region, SLOT_STRIDE,
+    WorldModel,
 };
 use macroquad::prelude::*;
 
@@ -1403,6 +1404,12 @@ impl Coast {
     }
 
     /// Land span (start, width) in cells for `abs_row`, for the minimap.
+    /// The row just past the continent's southern edge — where reserved ground
+    /// must stop, or it would square off the cape taper.
+    pub fn bottom(&self) -> u16 {
+        (self.y0 + self.h).max(0) as u16
+    }
+
     pub fn land_span(&self, abs_row: i32, w: f32) -> (f32, f32) {
         let (li, ri) = self.insets(abs_row);
         (li, (w - li - ri).max(0.0))
@@ -1511,12 +1518,28 @@ pub fn draw_world(
         // painted as two passes or sorted separately.
         let py: Vec<u16> = cont.provinces.iter().map(|p| p.y).collect();
         let gy: Vec<u16> = cont.ghosts.iter().map(|g| g.y).collect();
-        for band in terrain_order(&py, &gy) {
+        // Every slot's unfilled remainder — a province's or a ghost's alike. The
+        // rows belong to that slot and to nothing else, and used to render as
+        // open sea over ground no other node can ever take.
+        let bottom = coasts[ci].bottom();
+        let reserved: Vec<(u16, u16, u16, u16)> = cont
+            .provinces
+            .iter()
+            .map(|p| (p.x, p.w, p.y, p.h))
+            .chain(cont.ghosts.iter().map(|g| (g.x, g.w, g.y, g.h)))
+            .filter_map(|(x, w, y, h)| reserved_band(y, h, bottom).map(|b| (x, w, b.0, b.1)))
+            .collect();
+        let ry: Vec<u16> = reserved.iter().map(|r| r.2).collect();
+        for band in terrain_order(&py, &gy, &ry) {
             match band {
                 Band::Land(i) => {
                     draw_province_terrain(&cont.provinces[i], cam, &coasts[ci], overlay, data)
                 }
                 Band::Ghost(i) => draw_ghost_ground(&cont.ghosts[i], cam, &coasts[ci]),
+                Band::Reserved(i) => {
+                    let (x, w, t, b) = reserved[i];
+                    draw_reserved_ground(x, w, (t, b), cam, &coasts[ci]);
+                }
             }
         }
     }
@@ -1818,6 +1841,8 @@ pub(crate) fn region_label_row(rows: (f32, f32), top_y: f32, target_y: f32, hh: 
 pub(crate) enum Band {
     Land(usize),
     Ghost(usize),
+    /// A slot's unfilled remainder — indexes the caller's reserved-band list.
+    Reserved(usize),
 }
 
 /// A continent's terrain bands in back-to-front paint order — ascending `y`.
@@ -1841,14 +1866,19 @@ pub(crate) enum Band {
 /// two separate passes paint every ghost either in front of or behind every
 /// province regardless of where it is. On a tie (which disjoint ordinals should
 /// make unreachable) land goes first, for determinism only.
-pub(crate) fn terrain_order(province_y: &[u16], ghost_y: &[u16]) -> Vec<Band> {
+/// **Reserved remainders sort with them too**, keyed on their own top row — so a
+/// remainder paints after the band it belongs to and before the next slot's
+/// band, whose lifted cliff hangs north over it.
+pub(crate) fn terrain_order(province_y: &[u16], ghost_y: &[u16], reserved_y: &[u16]) -> Vec<Band> {
     let mut bands: Vec<Band> = (0..province_y.len())
         .map(Band::Land)
         .chain((0..ghost_y.len()).map(Band::Ghost))
+        .chain((0..reserved_y.len()).map(Band::Reserved))
         .collect();
     bands.sort_by_key(|b| match *b {
         Band::Land(i) => (province_y[i], 0u8, i),
         Band::Ghost(i) => (ghost_y[i], 1u8, i),
+        Band::Reserved(i) => (reserved_y[i], 2u8, i),
     });
     bands
 }
@@ -2066,6 +2096,55 @@ fn column_mark(letter: &str, note: Option<&str>, cam: &Camera, x: u16, y0: u16, 
 /// on the churn fleet, ~7% of the map turned to ocean across one 30-node
 /// refresh, which was the single largest reason the map did not look still even
 /// though not one province had moved.
+/// The rows of a slot that its band does not cover, clipped to the continent.
+///
+/// A band starts at `slot_row(ordinal)` and the next slot starts `SLOT_STRIDE`
+/// rows later, so everything between the band's bottom and that boundary belongs
+/// to this slot and to nothing else. PURE, so the arithmetic is testable without
+/// a camera.
+///
+/// Clipped at `coast_bottom`: the last slot's remainder lies past the
+/// continent's southern cape, where `Coast::insets` clamps to the final row and
+/// would paint a squared-off block through the taper. Returns `None` when there
+/// is nothing to paint — a band that already fills its slot, or one past the end.
+pub(crate) fn reserved_band(y: u16, h: u16, coast_bottom: u16) -> Option<(u16, u16)> {
+    let top = y.checked_add(h)?;
+    let bottom = y.checked_add(SLOT_STRIDE)?.min(coast_bottom);
+    (bottom > top).then_some((top, bottom))
+}
+
+/// Paint a slot's unfilled rows. Same band shape as a ghost, a different fact.
+///
+/// **Deliberately NOT lifted under `Relief`.** A ghost is ground in its own
+/// right and rises with the land; this is the part of a plot its node does not
+/// occupy, so leaving it at sea level makes the province stand proud of it —
+/// which keeps a node's extent readable as height as well as colour. That is
+/// half of this change's gate, and dropping the lift is what buys it.
+fn draw_reserved_ground(x: u16, w: u16, band: (u16, u16), cam: &Camera, coast: &Coast) {
+    let (hw, hh) = cam.cell_px();
+    let pair = reserved_land_pair();
+    let x0 = x as i32;
+    let wf = w as f32;
+    for wy in band.0 as i32..band.1 as i32 {
+        let (li, ri) = coast.insets(wy);
+        for wx in x0..(x + w) as i32 {
+            let rel = (wx - x0) as f32;
+            if rel < li || rel >= wf - ri {
+                continue; // sea cell — ocean shows through, as it should
+            }
+            let c = cam.to_land(wx as f32 + 0.5, wy as f32 + 0.5);
+            if c.x < -TILE_W
+                || c.x > screen_width() + TILE_W
+                || c.y < -TILE_H
+                || c.y > screen_height() + TILE_H
+            {
+                continue;
+            }
+            land_diamond(c, hw, hh, pair, wx as u16, wy as u16, 0.0, false, false);
+        }
+    }
+}
+
 fn draw_ghost_ground(g: &GhostGround, cam: &Camera, coast: &Coast) {
     let (hw, hh) = cam.cell_px();
     let lift = cam.lift_px();
@@ -4041,7 +4120,7 @@ mod tests {
         // order: provinces by name hash, ghosts by (pool, ordinal).
         let provinces = [28u16, 1, 46, 10];
         let ghosts = [37u16, 19];
-        let order = terrain_order(&provinces, &ghosts);
+        let order = terrain_order(&provinces, &ghosts, &[]);
         assert_eq!(
             order,
             vec![
@@ -4059,11 +4138,36 @@ mod tests {
             .map(|b| match *b {
                 Band::Land(i) => provinces[i],
                 Band::Ghost(i) => ghosts[i],
+                Band::Reserved(_) => unreachable!("no reserved bands in this fixture"),
             })
             .collect();
         assert!(
             ys.windows(2).all(|w| w[0] <= w[1]),
             "not back-to-front: {ys:?}"
+        );
+
+        // Reserved remainders join the SAME sequence. A remainder sits south of
+        // the band it belongs to and north of the next slot's, whose lifted
+        // cliff hangs over it — so it must paint between them, not in a pass of
+        // its own.
+        let res = [10u16, 1]; // the remainders of the y=1 and y=10 bands
+        let with_res = terrain_order(&provinces, &ghosts, &res);
+        let ys2: Vec<u16> = with_res
+            .iter()
+            .map(|b| match *b {
+                Band::Land(i) => provinces[i],
+                Band::Ghost(i) => ghosts[i],
+                Band::Reserved(i) => res[i],
+            })
+            .collect();
+        assert!(
+            ys2.windows(2).all(|w| w[0] <= w[1]),
+            "reserved bands broke the back-to-front order: {ys2:?}"
+        );
+        assert_eq!(
+            with_res.len(),
+            provinces.len() + ghosts.len() + res.len(),
+            "a band was dropped"
         );
 
         // Ghosts are not all-before or all-after: two passes cannot be correct.
@@ -4075,12 +4179,12 @@ mod tests {
             .collect();
         assert_eq!(ghost_at, vec![2, 4]);
 
-        assert!(terrain_order(&[], &[]).is_empty());
-        assert_eq!(terrain_order(&[5], &[]), vec![Band::Land(0)]);
-        assert_eq!(terrain_order(&[], &[5]), vec![Band::Ghost(0)]);
+        assert!(terrain_order(&[], &[], &[]).is_empty());
+        assert_eq!(terrain_order(&[5], &[], &[]), vec![Band::Land(0)]);
+        assert_eq!(terrain_order(&[], &[5], &[]), vec![Band::Ghost(0)]);
         // Tie: land first, for determinism only.
         assert_eq!(
-            terrain_order(&[5], &[5]),
+            terrain_order(&[5], &[5], &[]),
             vec![Band::Land(0), Band::Ghost(0)]
         );
     }

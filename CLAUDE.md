@@ -3075,6 +3075,53 @@ what makes the interesting logic unit-testable without a cluster.
   `hack/churn/positions.py` and its self-tests. 443 core (oracle feature) + 133
   GUI tests; gui-smoke 57.
 
+- **Two-thirds ocean — the reserved rows** (2026-08-19, **v1.28.0**; from
+  `docs/kubernation-two-thirds-ocean-guidance.md`, report in
+  `docs/reports/two-thirds-ocean.md`): **lever B only** — ground the layout has
+  reserved is painted as reserved ground instead of open sea. **Ground rose
+  33.1% → 55.0% of the play area (+65.9% relative)**, `ground lost = 0`, and
+  provinces stay readable as different sizes. Lever A (the stride) **not taken**,
+  per §2.3: measure B first and pay A's cross-zone cost only if B is
+  insufficient; it is not. **Claim 3 was flagged stale and is NOT** — the extent
+  distribution is identical post-v1.20.0 (30/54/16, class 9 absent), because
+  `EXTENT_HEADROOM` promotes *boundary* machines and kwok reports exact round
+  numbers, a fact the extent-headroom round had already established. A code
+  change landing between two measurements does not mean the measurement moved.
+  **The decomposition is the finding:** A6's 67.4% "ocean" is **26.2 points of
+  reserved ground plus 41.2 points of real sea** — computed from
+  `--dump-positions` and reproducing A6's bounding box and both land figures
+  exactly. `Coast::insets` is pure noise over the continent's whole row span, so
+  it already treated those rows as land-shaped and nothing was painting them;
+  lever B is the band paint `draw_ghost_ground` already models. **Three things
+  decided in front of the map:** a distinct material (§2.2's risk is real — if
+  reserved rows looked like land a class-3 and a class-9 province would occupy
+  the same visible ground); the tone tuned by looking **twice** (the first
+  attempt was structurally right and too heavy, framing every band in
+  near-black); and **not lifted under `Relief`** — a ghost rises with the land,
+  but this is the part of a plot its node does not occupy, so leaving it at sea
+  level makes the province stand proud and buys extent-legibility as height as
+  well as colour. Distinct from ghost ground because it is a different fact (*a
+  node was here* vs *this plot is bigger than its node*); ghost ground untouched.
+  **THE INSTRUMENT TRAP FIRED TWICE, exactly as §5.2 warned:** `compare.py`'s
+  land class is `g > b` and reserved ground is a cool grey whose blue exceeds its
+  green, so without its own class it counted as **sea** and the gate would have
+  reported no improvement; then the first classifier listed only the pair's two
+  shades and caught **a fifth** of the ground (4.2% where it is 21.6%), because
+  `land_diamond` adds `cell_jitter` as `(d, 1.3d, d)` and `cell_jitter` returns
+  one of exactly five values — so the class is 2 × 5 = **ten exact colours
+  enumerated from the renderer's own constants**, not sampled and not a range.
+  Caught by decomposing the before→after transitions rather than trusting the
+  total. **§5.2's discrimination check is the `reserved` row itself:** the class
+  is *exactly zero* in the pre-change build. **§5.3's Relief criterion checked
+  with class 9 present** (`bigmem.sh`, reversible): the two class-9 provinces
+  render with **no shelf at all** — `reserved_band` returning `None`, visible —
+  while neighbours' lifted land stands above flat shelves with cliffs intact; the
+  fleet was restored to 100 nodes. Four mutations, all caught. 431 core + 136 GUI
+  tests; gui-smoke 57. **Lever A remains available and unneeded** — it is the
+  lever for the map's HEIGHT, which §3 is explicit is a different problem, and
+  question 4's consumer list (`slot_row`, `slot_of_row`, the graticule, the
+  minimap, `province_ring`) is its real cost.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn

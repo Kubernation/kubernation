@@ -53,6 +53,7 @@ Read this before assuming a question is unanswered.
 | `plurality-siting-precheck.md` | 7 of 7 misrepresented at fleet scale; two surfaces state something false |
 | `plurality-false-claims.md` | both corrected; the gate on a 120-pod workload |
 | `plurality-residual.md` | §7 answered by enumeration — one residual left |
+| `two-thirds-ocean.md` | reserved ground was drawn as sea; ground 33% → 55% |
 
 ## Conventions
 
