@@ -43,6 +43,16 @@ Read this before assuming a question is unanswered.
 | `consolidation.md` | four deferred items; item A stopped at §0 |
 | `extent-headroom.md` | item A closed; and the Relief hazard, seen at last |
 | `region-label-ordering.md` | `Continent.provinces` is not in map order |
+| `d1-demodalise.md` | the drill-down docks; occlusion 100% → 66.6% |
+| `d2-gate.md` | the staged gate ran and FAILED; the phase stopped there |
+| `d2-fix-testable-decisions.md` | selection decisions moved out of `main.rs` |
+| `d2-inversion.md` | the selection is an identity; `province_pos` pointed into the sea |
+| `d2-brushing.md` | the list and the map agree; a DaemonSet is a road, not a settlement |
+| `d3-d4-precheck.md` | D3 closed by measurement; D4 is a decision plus two gaps |
+| `d4-reverse-indexing.md` | consult links mark; the field guide says what cannot |
+| `plurality-siting-precheck.md` | 7 of 7 misrepresented at fleet scale; two surfaces state something false |
+| `plurality-false-claims.md` | both corrected; the gate on a 120-pod workload |
+| `plurality-residual.md` | §7 answered by enumeration — one residual left |
 
 ## Conventions
 

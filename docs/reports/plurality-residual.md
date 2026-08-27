@@ -3,9 +3,17 @@
 **Follows:** `docs/reports/plurality-false-claims.md` §7
 **Date:** 2026-08-19 · **No product change.** An enumeration and a verdict.
 
-**Answer: YES — two residuals remain**, both the same shape as the two that were
-fixed (node facts folded into a workload's context with nothing saying how many
-nodes there are), and both narrower. One of them **publishes off-laptop**.
+**Answer: YES — two residuals**, both the same shape as the two that were fixed
+(node facts folded into a workload's context with nothing saying how many nodes
+there are), and both narrower. One of them **publishes off-laptop**.
+
+> **Residual 1 closed 2026-08-19 (v1.27.0).** The Oracle's node lens now opens
+> with `node_share_line`: *"this node runs 5 of churn/api's 120 placed pods; the
+> other 115 are on 64 other nodes."* Fed by `model::workload_pods_by_node`, the
+> inverse of `blast::workloads_on_node`, pinned equal to `build_world`'s siting
+> census by test. Verified live — the byte-identical preview at
+> `workload churn/api` goes 2901 → 3163 bytes with the lens folded.
+> **Residual 2 (`--dump-positions`) stands.**
 
 Done by the method that found the original two: enumerate every surface, **read
 the code**, and record what could not be exercised.
@@ -18,7 +26,7 @@ the code**, and record what could not be exercised.
 |---|---|---|
 | SELECTION / tooltip | yes | **fixed** in v1.26.0 |
 | Almanac Legend + World | yes | **fixed** in v1.26.0 (§4) |
-| **Oracle bundle — `WidenNode` lens** | **yes** | **RESIDUAL — §2** |
+| Oracle bundle — `WidenNode` lens | yes | **CLOSED v1.27.0** — §2 |
 | **`--dump-positions` city record** | **yes** | **RESIDUAL — §3** |
 | Attention concerns | one, `pool_confinement` | honest — §5.1 |
 | Annals / timeline | no | node text is `TimelineScope::Node`'s own filter |
@@ -162,13 +170,12 @@ Recorded rather than reported as absent:
 
 The pre-check's last row — *the city is a label, not a location claim* — is
 **closer to true, but not yet true**. The map itself is honest; both
-operator-facing false claims are fixed; and the two that remain are (a) an
-opt-in Oracle lens that omits a quantity it could now state, and (b) a dev
-instrument's field name.
+operator-facing false claims are fixed; the Oracle lens has since been closed
+(v1.27.0); and what remains is (b) alone — a dev instrument's field name.
 
 **Neither is a map problem.** So the four map-shaped candidates the pre-check
 recorded remain unchosen and, on this evidence, unneeded: nothing found here
 would be fixed by changing where a city is drawn.
 
-If a phase is scoped from this, it is small and specific: give the Oracle's node
-section the workload's footprint, and rename one JSON field.
+If a phase is scoped from this, it is now one line: rename one JSON field. The
+Oracle half was done directly (v1.27.0).
