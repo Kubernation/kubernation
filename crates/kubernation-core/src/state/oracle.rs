@@ -586,6 +586,20 @@ fn push_deepen_sections(
         && let Some(node) = representative_pod(world, scope).and_then(|p| p.node)
     {
         let mut ns = node_sections(world, &node);
+        // The node is ONE of the nodes this workload runs on. Say which, or the
+        // section reads as the workload's own context — see `node_share_line`.
+        if let Some(w) = &wr {
+            let by_node = crate::state::model::workload_pods_by_node(world, w);
+            let share = node_share_line(
+                &format!("{}/{}", w.namespace, w.name),
+                by_node.get(&node).copied().unwrap_or(0),
+                by_node.values().sum(),
+                by_node.len(),
+            );
+            if let Some(first) = ns.first_mut() {
+                first.body = format!("{share}\n{}", first.body);
+            }
+        }
         for s in &mut ns {
             s.priority = lens_pri(ctx, DeepenLens::WidenNode, 4);
         }
@@ -768,6 +782,39 @@ fn workload_sections(
     // Blast radius (count, or itemized under the Blast lens) is added by
     // push_deepen_sections for every scope.
     out
+}
+
+/// PURE: what a node is *relative to the workload the bundle is about*.
+///
+/// Without this, widening a workload consult to a node folded that node's
+/// health, strain and garrison into the bundle with nothing saying how much of
+/// the workload was actually there — and the node is the alphabetically first
+/// pod's, not even the plurality one the city is drawn on. For a 120-pod
+/// workload across 65 nodes a model reading `workload churn/api` beside
+/// `node churn-...-013` would reasonably attribute that node's state to the
+/// whole workload. On an armed remote endpoint that inference is published.
+///
+/// Every case is stated rather than defaulted: a workload with no placed pods,
+/// and a node that no longer runs any of them (the pod that resolved the lens
+/// can be gone by the time the bundle is built), both say so.
+pub fn node_share_line(label: &str, here: usize, total: usize, nodes: usize) -> String {
+    match (here, total, nodes) {
+        (_, 0, _) | (_, _, 0) => {
+            format!("{label} has no placed pods, so this node runs none of it")
+        }
+        (0, t, n) => format!(
+            "this node runs NONE of {label}'s {t} placed pods - they are on {n} other node(s)"
+        ),
+        (h, t, 1) => {
+            debug_assert_eq!(h, t);
+            format!("this node runs all {t} of {label}'s placed pods")
+        }
+        (h, t, n) => format!(
+            "this node runs {h} of {label}'s {t} placed pods; the other {} are on {} other nodes",
+            t - h,
+            n - 1
+        ),
+    }
 }
 
 fn node_sections(world: &ObservedWorld, name: &str) -> Vec<BundleSection> {
@@ -2683,6 +2730,100 @@ mod tests {
             Some(DeepenLens::Logs),
         );
         assert_eq!(fetching[0].1, LensState::Fetching);
+    }
+
+    /// Widening a workload consult to a node says how much of the workload is
+    /// actually there.
+    ///
+    /// The node is the alphabetically first pod's — not even the plurality node
+    /// the city is drawn on — so without this the section reads as the
+    /// workload's own context, and on an armed remote endpoint that inference is
+    /// published off the laptop.
+    #[test]
+    fn widening_to_a_node_says_how_much_of_the_workload_is_there() {
+        // Every case stated, none defaulted.
+        assert_eq!(
+            node_share_line("churn/api", 5, 120, 65),
+            "this node runs 5 of churn/api's 120 placed pods; the other 115 are on 64 other nodes"
+        );
+        assert_eq!(
+            node_share_line("demo/web", 3, 3, 1),
+            "this node runs all 3 of demo/web's placed pods"
+        );
+        // The pod that resolved the lens can be gone by the time the bundle is
+        // built; that is said, not silently reported as a share of zero.
+        assert!(node_share_line("demo/web", 0, 3, 2).contains("NONE"));
+        // And a workload with nothing placed does not get a fabricated ratio.
+        for line in [
+            node_share_line("demo/web", 0, 0, 0),
+            node_share_line("demo/web", 0, 5, 0),
+        ] {
+            assert!(line.contains("no placed pods"), "{line}");
+        }
+    }
+
+    /// End to end: the bundle carries it, and it names the right node.
+    #[test]
+    fn the_widen_node_section_carries_the_footprint() {
+        use crate::state::model::WorkloadKind;
+        let (world, mut st) = fx::world();
+        for n in ["n-alpha", "n-bravo", "n-charlie"] {
+            st.node(fx::node(n, Some("z-a")));
+        }
+        st.deployment(fx::deployment("demo", "web", 3, 3));
+        st.replicaset(fx::replicaset("demo", "web-abc", "web"));
+        // Alphabetically first pod is web-abc-0 on n-alpha, which holds 1 of 3.
+        for (i, node) in ["n-alpha", "n-bravo", "n-bravo"].iter().enumerate() {
+            st.pod(fx::pod_owned(
+                fx::pod("demo", &format!("web-abc-{i}"), Some(node)),
+                "ReplicaSet",
+                "web-abc",
+            ));
+        }
+        let wr = WorkloadRef {
+            kind: WorkloadKind::Deployment,
+            namespace: "demo".into(),
+            name: "web".into(),
+        };
+        let scope = Scope::Workload(wr.clone());
+
+        // The lens is offered, and resolves to the first pod's node.
+        assert!(available_lenses(&world, &scope).contains(&DeepenLens::WidenNode));
+        assert_eq!(
+            representative_pod(&world, &scope)
+                .and_then(|p| p.node)
+                .as_deref(),
+            Some("n-alpha")
+        );
+
+        let mut out = Vec::new();
+        push_deepen_sections(
+            &mut out,
+            &world,
+            &scope,
+            &BundleCtx {
+                cluster: "c",
+                log_body: None,
+                slo: None,
+                lenses: &[DeepenLens::WidenNode],
+                explicit_lenses: &[],
+            },
+        );
+        let node_body = out
+            .iter()
+            .find(|s| s.tag == SectionTag::Node)
+            .map(|s| s.body.clone())
+            .expect("a node section");
+        assert!(
+            node_body.contains("this node runs 1 of demo/web's 3 placed pods"),
+            "the node section does not say how much of the workload is here: {node_body}"
+        );
+        // Guard the guard: a fixture where the node held all of them could not
+        // tell a real share from a fabricated one.
+        assert!(
+            node_body.contains("other 2 are on 1 other nodes"),
+            "{node_body}"
+        );
     }
 
     #[test]

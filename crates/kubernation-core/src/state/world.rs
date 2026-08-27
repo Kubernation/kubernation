@@ -1112,6 +1112,54 @@ mod tests {
         assert!(city.spread.nodes < city.spread.pods, "not actually spread");
     }
 
+    /// The two computations of a workload's footprint agree.
+    ///
+    /// `build_world` groups pods by node in one pass over the map's tiles (for
+    /// siting); `model::workload_pods_by_node` does it per workload from the
+    /// observed pods (for the Oracle, which has no `Models`). Merging them would
+    /// make siting O(workloads x pods) and blow the 500-node rebuild budget, so
+    /// they are separate — and therefore pinned equal here, or the panel and the
+    /// bundle could report different footprints for the same workload.
+    #[test]
+    fn the_map_and_the_observed_world_agree_about_a_workloads_footprint() {
+        let (obs, mut st) = fx::world();
+        for n in ["n-alpha", "n-bravo", "n-charlie"] {
+            st.node(fx::node(n, Some("z-a")));
+        }
+        st.deployment(fx::deployment("demo", "web", 4, 4));
+        st.replicaset(fx::replicaset("demo", "web-abc", "web"));
+        for (i, node) in ["n-alpha", "n-alpha", "n-bravo", "n-charlie"]
+            .iter()
+            .enumerate()
+        {
+            st.pod(fx::pod_owned(
+                fx::pod("demo", &format!("web-abc-{i}"), Some(node)),
+                "ReplicaSet",
+                "web-abc",
+            ));
+        }
+        // An unschedulable pod: it belongs to the workload but is nowhere, so
+        // neither computation may count it.
+        st.pod(fx::pod_owned(
+            fx::pod("demo", "web-abc-pending", None),
+            "ReplicaSet",
+            "web-abc",
+        ));
+
+        let m = Models::build(&obs);
+        let city = m.world.cities().next().expect("a city");
+        let by_node = crate::state::model::workload_pods_by_node(&obs, &city.r);
+
+        assert_eq!(city.spread.pods, by_node.values().sum::<usize>());
+        assert_eq!(city.spread.nodes, by_node.len());
+        // Guard the guard: the fixture must be spread, or agreement is trivial.
+        assert_eq!(city.spread, CitySpread { pods: 4, nodes: 3 });
+        assert!(
+            !by_node.contains_key(""),
+            "an unplaced pod was counted onto an empty node name"
+        );
+    }
+
     /// The city's clickable region must match what is DRAWN — its own cell plus
     /// a one-cell forgiveness ring — and must NOT scale with the workload's
     /// name. It used to be `name.len() + 2` cells wide, so a long name silently

@@ -847,6 +847,11 @@ async fn main() {
     // `inspect.is_none()`), so the table is armed here instead — AFTER the
     // inspect has set the selection, which is the state worth capturing.
     let mut workloads_armed = args.workloads && args.inspect.is_some();
+    // Same reason as above: `--oracle` needs a SELECTION for a workload/node
+    // scope, and `--inspect` is what sets one — but the arm that opens the
+    // Oracle lives in a block guarded on `inspect.is_none()`, so the two flags
+    // could never be combined. Armed here instead, after the inspect lands.
+    let mut oracle_armed = args.oracle.is_some();
     let mut chaos_armed = args.chaos.is_some();
     // Memoized blast radius: (cluster, subject, result), recomputed only when
     // the subject or the snapshot changes (keyed by the snapshot's Arc pointer).
@@ -1936,34 +1941,6 @@ async fn main() {
                 if args.workloads {
                     workloads = Some(workloads::Workloads::new());
                 }
-                if let Some(want) = &args.oracle {
-                    if args.oracle_arm {
-                        net.arm_oracle_egress();
-                    }
-                    let mut v =
-                        OracleView::new(oracle_scopes(Some(s), selected.as_ref(), concern_idx));
-                    v.focus_kind(want);
-                    if args.oracle_ask {
-                        v.force_preview();
-                    }
-                    if args.oracle_go {
-                        v.auto_consult();
-                    }
-                    if args.oracle_suggest {
-                        v.demo_suggest();
-                    }
-                    if args.oracle_settings {
-                        v.open_settings();
-                    }
-                    if let Some(lens) = &args.oracle_deepen {
-                        v.dev_deepen(lens);
-                    }
-                    if args.oracle_investigate {
-                        v.dev_investigate();
-                    }
-                    oracle_view = Some(v);
-                    oracle_just_opened = true;
-                }
                 if args.postmortem {
                     annals = Some(timeline::Annals::new());
                     let msg = export_postmortem(
@@ -2021,6 +1998,43 @@ async fn main() {
                     }
                 }
             }
+            // Dev: open the Oracle over an existing selection, so a workload or
+            // node scope is available at all (the flag alone can only reach the
+            // realm). Same placement as the table below, for the same reason.
+            if oracle_armed
+                && (inspected || args.inspect.is_none())
+                && let Some(s) = snap.as_deref()
+                && let Some(want) = &args.oracle
+            {
+                oracle_armed = false;
+                if args.oracle_arm {
+                    net.arm_oracle_egress();
+                }
+                let mut v = OracleView::new(oracle_scopes(Some(s), selected.as_ref(), concern_idx));
+                v.focus_kind(want);
+                if args.oracle_ask {
+                    v.force_preview();
+                }
+                if args.oracle_go {
+                    v.auto_consult();
+                }
+                if args.oracle_suggest {
+                    v.demo_suggest();
+                }
+                if args.oracle_settings {
+                    v.open_settings();
+                }
+                if let Some(lens) = &args.oracle_deepen {
+                    v.dev_deepen(lens);
+                }
+                if args.oracle_investigate {
+                    v.dev_investigate();
+                }
+                panel = None;
+                oracle_view = Some(v);
+                oracle_just_opened = true;
+            }
+
             // Dev: open the workload table over an existing selection, so the
             // brushed row (D2) is capturable. The first-snapshot arm above is
             // guarded on `inspect.is_none()`, so with `--inspect` it never runs

@@ -20,6 +20,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   out what you are pointing at, so the two cannot disagree.
 
 ### Fixed
+- **Asking the Oracle to "widen to node" now says how much of the workload is
+  actually on that node.** It folded one node's health and strain into a
+  workload's consult with nothing saying it was one node of sixty-five — and the
+  node it picked was an arbitrary pod's, not even the one the city is drawn on.
+  A model reading that would reasonably blame the workload's trouble on a node
+  running two of its hundred and twenty pods, and on a remote endpoint that
+  inference leaves your laptop. The section now opens with the share.
 - **The map no longer implies a workload runs on one node.** A city is drawn on
   the node holding the most of its pods, which for a spread workload is a small
   minority — one 120-pod workload's city sat on a node running five of them —

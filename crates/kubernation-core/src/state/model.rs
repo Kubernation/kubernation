@@ -1644,6 +1644,38 @@ fn pvc_phase(world: &ObservedWorld, namespace: &str, name: &str) -> Option<Strin
         .and_then(|p| p.status.as_ref().and_then(|s| s.phase.clone()))
 }
 
+/// PURE: a workload's PLACED pods, grouped by the node running them.
+///
+/// The inverse of `blast::workloads_on_node`, and its sibling: that answers
+/// *what runs here*, this answers *where does this run*. Neither is derivable
+/// from the map, because a city is drawn on the node holding the PLURALITY of a
+/// workload's pods — at fleet scale a small minority (measured: 5 of 120 across
+/// 65 nodes), so the city's province says almost nothing about the footprint.
+///
+/// Pods with no `nodeName` are excluded: an unschedulable pod is not somewhere
+/// yet, and counting it would inflate a total the caller reports as *placed*.
+///
+/// `build_world` computes the same grouping for siting, in one pass over the
+/// map's node tiles rather than per workload — merging them would make siting
+/// O(workloads x pods), which the 500-node rebuild budget does not have. They
+/// are pinned equal by test instead.
+pub fn workload_pods_by_node(
+    world: &ObservedWorld,
+    r: &WorkloadRef,
+) -> std::collections::BTreeMap<String, usize> {
+    let idx = OwnerIndex::build(world);
+    let mut by_node: std::collections::BTreeMap<String, usize> = Default::default();
+    for p in world.pods.state() {
+        let Some(node) = p.spec.as_ref().and_then(|s| s.node_name.as_deref()) else {
+            continue;
+        };
+        if idx.workload_of(&p).as_ref() == Some(r) {
+            *by_node.entry(node.to_string()).or_default() += 1;
+        }
+    }
+    by_node
+}
+
 pub fn build_city(world: &ObservedWorld, r: &WorkloadRef) -> Option<CityModel> {
     let idx = OwnerIndex::build(world);
 

@@ -3040,6 +3040,41 @@ what makes the interesting logic unit-testable without a cluster.
   candidates remain unchosen and, on this evidence, unneeded. 431 core + 133 GUI
   tests; gui-smoke 56.
 
+- **Oracle: the node lens carries the workload's footprint** (2026-08-19,
+  **v1.27.0**; closes residual 1 of `docs/reports/plurality-residual.md`): the
+  `WidenNode` deepen lens folded `node_sections` into a workload-scoped bundle
+  with nothing saying how much of the workload was there — and the node is the
+  **alphabetically first pod's** (`build_city` sorts by name), not even the
+  plurality node the city is drawn on. For `churn/api` that is one node of 65
+  running 2 of 120 pods, and on an armed remote endpoint the resulting inference
+  is **published off-laptop**, which is what made this the strongest residual.
+  **Fix:** pure `oracle::node_share_line` prepended to the node section — *"this
+  node runs 5 of churn/api's 120 placed pods; the other 115 are on 64 other
+  nodes"* — with every case stated rather than defaulted (no placed pods; a node
+  that runs none of them, which happens when the pod that resolved the lens is
+  gone by the time the bundle is built; and the all-on-one-node case). Fed by a
+  new pure `model::workload_pods_by_node`, **the inverse of
+  `blast::workloads_on_node`** and deliberately its sibling — that answers *what
+  runs here*, this answers *where does this run* — excluding unplaced pods, since
+  an unschedulable pod is not somewhere yet and the caller reports a *placed*
+  total. **Deliberately NOT merged with `build_world`'s grouping:** that runs once
+  over the map's tiles for siting, and a per-workload helper would make it
+  O(workloads × pods) against a 500-node rebuild budget — so the two are **pinned
+  equal by test** instead, with a fixture that is genuinely spread and carries an
+  unschedulable pod neither may count. Four mutations, all caught (no footprint;
+  always claims all; unplaced pods counted; the two computations diverge).
+  **Dev-flag finding, the same structural trap as `--workloads`:** `--oracle`
+  lived in the block guarded on `inspect.is_none()`, so it could never be combined
+  with the `--inspect` that creates a workload scope — armed like `workloads_armed`
+  and fired outside both gates, which also makes `oracle-widen` a capturable
+  gui-smoke state. **Verified live** on the 100-node fleet: the byte-identical
+  preview at `workload churn/api` goes 2901 → 3163 bytes when the lens is folded,
+  and the sentence itself is pinned by an end-to-end test through the real
+  `push_deepen_sections`. Residual 2 (`--dump-positions` labelling the plurality
+  province `"node"`) is untouched — renaming the field would break
+  `hack/churn/positions.py` and its self-tests. 443 core (oracle feature) + 133
+  GUI tests; gui-smoke 57.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn
