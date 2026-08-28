@@ -1941,9 +1941,16 @@ pub fn spawn(args: NetArgs, net: Arc<Net>) {
                     *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) =
                         Some(format!("evicting {}/{} …", ev.namespace, ev.pod));
                     let res = actions::evict_pod(client, &ev.namespace, &ev.pod).await;
+                    // A budget refusal is NOT a failure — it is the apiserver
+                    // enforcing a PodDisruptionBudget, which is the whole reason
+                    // eviction goes through `pods/eviction`. Saying "evict
+                    // failed" would waste the distinction.
                     *net.evict_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(match &res {
                         Ok(()) => format!("evicted {}/{}", ev.namespace, ev.pod),
-                        Err(e) => format!("evict failed: {e}"),
+                        Err(actions::EvictRefusal::Budget(why)) => {
+                            format!("{}/{} is protected - {why}", ev.namespace, ev.pod)
+                        }
+                        Err(actions::EvictRefusal::Other(e)) => format!("evict failed: {e}"),
                     });
                     // Record a successful hot-cluster eviction in the Annals.
                     if ev.cluster == ClusterId::Hot && res.is_ok() {

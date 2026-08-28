@@ -23,7 +23,7 @@ use k8s_openapi::api::core::v1::{Node, Pod};
 use k8s_openapi::api::networking::v1::{NetworkPolicy, NetworkPolicySpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use kube::Client;
-use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
+use kube::api::{Api, DeleteParams, EvictParams, Patch, PatchParams, PostParams};
 
 use crate::state::chaos::NetpolSpec;
 use crate::state::model::{WorkloadKind, WorkloadRef};
@@ -32,12 +32,83 @@ use crate::state::planned::Intervention;
 /// Evict (delete) a single pod. A pod owned by a controller (Deployment,
 /// StatefulSet, DaemonSet, …) is recreated by it; a bare pod is gone. Errors
 /// are returned as display strings for the UI to surface.
-pub async fn evict_pod(client: Client, namespace: &str, pod: &str) -> Result<(), String> {
+/// Why an eviction did not happen.
+///
+/// A refusal is not a fault. The apiserver enforces PodDisruptionBudgets on the
+/// eviction subresource and answers **429** when one would be violated — that is
+/// the budget working, and it must not read as "eviction failed".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvictRefusal {
+    /// A PodDisruptionBudget would be violated. Carries the apiserver's own
+    /// words about which budget and why.
+    Budget(String),
+    /// Anything else — RBAC, already gone, server error.
+    Other(String),
+}
+
+impl std::fmt::Display for EvictRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EvictRefusal::Budget(d) => write!(f, "blocked by a disruption budget: {d}"),
+            EvictRefusal::Other(d) => write!(f, "{d}"),
+        }
+    }
+}
+
+/// PURE: classify an eviction failure from the parts of the apiserver's Status.
+///
+/// Taken as plain values rather than a `kube::Error` so the classification can
+/// be pinned without a cluster — the distinction it draws is the whole point of
+/// moving to the eviction subresource, and it would otherwise be testable only
+/// by evicting something.
+///
+/// The budget's NAME is not a field: it lives inside the cause's human-readable
+/// message ("The disruption budget web-strict needs 3 healthy pods and has 3
+/// currently"). That message is passed through verbatim rather than parsed —
+/// the apiserver's own words, with nothing invented. `reason` on the cause IS
+/// machine-readable, and that is what the match is on.
+pub fn classify_evict(code: u16, causes: &[(String, String)], message: &str) -> EvictRefusal {
+    if code == 429 {
+        let named = causes
+            .iter()
+            .find(|(reason, _)| reason == "DisruptionBudget")
+            .map(|(_, m)| m.clone());
+        return EvictRefusal::Budget(named.unwrap_or_else(|| message.to_string()));
+    }
+    EvictRefusal::Other(message.to_string())
+}
+
+/// Evict a pod through the **eviction subresource**, not a plain delete.
+///
+/// This is the difference between the app obeying PodDisruptionBudgets and
+/// ignoring them: the apiserver enforces budgets on `pods/eviction` and on
+/// nothing else, so the previous `api.delete` silently bypassed every budget on
+/// the cluster — including from the chaos "cordon + drain" drill, which drained
+/// harder than `kubectl drain` would.
+///
+/// A managed pod is still recreated by its controller; a bare pod is still gone.
+/// What changes is that a budget can now refuse, and saying so is the point.
+pub async fn evict_pod(client: Client, namespace: &str, pod: &str) -> Result<(), EvictRefusal> {
     let api: Api<Pod> = Api::namespaced(client, namespace);
-    api.delete(pod, &DeleteParams::default())
+    api.evict(pod, &EvictParams::default())
         .await
         .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| match &e {
+            kube::Error::Api(st) => {
+                let causes: Vec<(String, String)> = st
+                    .details
+                    .as_ref()
+                    .map(|d| {
+                        d.causes
+                            .iter()
+                            .map(|c| (c.reason.clone(), c.message.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                classify_evict(st.code, &causes, &st.message)
+            }
+            other => EvictRefusal::Other(other.to_string()),
+        })
 }
 
 /// Can the current user `delete pods` in `namespace`? A read-only RBAC probe
@@ -443,7 +514,12 @@ pub async fn run_chaos(client: Client, steps: &[crate::state::chaos::ChaosStep])
     let mut rows = Vec::new();
     for step in steps {
         let res = match step {
-            ChaosStep::Evict { namespace, pod } => evict_pod(client.clone(), namespace, pod).await,
+            // A budget refusal is reported per step like any other failure —
+            // the drill continues and the row says why. See the phase report:
+            // stopping midway would leave a half-drained node with no record.
+            ChaosStep::Evict { namespace, pod } => evict_pod(client.clone(), namespace, pod)
+                .await
+                .map_err(|e| e.to_string()),
             ChaosStep::Apply(iv) => apply_intervention(client.clone(), iv, false).await,
             ChaosStep::Partition(spec) => apply_partition(client.clone(), spec, false).await,
             ChaosStep::Unpartition { namespace, name } => {
@@ -506,5 +582,70 @@ pub fn iv_label(iv: &Intervention) -> String {
             "rollback {} {}/{} → rev {to_revision}",
             workload.kind, workload.namespace, workload.name
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A refusal names its reason, and a refusal is not a failure.
+    ///
+    /// Grounded in the apiserver's real answer, captured on kind against a
+    /// `minAvailable: 3` budget on a 3-replica workload:
+    ///
+    /// ```text
+    /// code 429  reason TooManyRequests
+    /// message "Cannot evict pod as it would violate the pod's disruption budget."
+    /// details.causes[0] = { reason: "DisruptionBudget",
+    ///   message: "The disruption budget web-strict needs 3 healthy pods and has 3 currently" }
+    /// ```
+    #[test]
+    fn a_budget_refusal_is_named_and_is_not_a_failure() {
+        let causes = vec![(
+            "DisruptionBudget".to_string(),
+            "The disruption budget web-strict needs 3 healthy pods and has 3 currently".to_string(),
+        )];
+        let r = classify_evict(
+            429,
+            &causes,
+            "Cannot evict pod as it would violate the pod's disruption budget.",
+        );
+        // The budget is NAMED — that is what makes the refusal actionable.
+        assert_eq!(
+            r,
+            EvictRefusal::Budget(
+                "The disruption budget web-strict needs 3 healthy pods and has 3 currently".into()
+            )
+        );
+        assert!(r.to_string().contains("web-strict"), "{r}");
+        assert!(
+            !r.to_string().contains("failed"),
+            "a refusal is not a failure: {r}"
+        );
+
+        // A 429 with no such cause still reads as a budget refusal, falling back
+        // to the top-level message rather than inventing a budget name.
+        let bare = classify_evict(
+            429,
+            &[],
+            "Cannot evict pod as it would violate the pod's disruption budget.",
+        );
+        assert!(matches!(bare, EvictRefusal::Budget(ref m) if m.contains("disruption budget")));
+
+        // Every other code keeps its existing handling.
+        for code in [403u16, 404, 409, 500] {
+            assert_eq!(
+                classify_evict(code, &[], "nope"),
+                EvictRefusal::Other("nope".into()),
+                "code {code} must not be read as a budget refusal"
+            );
+        }
+        // And a non-budget cause on a 429 does not borrow the budget wording.
+        let other_cause = vec![("SomethingElse".to_string(), "unrelated".to_string())];
+        assert_eq!(
+            classify_evict(429, &other_cause, "too many requests"),
+            EvictRefusal::Budget("too many requests".into())
+        );
     }
 }

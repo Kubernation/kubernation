@@ -56,6 +56,7 @@ Read this before assuming a question is unanswered.
 | `two-thirds-ocean.md` | reserved ground was drawn as sea; ground 33% → 55% |
 | `map-height.md` | lever A closed; "fit" framed into the sidebar |
 | `pdb-precheck.md` | PDB is unobserved; the node-shaped claim is derivable |
+| `pdb-item1-eviction.md` | the app stops bypassing the budgets it will report |
 
 ## Conventions
 

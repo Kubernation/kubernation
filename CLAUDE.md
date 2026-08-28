@@ -15,8 +15,9 @@ not a wall of dashboards.
 2026-06-17). The whole write surface is one small, auditable file,
 `kubernation-core/src/k8s/actions.rs` — everything else (reflectors, pure
 models, on-demand log tails) is read-only. Two write paths exist, each behind
-an explicit confirm: **pod eviction** (a real `DELETE`, from a pod's evict
-control), and **committing the planning turn** (apply staged Scale/Cordon/
+an explicit confirm: **pod eviction** (a real eviction through the
+`pods/eviction` subresource, so PodDisruptionBudgets are enforced, from a pod's
+evict control), and **committing the planning turn** (apply staged Scale/Cordon/
 Restart/Image to the cluster). Both are **RBAC-aware**: eviction probes `delete
 pods` with a `SelfSubjectAccessReview`; the planning turn validates every staged
 change with a **server-side dry-run** (which also enforces RBAC) and only applies
@@ -675,9 +676,11 @@ what makes the interesting logic unit-testable without a cluster.
   **"evict"**): the project's first and only cluster *write*, a deliberate,
   gated break of the former absolute observe-only guarantee. **All write code
   lives in one file**, `kubernation-core/src/k8s/actions.rs` —
-  `evict_pod(client, ns, pod)` does a plain `Api::<Pod>::delete` (a managed
-  pod is recreated by its controller; a bare pod is gone); errors come back as
-  strings. **Wiring (GUI only; the TUI stays read-only):** the city CITIZENS
+  `evict_pod(client, ns, pod)` did a plain `Api::<Pod>::delete` (a managed
+  pod is recreated by its controller; a bare pod is gone); errors came back as
+  strings. **Superseded 2026-08-19 (v1.30.0)** — it now goes through the
+  `pods/eviction` subresource so disruption budgets are enforced; see the
+  "eviction respects PodDisruptionBudgets" entry. **Wiring (GUI only; the TUI stays read-only):** the city CITIZENS
   list and node GARRISON list grow a hover-revealed red **`evict`** button per
   pod (`WinAction.evict`); clicking it raises a centered **confirm modal**
   (`panels::draw_evict_confirm`, Esc/Cancel to back out) — nothing is sent
@@ -3181,6 +3184,49 @@ what makes the interesting logic unit-testable without a cluster.
   neighbouring one, which then **silently stopped running** while the suite
   still reported green — caught only by clippy's dead-code lint under
   `-D warnings`. 431 core + 139 GUI tests; gui-smoke 57.
+
+- **Eviction respects PodDisruptionBudgets** (2026-08-19, **v1.30.0**; item 1 of
+  `docs/kubernation-pdb-guidance.md`, following
+  `docs/reports/pdb-precheck.md`, report in
+  `docs/reports/pdb-item1-eviction.md`): the app **bypassed the constraint it
+  was about to start reporting on**. `evict_pod` was a plain `DELETE`, which the
+  apiserver does not check a budget against, so a workload declaring "keep three
+  of us running" could be taken to two from inside the app — and the same
+  primitive is what the Game Day drill's pod kills run on, i.e. the one control
+  whose whole purpose is to disturb a running workload. Now `api.evict(...)`,
+  the `pods/eviction` subresource `kubectl drain` uses. **A refusal is not a
+  failure**: `EvictRefusal{Budget, Other}` keeps them apart at the type level, so
+  the GUI toast reads `ns/pod is protected - <why>` rather than "evict failed".
+  **The budget's name is not a field** — it lives inside the human-readable
+  message of a `Status.details.causes` entry, so the message is passed through
+  **verbatim** and the *match* is on the machine-readable `reason ==
+  "DisruptionBudget"`; nothing is parsed out of English prose. The classifier is
+  the pure `classify_evict(code, causes, message)` taking plain values rather
+  than a `kube::Error`, so the distinction is pinnable without a cluster —
+  otherwise it would be testable only by evicting something. It was written
+  against a **captured** apiserver response, not a guessed one. **§2.3's chaos
+  decision, recorded: continue and report per step** — which is already
+  `run_chaos`'s behaviour (a `CommitRow` per step, rendered `! {label}:
+  {detail}`), so a blocked eviction shows as a named refusal; stopping midway
+  would leave a half-drained node with no record, and refusing to start needs the
+  PDB read item 2 has not landed. One honest gap recorded: the drill's *verdict*
+  line describes the cluster's recovery, so an all-blocked drill still reads
+  "stayed up — no outage" (true, but readable as resistance rather than as the
+  drill never landing) — the per-step rows say otherwise, and item 3 is where it
+  is properly fixed. **The discrimination check is the finding, measured on one
+  workload seconds apart:** `DELETE /pods/X` → **HTTP 200** while `POST
+  /pods/X/eviction` → **HTTP 429** — the delete succeeds exactly where the
+  eviction is refused. Gate live on kind (`minAvailable: 3` on 3 replicas,
+  `disruptionsAllowed: 0`): the toast named `web-strict` and the pod count stayed
+  3; PDBs removed afterwards, cluster left as found. Three mutations caught
+  (429→ordinary, cause dropped, refusal-reads-as-failure), and **§5's first named
+  mutation — "make eviction a DELETE again" — is NOT unit-catchable**: the
+  primitive is one line in an async fn needing a cluster, the same structural
+  limit D2-fix established for `main.rs`, so the *classification* is covered by
+  tests and the *choice of primitive* only by the live gate. All ten §1 claims
+  TRUE. 435 core + 139 GUI tests; gui-smoke 57. **Items 2 (watch PDBs + the
+  Charter verb) and 3 (the node-shaped derivation) are not started** — §9 says
+  land this first, and it is independently correct.
 
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the

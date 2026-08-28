@@ -8,6 +8,20 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+- **Evicting a pod now respects PodDisruptionBudgets, and says so when one
+  refuses.** The evict button — and the Game Day drill's pod kills, which share
+  the same primitive — went through a plain delete, which the apiserver does not
+  check a budget against. So a workload declaring "keep at least three of us
+  running" could be taken to two from inside the app, silently, by the one
+  control whose whole purpose is to disturb a running workload. Eviction now
+  goes through the eviction subresource, the way `kubectl drain` does, so the
+  apiserver enforces the budget. A refusal is reported as a refusal rather than
+  an error, naming the budget in the apiserver's own words:
+  `web-f56f55fb4-scp2w is protected - The disruption budget web-strict needs 3
+  healthy pods and has 3 currently`. A chaos drill whose eviction is blocked
+  continues and reports that step as refused, rather than stopping half-drained.
+
 ### Fixed
 - **The field guide's "node" and "road" cross-references now land on the
   province they name**, instead of on the water just west of it.
