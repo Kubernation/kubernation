@@ -3147,6 +3147,41 @@ what makes the interesting logic unit-testable without a cluster.
   than "all of it runs here"), which is the price of refusing spread-conditional
   wording.
 
+- **"Fit view" frames into the map, not the window — and lever A is closed**
+  (2026-08-19, **v1.29.0**, user's call after an analysis of the map's height):
+  `Camera::fit` sized and centred against `screen_width()`/`screen_height()`,
+  but the docked right column (`COL_W` 264) and the top chrome (`CHROME_H` 32)
+  are drawn OVER the map. On the 100-node fleet that put ~466 px of world behind
+  the sidebar and clipped the northern continents — a "fit" that did not fit, at
+  **every** cluster size. `panels::play_rect(sw, sh)` is the pure authority for
+  the visible area, and **`fit` now TAKES its view rect** rather than reading the
+  screen: the signature change is what makes the framing arithmetic assertable at
+  all (`fit_frames_the_whole_scene_inside_the_view_it_is_given` checks the iso
+  AABB's four projected corners land inside the rect). Verified live: all four
+  zone letters now visible, zone D inside the play area instead of under the
+  column. **The residual edge overflow is the zoom FLOOR, not the framing** —
+  fit wants 0.279 and `clamp(0.30, 2.0)` floors it — which is stated on `fit`
+  and which the test explicitly skips checking when clamped. **Lever A (a
+  per-zone stride) is CLOSED, not deferred**, on the user's reasoning: a
+  guaranteed whole-world-at-full-detail view is not achievable at arbitrary
+  cluster size (1 node to thousands), Civilization does not have one either, and
+  chasing it would be scope creep. The measured options are recorded for the
+  record — per-zone stride would give H 370→211 and fit 0.35→0.52, and shrinking
+  `EXTENT_CLASSES` to `[3,4,5]` gives H→206, *marginally better and strictly
+  safer* since the stride stays a global constant — but **per-zone stride
+  reintroduces instability source 1 at zone granularity** (a slot's ground would
+  depend on the tallest node in its zone, so one big node joining moves every
+  province below it), which is what Workstream A spent eleven versions removing,
+  and the two-thirds-ocean guidance §3 rules extent out of scope anyway
+  (v1.20.0 settled that calibration). **Two process notes.** M4 first SURVIVED —
+  an iso scene is always twice as wide as tall, so on any ordinary window the
+  WIDTH constraint binds and a fit ignoring the view's height passes; closed by
+  adding a wide-short view (an ultrawide monitor) as the only fixture where
+  height binds. And my insertion duplicated a `#[test]` and orphaned the
+  neighbouring one, which then **silently stopped running** while the suite
+  still reported green — caught only by clippy's dead-code lint under
+  `-D warnings`. 431 core + 139 GUI tests; gui-smoke 57.
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn

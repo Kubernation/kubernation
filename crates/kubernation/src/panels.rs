@@ -49,6 +49,19 @@ pub fn play_width(sw: f32) -> f32 {
     (sw - COL_W).max(0.0)
 }
 
+/// The rect the map is actually visible in: everything left of the docked
+/// column and below the top chrome. PURE in the screen size, so what frames the
+/// world can be asserted without a GL context.
+///
+/// `Camera::fit` used `screen_width()` and the full height, so it framed the
+/// world into a viewport ~264 logical px wider and 32 taller than the operator
+/// can see — on a 100-node fleet that put a sixth of the map behind the sidebar
+/// and clipped the northern continents under the menu bar. "Fit" that does not
+/// fit is worth one rect.
+pub fn play_rect(sw: f32, sh: f32) -> Rect {
+    Rect::new(0.0, CHROME_H, play_width(sw), (sh - CHROME_H).max(0.0))
+}
+
 /// A cartographic title cartouche centered over the top of the play area —
 /// classic-4X "<realm> map" labeling. `title` is the realm name (serif);
 /// `subtitle` is an optional small suffix (the active map view), dimmed. A
@@ -2173,6 +2186,32 @@ mod tests {
         // A second slot's band, to pin that it is keyed on its own row.
         let y = 1 + SLOT_STRIDE;
         assert_eq!(reserved_band(y, 5, far), Some((y + 5, y + SLOT_STRIDE)));
+    }
+
+    /// The area the map is framed into excludes the chrome that is drawn over
+    /// it — which "fit" did not, so it fitted the world into a viewport wider
+    /// and taller than anyone can see.
+    #[test]
+    fn the_play_rect_excludes_the_column_and_the_chrome() {
+        let (sw, sh) = (1380.0, 860.0);
+        let r = play_rect(sw, sh);
+        assert_eq!(r.w, sw - COL_W, "the docked column is not map");
+        assert_eq!(r.y, CHROME_H, "the menu bar is not map");
+        assert_eq!(r.h, sh - CHROME_H);
+        assert_eq!(r.x, 0.0);
+
+        // It must not overlap the sidebar, whose rect is the authority on where
+        // the column is — two answers to "where is the column" is the drift this
+        // codebase keeps paying for.
+        assert!(
+            r.x + r.w <= sw - COL_W + f32::EPSILON,
+            "the play area runs under the column"
+        );
+
+        // Degenerate screens yield nothing, not a negative rect.
+        let tiny = play_rect(100.0, 10.0);
+        assert_eq!(tiny.w, 0.0);
+        assert_eq!(tiny.h, 0.0);
     }
 
     /// D4 item 1: a CONSULT NEXT link names a map selection, and only the two

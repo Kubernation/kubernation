@@ -19,6 +19,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   affected. The map now works out where a node's land is the same way it works
   out what you are pointing at, so the two cannot disagree.
 
+### Fixed
+- **"Fit view" now fits into the part of the map you can actually see.** It
+  framed the world against the whole window, so on a large cluster a sixth of
+  the map landed behind the docked right column and the northern edge was
+  clipped under the menu bar. It now frames into the map area. On a fleet big
+  enough to hit the zoom floor the world still will not all fit at once — no
+  framing can make an arbitrary number of nodes readable together — but nothing
+  is hidden behind the chrome any more.
+
 ### Changed
 - **A development diagnostic no longer calls the plurality node "the node".**
   `--dump-positions` labelled each city's province `node`, which reads as where

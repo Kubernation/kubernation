@@ -1871,14 +1871,14 @@ async fn main() {
             // Menu "Fit view" deferred from the chrome draw (bounds wasn't in
             // scope there).
             if std::mem::take(&mut pending_fit) {
-                cam.fit(bounds);
+                cam.fit(bounds, panels::play_rect(screen_width(), screen_height()));
             }
 
             // Frame the whole world whenever a snapshot first appears —
             // initial sync, a reconnect, or after a context switch (which
             // clears the snapshot). Skipped when --inspect will fly us in.
             if !had_snap && inspect.is_none() {
-                cam.fit(bounds);
+                cam.fit(bounds, panels::play_rect(screen_width(), screen_height()));
                 if let Some(needle) = &args.center {
                     // Headless map framing: zoom in and center on a named
                     // city / node / island so coast & island marks render
@@ -2106,7 +2106,7 @@ async fn main() {
                 // world navigation is suspended this frame.
             } else {
                 if is_key_pressed(KeyCode::F) {
-                    cam.fit(bounds);
+                    cam.fit(bounds, panels::play_rect(screen_width(), screen_height()));
                 }
                 if is_key_pressed(KeyCode::C) && !contexts.is_empty() {
                     picker = true;

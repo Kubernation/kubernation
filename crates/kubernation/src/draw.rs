@@ -1071,20 +1071,35 @@ impl Camera {
     /// Zoom and position so the whole iso scene is on screen. The scene of a
     /// (W,H) grid projects to a big diamond whose screen AABB is (W+H)·hw wide
     /// by (W+H)·hh tall; fit that, then center on the projected centroid.
-    pub fn fit(&mut self, bounds: (u16, u16)) {
+    /// Frame the whole world into the area the map is actually visible in.
+    ///
+    /// That area is NOT the screen: the docked right column and the top chrome
+    /// are drawn over it. Fitting to the screen put roughly a sixth of a
+    /// 100-node fleet behind the sidebar and clipped the northern continents
+    /// under the menu bar — a "fit" that did not fit, at every cluster size.
+    ///
+    /// It does not promise the world will be *legible*, only that all of it is
+    /// on the map. A large fleet still bottoms out at the zoom floor, and no
+    /// framing can make an arbitrary number of nodes readable at once.
+    /// `view` is the area the map is actually visible in — see
+    /// `panels::play_rect`. Taken as a parameter rather than read from the
+    /// screen so the framing arithmetic can be asserted without a GL context;
+    /// the old signature read `screen_width()` itself, which is why nothing
+    /// noticed it was framing into a viewport that included the sidebar.
+    pub fn fit(&mut self, bounds: (u16, u16), view: Rect) {
         let (w, h) = (bounds.0 as f32, bounds.1 as f32);
         let span = w + h;
         let margin = 60.0;
         let scene_w = span * (TILE_W * 0.5);
         let scene_h = span * (TILE_H * 0.5);
-        let zx = (screen_width() - margin) / scene_w.max(1.0);
-        let zy = (screen_height() - margin * 2.0) / scene_h.max(1.0);
+        let zx = (view.w - margin) / scene_w.max(1.0);
+        let zy = (view.h - margin) / scene_h.max(1.0);
         self.zoom = zx.min(zy).clamp(0.30, 2.0);
         let (hw, hh) = self.cell_px();
         // AABB centroid in pre-`pos` projected space: x in [-h·hw, w·hw],
-        // y in [0, (w+h)·hh].
+        // y in [0, (w+h)·hh]. Centred on the VIEW, not the screen.
         let center = vec2((w - h) * 0.5 * hw, (w + h) * 0.5 * hh);
-        self.pos = center - vec2(screen_width() * 0.5, screen_height() * 0.5 - 10.0);
+        self.pos = center - vec2(view.x + view.w * 0.5, view.y + view.h * 0.5);
         self.target = None;
     }
 
@@ -4112,6 +4127,88 @@ mod tests {
         // Total: a degenerate scale yields the band's first row, never a NaN.
         assert_eq!(region_label_row(rows, top_y, 200.0, 0.0), 4.0);
         assert!(region_label_row((11.0, 4.0), top_y, 9000.0, hh).is_finite());
+    }
+
+    /// "Fit" must actually fit: the whole scene inside the rect it was given.
+    ///
+    /// Asserted on the projected corners, because the failure this replaces was
+    /// invisible to every existing test — `fit` read `screen_width()` itself, so
+    /// it framed the world into a viewport that included the docked column and
+    /// nothing could call it to find out.
+    #[test]
+    fn fit_frames_the_whole_scene_inside_the_view_it_is_given() {
+        // A tall world, the shape that made this visible: 100 slots of stride 9.
+        //
+        // Two view shapes, and the second is load-bearing: an iso scene is
+        // always twice as wide as tall in screen space, so on an ordinary window
+        // the WIDTH constraint always binds and a fit that ignored the view's
+        // height would pass. A wide, short view (an ultrawide monitor, or a very
+        // short window) is the only fixture where the height binds.
+        for (bounds, view) in [
+            ((116u16, 370u16), Rect::new(0.0, 32.0, 1116.0, 828.0)),
+            ((30, 30), Rect::new(0.0, 32.0, 1116.0, 828.0)),
+            ((1, 1), Rect::new(0.0, 32.0, 1116.0, 828.0)),
+            ((116, 370), Rect::new(0.0, 32.0, 3000.0, 400.0)),
+            ((30, 30), Rect::new(0.0, 32.0, 3000.0, 400.0)),
+        ] {
+            let mut cam = Camera::new();
+            cam.fit(bounds, view);
+            let (w, h) = (bounds.0 as f32, bounds.1 as f32);
+            // The iso AABB's four extreme points, in screen space.
+            let pts = [
+                cam.to_screen(0.0, 0.0),
+                cam.to_screen(w, 0.0),
+                cam.to_screen(0.0, h),
+                cam.to_screen(w, h),
+            ];
+            let (minx, maxx) = (
+                pts.iter().map(|p| p.x).fold(f32::MAX, f32::min),
+                pts.iter().map(|p| p.x).fold(f32::MIN, f32::max),
+            );
+            let (miny, maxy) = (
+                pts.iter().map(|p| p.y).fold(f32::MAX, f32::min),
+                pts.iter().map(|p| p.y).fold(f32::MIN, f32::max),
+            );
+            // The zoom floor means a big enough world cannot fit — that is
+            // honest and stated on `fit`. Only check containment when the fit
+            // was not clamped.
+            if cam.zoom > 0.30 {
+                assert!(
+                    minx >= view.x && maxx <= view.x + view.w,
+                    "{bounds:?} overflows horizontally: {minx}..{maxx} vs {}..{}",
+                    view.x,
+                    view.x + view.w
+                );
+                assert!(
+                    miny >= view.y && maxy <= view.y + view.h,
+                    "{bounds:?} overflows vertically: {miny}..{maxy} vs {}..{}",
+                    view.y,
+                    view.y + view.h
+                );
+            }
+            // And it is centred in the view, not somewhere else.
+            let cx = (minx + maxx) * 0.5;
+            assert!(
+                (cx - (view.x + view.w * 0.5)).abs() < 1.0,
+                "{bounds:?} is not centred: {cx}"
+            );
+        }
+    }
+
+    /// The failure that shipped: framing into the screen rather than the play
+    /// area puts part of the world behind the docked column.
+    #[test]
+    fn fitting_to_the_whole_screen_hides_the_world_behind_the_column() {
+        let bounds = (116u16, 370u16);
+        let screen = Rect::new(0.0, 0.0, 1380.0, 860.0);
+        let play = crate::panels::play_rect(1380.0, 860.0);
+        let mut cam = Camera::new();
+        cam.fit(bounds, screen);
+        let right = cam.to_screen(bounds.0 as f32, 0.0).x;
+        assert!(
+            right > play.x + play.w,
+            "the screen-framed world should overrun the play area, but ended at {right}"
+        );
     }
 
     #[test]
