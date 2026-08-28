@@ -54,6 +54,7 @@ Read this before assuming a question is unanswered.
 | `plurality-false-claims.md` | both corrected; the gate on a 120-pod workload |
 | `plurality-residual.md` | §7 answered by enumeration — one residual left |
 | `two-thirds-ocean.md` | reserved ground was drawn as sea; ground 33% → 55% |
+| `map-height.md` | lever A closed; "fit" framed into the sidebar |
 
 ## Conventions
 

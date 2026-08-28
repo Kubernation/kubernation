@@ -211,7 +211,9 @@ row — the same discipline the consolidation round established for ghosts.
 
 431 core + 136 GUI tests; gui-smoke 57 states; `compare-selftest.py` green.
 
-**Lever A remains available and unneeded.** If the complaint ever becomes the
-map's *height* rather than its holes (§3 of the guidance is explicit that those
-are different problems), that is the lever — and question 4's consumer list is
-its real cost.
+**Lever A was subsequently CLOSED, not left available** — see
+`map-height.md` (v1.29.0). The height question was examined on its own terms and
+retired: a guaranteed whole-world-at-full-detail view is not achievable at
+arbitrary cluster size, and per-zone stride would have reintroduced instability
+source 1 at zone granularity. What the height analysis *did* find was a real bug
+in `fit`, which is fixed there.
