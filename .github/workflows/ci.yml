@@ -50,13 +50,21 @@ jobs:
 
       # Mirrors `make lint`: the whole workspace (the bin pulls core with the
       # `oracle` feature, so this covers the egress path)…
+      #
+      # `--locked` HERE, not only on the test step below. This is the FIRST cargo
+      # invocation that resolves, and an unlocked one silently rewrites
+      # Cargo.lock in the runner's checkout — after which every later `--locked`
+      # step sees a corrected file and passes. v1.34.1 was pushed with a lock
+      # naming 1.34.0 and this job went green; release.yml, whose first cargo
+      # call IS `--locked` on a fresh checkout, would have failed on all three
+      # platforms. The guard was defeated by its own predecessor.
       - name: Clippy (workspace)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       # …plus the headless core on its own (no `oracle` feature — the smoke gate's
       # build), so the no-egress path stays clippy-clean too.
       - name: Clippy (core, no features)
-        run: cargo clippy -p kubernation-core --all-targets -- -D warnings
+        run: cargo clippy -p kubernation-core --all-targets --locked -- -D warnings
 
       # --locked so a stale Cargo.lock (e.g. a version bump not refreshed into the
       # lock) fails CI here, before the release job hits it with --locked.

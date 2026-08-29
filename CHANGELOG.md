@@ -8,7 +8,22 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [1.34.1] — 2026-08-29
+
+### Changed
+- **The build's lockfile check now actually checks.** It was meant to catch a
+  version bump that had not been written into `Cargo.lock`, but an earlier step
+  in the same job quietly corrected the file first, so the check always saw a
+  good one — while the release build, which starts from a clean copy, would have
+  failed. Every step now uses the strict flag, and the stale lockfile that
+  exposed this is fixed.
+
+- The third-party licence check now pins the tool it runs, so it reports a
+  dependency appearing, vanishing or changing terms — and not a cosmetic
+  reformatting from a new release of the checker itself.
+
 ### Fixed
+
 - **The Oracle said "streaming" before the model had produced anything.** While
   waiting for a local model's first token — 10 to 30 seconds on a large one — the
   consult window read `streaming… 0s · 0 chars` and dropped the countdown, which
@@ -53,11 +68,6 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   evict button's own notes named the wrong permission. None of this changed
   behaviour; all of it would have misled someone reading to understand what the
   app is allowed to do.
-
-### Changed
-- The third-party licence check now pins the tool it runs, so it reports a
-  dependency appearing, vanishing or changing terms — and not a cosmetic
-  reformatting from a new release of the checker itself.
 
 ## [1.32.0] — 2026-08-28
 

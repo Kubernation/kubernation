@@ -111,7 +111,7 @@ churn-down:
 ## lint: formatting + clippy + the structural guards, the same gate as CI
 lint:
 	cargo fmt --all --check
-	cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets --locked -- -D warnings
 	./hack/check-conversion-authorities.sh
 	./hack/check-release-targets.sh
 
