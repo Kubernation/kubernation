@@ -455,7 +455,7 @@ pub fn pool_pair(pool: &str) -> (Color, Color) {
     (hsv(hue, 0.38, 0.50), hsv(hue, 0.38, 0.58))
 }
 
-/// Minimal HSV→RGB (h in [0,360), s/v in [0,1]) for the namespace palette.
+/// Minimal HSV→RGB (h in \[0,360\), s/v in \[0,1\]) for the namespace palette.
 fn hsv(h: f32, s: f32, v: f32) -> Color {
     let c = v * s;
     let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());

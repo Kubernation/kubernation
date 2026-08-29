@@ -23,7 +23,7 @@
 //!
 //! **3. A null selector is not an empty one.** `policy/v1` says: *"A null
 //! selector will match no pods, while an empty ({}) selector will select all
-//! pods within the namespace."* [`netpol::selector_matches`] answers the
+//! pods within the namespace."* `netpol::selector_matches` answers the
 //! opposite for `None`, because a NetworkPolicy's absent `podSelector` IS
 //! namespace-wide. The expression semantics are shared — matchLabels,
 //! matchExpressions, and the fail-closed unknown operator — and the null case is

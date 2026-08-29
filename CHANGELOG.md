@@ -8,6 +8,26 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **The field guide was naming eight of the nine map overlays.** The Pool
+  (nodepools) view has existed since v1.14.0 and the Controls page never
+  mentioned it — the one surface whose job is to tell you what the menus contain
+  was the surface that did not know. The list is now built from the overlays
+  themselves, so it cannot fall behind again.
+- **Corrected a set of stale descriptions** that no longer matched what the app
+  does: the write-surface documentation still called evicting a pod a delete
+  (it goes through the eviction subresource, so disruption budgets are enforced),
+  listed two planning-turn verbs where there are five, and referred to two
+  frontends where there has been one since the terminal client was removed. The
+  evict button's own notes named the wrong permission. None of this changed
+  behaviour; all of it would have misled someone reading to understand what the
+  app is allowed to do.
+
+### Changed
+- The third-party licence check now pins the tool it runs, so it reports a
+  dependency appearing, vanishing or changing terms — and not a cosmetic
+  reformatting from a new release of the checker itself.
+
 ## [1.32.0] — 2026-08-28
 
 ### Added

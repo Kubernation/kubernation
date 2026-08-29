@@ -2,16 +2,21 @@
 //!
 //! Everything else is observe-only (reflectors, pure models, on-demand log
 //! tails). This module is the deliberate, narrowly-scoped exception: pod
-//! eviction (a delete) and applying a planning-turn intervention (scale a
-//! workload, cordon a node). Each write is invoked only behind an explicit
+//! eviction — through the `pods/eviction` subresource, NOT a delete, so the
+//! apiserver enforces PodDisruptionBudgets — and applying a planning-turn
+//! intervention (scale, cordon, restart, set-image, rollback). Chaos drills
+//! sequence those same primitives and add no verb of their own. Each write is
+//! invoked only behind an explicit
 //! confirm, and every staged intervention is validated with a **server-side
 //! dry-run** (which also enforces RBAC) before any real apply. Kept apart so
 //! the entire write surface is one small, auditable file.
 //!
 //! Committing a planning turn goes through [`commit_interventions`]: it
 //! dry-runs every staged change first and only writes for real if *all* pass,
-//! so a turn the cluster would reject never half-applies. Both frontends call
-//! it, keeping the "decide to write for real" step inside this one file.
+//! so a turn the cluster would reject never half-applies. The GUI calls it
+//! rather than orchestrating the gate itself, keeping the "decide to write for
+//! real" step inside this one file. (It read "both frontends" until now: the
+//! ratutui TUI was removed 2026-06-18 and the sentence outlived it.)
 
 use std::collections::BTreeMap;
 

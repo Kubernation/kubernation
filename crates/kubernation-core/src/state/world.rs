@@ -2,7 +2,9 @@
 //!
 //! Zones are continents of solid land separated by ocean; each node is a
 //! province (a patch of that land) whose terrain reflects its health.
-//! Workloads are cities sited on the province hosting most of their pods,
+//! Workloads are cities sited on the province hosting the PLURALITY of their
+//! pods — often a small minority of them, so a city marks where a workload is
+//! DRAWN and not where it runs (`City::spread` carries the real footprint),
 //! with population badges and name labels. DaemonSets are infrastructure
 //! (roads on every province), never cities. Things with no place on the
 //! land — custom-resource instances and zero-pod workloads — live on

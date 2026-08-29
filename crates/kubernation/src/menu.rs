@@ -452,6 +452,32 @@ pub fn draw_menu_bar(
 mod tests {
     use super::*;
 
+    /// Every overlay that exists has a row in the View menu.
+    ///
+    /// The rows are written out one per variant rather than looped, because each
+    /// carries its own display label and check state — so `Overlay::ALL` growing
+    /// does not grow the menu. The field guide had exactly this drift (it named
+    /// eight of nine for fourteen versions) and is now built from `ALL`; this is
+    /// the same guarantee for the menu, as a test rather than a loop.
+    #[test]
+    fn every_overlay_has_a_menu_row() {
+        let ctx = ctx(NewGroundChoice::Off);
+        let menus = menus(&ctx);
+        let view = menus
+            .iter()
+            .find(|m| m.title == "View")
+            .expect("a View menu");
+        for o in crate::draw::Overlay::ALL {
+            assert!(
+                view.items
+                    .iter()
+                    .any(|i| i.action == Some(MenuAction::SetOverlay(o))),
+                "no View row sets the {} overlay",
+                o.label()
+            );
+        }
+    }
+
     fn ctx(ng: NewGroundChoice) -> MenuCtx {
         MenuCtx {
             overlay: Overlay::Terrain,

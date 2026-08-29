@@ -258,8 +258,10 @@ pub fn row_button(r: Rect, mouse: Vec2, click: bool, label: &str) -> bool {
 
 /// A per-pod evict button, revealed on row hover. RBAC-aware via `allowed`:
 /// `Some(true)` = enabled (red, destructive), `Some(false)` = disabled
-/// ("locked" — no delete permission), `None` = the permission probe is still
-/// in flight ("…"). Returns true only when clicked while enabled.
+/// ("locked" — no `create pods/eviction` permission, which is the verb the
+/// eviction subresource is authorized under and is separately grantable from
+/// `delete pods`), `None` = the permission probe is still in flight ("…").
+/// Returns true only when clicked while enabled.
 pub fn evict_button(r: Rect, mouse: Vec2, click: bool, allowed: Option<bool>) -> bool {
     let on = r.contains(mouse);
     let (fill, border, tc, label) = match allowed {

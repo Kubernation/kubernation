@@ -10,7 +10,7 @@ use kubernation_core::state::attention::Severity;
 use kubernation_core::state::model::{NodeHealth, PodState};
 use kubernation_core::state::world::{CoastKind, WorldModel};
 
-use crate::draw::{draw_cronjob, draw_gate, draw_granary, draw_harbor, draw_job};
+use crate::draw::{Overlay, draw_cronjob, draw_gate, draw_granary, draw_harbor, draw_job};
 use crate::net::Snapshot;
 use crate::panels::pod_color;
 use crate::text::{text, text_bold, text_size};
@@ -85,6 +85,29 @@ fn mark_locator(m: Mark) -> Option<Locator> {
 /// 7 of 7 eligible, the worst at 3.3%). They diverged because nothing compared
 /// them; sharing the phrase is what makes comparing them unnecessary.
 pub(crate) const SITING_CLAIM: &str = "sited on the province holding the plurality of its pods";
+
+/// The Controls page's description of the menu bar.
+///
+/// The overlay list is BUILT from [`Overlay::ALL`] rather than restated. It was
+/// restated, and drifted: `Pool` shipped in v1.14.0 and the field guide went on
+/// naming eight overlays for fourteen versions, so the one surface whose job is
+/// to tell an operator what the menu contains was the surface that did not know.
+///
+/// The `SITING_CLAIM` pattern, second instance — where two places describe one
+/// mechanism, give the mechanism one home instead of a test that compares them.
+pub(crate) fn menu_bar_text() -> String {
+    let overlays: Vec<&str> = Overlay::ALL.iter().map(|o| o.label()).collect();
+    format!(
+        "The top bar holds the menus: Game (context, fit, export after-action \
+         report, quit), View (the map overlay — {} — the map style, new ground, \
+         the colour-blind palette, and the Annals), Orders (end of turn, \
+         discard), Game Day (chaos drills), Advisors (Health / Storage / Network \
+         / Right-sizing / Hardening / Posture / Cost summaries), World \
+         (namespace filter), Help (Charter — your RBAC access — and the field \
+         guide). Click a title to open it.",
+        overlays.join(", ")
+    )
+}
 
 /// The Legend's City entry. Built here so a test can read it.
 pub(crate) fn city_legend_text() -> String {
@@ -630,9 +653,7 @@ fn page_controls(cx: &mut Ctx) {
     );
     cx.key("Q", "quit");
     cx.heading("Menu bar");
-    cx.para(
-        "The top bar holds the menus: Game (context, fit, export after-action report, quit), View (the map overlay — terrain health, cpu/mem pressure, replica health, namespace territory, walls, saturation, upkeep/cost, or substrate; the map style; and the Annals), Orders (end of turn, discard), Game Day (chaos drills), Advisors (Health / Storage / Network / Right-sizing / Hardening / Posture / Cost summaries), World (namespace filter), Help (Charter — your RBAC access — and the field guide). Click a title to open it.",
-    );
+    cx.para(&menu_bar_text());
     cx.heading("Hover marker");
     cx.para(
         "Point at the map and KuberNation outlines what a click would open, before you click it: a diamond on a city, harbour or gate, and the full ragged boundary of a province — which is otherwise invisible, since provinces are only implied by their coastline. Ambient white, never pulsing, so it is never confused with the red/amber blast-radius marks (B), which mean trouble. It follows the same rules as the tooltip: map only, and nothing while a window is open.",

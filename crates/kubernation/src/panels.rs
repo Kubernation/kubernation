@@ -1064,7 +1064,7 @@ pub(crate) fn panel_size(sw: f32, sh: f32) -> Vec2 {
 
 /// The x boundary between the left (garrison/citizens) and right (terrain/…)
 /// columns, for routing the scroll wheel by hover. Takes the frame from
-/// [`window::window_rect`] — the placement authority — and adds the windows'
+/// [`crate::window::window_rect_at`] — the placement authority — and adds the windows'
 /// inter-column gutter (left ends ~0.55·body, right starts ~0.58·body).
 pub(crate) fn panel_split_x(sw: f32, sh: f32) -> f32 {
     let f = panel_frame(sw, sh);
@@ -1075,7 +1075,7 @@ pub(crate) fn panel_split_x(sw: f32, sh: f32) -> f32 {
 
 /// The drill-down window's frame, for gating the scroll wheel to its bounds.
 ///
-/// Derived from [`window::window_rect`] rather than re-centred here, so hit
+/// Derived from [`crate::window::window_rect_at`] rather than re-centred here, so hit
 /// testing and scroll routing cannot disagree with what was drawn.
 pub(crate) fn panel_frame(sw: f32, sh: f32) -> Rect {
     crate::window::window_rect_at(
@@ -2198,6 +2198,25 @@ mod tests {
             assert!(
                 line.chars().count() <= 40,
                 "too wide for the column, so it truncates: {line:?}"
+            );
+        }
+    }
+
+    /// The field guide names every map overlay that exists.
+    ///
+    /// It named eight while the View menu offered nine: `Pool` shipped in
+    /// v1.14.0 and the one surface whose job is to say what the menu contains
+    /// went fourteen versions without it. Restating a set is what let it drift,
+    /// so the sentence is now BUILT from `Overlay::ALL` — this test guards the
+    /// build, and a tenth overlay appears in the guide by construction.
+    #[test]
+    fn the_field_guide_names_every_overlay() {
+        let text = crate::almanac::menu_bar_text();
+        for o in crate::draw::Overlay::ALL {
+            assert!(
+                text.contains(o.label()),
+                "the field guide does not mention the {} overlay: {text}",
+                o.label()
             );
         }
     }

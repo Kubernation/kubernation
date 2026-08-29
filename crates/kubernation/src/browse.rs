@@ -1,7 +1,8 @@
 //! The GUI resource browser — the `:` command. A modal with two modes: pick a
 //! kind (a scrollable, clickable list of everything the cluster serves), then a
 //! generic table of that kind's objects; click a row to drill into the YAML
-//! inspector. Mouse + wheel driven (the TUI has the keyboard/filter idiom). The
+//! inspector. Mouse + wheel driven; the keyboard/filter idiom belonged to the
+//! ratatui TUI, removed 2026-06-18. The
 //! data (discovery + LIST) comes from the net thread via `Net`.
 
 use std::sync::Arc;

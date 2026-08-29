@@ -1298,7 +1298,7 @@ fn place(occ: &mut Vec<Rect>, candidates: &[Rect]) -> Rect {
 // --- irregular coastlines -------------------------------------------------
 //
 // The core world model is a clean rectangular grid (the canonical
-// coordinate system both frontends share). The GUI paints organic
+// coordinate system the core model defines). The GUI paints organic
 // landmasses over it: each continent's east/west shores are displaced
 // inward by smooth value noise, and the north/south ends taper into
 // rounded capes — so a zone reads as geography, not a filing cabinet.
@@ -1313,7 +1313,7 @@ fn hash01(seed: u64, n: i64) -> f32 {
     (fnv1a64(&format!("{seed}:{n}")) % 10_000) as f32 / 10_000.0
 }
 
-/// Smooth value noise in [0,1] sampled along `t`, one control point every
+/// Smooth value noise in \[0,1\] sampled along `t`, one control point every
 /// `period` units, smoothstep-interpolated.
 fn vnoise(seed: u64, t: f32, period: f32) -> f32 {
     let x = t / period;

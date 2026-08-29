@@ -185,7 +185,7 @@ struct Args {
     /// verification of the chaos write path
     #[arg(long)]
     chaos_go: bool,
-    /// With --chaos-go, which experiment to run (kill-one [default] / kill-all /
+    /// With --chaos-go, which experiment to run (kill-one \[default\] / kill-all /
     /// outage / broken-image / partition / node-failure). node-failure targets
     /// the first non-control-plane node hosting the --chaos target's pods.
     #[arg(long, value_name = "KIND")]

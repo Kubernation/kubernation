@@ -59,6 +59,7 @@ Read this before assuming a question is unanswered.
 | `pdb-item1-eviction.md` | the app stops bypassing the budgets it will report |
 | `pdb-item2-observe.md` | budgets watched; unread is not unprotected; the evict RBAC verb was wrong |
 | `pdb-item3-surfaces.md` | the constraint reaches the queue and the panels; the drill stops over-claiming |
+| `prose-audit.md` | nine false claims; the field guide named 8 of 9 overlays; the license guard closed |
 
 ## Conventions
 

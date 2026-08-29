@@ -9,7 +9,7 @@
 //! A reference is `⟨column letter⟩⟨row number⟩`, and it names a **slot**, not a
 //! screen position:
 //!
-//! - the **column** is a zone, lettered from its durable [`zone_ordinal`], which
+//! - the **column** is a zone, lettered from its durable [`Layout::zone_ordinal`], which
 //!   is assigned once and carried forward — so a zone keeps its letter across a
 //!   refresh, a restart, and even its own disappearance;
 //! - the **row** is the slot ordinal within that zone, which is zone-wide (A2)

@@ -587,7 +587,7 @@ fn page_cost(cx: &mut Ctx, r: &CostReport) {
 
 // --- hardening page (pure line builder + renderer) --------------------------
 
-/// One workload's worst-severity findings as a compact "summary [standard]".
+/// One workload's worst-severity findings as a compact "summary \[standard\]".
 fn hf_summary(wf: &WorkloadFindings) -> String {
     let top: Vec<_> = wf
         .findings
