@@ -1,6 +1,9 @@
 # Planning handoff — v1.32.0 released
 
 **Date:** 2026-08-29 · **Tag:** `v1.32.0` (pushed) · **Previous tag:** `v1.9.0`
+**Amended 2026-08-29**, later the same day: v1.33.0–v1.33.2 landed after this was
+written and closed two of its five open items. See §4 — and §5.6, which is about
+this document.
 **Supersedes:** `docs/kubernation-planning-handoff.md` for status; that document's
 method notes still stand.
 
@@ -113,28 +116,43 @@ producing a plausible answer for an unrelated reason.
 
 ## 4. What is open
 
-**Nothing is in flight in the code.** Working tree clean; 453 core (478 with the
-`oracle` feature) + 143 GUI tests; gui-smoke 57; clippy clean with and without
-features.
+**Nothing is in flight in the code.** Working tree clean; **453 core (478 with
+the `oracle` feature) + 145 GUI**, 623 under `cargo nextest run --workspace`;
+gui-smoke 57; clippy clean with and without features; zero broken doc links.
 
-1. **The license guard** (§3) — a decision, not a puzzle. Pin and regenerate, or
-   leave the job red and rely on local checks. **It is the only red thing.**
-2. **More consolidation, or new capability?** The evidence has shifted since the
-   last handoff said the defect rate was falling and the last four findings were
-   documentation. This stretch found three *live* defects — the eviction bypass,
-   the RBAC verb, and the truncated selection line — one of which I introduced the
-   day before I found it. The seam is still productive.
+**Closed after this was written** (§5.6):
+
+- ~~The licence guard~~ — **v1.33.1**. Pinned cargo-about, since `--locked` fixes
+  its dependencies and not the tool; the guard now measures dependency drift.
+  Diagnosing it turned up the real cause of seven "cosmetic" doc links: a module
+  with two doc comments makes rustdoc resolve the file's own links in the
+  parent's scope. `broken_intra_doc_links` is now denied and CI runs rustdoc.
+- ~~`about.toml` omits Windows~~ — **v1.33.2**. The Windows zip had shipped
+  notices missing six of its own crates, `schannel` among them, for six releases.
+  Guarded, and the guard was broken on arrival — see §5.6.
+
+**Still open, all choices rather than debts:**
+
+1. **More consolidation, or new capability?** The evidence has moved further
+   since this was drafted. The claim it argued against — that the defect rate was
+   falling — is now clearly false: the two days since produced roughly fifteen
+   real findings (three live defects in the PDB round, nine false claims in the
+   prose audit, two more plus a broken guard in the lint pass). The seam is
+   productive. What is genuinely unknown is how much longer it stays that way.
+2. **The prose audit's second pass.** Its §5 capped the first deliberately — *"a
+   second pass is cheaper than a first pass that never finishes"* — and named a
+   gap it could not close: **§2's second kind, panel and concern wording**, the
+   surface an operator reads during an incident. Checking it needs rendering
+   against a live cluster, not reading source, which is why the first pass
+   recorded it unmeasured.
 3. **Deferred grafts**, each with a shaped extension point: an Advisors ▸
    Substrate tab, per-pod metrics history for true P90 sizing, a CNI enforcement
    probe, warm-cluster parity for several features, Annals brushing (needs an
    identity resolver for its stringly subjects).
-4. **New this stretch, deferred with reasons**: a map mark for blocked nodes (a
+4. **The PDB round's deferrals, with reasons**: a map mark for blocked nodes (a
    per-node question, and the guidance's own call), the workload-side budget view
    (*protected, and by how much* — a different feature), and a gui-smoke state for
    the drain line (it renders only against a live blocking budget).
-5. **`about.toml` omits Windows** — recorded during the v0.62.0 About review and
-   still true: the Windows zip's notices lack Windows-only crates. Independent of
-   §3, and the natural thing to fix in the same pass.
 
 ---
 
@@ -160,3 +178,20 @@ features.
   finding.** The truncated selection line fired a criterion written in advance;
   without it I would have looked past a screenshot that "showed the feature
   working".
+
+**6. This document went stale the day it was written, and that is the point.**
+Two of its five open items were closed hours later, so a reader taking §4 at
+face value would have had a wrong list. That is precisely what the prose audit
+spent the same day fixing elsewhere, and precisely what its §1 predicts: *the
+claim most often wrong is the author's own, from the same week.* A handoff is a
+claim-bearing surface by §2's first kind — someone acts on it — and nothing
+compiles it.
+
+The correction here is the audit's own §4 shape: state what is true now, and say
+why the omission is deliberate rather than deleting the history. The rows are
+struck through rather than removed, so a reader who remembers the old list can
+see it was answered instead of wondering whether it was dropped.
+
+The general lesson is narrower than "keep documents updated": **a document that
+lists open work has a shelf life measured in commits, not days**, and should say
+what it was true *of* — hence the amendment line under the title.
