@@ -257,6 +257,7 @@ pub fn build(
     map: &MapModel,
     workloads: &[WorkloadRow],
     filter: &NamespaceFilter,
+    drain: &crate::state::pdb::DrainReport,
 ) -> Vec<Concern> {
     let idx = OwnerIndex::build(world);
     // Where each node sits, and how many pools the fleet has at all — the
@@ -560,17 +561,30 @@ pub fn build(
                 continue;
             };
             covered_nodes.insert(tile.name.clone());
+            let mut detail = format!(
+                "zone {} · {} pods · cpu {} mem {}",
+                tile.zone,
+                tile.pods.len(),
+                pct_or_unknown(tile.cpu_ratio),
+                pct_or_unknown(tile.mem_ratio)
+            );
+            // A cordoned node is one someone is taking out of service, so what a
+            // disruption budget would refuse is the next thing they need. See
+            // `pdb::drain_note` for why this enriches rather than raising its own
+            // concern, and why only when cordoned.
+            if tile.cordoned
+                && let Some(note) = drain
+                    .node(&tile.name)
+                    .and_then(crate::state::pdb::drain_note)
+            {
+                detail.push_str(" · ");
+                detail.push_str(&note);
+            }
             concerns.push(Concern {
                 cluster: ClusterId::Hot,
                 severity,
                 title: format!("node {} — {headline}", tile.name),
-                detail: format!(
-                    "zone {} · {} pods · cpu {} mem {}",
-                    tile.zone,
-                    tile.pods.len(),
-                    pct_or_unknown(tile.cpu_ratio),
-                    pct_or_unknown(tile.mem_ratio)
-                ),
+                detail,
                 target: Target::Node(tile.name.clone()),
                 probe: None,
                 key: format!("n:{}", tile.name),
@@ -937,7 +951,13 @@ mod tests {
         }
         let map = crate::state::model::build_map(&world);
         let wl = crate::state::model::build_workloads(&world);
-        let cs = build(&world, &map, &wl, &NamespaceFilter::All);
+        let cs = build(
+            &world,
+            &map,
+            &wl,
+            &NamespaceFilter::All,
+            &crate::state::pdb::drain_report(&world),
+        );
         let c = cs
             .iter()
             .find(|c| c.title.contains("agent"))
@@ -958,7 +978,13 @@ mod tests {
         ));
         let map = crate::state::model::build_map(&world);
         let wl = crate::state::model::build_workloads(&world);
-        let cs = build(&world, &map, &wl, &NamespaceFilter::All);
+        let cs = build(
+            &world,
+            &map,
+            &wl,
+            &NamespaceFilter::All,
+            &crate::state::pdb::drain_report(&world),
+        );
         let c = cs
             .iter()
             .find(|c| c.title.contains("agent"))
@@ -985,7 +1011,13 @@ mod tests {
     fn concerns(world: &ObservedWorld) -> Vec<Concern> {
         let map = build_map(world);
         let rows = build_workloads(world);
-        build(world, &map, &rows, &NamespaceFilter::All)
+        build(
+            world,
+            &map,
+            &rows,
+            &NamespaceFilter::All,
+            &crate::state::pdb::drain_report(world),
+        )
     }
 
     #[test]
@@ -1151,7 +1183,13 @@ mod tests {
         let map = build_map(world);
         let mut rows = build_workloads(world);
         rows.retain(|w| filter.matches(&w.r.namespace));
-        build(world, &map, &rows, filter)
+        build(
+            world,
+            &map,
+            &rows,
+            filter,
+            &crate::state::pdb::drain_report(world),
+        )
     }
 
     #[test]
@@ -1322,6 +1360,96 @@ mod tests {
         assert!(cs[1].title.contains("cordoned"));
         // Healthy node contributes nothing.
         assert!(!cs.iter().any(|c| c.title.contains("n-ok")));
+    }
+
+    /// The `pool_confinement` shape: a cordoned node's concern names what would
+    /// refuse the drain, rather than a concern of its own (which a permanently
+    /// tight budget would make squat the queue forever).
+    #[test]
+    fn a_cordoned_node_names_the_budget_that_would_block_its_drain() {
+        use std::collections::BTreeMap;
+        let (world, mut s) = fx::world();
+        s.node(fx::cordoned(fx::node("n-cord", Some("z-a"))));
+        s.node(fx::node("n-open", Some("z-a")));
+        for (name, node) in [("web-1", "n-cord"), ("web-2", "n-open")] {
+            let mut p = fx::pod("demo", name, Some(node));
+            p.metadata.labels = Some(BTreeMap::from([("app".into(), "web".into())]));
+            s.pod(p);
+        }
+        s.pdb(fx::pdb("demo", "web-strict", &[("app", "web")], 0));
+
+        let map = build_map(&world);
+        let rows = crate::state::model::build_workloads(&world);
+        let cs = build(
+            &world,
+            &map,
+            &rows,
+            &NamespaceFilter::All,
+            &crate::state::pdb::drain_report(&world),
+        );
+        let cord = cs
+            .iter()
+            .find(|c| c.title.contains("n-cord"))
+            .expect("the cordoned node has a concern");
+        assert!(
+            cord.detail.contains("demo/web-strict"),
+            "the concern must name the budget: {}",
+            cord.detail
+        );
+        // The uncordoned node is equally blocked, and says nothing — a standing
+        // fact, not something needing orders. The panel reports it instead.
+        assert!(
+            !cs.iter().any(|c| c.title.contains("n-open")),
+            "a blocked-but-untouched node must not squat the queue"
+        );
+    }
+
+    /// ...and a cordoned node nothing would refuse spends no words on it.
+    ///
+    /// The `None` arm of `drain_note` exists for exactly this: a caveat that
+    /// carries no information is noise, and the queue is the surface where noise
+    /// costs the most. Without this the arm can be deleted and every other test
+    /// still passes.
+    #[test]
+    fn a_cordoned_node_with_nothing_blocking_it_says_nothing_about_draining() {
+        let (world, mut s) = fx::world();
+        s.node(fx::cordoned(fx::node("n-cord", Some("z-a"))));
+        s.pod(fx::pod("demo", "p1", Some("n-cord")));
+        let map = build_map(&world);
+        let rows = crate::state::model::build_workloads(&world);
+        let cs = build(
+            &world,
+            &map,
+            &rows,
+            &NamespaceFilter::All,
+            &crate::state::pdb::drain_report(&world),
+        );
+        let cord = cs.iter().find(|c| c.title.contains("n-cord")).unwrap();
+        assert!(
+            !cord.detail.contains("drain"),
+            "nothing refuses, so nothing to say: {}",
+            cord.detail
+        );
+    }
+
+    /// An unread budget set is not silence: a cordon you cannot cost is worth
+    /// saying so about.
+    #[test]
+    fn a_cordoned_node_says_when_the_budgets_were_not_read() {
+        let (world, mut s) = fx::world();
+        s.node(fx::cordoned(fx::node("n-cord", Some("z-a"))));
+        s.pdbs_unread();
+        let map = build_map(&world);
+        let rows = crate::state::model::build_workloads(&world);
+        let cs = build(
+            &world,
+            &map,
+            &rows,
+            &NamespaceFilter::All,
+            &crate::state::pdb::drain_report(&world),
+        );
+        let cord = cs.iter().find(|c| c.title.contains("n-cord")).unwrap();
+        assert!(cord.detail.contains("not read"), "{}", cord.detail);
     }
 
     #[test]

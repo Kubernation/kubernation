@@ -515,6 +515,14 @@ impl Chaos {
                 healthy_before: sess.healthy_before,
                 detect_secs: sess.detect_secs(),
                 restored: sess.restored,
+                // From the run's own per-step results. A drill whose evictions
+                // were all turned down by a disruption budget must not be read
+                // as the workload shrugging it off.
+                steps_refused: sess
+                    .outcome
+                    .as_ref()
+                    .map_or(0, |o| o.rows.iter().filter(|r| !r.ok).count()),
+                steps_total: sess.outcome.as_ref().map_or(0, |o| o.rows.len()),
             };
             // Cull at the modal frame — the body is unclipped (window.rs has no
             // scissor), so a tall card must stop rather than spill past the frame.

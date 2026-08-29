@@ -3301,6 +3301,62 @@ what makes the interesting logic unit-testable without a cluster.
   concern + province window/SELECTION, and the drill-verdict gap item 1 recorded)
   is not started.**
 
+- **PDB item 3 — the constraint reaches the operator; the guidance closes**
+  (2026-08-28, **v1.32.0**; item 3 of `docs/kubernation-pdb-guidance.md`, report
+  in `docs/reports/pdb-item3-surfaces.md`): the derivation surfaces, and the Game
+  Day scorecard stops over-claiming. **§4 says "take the attention concern" and
+  names `pool_confinement` as the precedent — and that precedent is ENRICHMENT,
+  not a new concern**, which is what makes the feature safe: a budget written
+  `minAvailable: 3` on a 3-replica workload sits at `disruptionsAllowed: 0`
+  permanently and *by design*, so a concern per blocked node would squat the queue
+  forever on a healthy cluster — the harden-#7 failure in a form no
+  namespace exclusion could reach, since the workloads are the operator's own.
+  So `pdb::drain_note` rides the **cordon** concern's `detail`: the queue answers
+  *what needs orders*, and a blocked drain is only an obstacle to someone
+  draining; a cordon is the observable signal that the node is being taken out of
+  service. It is silent for a drainable node (the `pool_line`/`extent_line` rule
+  that a caveat carrying no information is noise). Landing in `detail` makes it
+  ride the sidebar, the Oracle bundle and the postmortem for free — verified in a
+  real export. **The panels take the OPPOSITE rule, deliberately**: the province
+  window and the SELECTION box report the constraint under **every** overlay,
+  because what would refuse to give a node up is a standing property of the
+  machine like its pool, and there is no "drain overlay" whose absence should hide
+  it. Both read one `DrainReport`, so they cannot disagree about the fact; they
+  differ only about when it is worth saying, and the divergence is asserted by
+  test in both directions. **THE LIVE CAPTURE CHANGED THE DESIGN:** the first
+  SELECTION line reused the concern's sentence and truncated to `drain: draining
+  blocked by kubernation...` — the column is ~40 chars and `namespace/name` is the
+  END of the sentence, so right-truncation ate precisely the part the operator
+  needs (the D1 finding the IMPACT row front-loads its hop for). Reshaped to a
+  header plus an indented name, the `substrate_gap_lines` shape three lines away
+  in the same file, and pinned by a test asserting every row fits in 40 chars —
+  so the next long budget name fails a test rather than a screenshot. **The
+  drill-verdict gap item 1 recorded is closed:** `ChaosScorecard` gained
+  `steps_refused`/`steps_total` from the run's own `CommitRow`s, and a wholly
+  refused drill now reads "no disruption landed — every step was refused" instead
+  of "stayed up — no outage" (which would be the drill taking credit for a
+  disruption it never caused); a partial one says how much smaller the experiment
+  was; `(0, 0)` says nothing rather than "0 of 0". Reachable only because item 1
+  moved eviction to `pods/eviction` — a plain DELETE always landed. **Mutation
+  floor: 6, 5 caught, 1 survival closed.** N2 (`drain_note` speaks for a drainable
+  node) survived because every test aimed at the note's PRESENCE — the
+  anti-squatting assertion was about an *un*cordoned node, which has no concern at
+  all — so the entire justification for the `None` arm was untested; closed with a
+  cordoned node that nothing blocks. Same shape as item 2's M11 and D2's M-D: the
+  fixture could express the positive case and not the negative one, so the floor
+  measured half the rule. **Gate on kind** (`web-strict` at
+  `disruptionsAllowed: 0`, `kubernation-worker` cordoned), criteria stated first:
+  the postmortem export carries the enriched concern and mentions it **exactly
+  once** — `worker2` is equally blocked but uncordoned and the queue stays silent,
+  the anti-squatting rule live; the province window and column both render in
+  full. The truncation criterion FIRED on the first capture, which is what made it
+  a finding rather than a detail I looked past. Cluster left as found. 453 core
+  (478 with `oracle`) + 143 GUI tests; gui-smoke 57. **This closes the PDB
+  guidance (items 1–3).** Deferred with reasons: a map mark (a per-node question,
+  and §4's own call), the workload surfaces (*protected, and by how much* is a
+  different feature), and a gui-smoke state (the line renders only against a live
+  blocking budget).
+
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the
   treasury's single burn threshold (`BURN_HOT=1.5`) became the SRE multiwindow burn

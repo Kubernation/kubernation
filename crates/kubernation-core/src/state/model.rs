@@ -2154,7 +2154,12 @@ impl Models {
         let layout = crate::state::layout::assign_layout(prior, &observed);
         let mut workloads = build_workloads(world);
         workloads.retain(|w| filter.matches(&w.r.namespace));
-        let attention = attention::build(world, &map, &workloads, filter);
+        // PodDisruptionBudgets — "can this node be drained?". Computed before
+        // attention because a cordoned node's concern names what would refuse.
+        // Cheap on a healthy realm by construction: only budgets that could
+        // refuse are matched against pods, and on most clusters there are none.
+        let drain = crate::state::pdb::drain_report(world);
+        let attention = attention::build(world, &map, &workloads, filter, &drain);
         let mut workload_severity: HashMap<WorkloadRef, Severity> = HashMap::new();
         for c in &attention {
             if let Target::Workload(r) = &c.target {
@@ -2210,10 +2215,6 @@ impl Models {
         // and NOT reusing `Province.infra` (which is gated on the filtered
         // workload list, so prevalence over it would report phantom gaps).
         let substrate = crate::state::substrate::coverage_report(world);
-        // PodDisruptionBudgets — "can this node be drained?". Cheap on a healthy
-        // realm by construction: only budgets that could refuse are matched
-        // against pods, and on most clusters there are none.
-        let drain = crate::state::pdb::drain_report(world);
         Models {
             map,
             workloads,

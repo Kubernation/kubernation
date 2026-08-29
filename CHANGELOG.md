@@ -9,6 +9,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **A cordoned node now tells you what would refuse to let it drain.** Its entry
+  in the attention queue — and so in the sidebar, the Oracle's context and the
+  after-action report — names the disruption budget standing in the way:
+  *"draining blocked by kubernation-demo/web-strict"*. Deliberately only for a
+  cordoned node: a budget written to allow no disruptions at all is a permanent
+  state on a healthy cluster, and a standing alarm on every node running that
+  workload would be noise rather than news. The province window and the selection
+  panel report it for any node, whatever map view you have open.
+
 - **KuberNation now knows which nodes a PodDisruptionBudget would refuse to give
   up.** Budgets are watched like every other resource, and the app works out, per
   node, whether draining it would currently be blocked and by which budget. The
@@ -20,6 +29,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   claiming to be drainable. Read-only; nothing new is written to the cluster.
 
 ### Fixed
+- **A Game Day drill the cluster refused no longer reports that the workload
+  shrugged it off.** Now that evicting a pod respects disruption budgets, a drill
+  can be turned down before it does anything — and the scorecard was still
+  reading "stayed up — no outage", which sounds like resilience the drill never
+  actually tested. It now says *"no disruption landed — every step was refused"*,
+  or, when only some steps were refused, how much smaller the experiment was than
+  the one you asked for.
 - **The evict button was asking the cluster for the wrong permission.** Since the
   previous release evicting a pod goes through the eviction subresource, which
   Kubernetes authorizes under its own verb — but the permission check still asked

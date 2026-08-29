@@ -15,6 +15,7 @@ use kubernation_core::state::filter::NamespaceFilter;
 use kubernation_core::state::model::{
     MetricSource, NodeDetailModel, NodeHealth, PodState, build_node_detail,
 };
+use kubernation_core::state::pdb::{Drain, DrainReport};
 use kubernation_core::state::planned::{Intervention, PlannedWorld};
 use kubernation_core::state::saturation::{NodeSaturation, SatLevel};
 use kubernation_core::state::timeline::{
@@ -233,6 +234,22 @@ pub fn draw_node(
         let (txt, col) = strain_line(sat);
         text(txt.as_str(), b.x, y + 12.0, 13.0, col);
         y += 18.0;
+    }
+    // Can this node be given up? A standing fact, so it is shown whether or not
+    // the node is cordoned and whatever the map overlay is — the same rule the
+    // pool and the substrate follow.
+    {
+        let drain = match id {
+            ClusterId::Hot => &snap.hot.models.drain,
+            ClusterId::Warm => snap
+                .warm
+                .as_ref()
+                .map_or(&snap.hot.models.drain, |w| &w.models.drain),
+        };
+        if let Some((txt, col)) = drain_line(drain, name) {
+            text(ascii(&txt), b.x, y + 12.0, 13.0, col);
+            y += 18.0;
+        }
     }
     text(
         format!("{} pods stationed", detail.pods.len()),
@@ -649,6 +666,27 @@ fn ratio_gauge(x: f32, y: f32, w: f32, label: &str, ratio: Option<f64>) {
 /// Reads `worst_level()`, the same authority the SELECTION box
 /// (`panels::saturation_lines`) and the map's hatch gate use — so the three
 /// surfaces cannot disagree about whether a node's strain is knowable.
+/// PURE draw-decision fn: the province's drain line — whether a
+/// PodDisruptionBudget would refuse to give this node's pods up, and which one.
+///
+/// Shown **unconditionally**, not gated on an overlay or on the node being
+/// cordoned: it is a standing fact about the node, like its pool and its
+/// substrate. The attention queue takes the opposite rule and speaks only for a
+/// cordoned node, because the queue answers *what needs orders* — see
+/// `pdb::drain_note`.
+///
+/// `None` for a node the report never examined, which is not the same as
+/// drainable: a node absent from the store has no answer, and inventing one
+/// here would be the fabrication `DrainReport::node` refuses to make.
+pub fn drain_line(drain: &DrainReport, node: &str) -> Option<(String, Color)> {
+    let d = drain.node(node)?;
+    Some(match d.state {
+        Drain::Allowed => (format!("drain: {}", d.detail()), DIM),
+        Drain::Blocked => (format!("drain: {}", d.detail()), CRIT),
+        Drain::Unknown => (format!("drain: {}", d.detail()), WARN),
+    })
+}
+
 pub fn strain_line(sat: &NodeSaturation) -> (String, Color) {
     match sat.worst_level() {
         // No dimensions ⇒ nothing measured ⇒ "calm" would be a claim we cannot

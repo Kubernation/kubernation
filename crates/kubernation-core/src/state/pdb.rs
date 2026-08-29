@@ -322,6 +322,34 @@ pub fn drain_report(world: &ObservedWorld) -> DrainReport {
     }
 }
 
+/// "draining blocked by demo/web-strict" — when that is worth saying.
+///
+/// PURE, unit-tested. The `pool_confinement` shape: a fact appended to an
+/// existing concern's `detail`, riding the sidebar, the Oracle bundle and the
+/// postmortem for free, rather than a concern of its own.
+///
+/// **Why not a concern of its own.** A budget written `minAvailable: 3` on a
+/// 3-replica workload sits at `disruptionsAllowed: 0` permanently and by design.
+/// A concern per blocked node would therefore squat the queue forever on a
+/// perfectly healthy cluster — the failure the hardening round had to fix by
+/// excluding system namespaces, in a form no exclusion could reach. So this
+/// enriches the node concern that already exists.
+///
+/// **Why only a cordoned node.** The queue answers *what needs orders*, and a
+/// blocked drain is only an obstacle to someone draining. A cordon is the
+/// observable signal that the operator is taking the node out of service; a
+/// blocked budget on a node nobody is touching is a standing fact, which the
+/// province panel reports unconditionally.
+///
+/// `None` for [`Drain::Allowed`] — a caveat on a value that carries none is
+/// noise, the rule `pool_line` and `extent_line` already follow.
+pub fn drain_note(d: &NodeDrain) -> Option<String> {
+    match d.state {
+        Drain::Allowed => None,
+        _ => Some(d.detail()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

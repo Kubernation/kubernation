@@ -700,6 +700,14 @@ pub struct ChaosScorecard {
     /// dip/recover "self-healed" claim — the cluster came back because *we* fixed
     /// it, not because it self-healed.
     pub restored: bool,
+    /// How many of the drill's steps the cluster refused, out of how many were
+    /// attempted. Since eviction goes through `pods/eviction`, a
+    /// PodDisruptionBudget can turn a step down — so a drill can now fail to
+    /// land while the cluster sails on, and "stayed up — no outage" would be a
+    /// claim about resilience the drill never tested. `(0, 0)` for a session
+    /// with no recorded outcome.
+    pub steps_refused: usize,
+    pub steps_total: usize,
 }
 
 /// A colour role for a scorecard line — the GUI maps it to a theme colour.
@@ -754,6 +762,14 @@ fn recovery_line(s: &ChaosScorecard) -> (String, ScoreRole) {
             "restored — cluster undone by operator".into(),
             ScoreRole::Good,
         )
+    } else if s.steps_total > 0 && s.steps_refused == s.steps_total {
+        // Nothing reached the cluster, so the workload's staying up says nothing
+        // about the workload. Reporting resilience here would be the drill
+        // taking credit for a disruption it never caused.
+        (
+            "no disruption landed — every step was refused".into(),
+            ScoreRole::Warn,
+        )
     } else if !s.dipped {
         ("stayed up — no outage".into(), ScoreRole::Good)
     } else {
@@ -776,6 +792,17 @@ pub fn scorecard_lines(s: &ChaosScorecard) -> Vec<(String, ScoreRole)> {
             ScoreRole::Info,
         ),
     ];
+    // Partly refused: the recovery verdict below is about a smaller experiment
+    // than the one requested, so say how much smaller.
+    if s.steps_refused > 0 && s.steps_refused < s.steps_total {
+        out.push((
+            format!(
+                "{} of {} steps refused — a partial drill",
+                s.steps_refused, s.steps_total
+            ),
+            ScoreRole::Warn,
+        ));
+    }
     // Steady-state hypothesis: warn if the baseline was already degraded.
     if !s.healthy_before {
         out.push((
@@ -1014,6 +1041,8 @@ mod tests {
             healthy_before: true,
             detect_secs: None,
             restored: false,
+            steps_refused: 0,
+            steps_total: 0,
         };
         // Dipped but not back → "not recovered yet".
         assert!(
@@ -1043,6 +1072,61 @@ mod tests {
                 .iter()
                 .any(|(t, _)| t.contains("self-healed in 3s"))
         );
+    }
+
+    /// A drill whose every step the cluster refused did not test anything, and
+    /// must not be reported as the workload staying up under it.
+    ///
+    /// This became reachable when eviction moved to the `pods/eviction`
+    /// subresource: a PodDisruptionBudget can now turn a pod kill down, where a
+    /// plain DELETE always landed.
+    #[test]
+    fn a_wholly_refused_drill_does_not_claim_the_workload_stayed_up() {
+        let card = |refused, total| ChaosScorecard {
+            kind: ScoreKind::Workload,
+            experiment: "kill one pod".into(),
+            target: "demo/web".into(),
+            blast: 1,
+            budget_before: None,
+            budget_after: None,
+            dipped: false,
+            recovered: false,
+            recover_secs: None,
+            healthy_before: true,
+            detect_secs: None,
+            restored: false,
+            steps_refused: refused,
+            steps_total: total,
+        };
+        let joined = |c: &ChaosScorecard| {
+            scorecard_lines(c)
+                .iter()
+                .map(|(t, _)| t.clone())
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+
+        let all = joined(&card(3, 3));
+        assert!(all.contains("no disruption landed"), "{all}");
+        assert!(
+            !all.contains("stayed up"),
+            "a refused drill must not read as resilience: {all}"
+        );
+
+        // Partly refused: the verdict stands, but the experiment was smaller
+        // than the one requested and the card says so.
+        let part = joined(&card(1, 3));
+        assert!(part.contains("1 of 3 steps refused"), "{part}");
+        assert!(part.contains("stayed up"), "{part}");
+
+        // Nothing refused: unchanged.
+        let none = joined(&card(0, 3));
+        assert!(none.contains("stayed up"), "{none}");
+        assert!(!none.contains("refused"), "{none}");
+
+        // No recorded outcome at all — say nothing rather than "0 of 0".
+        let unknown = joined(&card(0, 0));
+        assert!(!unknown.contains("refused"), "{unknown}");
     }
 
     #[test]
@@ -1260,6 +1344,8 @@ mod tests {
             healthy_before: true,
             detect_secs: None,
             restored: false,
+            steps_refused: 0,
+            steps_total: 0,
         };
         let lines = scorecard_lines(&node_card);
         assert!(lines.iter().any(|(t, _)| t.contains("3 pod(s) drained")));
@@ -1306,6 +1392,8 @@ mod tests {
             healthy_before: true,
             detect_secs: Some(2.0),
             restored: false,
+            steps_refused: 0,
+            steps_total: 0,
         };
         let lines = scorecard_lines(&base);
         assert!(lines.iter().any(|(t, _)| t.contains("flagged it in 2s")));

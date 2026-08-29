@@ -8,6 +8,7 @@ use kubernation_core::events::ClusterId;
 use kubernation_core::state::cost::{self, CostBasis, NodeCost};
 use kubernation_core::state::logline::{self, FilterExpr, Level};
 use kubernation_core::state::model::{ExtentSource, NodeHealth, PodState, WorkloadRef};
+use kubernation_core::state::pdb::{Drain, DrainReport};
 use kubernation_core::state::saturation::{NodeSaturation, SatLevel};
 use kubernation_core::state::world::{CitySpread, CoastKind, Region};
 use macroquad::prelude::*;
@@ -238,6 +239,16 @@ pub fn region_lines(
             .as_ref()
             .map_or(&snap.hot.models.substrate, |w| &w.models.substrate),
     };
+    // And whether its nodes can be given up. Ungated by overlay: a blocked
+    // drain is a standing fact about the machine, like its pool — there is no
+    // "drain overlay" whose absence should hide it.
+    let drain = match sw.id {
+        ClusterId::Hot => &snap.hot.models.drain,
+        ClusterId::Warm => snap
+            .warm
+            .as_ref()
+            .map_or(&snap.hot.models.drain, |w| &w.models.drain),
+    };
     // Route through the ONE resolver so the tooltip can never name something
     // different from what a click at the same pixel would open.
     match crate::draw::resolve_region(sw, local) {
@@ -333,6 +344,7 @@ pub fn region_lines(
                             substrate.has_data(),
                         ));
                     }
+                    lines.extend(drain_gap_lines(drain, &p.tile.name));
                 }
                 Region::Province(p) => {
                     lines.push((p.tile.name.clone(), STONE_INK));
@@ -372,6 +384,9 @@ pub fn region_lines(
                             substrate.has_data(),
                         ));
                     }
+                    // Ungated: what would refuse to give this node up is not a
+                    // property of the view you happen to have turned on.
+                    lines.extend(drain_gap_lines(drain, &p.tile.name));
                 }
                 Region::Structure(_, s) => {
                     lines.push((format!("{}/{}", s.kind, s.name), STONE_INK));
@@ -643,6 +658,48 @@ pub fn fresh_line(
 /// and without this the map raises a question it can't answer and the operator
 /// goes to `kubectl`. (Distinct from `node::substrate_lines`, which shows what
 /// a node HAS — this is the complement, and only under this overlay.)
+/// PURE draw-decision fn: the SELECTION/tooltip lines for a node's drain
+/// constraint. Ungated by overlay (see the call site), and silent for a
+/// drainable node — the box is a scarce surface and "nothing is stopping you"
+/// on every province is noise. A refusal and an unknown both earn a row.
+///
+/// **Header then indented names**, the `substrate_gap_lines` shape, rather than
+/// one long sentence. The column is ~40 characters wide and the budget's
+/// `namespace/name` is the end of the sentence, so a single line truncates away
+/// precisely the thing the operator needs — the D1 finding that the IMPACT row
+/// front-loads its hop for.
+///
+/// `None` for a node the report never examined, which is not drainable: a node
+/// absent from the store has no answer, and inventing one here is the
+/// fabrication `DrainReport::node` refuses to make.
+pub fn drain_gap_lines(drain: &DrainReport, node: &str) -> Vec<(String, Color)> {
+    let Some(d) = drain.node(node) else {
+        return Vec::new();
+    };
+    let named = |budgets: &[kubernation_core::state::pdb::BudgetRef], col: Color| {
+        budgets
+            .iter()
+            .map(|b| (format!("  {}", b.label()), col))
+            .collect::<Vec<_>>()
+    };
+    match d.state {
+        Drain::Allowed => Vec::new(),
+        Drain::Blocked => {
+            let mut out = vec![("drain: blocked by".into(), STONE_CRIT)];
+            out.extend(named(&d.blocking, STONE_CRIT));
+            out
+        }
+        Drain::Unknown if d.unreadable.is_empty() => {
+            vec![("drain: budgets not read".into(), STONE_WARN)]
+        }
+        Drain::Unknown => {
+            let mut out = vec![("drain: headroom unknown for".into(), STONE_WARN)];
+            out.extend(named(&d.unreadable, STONE_WARN));
+            out
+        }
+    }
+}
+
 pub fn substrate_gap_lines(missing: &[String], report_has_data: bool) -> Vec<(String, Color)> {
     if !report_has_data {
         // No fleet-wide DaemonSets ⇒ nothing to be missing from. Say so rather
@@ -1920,7 +1977,28 @@ mod tests {
     }
 
     fn world_snap_cfg(nodes: &[(&str, &str)], pod_node: &str) -> (WorldSnap, (u16, u16)) {
+        world_snap_with(nodes, pod_node, false)
+    }
+
+    /// `blocking_pdb` seeds a PodDisruptionBudget at `disruptionsAllowed: 0`
+    /// covering the fixture's pod, so `pod_node` cannot be drained. Off by
+    /// default: it adds a line to every SELECTION box, and the point is to
+    /// exercise the case rather than to change the baseline every other test
+    /// reads.
+    fn world_snap_with(
+        nodes: &[(&str, &str)],
+        pod_node: &str,
+        blocking_pdb: bool,
+    ) -> (WorldSnap, (u16, u16)) {
         let (world, mut s) = fx::world();
+        if blocking_pdb {
+            s.pdb(fx::pdb(
+                "demo",
+                "web-strict",
+                &[("app", "a-long-workload-name")],
+                0,
+            ));
+        }
         for (n, z) in nodes {
             s.node(fx::node(n, Some(z)));
         }
@@ -1995,6 +2073,133 @@ mod tests {
             attention: Arc::new(Vec::new()),
         };
         (snap, city)
+    }
+
+    /// The SELECTION box names what would refuse to give a node up — and, when
+    /// nothing would, spends no row saying so.
+    ///
+    /// End-to-end through the real `region_lines` rather than against the pure
+    /// fn alone: pinning the authority while nothing pins that the box calls it
+    /// is the gap D2-fix named, and it recurs one level down every time.
+    #[test]
+    fn selection_names_a_budget_that_would_block_the_drain() {
+        let (hot, city) = world_snap_with(
+            &[("n1", "z-a"), ("n2", "z-a"), ("n3", "z-a"), ("n4", "z-a")],
+            "n1",
+            true,
+        );
+        let snap = Snapshot {
+            hot,
+            warm: None,
+            pair: None,
+            attention: Arc::new(Vec::new()),
+        };
+        let worlds = crate::draw::scene(&snap);
+        let sw = &worlds[0];
+        let lines = region_lines(
+            sw,
+            city,
+            &snap,
+            Overlay::Terrain,
+            false,
+            kubernation_core::state::layout::NewGround::Off,
+        );
+        let joined: String = lines
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            joined.contains("demo/web-strict"),
+            "the box must name the budget, not just say blocked: {joined}"
+        );
+
+        // ...and the same scene without the budget says nothing about draining.
+        let (hot, city) = world_snap();
+        let snap = Snapshot {
+            hot,
+            warm: None,
+            pair: None,
+            attention: Arc::new(Vec::new()),
+        };
+        let worlds = crate::draw::scene(&snap);
+        let sw = &worlds[0];
+        let clean: String = region_lines(
+            sw,
+            city,
+            &snap,
+            Overlay::Terrain,
+            false,
+            kubernation_core::state::layout::NewGround::Off,
+        )
+        .iter()
+        .map(|(t, _)| t.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
+        assert!(
+            !clean.contains("drain:"),
+            "a drainable node spends no row on it: {clean}"
+        );
+    }
+
+    /// A node the report never examined is not drainable — it has no answer, and
+    /// inventing one here is the fabrication `DrainReport::node` refuses.
+    #[test]
+    fn drain_gap_lines_are_silent_for_an_unexamined_node() {
+        let (world, _s) = fx::world();
+        let d = kubernation_core::state::pdb::drain_report(&world);
+        assert!(drain_gap_lines(&d, "no-such-node").is_empty());
+    }
+
+    /// An unread budget set earns a row: a cordon you cannot cost is worth
+    /// knowing about, and silence here would read as "nothing is stopping you".
+    #[test]
+    fn drain_gap_lines_speak_when_the_budgets_were_not_read() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.pdbs_unread();
+        let d = kubernation_core::state::pdb::drain_report(&world);
+        let out = drain_gap_lines(&d, "n1");
+        assert_eq!(out.len(), 1, "unknown earns exactly one row");
+        assert!(out[0].0.contains("not read"), "{}", out[0].0);
+        assert_eq!(out[0].1, STONE_WARN);
+    }
+
+    /// The column is ~40 characters. A one-line "drain: draining blocked by
+    /// kubernation-demo/web-strict" truncated away the budget name — the only
+    /// part the operator needs — so the name gets its own indented row and the
+    /// header carries the verdict.
+    #[test]
+    fn a_blocked_node_names_its_budget_on_a_row_narrow_enough_to_read() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        let mut p = fx::pod("kubernation-demo", "web-1", Some("n1"));
+        p.metadata.labels = Some(std::collections::BTreeMap::from([(
+            "app".to_string(),
+            "web".to_string(),
+        )]));
+        s.pod(p);
+        s.pdb(fx::pdb(
+            "kubernation-demo",
+            "web-strict",
+            &[("app", "web")],
+            0,
+        ));
+        let d = kubernation_core::state::pdb::drain_report(&world);
+        let out = drain_gap_lines(&d, "n1");
+        assert_eq!(out.len(), 2, "a header and the budget: {out:?}");
+        assert!(out[0].0.starts_with("drain: blocked"), "{}", out[0].0);
+        assert!(
+            out[1].0.trim() == "kubernation-demo/web-strict",
+            "{}",
+            out[1].0
+        );
+        for (line, _) in &out {
+            assert!(
+                line.chars().count() <= 40,
+                "too wide for the column, so it truncates: {line:?}"
+            );
+        }
     }
 
     /// The two almanac pages make the SAME claim about siting.
