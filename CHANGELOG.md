@@ -8,7 +8,10 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [1.32.0] — 2026-08-28
+
 ### Added
+
 - **A cordoned node now tells you what would refuse to let it drain.** Its entry
   in the attention queue — and so in the sidebar, the Oracle's context and the
   after-action report — names the disruption budget standing in the way:
@@ -28,91 +31,6 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   read budgets at all, every node says so — "budgets not read" — instead of
   claiming to be drainable. Read-only; nothing new is written to the cluster.
 
-### Fixed
-- **A Game Day drill the cluster refused no longer reports that the workload
-  shrugged it off.** Now that evicting a pod respects disruption budgets, a drill
-  can be turned down before it does anything — and the scorecard was still
-  reading "stayed up — no outage", which sounds like resilience the drill never
-  actually tested. It now says *"no disruption landed — every step was refused"*,
-  or, when only some steps were refused, how much smaller the experiment was than
-  the one you asked for.
-- **The evict button was asking the cluster for the wrong permission.** Since the
-  previous release evicting a pod goes through the eviction subresource, which
-  Kubernetes authorizes under its own verb — but the permission check still asked
-  about deleting pods. Those are separately grantable, so the button could be
-  greyed out for someone who is in fact allowed to evict, or offered to someone
-  who is not and would hit a refusal. Both directions were reproduced on a real
-  cluster. The check, the Game Day drill's pre-flight, and the in-app Charter now
-  name the verb the app actually uses.
-
-### Changed
-- **Evicting a pod now respects PodDisruptionBudgets, and says so when one
-  refuses.** The evict button — and the Game Day drill's pod kills, which share
-  the same primitive — went through a plain delete, which the apiserver does not
-  check a budget against. So a workload declaring "keep at least three of us
-  running" could be taken to two from inside the app, silently, by the one
-  control whose whole purpose is to disturb a running workload. Eviction now
-  goes through the eviction subresource, the way `kubectl drain` does, so the
-  apiserver enforces the budget. A refusal is reported as a refusal rather than
-  an error, naming the budget in the apiserver's own words:
-  `web-f56f55fb4-scp2w is protected - The disruption budget web-strict needs 3
-  healthy pods and has 3 currently`. A chaos drill whose eviction is blocked
-  continues and reports that step as refused, rather than stopping half-drained.
-
-### Fixed
-- **The field guide's "node" and "road" cross-references now land on the
-  province they name**, instead of on the water just west of it.
-- **Jumping to a node that needs attention no longer lands you in the sea.**
-  Pressing `N` to park on a node concern put the marker on open water just west
-  of the province and left the SELECTION panel blank, because the position it
-  jumped to was computed without reference to the coastline the map actually
-  draws. The blast radius drew its ring there too. Every province measured was
-  affected. The map now works out where a node's land is the same way it works
-  out what you are pointing at, so the two cannot disagree.
-
-### Fixed
-- **"Fit view" now fits into the part of the map you can actually see.** It
-  framed the world against the whole window, so on a large cluster a sixth of
-  the map landed behind the docked right column and the northern edge was
-  clipped under the menu bar. It now frames into the map area. On a fleet big
-  enough to hit the zoom floor the world still will not all fit at once — no
-  framing can make an arbitrary number of nodes readable together — but nothing
-  is hidden behind the chrome any more.
-
-### Changed
-- **A development diagnostic no longer calls the plurality node "the node".**
-  `--dump-positions` labelled each city's province `node`, which reads as where
-  the workload runs; it is where the city is *drawn*, often on a node holding a
-  few percent of the pods. It is now `plurality_node`. Nothing user-facing.
-- **The map stopped drawing sea over ground it has reserved.** Every node's plot
-  is the same size so that adding or replacing a node never shifts the world
-  around it, but most nodes are smaller than that — and the unused part of each
-  plot was being drawn as open water. About a quarter of the world was ocean
-  that no ship could ever sail. It now shows as bare reserved ground, so a
-  continent reads as land with structure rather than stripes in a sea, and each
-  node's own size is still legible: the built part is green and, in the relief
-  style, stands proudly above its unbuilt remainder.
-
-### Fixed
-- **Asking the Oracle to "widen to node" now says how much of the workload is
-  actually on that node.** It folded one node's health and strain into a
-  workload's consult with nothing saying it was one node of sixty-five — and the
-  node it picked was an arbitrary pod's, not even the one the city is drawn on.
-  A model reading that would reasonably blame the workload's trouble on a node
-  running two of its hundred and twenty pods, and on a remote endpoint that
-  inference leaves your laptop. The section now opens with the share.
-- **The map no longer implies a workload runs on one node.** A city is drawn on
-  the node holding the most of its pods, which for a spread workload is a small
-  minority — one 120-pod workload's city sat on a node running five of them —
-  and selecting it went on to show that node's strain, cost and pool as though
-  they were the workload's. The panel now states the real footprint ("120 pods
-  across 65 nodes") and says the readings beside it belong to the province.
-- **The field guide said a city sits where *most* of its pods are.** It does
-  not, and the same document said so correctly two pages later. Both now come
-  from one sentence, and it explains that a city marks where a workload is
-  drawn rather than where it runs.
-
-### Added
 - **Following an Oracle "consult next" link now marks that object on the map**,
   so when you close the Oracle the selection panel is describing the thing you
   just drilled into. The camera deliberately stays put: drilling into a suspect
@@ -129,64 +47,6 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   the provinces it runs on, never a settlement, so its row reads "road - not a
   settlement" instead of quietly failing to highlight.
 
-### Changed
-- **What you have selected now survives the cluster changing under you.** The
-  map remembered a *place*, so a workload rescheduled to another node left the
-  selection quietly pointing at whatever was on the old ground — and, in a
-  hot/warm pair, adding a zone to the hot cluster shifted every warm selection
-  onto a different cluster's node entirely. It now remembers *what* you picked
-  and works out where that is each frame. Measured on a live cluster: a
-  workload moved across continents and the selection followed it; a warm
-  selection stayed put while the cell it used to occupy was swallowed by a
-  newly added hot zone.
-- **A selected workload that gets deleted says so** instead of disappearing or
-  leaving a mark on ground that is no longer its own.
-- **Clicking water no longer selects a node.** Where the shoreline cut into a
-  province's rectangle, a click could give you a selection the tooltip called
-  ocean and the blast radius called a node.
-- **The map's selection decisions are now covered by tests.** Which node or
-  workload the blast radius points at, which one the Oracle will consult, and
-  which window an impact row opens were all decided in the one file the test
-  suite cannot reach — so a wrong answer there could only be found by using the
-  app. They moved somewhere testable, and five deliberate breakages of them now
-  fail the build. Nothing about how they behave changed.
-- **One home for turning a map cell into the thing it names.** Two places
-  converted a selected cell into a workload-or-node identity with the same ten
-  lines; they now share `subject_at`. The test written to pin it against the
-  richer panel resolver found a divergence nobody had named: a cell inside a
-  province's rectangle that the shoreline carving turned to water is *ocean* to
-  the tooltip and *a node* to the blast radius. Recorded, not yet fixed — the
-  selection rework that dissolves it did not clear its gate.
-
-### Fixed
-- **A deploy and the failure it caused in the same second are now connected.**
-  Kubernetes timestamps only go down to the second and a kubelet rejects a bad
-  image immediately, so the two routinely land together — and the rule required a
-  gap of at least one second, silently dropping the most common incident there
-  is. Measured across four induced rollouts, half sat at exactly zero. A rollout
-  or an action you took is now treated as a precursor even at the same instant; a
-  passively-observed change is not, since at the same instant it may just as
-  easily be the failure's *consequence*.
-- **A repeating change is now correlated from when it started**, not from the last
-  time it was seen. A scaling event that had been recurring since before a failure
-  could be measured from its most recent repeat and land on the wrong side of it.
-- **"Trouble begins here" now marks when the incident began**, not when the app
-  last saw the oldest long-running failure. If anything in view had been failing
-  for hours or days, it kept refreshing its own timestamp and stole the marker —
-  so on a cluster with a crash-looping pod anywhere, the Annals drew the line in
-  the wrong place and silently dropped the "(before the failure)" cue that is the
-  section's whole point. A deploy that broke something now gets flagged even
-  while unrelated chronic noise is present. Affected the realm feed and a city's
-  or province's own feed alike.
-- The "(before the failure)" cue is no longer truncated away before you can read
-  it. It used to be appended and the row then cut to fit, so it was the first
-  thing lost — and a city row is capped at 30 characters when it shares space
-  with a rollback button, which an entry title alone exceeds. It was therefore
-  effectively invisible in the city and province panels, which is where you look
-  after the map sends you somewhere. The wording is also one string now; two of
-  the three places that drew it had drifted apart.
-
-### Added
 - **Nodepools are now visible on the map** — *View ▸ Pool (nodepools)* tints each
   province by the pool that holds it, and the panel names it; a province's own
   window shows its pool beside its zone whichever view you are in. Until now the
@@ -219,23 +79,6 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   no pool label recedes instead of being given a colour, and is listed as "no pool
   label" rather than named, since it is not a member of anything.
 
-### Changed
-- **Ground that changed hands is marked by one setting with two modes** —
-  *View ▸ NEW GROUND*. **Fading** lets go, decaying over a window, which is what
-  makes a rolling refresh read as a wave crossing the fleet. **Since** holds
-  instead: pick a moment, and every change of hands from then on stays marked
-  until you move it. Fading answers *how recently*; since answers *whether, from
-  a point you fixed*. Use the second when an investigation outlasts the window.
-  `--changed-since N` selects since, `--fresh-minutes N` fading; a baseline
-  belongs to the session you set it in and is not remembered between runs.
-
-  This replaces a separate "changed" map view built earlier in the same
-  unreleased cycle. On our own evaluation it marked the same ground the ageing
-  marks already did — the only thing it added was reach, and reach is a setting
-  on the window too. One fact now has one colour, one setting and one panel line
-  instead of two of each.
-
-### Added
 - **A position on the map can now be named.** *View ▸ Reference frame* (or
   `--graticule`) draws a letter per zone and a number per slot, so a province is
   "C4" — something you can put in a ticket, say on a call, or write on a
@@ -268,22 +111,6 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   changes KuberNation itself made this session, rather than only as a toast that
   vanishes when you look away.
 
-### Fixed
-
-- **Three false ordering contracts in `state/world.rs`** — an audit prompted by
-  the v1.17.0 region-label defect found the same mistake in three more places.
-  `WorldModel::cities()` promised "west→east, north→south"; both halves were
-  true until A2 moved rows to layout ordinals and continent x to durable
-  first-observed ordinals while the vectors kept their old sort keys
-  (alphabetical, and `fnv1a64(name)`). Verified: with `z-m` observed before
-  `z-a`, the continents vector is `[(z-a, x=30), (z-m, x=0)]` — the first entry
-  is the eastern one. The order is still deterministic, so `]` / `[` cycles
-  every city exactly once; it is just not geographic. `province_index_at` and
-  `visible_provinces` return vector indices documented as rows and have had no
-  callers since the TUI was removed. Documentation only — no behaviour change.
-  Full audit in `docs/reports/region-label-ordering.md`.
-
-### Added
 
 - **A province says when its size was a guess.** A node that reports no
   allocatable memory is still drawn at some size, and until now nothing
@@ -295,110 +122,6 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   denominator" and is gated to the ratio overlays, whereas size is drawn under
   every overlay, so hatching it would put two unrelated meanings on one texture.
 
-### Fixed
-
-- **Terrain is painted back to front.** Under the Relief map style a raised tile
-  extends about 7px north of its own ground, so a southern band has to paint
-  over its northern neighbour. Land and ghost ground were painted in the order
-  the model happened to store them (name hash, and pool-then-slot) and in two
-  separate passes, which put every patch of ghost ground behind every province
-  regardless of where it sat. Both now sort together into one back-to-front
-  sequence. No visible change today — bands only touch at the largest size
-  class, which no test cluster reaches — which is precisely why the order is now
-  asserted by test rather than left to a fleet that happens not to show it.
-
-### Removed
-
-- `WorldModel::province_index_at` and `WorldModel::visible_provinces` — dead
-  since the TUI was removed, and both returned a vector index documented as a
-  map row. A false contract on an unused public helper is a trap for whoever
-  calls it next.
-
-### Documentation
-
-- Corrected the churn-fleet region-fragmentation figure from "4 of 8" to
-  **3 of 8** wherever it appeared (8 regions in 12 pieces; the difference counts
-  extra pieces, not fragmented regions). The per-zone data and the design
-  conclusion it supported are unchanged. Re-derived by the new
-  `hack/churn/pieces.py`, which now emits the fleet figure rather than leaving it
-  to be read off a breakdown.
-- Corrected T1's per-column run diagram: one of four columns is two pieces, not
-  one, because the original script collapsed vacated slots out instead of letting
-  them break a run. Full account in `docs/reports/t1-shape-rederivation.md`.
-
-### Documentation
-
-- Corrected the churn-fleet region-fragmentation figure from "4 of 8" to
-  **3 of 8** wherever it appeared (8 regions in 12 pieces; the difference counts
-  extra pieces, not fragmented regions). The per-zone data and the design
-  conclusion it supported are unchanged. Re-derived by the new
-  `hack/churn/pieces.py`, which now emits the fleet figure rather than leaving it
-  to be read off a breakdown.
-- Corrected T1's per-column run diagram: one of four columns is two pieces, not
-  one, because the original script collapsed vacated slots out instead of letting
-  them break a run. Full account in `docs/reports/t1-shape-rederivation.md`.
-
-### Fixed
-
-- **The map says when it has no record of a change, instead of staying quiet.**
-  Under a fixed baseline ("new ground since …"), an unmarked province could mean
-  two different things — it genuinely did not change, or nothing was ever
-  recorded for it — and the panel said neither. It now distinguishes "unchanged
-  since the baseline" from "no succession on record", because an absent record
-  is not evidence that nothing happened. The rolling-window mode is unaffected:
-  there, an absent record honestly means "not recently new".
-
-  The map's *colour* deliberately still treats both as unmarked. Marking them
-  would tint 82% of a churned fleet — and every province of one that has never
-  churned — under every overlay at once, and would reuse the texture that
-  already means "this reading has no denominator".
-
-### Fixed
-
-- **A node at a nominal size boundary now gets the province size its machine
-  implies.** The size classes are written in nominal memory sizes (32, 128,
-  512 GiB) but compared against what the node *reports*, which is always lower —
-  firmware and reserved RAM, plus any kubelet reservation. So a machine sold as
-  32 GiB reports about 30.9, missed the threshold, and was drawn one class too
-  small; the same at every boundary. A named `EXTENT_HEADROOM` now scales the
-  reported figure before the comparison, so the thresholds stay readable as
-  machine sizes. Genuinely in-between machines — 24, 96 and 384 GiB are all real
-  instance sizes — are unaffected, and there are tests in both directions.
-
-  No visible change on kind or on the kwok test fleet, which report exact round
-  numbers; this only moves on real cloud nodes.
-
-### Changed
-
-- `ExtentInput::Capacity` and `ExtentSource::Capacity` are now **`Allocatable`**,
-  because that is the field they read. `status.capacity` is a different
-  Kubernetes field, reports a different number, and is never consulted — a
-  mismatch that had already misled one design proposal. This changes the
-  `extent_source` value emitted by the `--dump-positions` developer flag from
-  `"Capacity"` to `"Allocatable"`; nothing persisted is affected.
-
-### Documentation
-
-- Measured which dimension pod failures actually cluster in, before scoping a
-  feature around the assumption that they cluster by location. On the dev
-  cluster they cluster by **workload** in every failure shape that could be
-  induced, and scatter evenly across nodes; unschedulable pods have no node at
-  all, so no map can place them; and a node going down produced no failing pods
-  whatsoever — that signal lives in the node's own condition, which the map
-  already shows. Report in `docs/reports/t2-pre-failure-clustering.md`; no
-  product change.
-
-### Documentation
-
-- Closed the measurement gap the previous round flagged: whether a failure
-  confined to a single nodepool reads as a shape on the map. It does not — 100%
-  of one nodepool renders as eight disconnected pieces across three columns, and
-  in the case measured it produced no trouble marking on the map at all. Neither
-  the map nor the attention queue currently says "these failures are confined to
-  one pool", which is the actual gap and is a sentence rather than a map feature.
-  Report in `docs/reports/t2-pre-pool-gap.md`; no product change.
-
-### Added
 
 - **A concern now says when a workload's failures are confined to one
   nodepool** — `... CrashLoopBackOff ×29 · all 29 on pool sys`. A bad node image
@@ -415,6 +138,84 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ### Changed
 
+- **Evicting a pod now respects PodDisruptionBudgets, and says so when one
+  refuses.** The evict button — and the Game Day drill's pod kills, which share
+  the same primitive — went through a plain delete, which the apiserver does not
+  check a budget against. So a workload declaring "keep at least three of us
+  running" could be taken to two from inside the app, silently, by the one
+  control whose whole purpose is to disturb a running workload. Eviction now
+  goes through the eviction subresource, the way `kubectl drain` does, so the
+  apiserver enforces the budget. A refusal is reported as a refusal rather than
+  an error, naming the budget in the apiserver's own words:
+  `web-f56f55fb4-scp2w is protected - The disruption budget web-strict needs 3
+  healthy pods and has 3 currently`. A chaos drill whose eviction is blocked
+  continues and reports that step as refused, rather than stopping half-drained.
+
+- **A development diagnostic no longer calls the plurality node "the node".**
+  `--dump-positions` labelled each city's province `node`, which reads as where
+  the workload runs; it is where the city is *drawn*, often on a node holding a
+  few percent of the pods. It is now `plurality_node`. Nothing user-facing.
+- **The map stopped drawing sea over ground it has reserved.** Every node's plot
+  is the same size so that adding or replacing a node never shifts the world
+  around it, but most nodes are smaller than that — and the unused part of each
+  plot was being drawn as open water. About a quarter of the world was ocean
+  that no ship could ever sail. It now shows as bare reserved ground, so a
+  continent reads as land with structure rather than stripes in a sea, and each
+  node's own size is still legible: the built part is green and, in the relief
+  style, stands proudly above its unbuilt remainder.
+
+- **What you have selected now survives the cluster changing under you.** The
+  map remembered a *place*, so a workload rescheduled to another node left the
+  selection quietly pointing at whatever was on the old ground — and, in a
+  hot/warm pair, adding a zone to the hot cluster shifted every warm selection
+  onto a different cluster's node entirely. It now remembers *what* you picked
+  and works out where that is each frame. Measured on a live cluster: a
+  workload moved across continents and the selection followed it; a warm
+  selection stayed put while the cell it used to occupy was swallowed by a
+  newly added hot zone.
+- **A selected workload that gets deleted says so** instead of disappearing or
+  leaving a mark on ground that is no longer its own.
+- **Clicking water no longer selects a node.** Where the shoreline cut into a
+  province's rectangle, a click could give you a selection the tooltip called
+  ocean and the blast radius called a node.
+- **The map's selection decisions are now covered by tests.** Which node or
+  workload the blast radius points at, which one the Oracle will consult, and
+  which window an impact row opens were all decided in the one file the test
+  suite cannot reach — so a wrong answer there could only be found by using the
+  app. They moved somewhere testable, and five deliberate breakages of them now
+  fail the build. Nothing about how they behave changed.
+- **One home for turning a map cell into the thing it names.** Two places
+  converted a selected cell into a workload-or-node identity with the same ten
+  lines; they now share `subject_at`. The test written to pin it against the
+  richer panel resolver found a divergence nobody had named: a cell inside a
+  province's rectangle that the shoreline carving turned to water is *ocean* to
+  the tooltip and *a node* to the blast radius. Recorded, not yet fixed — the
+  selection rework that dissolves it did not clear its gate.
+
+- **Ground that changed hands is marked by one setting with two modes** —
+  *View ▸ NEW GROUND*. **Fading** lets go, decaying over a window, which is what
+  makes a rolling refresh read as a wave crossing the fleet. **Since** holds
+  instead: pick a moment, and every change of hands from then on stays marked
+  until you move it. Fading answers *how recently*; since answers *whether, from
+  a point you fixed*. Use the second when an investigation outlasts the window.
+  `--changed-since N` selects since, `--fresh-minutes N` fading; a baseline
+  belongs to the session you set it in and is not remembered between runs.
+
+  This replaces a separate "changed" map view built earlier in the same
+  unreleased cycle. On our own evaluation it marked the same ground the ageing
+  marks already did — the only thing it added was reach, and reach is a setting
+  on the window too. One fact now has one colour, one setting and one panel line
+  instead of two of each.
+
+
+- `ExtentInput::Capacity` and `ExtentSource::Capacity` are now **`Allocatable`**,
+  because that is the field they read. `status.capacity` is a different
+  Kubernetes field, reports a different number, and is never consulted — a
+  mismatch that had already misled one design proposal. This changes the
+  `extent_source` value emitted by the `--dump-positions` developer flag from
+  `"Capacity"` to `"Allocatable"`; nothing persisted is affected.
+
+
 - **The map stays visible while you read a city or a province.** Both drill-down
   windows used to open centred, at up to 1100px wide with a dimming wash over
   everything else — which covered essentially the whole map, so the overview you
@@ -429,6 +230,189 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   Pod rows now fit their column rather than a fixed character count, so the
   narrower panel shortens a pod's name-hash instead of running its text under the
   hover buttons. Every field on the row survives.
+
+### Removed
+
+- `WorldModel::province_index_at` and `WorldModel::visible_provinces` — dead
+  since the TUI was removed, and both returned a vector index documented as a
+  map row. A false contract on an unused public helper is a trap for whoever
+  calls it next.
+
+### Fixed
+
+- **A Game Day drill the cluster refused no longer reports that the workload
+  shrugged it off.** Now that evicting a pod respects disruption budgets, a drill
+  can be turned down before it does anything — and the scorecard was still
+  reading "stayed up — no outage", which sounds like resilience the drill never
+  actually tested. It now says *"no disruption landed — every step was refused"*,
+  or, when only some steps were refused, how much smaller the experiment was than
+  the one you asked for.
+- **The evict button was asking the cluster for the wrong permission.** Since the
+  previous release evicting a pod goes through the eviction subresource, which
+  Kubernetes authorizes under its own verb — but the permission check still asked
+  about deleting pods. Those are separately grantable, so the button could be
+  greyed out for someone who is in fact allowed to evict, or offered to someone
+  who is not and would hit a refusal. Both directions were reproduced on a real
+  cluster. The check, the Game Day drill's pre-flight, and the in-app Charter now
+  name the verb the app actually uses.
+
+- **The field guide's "node" and "road" cross-references now land on the
+  province they name**, instead of on the water just west of it.
+- **Jumping to a node that needs attention no longer lands you in the sea.**
+  Pressing `N` to park on a node concern put the marker on open water just west
+  of the province and left the SELECTION panel blank, because the position it
+  jumped to was computed without reference to the coastline the map actually
+  draws. The blast radius drew its ring there too. Every province measured was
+  affected. The map now works out where a node's land is the same way it works
+  out what you are pointing at, so the two cannot disagree.
+
+- **"Fit view" now fits into the part of the map you can actually see.** It
+  framed the world against the whole window, so on a large cluster a sixth of
+  the map landed behind the docked right column and the northern edge was
+  clipped under the menu bar. It now frames into the map area. On a fleet big
+  enough to hit the zoom floor the world still will not all fit at once — no
+  framing can make an arbitrary number of nodes readable together — but nothing
+  is hidden behind the chrome any more.
+
+- **Asking the Oracle to "widen to node" now says how much of the workload is
+  actually on that node.** It folded one node's health and strain into a
+  workload's consult with nothing saying it was one node of sixty-five — and the
+  node it picked was an arbitrary pod's, not even the one the city is drawn on.
+  A model reading that would reasonably blame the workload's trouble on a node
+  running two of its hundred and twenty pods, and on a remote endpoint that
+  inference leaves your laptop. The section now opens with the share.
+- **The map no longer implies a workload runs on one node.** A city is drawn on
+  the node holding the most of its pods, which for a spread workload is a small
+  minority — one 120-pod workload's city sat on a node running five of them —
+  and selecting it went on to show that node's strain, cost and pool as though
+  they were the workload's. The panel now states the real footprint ("120 pods
+  across 65 nodes") and says the readings beside it belong to the province.
+- **The field guide said a city sits where *most* of its pods are.** It does
+  not, and the same document said so correctly two pages later. Both now come
+  from one sentence, and it explains that a city marks where a workload is
+  drawn rather than where it runs.
+
+- **A deploy and the failure it caused in the same second are now connected.**
+  Kubernetes timestamps only go down to the second and a kubelet rejects a bad
+  image immediately, so the two routinely land together — and the rule required a
+  gap of at least one second, silently dropping the most common incident there
+  is. Measured across four induced rollouts, half sat at exactly zero. A rollout
+  or an action you took is now treated as a precursor even at the same instant; a
+  passively-observed change is not, since at the same instant it may just as
+  easily be the failure's *consequence*.
+- **A repeating change is now correlated from when it started**, not from the last
+  time it was seen. A scaling event that had been recurring since before a failure
+  could be measured from its most recent repeat and land on the wrong side of it.
+- **"Trouble begins here" now marks when the incident began**, not when the app
+  last saw the oldest long-running failure. If anything in view had been failing
+  for hours or days, it kept refreshing its own timestamp and stole the marker —
+  so on a cluster with a crash-looping pod anywhere, the Annals drew the line in
+  the wrong place and silently dropped the "(before the failure)" cue that is the
+  section's whole point. A deploy that broke something now gets flagged even
+  while unrelated chronic noise is present. Affected the realm feed and a city's
+  or province's own feed alike.
+- The "(before the failure)" cue is no longer truncated away before you can read
+  it. It used to be appended and the row then cut to fit, so it was the first
+  thing lost — and a city row is capped at 30 characters when it shares space
+  with a rollback button, which an entry title alone exceeds. It was therefore
+  effectively invisible in the city and province panels, which is where you look
+  after the map sends you somewhere. The wording is also one string now; two of
+  the three places that drew it had drifted apart.
+
+
+- **Three false ordering contracts in `state/world.rs`** — an audit prompted by
+  the v1.17.0 region-label defect found the same mistake in three more places.
+  `WorldModel::cities()` promised "west→east, north→south"; both halves were
+  true until A2 moved rows to layout ordinals and continent x to durable
+  first-observed ordinals while the vectors kept their old sort keys
+  (alphabetical, and `fnv1a64(name)`). Verified: with `z-m` observed before
+  `z-a`, the continents vector is `[(z-a, x=30), (z-m, x=0)]` — the first entry
+  is the eastern one. The order is still deterministic, so `]` / `[` cycles
+  every city exactly once; it is just not geographic. `province_index_at` and
+  `visible_provinces` return vector indices documented as rows and have had no
+  callers since the TUI was removed. Documentation only — no behaviour change.
+  Full audit in `docs/reports/region-label-ordering.md`.
+
+
+- **Terrain is painted back to front.** Under the Relief map style a raised tile
+  extends about 7px north of its own ground, so a southern band has to paint
+  over its northern neighbour. Land and ghost ground were painted in the order
+  the model happened to store them (name hash, and pool-then-slot) and in two
+  separate passes, which put every patch of ghost ground behind every province
+  regardless of where it sat. Both now sort together into one back-to-front
+  sequence. No visible change today — bands only touch at the largest size
+  class, which no test cluster reaches — which is precisely why the order is now
+  asserted by test rather than left to a fleet that happens not to show it.
+
+
+- **The map says when it has no record of a change, instead of staying quiet.**
+  Under a fixed baseline ("new ground since …"), an unmarked province could mean
+  two different things — it genuinely did not change, or nothing was ever
+  recorded for it — and the panel said neither. It now distinguishes "unchanged
+  since the baseline" from "no succession on record", because an absent record
+  is not evidence that nothing happened. The rolling-window mode is unaffected:
+  there, an absent record honestly means "not recently new".
+
+  The map's *colour* deliberately still treats both as unmarked. Marking them
+  would tint 82% of a churned fleet — and every province of one that has never
+  churned — under every overlay at once, and would reuse the texture that
+  already means "this reading has no denominator".
+
+
+- **A node at a nominal size boundary now gets the province size its machine
+  implies.** The size classes are written in nominal memory sizes (32, 128,
+  512 GiB) but compared against what the node *reports*, which is always lower —
+  firmware and reserved RAM, plus any kubelet reservation. So a machine sold as
+  32 GiB reports about 30.9, missed the threshold, and was drawn one class too
+  small; the same at every boundary. A named `EXTENT_HEADROOM` now scales the
+  reported figure before the comparison, so the thresholds stay readable as
+  machine sizes. Genuinely in-between machines — 24, 96 and 384 GiB are all real
+  instance sizes — are unaffected, and there are tests in both directions.
+
+  No visible change on kind or on the kwok test fleet, which report exact round
+  numbers; this only moves on real cloud nodes.
+
+### Documentation
+
+- Corrected the churn-fleet region-fragmentation figure from "4 of 8" to
+  **3 of 8** wherever it appeared (8 regions in 12 pieces; the difference counts
+  extra pieces, not fragmented regions). The per-zone data and the design
+  conclusion it supported are unchanged. Re-derived by the new
+  `hack/churn/pieces.py`, which now emits the fleet figure rather than leaving it
+  to be read off a breakdown.
+- Corrected T1's per-column run diagram: one of four columns is two pieces, not
+  one, because the original script collapsed vacated slots out instead of letting
+  them break a run. Full account in `docs/reports/t1-shape-rederivation.md`.
+
+
+- Corrected the churn-fleet region-fragmentation figure from "4 of 8" to
+  **3 of 8** wherever it appeared (8 regions in 12 pieces; the difference counts
+  extra pieces, not fragmented regions). The per-zone data and the design
+  conclusion it supported are unchanged. Re-derived by the new
+  `hack/churn/pieces.py`, which now emits the fleet figure rather than leaving it
+  to be read off a breakdown.
+- Corrected T1's per-column run diagram: one of four columns is two pieces, not
+  one, because the original script collapsed vacated slots out instead of letting
+  them break a run. Full account in `docs/reports/t1-shape-rederivation.md`.
+
+
+- Measured which dimension pod failures actually cluster in, before scoping a
+  feature around the assumption that they cluster by location. On the dev
+  cluster they cluster by **workload** in every failure shape that could be
+  induced, and scatter evenly across nodes; unschedulable pods have no node at
+  all, so no map can place them; and a node going down produced no failing pods
+  whatsoever — that signal lives in the node's own condition, which the map
+  already shows. Report in `docs/reports/t2-pre-failure-clustering.md`; no
+  product change.
+
+
+- Closed the measurement gap the previous round flagged: whether a failure
+  confined to a single nodepool reads as a shape on the map. It does not — 100%
+  of one nodepool renders as eight disconnected pieces across three columns, and
+  in the case measured it produced no trouble marking on the map at all. Neither
+  the map nor the attention queue currently says "these failures are confined to
+  one pool", which is the actual gap and is a sentence rather than a map feature.
+  Report in `docs/reports/t2-pre-pool-gap.md`; no product change.
 
 ## [1.9.0] — 2026-08-03
 
