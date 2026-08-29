@@ -297,7 +297,8 @@ pub struct Net {
     evict_req: Mutex<Option<EvictReq>>,
     /// Transient result of the last eviction, shown as a toast then cleared.
     evict_status: Mutex<Option<String>>,
-    /// RBAC cache: can the user delete pods in (cluster, namespace)? Filled by
+    /// RBAC cache: can the user evict pods (`create pods/eviction`) in
+    /// (cluster, namespace)? Filled by
     /// the net thread from `SelfSubjectAccessReview` probes; drives whether the
     /// evict control is enabled.
     evict_perm: Mutex<HashMap<(ClusterId, String), bool>>,

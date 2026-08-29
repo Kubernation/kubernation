@@ -7,7 +7,7 @@
 //!
 //! The set covers the OWASP-K03 escalation primitives (exec, secrets-list,
 //! rbac-write, node patch/proxy, SA-token) AND KuberNation's own write surface
-//! (delete pods = evict, patch nodes = cordon, patch deployments = scale/
+//! (create pods/eviction = evict, patch nodes = cordon, patch deployments = scale/
 //! restart/image/rollback, create pods/portforward = the fwd button, create
 //! networkpolicies = a chaos partition), so the Charter doubles as a "which
 //! features will work for me here?" check.
@@ -45,6 +45,9 @@ static NS_PROBES: &[AccessProbe] = &[
     p("list", "", "pods", None, true, Risk::Normal),
     p("create", "", "pods", None, true, Risk::High),
     p("delete", "", "pods", None, true, Risk::High),
+    // CREATE on the eviction subresource, not DELETE on pods: this is the verb
+    // KuberNation's own evict button uses, and the two are separately grantable.
+    p("create", "", "pods", Some("eviction"), true, Risk::High),
     p("create", "", "pods", Some("exec"), true, Risk::Critical),
     p("get", "", "pods", Some("log"), true, Risk::Normal),
     p("create", "", "pods", Some("portforward"), true, Risk::High),
@@ -98,6 +101,17 @@ static NS_PROBES: &[AccessProbe] = &[
         Risk::Critical,
     ),
     p("list", "", "events", None, true, Risk::Normal),
+    // The drain constraint (`state/pdb.rs`) is read-only, and it is a READ the
+    // app did not previously require — declared here rather than added quietly.
+    // Denied, every node reads "budgets not read", never "drainable".
+    p(
+        "list",
+        "policy",
+        "poddisruptionbudgets",
+        None,
+        true,
+        Risk::Normal,
+    ),
 ];
 
 /// Cluster-scoped probes — answered with `namespace=None` (authoritative for
@@ -285,6 +299,7 @@ mod tests {
                 "deployments" => "apps",
                 "roles" | "rolebindings" | "clusterroles" | "clusterrolebindings" => RBAC,
                 "networkpolicies" => "networking.k8s.io",
+                "poddisruptionbudgets" => "policy",
                 _ => "", // pods/secrets/configmaps/services/events/serviceaccounts/
                          // nodes/namespaces/PVCs/PVs are all core
             };
@@ -341,6 +356,34 @@ mod tests {
         assert!(
             !dep("update"),
             "must not probe `update` (no KuberNation write uses it)"
+        );
+    }
+
+    /// The same defect, one resource over: `evict_pod` posts to the eviction
+    /// subresource, which RBAC authorizes as `create pods/eviction`. A role can
+    /// hold `delete pods` and still be refused the eviction, and vice versa, so
+    /// probing `delete` would report the evict button's availability wrongly in
+    /// both directions.
+    #[test]
+    fn own_write_surface_probes_the_eviction_subresource() {
+        assert!(
+            all_probes().iter().any(|p| p.verb == "create"
+                && p.group.is_empty()
+                && p.resource == "pods"
+                && p.subresource == Some("eviction")),
+            "the evict button's verb must be in the grid"
+        );
+    }
+
+    /// The drain constraint's read. Denying it must leave the app saying
+    /// "unknown", so the Charter has to be able to show that it was denied.
+    #[test]
+    fn the_drain_constraint_read_is_declared() {
+        assert!(
+            all_probes().iter().any(|p| p.verb == "list"
+                && p.group == "policy"
+                && p.resource == "poddisruptionbudgets"),
+            "a new read is a decision, and this is where it is declared"
         );
     }
 

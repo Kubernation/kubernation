@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::pin::pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
@@ -7,6 +8,7 @@ use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet}
 use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::core::v1::{Event, Node, PersistentVolumeClaim, Pod, Service};
 use k8s_openapi::api::networking::v1::{Ingress, NetworkPolicy};
+use k8s_openapi::api::policy::v1::PodDisruptionBudget;
 use kube::api::Api;
 use kube::runtime::reflector::store::Writer;
 use kube::runtime::{WatchStreamExt, reflector, watcher};
@@ -168,6 +170,40 @@ pub fn spawn(
         WorldDelta::NetworkPolicies,
     ));
 
+    // PodDisruptionBudgets — the drain constraint (`state/pdb.rs`), and the one
+    // store whose emptiness is not an answer. See `pdbs_synced` below.
+    let (pdbs, w) = reflector::store::<PodDisruptionBudget>();
+    tasks.push(spawn_reflector(
+        Api::all(c.clone()),
+        w,
+        id,
+        sink.clone(),
+        WorldDelta::Pdbs,
+    ));
+    // Did that list ever complete? An RBAC-denied watcher logs and backs off
+    // forever, leaving a store indistinguishable from a cluster with no budgets
+    // — so a node would read "drainable" on the strength of a denied LIST.
+    //
+    // `wait_until_ready` resolves on the first `InitDone`, which the writer emits
+    // even when the list was empty (kube 3.1 `store.rs`) — exactly the case that
+    // has to be distinguishable. One waiter, on a store nothing else awaits: the
+    // single-waker hazard recorded in CLAUDE.md is two tasks racing on the SAME
+    // store's one waker slot, which this does not do.
+    let pdbs_synced = Arc::new(AtomicBool::new(false));
+    {
+        let store = pdbs.clone();
+        let flag = pdbs_synced.clone();
+        let sink = sink.clone();
+        tasks.push(tokio::spawn(async move {
+            if store.wait_until_ready().await.is_ok() {
+                flag.store(true, Ordering::Relaxed);
+                // Repaint: the answer changed from "unknown" to a fact, and on a
+                // cluster with no budgets no object event will ever say so.
+                sink(id, WorldDelta::Pdbs);
+            }
+        }));
+    }
+
     let events = Arc::new(Mutex::new(VecDeque::new()));
     tasks.push(spawn_events(
         Api::all(c.clone()),
@@ -216,6 +252,8 @@ pub fn spawn(
         services,
         ingresses,
         networkpolicies,
+        pdbs,
+        pdbs_synced,
         events,
     };
     WorldHandle { world, tasks }

@@ -24,6 +24,7 @@ pub mod oracle_config;
 pub mod oracle_investigate;
 pub mod oracle_suggest;
 pub mod pair;
+pub mod pdb;
 pub mod planned;
 pub mod postmortem;
 pub mod posture;

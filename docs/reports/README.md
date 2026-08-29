@@ -57,6 +57,7 @@ Read this before assuming a question is unanswered.
 | `map-height.md` | lever A closed; "fit" framed into the sidebar |
 | `pdb-precheck.md` | PDB is unobserved; the node-shaped claim is derivable |
 | `pdb-item1-eviction.md` | the app stops bypassing the budgets it will report |
+| `pdb-item2-observe.md` | budgets watched; unread is not unprotected; the evict RBAC verb was wrong |
 
 ## Conventions
 

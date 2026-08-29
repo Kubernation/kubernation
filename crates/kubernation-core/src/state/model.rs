@@ -2092,6 +2092,13 @@ pub struct Models {
     /// window read this. Unfiltered, like `coverage`: which nodes lack the
     /// fleet's infrastructure is a physical fact, not a namespace view.
     pub substrate: crate::state::substrate::SubstrateReport,
+    /// Per-node drain constraint from PodDisruptionBudgets. Unfiltered for the
+    /// same reason as `substrate`: whether a node can be given up is physical.
+    ///
+    /// Memoized here rather than derived per frame — the province panel and the
+    /// SELECTION box read it, and both are on the 60fps path (the posture-chip
+    /// precedent).
+    pub drain: crate::state::pdb::DrainReport,
     /// The explorable world projection of all of the above.
     pub world: WorldModel,
     /// Every nodepool on the map, largest first — the Pool overlay's legend.
@@ -2203,6 +2210,10 @@ impl Models {
         // and NOT reusing `Province.infra` (which is gated on the filtered
         // workload list, so prevalence over it would report phantom gaps).
         let substrate = crate::state::substrate::coverage_report(world);
+        // PodDisruptionBudgets — "can this node be drained?". Cheap on a healthy
+        // realm by construction: only budgets that could refuse are matched
+        // against pods, and on most clusters there are none.
+        let drain = crate::state::pdb::drain_report(world);
         Models {
             map,
             workloads,
@@ -2211,6 +2222,7 @@ impl Models {
             coverage,
             exposed,
             substrate,
+            drain,
             pools: pool_tally(&world_model),
             world: world_model,
             layout,

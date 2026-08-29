@@ -32,6 +32,8 @@ pub enum WorldDelta {
     Services,
     /// NetworkPolicies — the segmentation "walls" coverage map.
     NetworkPolicies,
+    /// PodDisruptionBudgets — the drain constraint (`state/pdb.rs`).
+    Pdbs,
     Events,
     /// Projected custom-resource instances changed.
     Custom,

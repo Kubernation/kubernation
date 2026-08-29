@@ -2,6 +2,7 @@
 //! we drive reflector writers with synthetic watcher events.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use k8s_openapi::api::apps::v1::{
@@ -21,6 +22,9 @@ use k8s_openapi::api::networking::v1::{
     HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressBackend, IngressRule,
     IngressServiceBackend, IngressSpec, NetworkPolicy, NetworkPolicyEgressRule, NetworkPolicySpec,
     ServiceBackendPort,
+};
+use k8s_openapi::api::policy::v1::{
+    PodDisruptionBudget, PodDisruptionBudgetSpec, PodDisruptionBudgetStatus,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{
@@ -47,6 +51,9 @@ pub struct Seeds {
     pub services: Writer<Service>,
     pub ingresses: Writer<Ingress>,
     pub networkpolicies: Writer<NetworkPolicy>,
+    pub pdbs: Writer<PodDisruptionBudget>,
+    /// Shared with the world's `pdbs_synced` so a test can take it back down.
+    pdbs_synced: Arc<AtomicBool>,
 }
 
 macro_rules! seed_fn {
@@ -68,6 +75,21 @@ impl Seeds {
     seed_fn!(service, services, Service);
     seed_fn!(ingress, ingresses, Ingress);
     seed_fn!(networkpolicy, networkpolicies, NetworkPolicy);
+    seed_fn!(pdb, pdbs, PodDisruptionBudget);
+
+    /// Model a cluster whose PodDisruptionBudgets were never read — the reflector
+    /// still starting, or RBAC denying the LIST.
+    ///
+    /// `world()` starts them *observed*, because a fixture's writer has by
+    /// construction completed its listing: seeding IS the list, and the ordinary
+    /// case a test should model is a working cluster that happens to have no
+    /// budgets. This is the opt-out, and it exists so that "unprotected" and
+    /// "unknown" are both expressible — a fixture that can only say one of them
+    /// cannot test the distinction.
+    pub fn pdbs_unread(&mut self) {
+        self.pdbs_synced
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
     seed_fn!(job, jobs, Job);
     seed_fn!(cronjob, cronjobs, CronJob);
 }
@@ -85,6 +107,8 @@ pub fn world() -> (ObservedWorld, Seeds) {
     let (services, services_w) = reflector::store();
     let (ingresses, ingresses_w) = reflector::store();
     let (networkpolicies, networkpolicies_w) = reflector::store();
+    let (pdbs, pdbs_w) = reflector::store();
+    let pdbs_synced = Arc::new(AtomicBool::new(true));
     let world = ObservedWorld {
         meta: ClusterMeta {
             context: "test".into(),
@@ -104,6 +128,8 @@ pub fn world() -> (ObservedWorld, Seeds) {
         services,
         ingresses,
         networkpolicies,
+        pdbs,
+        pdbs_synced: pdbs_synced.clone(),
         events: Arc::new(Mutex::new(VecDeque::new())),
         customs: Arc::new(Vec::new()),
         metrics: crate::k8s::metrics::store(),
@@ -121,6 +147,8 @@ pub fn world() -> (ObservedWorld, Seeds) {
         services: services_w,
         ingresses: ingresses_w,
         networkpolicies: networkpolicies_w,
+        pdbs: pdbs_w,
+        pdbs_synced,
     };
     (world, seeds)
 }
@@ -690,4 +718,54 @@ pub fn networkpolicy_egress_rules(
             ..Default::default()
         }),
     }
+}
+
+/// A PodDisruptionBudget selecting `match_labels`, whose controller has caught
+/// up (`observedGeneration == generation`) and currently allows `allowed`
+/// disruptions. `allowed == 0` is the blocking case.
+pub fn pdb(
+    ns: &str,
+    name: &str,
+    match_labels: &[(&str, &str)],
+    allowed: i32,
+) -> PodDisruptionBudget {
+    let labels: BTreeMap<String, String> = match_labels
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let mut m = meta(Some(ns), name);
+    m.generation = Some(1);
+    PodDisruptionBudget {
+        metadata: m,
+        spec: Some(PodDisruptionBudgetSpec {
+            selector: Some(LabelSelector {
+                match_labels: Some(labels),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        status: Some(PodDisruptionBudgetStatus {
+            disruptions_allowed: allowed,
+            observed_generation: Some(1),
+            ..Default::default()
+        }),
+    }
+}
+
+/// The same budget with a **null** selector, which in `policy/v1` matches NO
+/// pods — the opposite of a NetworkPolicy's absent `podSelector`. Exists so the
+/// divergence is testable rather than assumed.
+pub fn pdb_null_selector(ns: &str, name: &str, allowed: i32) -> PodDisruptionBudget {
+    let mut p = pdb(ns, name, &[], allowed);
+    p.spec.as_mut().unwrap().selector = None;
+    p
+}
+
+/// A budget the disruption controller has not caught up with: its
+/// `disruptionsAllowed` describes an older generation and the API says it is
+/// not valid. `status: None` (never reconciled) is the other unknown shape.
+pub fn pdb_stale(ns: &str, name: &str, match_labels: &[(&str, &str)]) -> PodDisruptionBudget {
+    let mut p = pdb(ns, name, match_labels, 5);
+    p.metadata.generation = Some(7);
+    p
 }

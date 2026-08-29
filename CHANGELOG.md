@@ -8,6 +8,27 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **KuberNation now knows which nodes a PodDisruptionBudget would refuse to give
+  up.** Budgets are watched like every other resource, and the app works out, per
+  node, whether draining it would currently be blocked and by which budget. The
+  reading is deliberately careful in three ways: a budget the cluster has not
+  finished reconciling is reported as *unknown headroom* rather than as its stale
+  number; a budget with a null selector covers nothing (which is the opposite of
+  how the same field reads on a NetworkPolicy); and if the app is not permitted to
+  read budgets at all, every node says so — "budgets not read" — instead of
+  claiming to be drainable. Read-only; nothing new is written to the cluster.
+
+### Fixed
+- **The evict button was asking the cluster for the wrong permission.** Since the
+  previous release evicting a pod goes through the eviction subresource, which
+  Kubernetes authorizes under its own verb — but the permission check still asked
+  about deleting pods. Those are separately grantable, so the button could be
+  greyed out for someone who is in fact allowed to evict, or offered to someone
+  who is not and would hit a refusal. Both directions were reproduced on a real
+  cluster. The check, the Game Day drill's pre-flight, and the in-app Charter now
+  name the verb the app actually uses.
+
 ### Changed
 - **Evicting a pod now respects PodDisruptionBudgets, and says so when one
   refuses.** The evict button — and the Game Day drill's pod kills, which share

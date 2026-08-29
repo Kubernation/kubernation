@@ -111,16 +111,28 @@ pub async fn evict_pod(client: Client, namespace: &str, pod: &str) -> Result<(),
         })
 }
 
-/// Can the current user `delete pods` in `namespace`? A read-only RBAC probe
-/// (a `SelfSubjectAccessReview`) the frontends use to disable the evict
+/// Can the current user `create pods/eviction` in `namespace`? A read-only RBAC
+/// probe (a `SelfSubjectAccessReview`) the frontends use to disable the evict
 /// control when permission is lacking. Errs to the UI as a display string.
+///
+/// This must name the verb [`evict_pod`] actually uses. The apiserver is the
+/// real gate; the SSAR only decides whether the button looks available, and a
+/// button that is enabled and then 403s is worse than one that is honestly
+/// locked.
 pub async fn can_evict_pod(client: Client, namespace: &str) -> Result<bool, String> {
     let api: Api<SelfSubjectAccessReview> = Api::all(client);
     let review = SelfSubjectAccessReview {
         spec: SelfSubjectAccessReviewSpec {
             resource_attributes: Some(ResourceAttributes {
-                verb: Some("delete".into()),
+                // CREATE on pods/eviction, not DELETE on pods. `evict_pod` posts
+                // to the eviction subresource, which RBAC authorizes under its
+                // own verb — a role granting `delete pods` cannot evict, and a
+                // role granting only eviction can. Probing `delete` gave a false
+                // verdict in both directions, the same defect the Charter round
+                // fixed for `patch` versus `update` on deployments.
+                verb: Some("create".into()),
                 resource: Some("pods".into()),
+                subresource: Some("eviction".into()),
                 namespace: Some(namespace.into()),
                 ..Default::default()
             }),
@@ -483,8 +495,9 @@ pub async fn run_chaos(client: Client, steps: &[crate::state::chaos::ChaosStep])
             });
         }
     }
-    // Gate part 2: pre-flight `delete pods` RBAC for every namespace we'd evict
-    // in (evicts aren't dry-runnable). This is what makes a drain all-or-nothing.
+    // Gate part 2: pre-flight `create pods/eviction` RBAC for every namespace
+    // we'd evict in (evictions aren't dry-runnable). This is what makes a drain
+    // all-or-nothing.
     let mut evict_ns: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for step in steps {
         if let ChaosStep::Evict { namespace, .. } = step {
@@ -494,13 +507,15 @@ pub async fn run_chaos(client: Client, steps: &[crate::state::chaos::ChaosStep])
     for ns in evict_ns {
         let allowed = can_evict_pod(client.clone(), ns).await;
         let row = |detail: String| CommitRow {
-            label: format!("delete pods in {ns}"),
+            label: format!("evict pods in {ns}"),
             ok: false,
             detail,
         };
         match allowed {
             Ok(true) => {}
-            Ok(false) => dry_fail.push(row("forbidden — no `delete pods` permission".into())),
+            Ok(false) => dry_fail.push(row(
+                "forbidden — no `create pods/eviction` permission".into()
+            )),
             Err(e) => dry_fail.push(row(e)),
         }
     }

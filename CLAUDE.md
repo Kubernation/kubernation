@@ -376,7 +376,7 @@ what makes the interesting logic unit-testable without a cluster.
   so `hack/kind-config.yaml` bakes z-a/z-b/z-c onto the workers.
 - **Watched resources:** Node, Pod, Deployment, ReplicaSet (ownership chain +
   rollout), StatefulSet, DaemonSet, Job, CronJob, PVC, Service, Ingress,
-  Event. **Secrets and ConfigMaps are never watched** — the city screen
+  NetworkPolicy, PodDisruptionBudget, Event. **Secrets and ConfigMaps are never watched** — the city screen
   derives their *names* from pod-template references, so we observe
   dependency shape without reading contents (least privilege). The one
   controlled exception is the **resource browser** (`:any kind`), which can
@@ -3227,6 +3227,79 @@ what makes the interesting logic unit-testable without a cluster.
   TRUE. 435 core + 139 GUI tests; gui-smoke 57. **Items 2 (watch PDBs + the
   Charter verb) and 3 (the node-shaped derivation) are not started** — §9 says
   land this first, and it is independently correct.
+
+- **PDBs observed — and the evict RBAC verb was wrong** (2026-08-28, **v1.31.0**;
+  item 2 of `docs/kubernation-pdb-guidance.md`, report in
+  `docs/reports/pdb-item2-observe.md`): PodDisruptionBudget becomes the **14th
+  reflector** and `state/pdb.rs` answers *can this node be drained, and if not,
+  which budget says no?* READ-ONLY — no new write verb. **Two §1 claims were TRUE
+  and INSUFFICIENT, which is the finding.** (a) `netpol::selector_matches` has the
+  right expression semantics and **the opposite `None` case**: `policy/v1` says
+  *"a null selector will match no pods, while an empty ({}) selector will select
+  all pods within the namespace"*, where a NetworkPolicy's absent `podSelector`
+  IS namespace-wide — so a null-selector PDB would have covered its whole
+  namespace and blocked every node it touched. `pdb::covers` owns the null case
+  and delegates the rest, with an agreement test pinning that the expression
+  semantics never diverge. (b) `NodeTile.pods` exists but `PodGlyph` carries **no
+  labels**, so the derivation reads `ObservedWorld` directly like
+  `netpol`/`substrate` — which also avoids hanging a label map off 5000 glyphs
+  rebuilt every tick. **§3.3 — unprotected is not unknown — could not be expressed by
+  the existing reflector pattern**: a denied LIST logs and backs off forever,
+  leaving a store identical to a cluster with no budgets (the conflation
+  `ObservedWorld.networkpolicies` records as accepted, because *there* the
+  fail-safe direction is the same). So one flag, `pdbs_synced`, set by a task
+  awaiting `Store::wait_until_ready`. **The signal must come from the watcher, not
+  the objects** — a flag flipped on the first observed OBJECT would never flip on
+  a cluster with no budgets, the very case that must be distinguishable; kube's
+  writer fires ready on `InitDone` even for an empty list (verified at source).
+  **The single-waker rule is respected, not waived**: re-read in kube 3.1, the
+  hazard is two waiters on the SAME store's one waker slot, and nothing else
+  awaits this one. Never cleared — a later watch error leaves the last-known set,
+  the metrics-ring reasoning. **Rule 2, from the API's own text** (*"valid only if
+  observedGeneration equals to PDB's object generation"*): a budget the disruption
+  controller has not caught up with has no readable headroom, so there are three
+  per-budget states — refusing, permissive, **unreadable** — and an unreadable one
+  makes its nodes `Unknown`, never `Allowed` (a definite refusal outranks it).
+  **§3.2 cost MEASURED, not predicted**, and on the case that costs: 0ms on a
+  healthy realm (only budgets that *could refuse* are matched against pods, so the
+  pod walk is skipped entirely), and for a fleet where all 100 workloads sit at
+  `disruptionsAllowed: 0` — 9.6ms → 3.9ms memoized by label set → **3.4ms** with
+  no allocation in the hot loop; the whole-rebuild A/B is inside the noise.
+  **THE DEFECT ITEM 2 FOUND IN ITEM 1:** `can_evict_pod` probed `delete pods`,
+  correct while eviction was a DELETE and **wrong the moment item 1 moved it to
+  `pods/eviction`**, which RBAC authorizes as `create` on that subresource — the
+  same defect the Charter round already fixed for `patch` vs `update` on
+  deployments, reintroduced by me the day before. False in **both** directions,
+  proven with two throwaway roles and then end-to-end on one pod seconds apart:
+  as `evict-only`, `POST /pods/X/eviction` → **201** while `DELETE /pods/X` →
+  **403** — the exact inverse of item 1's `DELETE` 200 / evict 429, so the verbs
+  are now shown independent both ways. Fixed at the probe, the chaos pre-flight's
+  label and message, and the Charter grid, pinned by a regression test; `list
+  poddisruptionbudgets` is declared in the Charter too (§3.1: a new read is a
+  decision). **An instrument trap caught in flight:** `kubectl auth can-i create
+  pods/eviction` parses `eviction` as a **resource name**, so it answers *"may I
+  create a pod called eviction"* — `yes` as admin, the right answer to the wrong
+  question, and it nearly validated the fix; `--subresource=eviction` is the
+  correct form and is what exposed `evict-only` as no→yes. **Mutation floor: 11,
+  9 caught, 2 survivals both reported.** M10 (drop the healthy short-circuit)
+  survives correctly — it changes cost, not answers, and a perf assertion is a
+  budget not a guard. **M11 was real**: the coverage memo holds indices into
+  *that namespace's* candidate list, so a key without the namespace hands one
+  namespace's answer to another — and `app=web` is the commonest label in
+  Kubernetes, so that is the ordinary case; every fixture had one namespace with
+  candidates, where all indices mean the same thing. Closed with two namespaces
+  running identically-labelled pods under differently-targeted budgets. Same
+  shape as D2's M-D and plurality's M4. **Gate** (`examples/drain.rs`, headless —
+  item 2 has no surface yet): §6.1's no-PDB check FIRST (`0 read`, all drainable
+  — so a blocked-everywhere derivation could not pass for the wrong reason), then
+  the positive case with the expectation written from where the pods actually run
+  (`web-strict` blocks worker + worker2 only; permissive `db-loose` appears
+  nowhere), then §3.3 live through a PDB-denied ServiceAccount on the same
+  cluster **with the budgets still in place** → `NOT READ` / every node unknown.
+  The pair of runs is itself the discrimination. Cluster left as found. 449 core
+  (474 with `oracle`) + 139 GUI tests; gui-smoke 57. **Item 3 (the attention
+  concern + province window/SELECTION, and the drill-verdict gap item 1 recorded)
+  is not started.**
 
 - **Multi-burn-rate SLO alerting** (2026-06-23, v0.61.0, user picked it from the backlog;
   design-workflow vetted — 2 lenses → synthesis — then adversarially reviewed): the

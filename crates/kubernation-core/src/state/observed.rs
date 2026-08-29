@@ -1,10 +1,12 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::core::v1::{Event, Node, PersistentVolumeClaim, Pod, Service};
 use k8s_openapi::api::networking::v1::{Ingress, NetworkPolicy};
+use k8s_openapi::api::policy::v1::PodDisruptionBudget;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::runtime::reflector::Store;
 
@@ -33,6 +35,18 @@ pub struct ObservedWorld {
     /// NetworkPolicies — the segmentation "walls" (read-only coverage analysis;
     /// `state/netpol.rs`). Empty when none observed / RBAC-denied → "unwalled".
     pub networkpolicies: Store<NetworkPolicy>,
+    /// PodDisruptionBudgets — the drain constraint (`state/pdb.rs`). Unlike
+    /// every other store, an EMPTY one here is not a fact: "no budgets" and
+    /// "the budgets were never read" are different answers, and reporting a
+    /// node drainable on the strength of a denied LIST would be the unearned
+    /// all-clear this codebase refuses. Ask [`Self::pdbs_observed`] before
+    /// reading this, always.
+    pub pdbs: Store<PodDisruptionBudget>,
+    /// Set once the PDB reflector has completed an initial list — including an
+    /// initial list that found nothing, which is the whole point: an unprotected
+    /// cluster must be distinguishable from an unread one. Never cleared: a
+    /// later watch error leaves the last-known set, which is still an answer.
+    pub pdbs_synced: Arc<AtomicBool>,
     /// Bounded ring of recent events (all types; Warning drives attention).
     pub events: Arc<Mutex<VecDeque<RecentEvent>>>,
     /// Dynamic custom-resource projections (configured via `projections` /
@@ -51,6 +65,17 @@ pub struct CustomWatch {
 }
 
 impl ObservedWorld {
+    /// Whether the PodDisruptionBudget store holds an answer at all.
+    ///
+    /// `false` means the reflector has not finished its first list — it is still
+    /// starting, or RBAC denied the LIST and it is backing off forever. Either
+    /// way the app does not know what budgets exist, which is a different claim
+    /// from "there are none". Every consumer of [`Self::pdbs`] must branch on
+    /// this rather than on the store being empty.
+    pub fn pdbs_observed(&self) -> bool {
+        self.pdbs_synced.load(Ordering::Relaxed)
+    }
+
     /// Every namespace that holds an observed object the map can show —
     /// workloads, pods, batch, storage, connectivity, and projected customs.
     /// Sorted; feeds the namespace-filter picker.
