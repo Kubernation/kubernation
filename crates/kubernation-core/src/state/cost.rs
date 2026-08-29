@@ -86,6 +86,28 @@ pub enum CostBasis {
     OpenCost,
 }
 
+/// What "idle" MEANS for a given basis — one word, one home.
+///
+/// The word carries two different claims. Under [`CostBasis::Requests`] idle is
+/// capacity **nobody reserved**; under [`CostBasis::Usage`] it is capacity
+/// **nobody is using**. On a node that is fully reserved and lightly used —
+/// exactly the case this feature exists to find — those differ by nearly the
+/// whole range, so a reader who cannot tell which one is on screen cannot act on
+/// the number.
+///
+/// The advisor footer had always distinguished them and the SELECTION line had
+/// not: it printed a caveat for `Requests` and nothing for `Usage`, on the
+/// `pool_line` rule that a measured value needs no caveat. That rule fits a
+/// fallback cascade, where the alternatives answer one question with decreasing
+/// confidence. These answer two questions, so both are named.
+pub fn idle_meaning(basis: CostBasis) -> &'static str {
+    match basis {
+        CostBasis::Requests => "unreserved",
+        CostBasis::Usage => "unused",
+        CostBasis::OpenCost => "OpenCost idle",
+    }
+}
+
 /// Operator-supplied pricing. All-absent ⇒ [`CostMode::Unitless`].
 #[derive(Debug, Clone, Default)]
 pub struct CostRates {

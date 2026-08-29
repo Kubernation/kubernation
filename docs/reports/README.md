@@ -62,6 +62,7 @@ Read this before assuming a question is unanswered.
 | `prose-audit.md` | nine false claims; the field guide named 8 of 9 overlays; the license guard closed |
 | `rustdoc-lint.md` | two doc homes broke seven links; prose gets a compiler in CI |
 | `about-toml-windows.md` | the Windows zip shipped notices missing its own crates; the guard was broken too |
+| `panel-wording.md` | `×N` had two units in one list; "idle" had two meanings and said neither |
 
 ## Conventions
 

@@ -558,14 +558,32 @@ pub fn cost_lines(r: &CostReport) -> Vec<(String, RsRole)> {
 
     out.push((
         match r.basis {
-            CostBasis::OpenCost => "imported from OpenCost (it reads the cloud billing API + amortizes spot/reserved). idle is OpenCost's cluster __idle__.",
-            _ if r.metrics_available => "upkeep = what you pay to HOLD reserved capacity; usage-refined — idle is paid-for-but-unused. rates are operator config; KuberNation reads no cloud billing.",
-            _ => "upkeep = what you pay to HOLD reserved capacity (requests); install metrics-server for usage-refined waste. rates are operator config; KuberNation reads no cloud billing.",
-        }
-        .to_string(),
+            CostBasis::OpenCost => "imported from OpenCost (it reads the cloud billing API + amortizes spot/reserved). idle is OpenCost's cluster __idle__.".to_string(),
+            // The word "idle" comes from `cost::idle_meaning`, the same source the
+            // SELECTION line uses, so the two surfaces cannot describe it
+            // differently.
+            _ if r.metrics_available => return_idle_note(
+                r.basis,
+                "usage-refined, so idle is capacity nobody is using.",
+            ),
+            _ => return_idle_note(
+                r.basis,
+                "install metrics-server to refine idle from reserved to actually-used.",
+            ),
+        },
         RsRole::Dim,
     ));
     out
+}
+
+/// The cost footer's idle clause, naming the basis from `cost::idle_meaning` so
+/// the advisor and the SELECTION line cannot disagree about what idle counts.
+fn return_idle_note(basis: CostBasis, tail: &str) -> String {
+    format!(
+        "upkeep = what you pay to HOLD reserved capacity; idle = {}. {tail} \
+         rates are operator config; KuberNation reads no cloud billing.",
+        cost::idle_meaning(basis)
+    )
 }
 
 fn page_cost(cx: &mut Ctx, r: &CostReport) {

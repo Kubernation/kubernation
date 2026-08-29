@@ -191,6 +191,22 @@ pub(crate) fn pool_confinement(
     })
 }
 
+/// `"restarting repeatedly ×2 pods"` — the count with its UNIT.
+///
+/// Every counter in [`Agg`] counts PODS: the queue aggregates a workload's
+/// failing pods into one concern ("city in trouble, not 40 pod alarms"), so `×N`
+/// is how many pods, never how many restarts or how many times.
+///
+/// The unit used to be implicit, and `×N` is not read that way. `restarting
+/// repeatedly ×1` on the dev cluster is one pod that has restarted **five**
+/// times — `RESTART_THRESHOLD` is 5 — and it reads as one restart, which
+/// understates it. Two lines below it in the same queue,
+/// `events: ProvisioningFailed ×522` means 522 occurrences: the same suffix,
+/// a different unit, adjacent on screen.
+fn tally(label: &str, n: u32) -> String {
+    format!("{label} ×{n} {}", if n == 1 { "pod" } else { "pods" })
+}
+
 impl Agg {
     fn any(&self) -> bool {
         self.crash
@@ -216,17 +232,23 @@ impl Agg {
         }
     }
 
-    /// The single most important thing to say about this group of pods.
-    fn primary(&self) -> Option<(Severity, String)> {
+    /// The single most important thing to say about this group of pods — the
+    /// label and HOW MANY PODS it covers, not a rendered string.
+    ///
+    /// The caller renders it, because only the caller knows whether the count
+    /// is worth saying: a workload concern aggregates its failing pods and the
+    /// number is the point, while a bare-pod concern is about one named pod and
+    /// "×1 pod" only repeats its own title.
+    fn primary(&self) -> Option<(Severity, &'static str, u32)> {
         let crit = [
             (self.crash, "CrashLoopBackOff"),
             (self.image, "image pull failing"),
             (self.config, "container create failing"),
-            (self.failed, "pods Failed"),
+            (self.failed, "Failed"),
         ];
         for (n, label) in crit {
             if n > 0 {
-                return Some((Severity::Critical, format!("{label} ×{n}")));
+                return Some((Severity::Critical, label, n));
             }
         }
         let warn = [
@@ -236,7 +258,7 @@ impl Agg {
         ];
         for (n, label) in warn {
             if n > 0 {
-                return Some((Severity::Warning, format!("{label} ×{n}")));
+                return Some((Severity::Warning, label, n));
             }
         }
         None
@@ -419,7 +441,9 @@ pub fn build(
                     }
                     continue;
                 }
-                let (severity, msg) = agg.primary().expect("agg.any() checked");
+                // One named pod — its title already says which, so the tally
+                // would only restate it.
+                let (severity, msg, _) = agg.primary().expect("agg.any() checked");
                 let target = pod
                     .spec
                     .as_ref()
@@ -455,8 +479,12 @@ pub fn build(
         if !gap && !stalled && pod_issue.is_none() {
             continue;
         }
-        let (severity, headline) = if let Some((sev, msg)) = pod_issue {
-            (if stalled { Severity::Critical } else { sev }, msg)
+        let (severity, headline) = if let Some((sev, label, n)) = pod_issue {
+            // Aggregated across the workload's pods, so the count is the point.
+            (
+                if stalled { Severity::Critical } else { sev },
+                tally(label, n),
+            )
         } else if stalled {
             (Severity::Critical, "rollout stalled".into())
         } else {
@@ -493,7 +521,8 @@ pub fn build(
     // Aggregates whose workload row vanished (e.g. workload deleted while
     // pods linger) still deserve a line.
     for (r, agg) in by_workload {
-        if let Some((severity, msg)) = agg.primary() {
+        if let Some((severity, label, n)) = agg.primary() {
+            let msg = tally(label, n);
             covered_workloads.insert((r.namespace.clone(), r.name.clone()));
             concerns.push(Concern {
                 cluster: ClusterId::Hot,
@@ -1321,8 +1350,57 @@ mod tests {
             .find(|c| c.key.contains("agent"))
             .expect("flapping concern");
         assert_eq!(c.severity, Severity::Warning);
-        assert!(c.title.contains("restarting repeatedly ×1"), "{}", c.title);
+        // The UNIT, not just the count: every Agg counter counts PODS, and `×1`
+        // alone reads as one restart when it means one pod past a 5-restart
+        // threshold. Two lines below in the same queue, `events: X ×522` counts
+        // occurrences — same suffix, different unit.
+        assert!(
+            c.title.contains("restarting repeatedly ×1 pod"),
+            "the count must carry its unit: {}",
+            c.title
+        );
         assert!(matches!(&c.target, Target::Workload(r) if r.kind == WorkloadKind::DaemonSet));
+    }
+
+    /// A bare pod says the label; a workload says the label AND how many pods.
+    ///
+    /// Same `Agg::primary`, two renderings, because only the caller knows
+    /// whether the count carries information: a bare-pod concern is titled
+    /// `pod ns/name`, so "×1 pod" restates its own subject, while a workload
+    /// concern aggregates and the number is the whole point. Asserted in both
+    /// directions — a single rendering would be wrong at one of the two sites.
+    #[test]
+    fn the_tally_is_for_aggregates_not_for_one_named_pod() {
+        // A bare pod (no owner) past the restart threshold.
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        let mut p = fx::pod("demo", "lonely", Some("n1"));
+        p.status
+            .as_mut()
+            .unwrap()
+            .container_statuses
+            .as_mut()
+            .unwrap()[0]
+            .restart_count = 9;
+        s.pod(p);
+        let map = build_map(&world);
+        let rows = crate::state::model::build_workloads(&world);
+        let cs = build(
+            &world,
+            &map,
+            &rows,
+            &NamespaceFilter::All,
+            &crate::state::pdb::drain_report(&world),
+        );
+        let bare = cs
+            .iter()
+            .find(|c| c.title.starts_with("pod demo/lonely"))
+            .expect("a bare-pod concern");
+        assert!(
+            bare.title.ends_with("restarting repeatedly"),
+            "a bare pod restates its own subject with a tally: {}",
+            bare.title
+        );
     }
 
     #[test]

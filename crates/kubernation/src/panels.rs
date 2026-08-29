@@ -429,9 +429,13 @@ pub fn cost_lines(nc: &NodeCost) -> Vec<(String, Color)> {
             STONE_INK,
         ),
         (
+            // The basis word is ALWAYS present: "idle" alone means either
+            // unreserved or unused, and those are different claims about the
+            // node (see `cost::idle_meaning`).
             format!(
-                "idle {:.0}% · {}",
+                "idle {:.0}% {} · {}",
                 idle * 100.0,
+                cost::idle_meaning(nc.basis),
                 cost::fmt_monthly(nc.idle_per_hour, nc.mode)
             ),
             idle_col,
@@ -440,9 +444,8 @@ pub fn cost_lines(nc: &NodeCost) -> Vec<(String, Color)> {
     if nc.basis == CostBasis::OpenCost {
         lines.push(("(from OpenCost)".into(), STONE_STRUCT));
     } else {
-        if nc.basis == CostBasis::Requests {
-            lines.push(("(idle est. from requests)".into(), STONE_INK_DIM));
-        }
+        // No "(est. from requests)" line: the basis word above says it, and a
+        // second row saying the same thing costs a line of a ~40-char column.
         // The only on-map $ figure carries the same honesty caveat the advisor does.
         if nc.mode == cost::CostMode::Currency {
             lines.push(("(est., not a cloud bill)".into(), STONE_INK_DIM));
@@ -2200,6 +2203,46 @@ mod tests {
                 "too wide for the column, so it truncates: {line:?}"
             );
         }
+    }
+
+    /// "idle" always says WHICH idle it means, and it agrees with the advisor.
+    ///
+    /// The word carries two claims — capacity nobody reserved, versus capacity
+    /// nobody is using — and on a fully-reserved, lightly-used node they differ
+    /// by nearly the whole range. The SELECTION line used to print a caveat for
+    /// the requests basis and NOTHING for usage, so the common case was the
+    /// ambiguous one; the advisor footer had always distinguished them.
+    #[test]
+    fn the_idle_figure_always_names_its_basis() {
+        use kubernation_core::state::cost::{CostBasis, CostMode, NodeCost, idle_meaning};
+        for basis in [CostBasis::Requests, CostBasis::Usage, CostBasis::OpenCost] {
+            let nc = NodeCost {
+                per_hour: 1.0,
+                idle_per_hour: 0.5,
+                used_frac: 0.5,
+                priced: true,
+                basis,
+                mode: CostMode::Unitless,
+                overcommitted: false,
+            };
+            let lines = cost_lines(&nc);
+            let idle = lines
+                .iter()
+                .find(|(t, _)| t.starts_with("idle "))
+                .expect("an idle line");
+            assert!(
+                idle.0.contains(idle_meaning(basis)),
+                "{basis:?}: the idle line does not say which idle it means: {}",
+                idle.0
+            );
+            assert!(idle.0.chars().count() <= 40, "too wide: {}", idle.0);
+        }
+        // The two bases genuinely mean different things — if they ever collapse
+        // to one word, this line is decoration and the test is theatre.
+        assert_ne!(
+            idle_meaning(CostBasis::Requests),
+            idle_meaning(CostBasis::Usage)
+        );
     }
 
     /// The field guide names every map overlay that exists.

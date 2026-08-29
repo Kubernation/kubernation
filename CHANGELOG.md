@@ -9,6 +9,19 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **The attention queue's "×N" now says what it counts, and it was understating
+  trouble.** A concern reading `restarting repeatedly ×1` meant *one pod that has
+  restarted at least five times*, not one restart — while two lines below it in
+  the same list, `events: ProvisioningFailed ×522` meant 522 occurrences. The
+  count now carries its unit (`×1 pod`, `×3 pods`) where it aggregates, and is
+  omitted on a concern about a single named pod, where it only repeated the
+  title.
+- **The cost panel now says which kind of idle it means.** "Idle" is capacity
+  nobody *reserved* when there is no metrics-server, and capacity nobody is
+  *using* when there is — on a busy node those are nearly opposite numbers, and
+  the panel named the basis in one case and stayed silent in the other. It now
+  always says (`idle 100% unused`), from the same source of words the Cost
+  advisor uses.
 - **The Windows download's licence notices were missing six of its own
   dependencies.** `THIRD-PARTY-NOTICES.md` ships inside every release archive,
   but it was generated for macOS and Linux only — so the file in the Windows zip
