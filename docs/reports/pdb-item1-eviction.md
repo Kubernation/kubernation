@@ -163,7 +163,8 @@ gained a distinction.
 - [x] Failure criteria stated before the run
 - [x] Mutations asserted applied; the one that cannot be unit-caught is named (§4)
 - [x] Standing questions answered, claims tagged
-- [x] `cargo nextest run --workspace` green — 599 tests
+- [x] Test suite green — 599 tests (`cargo test --workspace`; re-run under
+      `cargo nextest run --workspace` on 2026-08-29, 621 tests, all passing)
 
 435 core + 139 GUI tests; gui-smoke 57. The PDBs created for the gate were
 removed and the cluster left as found.

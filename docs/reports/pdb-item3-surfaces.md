@@ -208,7 +208,9 @@ compared against a drill that might never have run. §3 is that repair.
 - [x] Failure criteria stated before the run
 - [x] Mutations asserted applied; the survival reported and closed
 - [x] Standing questions answered
-- [x] `cargo test --workspace` green
+- [x] `cargo test --workspace` green (and `cargo nextest run --workspace`,
+      2026-08-29 — 621 tests, plus the `--all-features` and
+      `--no-default-features` core runs)
 
 453 core (478 with the `oracle` feature) + 143 GUI tests; gui-smoke 57; clippy
 clean with and without features.

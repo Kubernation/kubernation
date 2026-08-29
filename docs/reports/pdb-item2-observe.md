@@ -312,7 +312,9 @@ it.
 - [x] Failure criteria stated before the run
 - [x] Mutations asserted applied; the two survivals reported with their reasons (§6)
 - [x] Standing questions answered, claims tagged
-- [x] `cargo test --workspace` green
+- [x] `cargo test --workspace` green (and `cargo nextest run --workspace`,
+      2026-08-29 — 621 tests, plus the `--all-features` and
+      `--no-default-features` core runs)
 
 449 core (474 with the `oracle` feature) + 139 GUI tests; gui-smoke 57; clippy
 clean with and without features.
