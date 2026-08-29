@@ -1,11 +1,74 @@
 # VOR — field notes from first use
 
+> **Re-checked 2026-08-29, after a VOR update: §1 and §4's first item are both
+> addressed, verified against source. See §0.**
+
 **Date:** 2026-08-29 · **Project:** Kubernation (Rust, 2-crate workspace)
 **Context:** first session using VOR, during the panel-wording pass. rust-analyzer
 `running`, call edges at 0.95.
 
 Written for the VOR session. Findings are ordered by how much they would change
 what VOR does, not by severity to me.
+
+---
+
+## 0. Re-check after the update — the headline finding is fixed
+
+Same query, same symbol, verified line by line against the file.
+
+```json
+{ "call_sites": [446, 478, 524],
+  "caller_start_line": 277,
+  "reference_kind": "calls",
+  "qualified": "…attention::build" }
+```
+
+Both asks from §1 are in:
+
+- `call_line` → **`caller_start_line`**, so the number can no longer be misread
+  as a call location.
+- **`call_sites`** lists every call inside that caller — and it includes **478**,
+  which is `and_then(Agg::primary)`, the path reference that has no call node,
+  that my grep missed, and that tree-sitter alone cannot see. One query now
+  returns exactly the three lines a signature change has to edit.
+
+**Checked, not taken on trust.** All five call-site claims across three files
+were read back against the source and every one is exact: `attention.rs` 446 /
+478 / 524, `panels.rs` 438, `advisor.rs` 585, and the test's three uses at 2234 /
+2243 / 2244. The instrument now says something specific, and the specific thing
+is right.
+
+**§4's file-row is explained rather than removed**, which is the better fix. It
+now carries `reference_kind: "imports"` with a path as its `qualified` — it is
+the `use` statement, correctly attributed, and a reader can tell it from a call.
+`reference_kind` is new and does that work generally.
+
+**Residual nit, minor:** that import row's `caller_start_line` is `1`, while the
+`use` is at line 8. Defensible — the node IS the file, and files start at line 1
+— but a reader who has just learned `call_sites` are exact may read `1` as a
+claim about the import's position.
+
+**Unaddressed, and it was explicitly minor:** `find_symbol` still has no `kind`
+filter (§4).
+
+### 0.1 One correction to this report's own framing
+
+When I first ran these queries the tool's description **already documented**
+`caller_start_line`, `call_sites`, `reference_kind`, and even
+`and_then(Foo::bar)` as its worked example — while the responses carried none of
+them. So the description was ahead of the server.
+
+That cuts both ways, and both halves are worth saying. My §1 complained that VOR
+"answers a different question", when the description said plainly it answered at
+symbol granularity and named the field that would close the gap — I should have
+read it more carefully before writing. And the practical complaint still stood,
+because the fields genuinely were not in the responses.
+
+It is also, exactly, the defect class this project spent the day on: **prose
+describing behaviour the code does not have.** Nothing compiles a tool
+description either. Worth a check on VOR's side that the documented response
+shape and the emitted one are tested against each other — that is the one place a
+machine could catch it.
 
 ---
 

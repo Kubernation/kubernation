@@ -63,7 +63,7 @@ Read this before assuming a question is unanswered.
 | `rustdoc-lint.md` | two doc homes broke seven links; prose gets a compiler in CI |
 | `about-toml-windows.md` | the Windows zip shipped notices missing its own crates; the guard was broken too |
 | `panel-wording.md` | `×N` had two units in one list; "idle" had two meanings and said neither |
-| `vor-feedback.md` | first VOR session: impact is excellent, references answer at the wrong granularity |
+| `vor-feedback.md` | first VOR session, plus a verified re-check: the call-site gap is fixed |
 
 ## Conventions
 
