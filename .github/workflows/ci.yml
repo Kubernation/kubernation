@@ -63,6 +63,18 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      # Prose has no compiler — except for doc links, and this is where that one
+      # runs. `#![deny(rustdoc::broken_intra_doc_links)]` at both crate roots
+      # makes a link naming a renamed or nonexistent item a hard error; nothing
+      # else in CI invokes rustdoc, so without this step the deny is inert.
+      #
+      # Deliberately NOT `-D warnings`: `private_intra_doc_links` (9 today) names
+      # items that DO exist and are merely not public, so the words are true and
+      # only the hyperlink fails. Denying it would push toward widening
+      # visibility to satisfy a doc tool. Broken is false; private is unfollowable.
+      - name: Doc links
+        run: cargo doc --workspace --no-deps --locked
+
       # The UI-free CI gate (the GUI's smoke needs a display, so it is a local-only
       # gate); this just proves the headless core example links + builds.
       - name: Build smoke example (headless core)

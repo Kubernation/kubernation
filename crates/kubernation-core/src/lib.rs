@@ -4,6 +4,16 @@
 //! windowed `kubernation` client (and the headless `smoke` example) render
 //! these models; any future frontend would too.
 
+// Prose has no compiler — except here. A doc link naming an item that was
+// renamed, made private, or never existed is the one class of stale claim a
+// machine can catch, and the prose audit found eight of them by hand (two
+// pointing at a function D1 renamed, in the comment explaining that placement
+// has ONE home). Denied rather than warned so it fails `cargo doc` in CI.
+//
+// Escape notational brackets — `\[0,1\]`, `\[default\]` — which are values,
+// not links.
+#![deny(rustdoc::broken_intra_doc_links)]
+
 pub mod events;
 pub mod k8s;
 pub mod state;

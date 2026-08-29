@@ -1,20 +1,15 @@
+// Each module's documentation lives in the module's own file. A `///` here as
+// well would be a SECOND home for the same claim — and rustdoc then resolves the
+// file's own `//!` links in THIS module's scope, where the file's items are not
+// visible, which is what silently broke seven doc links.
 pub mod actions;
-/// Reusable in-cluster HTTP-source substrate (the API-server service proxy) — the
-/// generalized fetch + validation + body-cap behind the OpenCost adapter and any
-/// future Prometheus / kube-state-metrics / Hubble source.
 pub mod adapter;
 pub mod browse;
 pub mod client;
 pub mod fingerprint;
 pub mod logs;
 pub mod metrics;
-/// OpenCost adapter — polls the in-cluster OpenCost `/allocation` API through the
-/// kube API-server **service proxy** (no port-forward, no new egress; the same
-/// authenticated connection as the reflectors). Fetch-not-watch, like `metrics`.
 pub mod opencost;
-/// The Oracle (BYO-LLM) HTTP client — non-mutating, beside the write file but
-/// not in it; gated behind the `oracle` feature so the headless core smoke
-/// example never links an HTTP egress.
 #[cfg(feature = "oracle")]
 pub mod oracle_client;
 pub mod portforward;

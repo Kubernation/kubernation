@@ -5,11 +5,16 @@
 //! Gated behind the `oracle` cargo feature so the headless core smoke example
 //! never links an HTTP egress.
 //!
-//! It does ONE thing: a single non-streaming POST to an OpenAI-compatible
-//! `/v1/chat/completions` (Ollama, llama.cpp, vLLM, LM Studio, OpenRouter,
-//! Anthropic-via-shim, …) under a timeout, returning the assistant text. The
-//! request body + the prompt are built by the PURE `state::oracle` module, so
-//! the consent preview the operator approves is byte-identical to what is sent.
+//! It talks to ONE kind of endpoint — OpenAI-compatible (Ollama, llama.cpp,
+//! vLLM, LM Studio, OpenRouter, Anthropic-via-shim, …) — in four calls, each
+//! under a timeout: [`consult`] (a single POST to `/v1/chat/completions`,
+//! returning the assistant text), [`consult_stream`] (the same request with
+//! `stream: true`, decoding SSE and handing back tokens as they arrive — added
+//! in v0.59.0, and the reason "one non-streaming POST" no longer described this
+//! module), [`probe`], and [`list_models`] (`GET /v1/models`, the Settings
+//! face's connection test). The request body + the prompt are built by the PURE
+//! `state::oracle` module, so the consent preview the operator approves is
+//! byte-identical to what is sent.
 //!
 //! Reuses the hyper + hyper-rustls(ring) stack kube already pulls (zero new
 //! crates). The rustls process-default crypto provider is installed once, to

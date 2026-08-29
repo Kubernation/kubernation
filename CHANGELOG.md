@@ -9,6 +9,11 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **Corrected the description of the Oracle's network code**, which said it made
+  a single non-streaming request. It has streamed replies token by token since
+  v0.59.0, and also probes the endpoint and lists available models. Documentation
+  only — no behaviour changed — but it is the file whose description matters most
+  for understanding what leaves your laptop.
 - **The field guide was naming eight of the nine map overlays.** The Pool
   (nodepools) view has existed since v1.14.0 and the Controls page never
   mentioned it — the one surface whose job is to tell you what the menus contain
