@@ -9,6 +9,13 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **The Windows download's licence notices were missing six of its own
+  dependencies.** `THIRD-PARTY-NOTICES.md` ships inside every release archive,
+  but it was generated for macOS and Linux only — so the file in the Windows zip
+  omitted the crates that only the Windows build links, among them `schannel`,
+  the Windows TLS implementation. Six releases were affected. The notices now
+  cover every platform the release builds, and a check in CI fails if the two
+  lists ever drift apart again.
 - **Corrected the description of the Oracle's network code**, which said it made
   a single non-streaming request. It has streamed replies token by token since
   v0.59.0, and also probes the endpoint and lists available models. Documentation

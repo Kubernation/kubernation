@@ -113,6 +113,7 @@ lint:
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
 	./hack/check-conversion-authorities.sh
+	./hack/check-release-targets.sh
 
 ## test: unit tests (core logic + GUI render helpers)
 test:

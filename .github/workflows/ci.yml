@@ -94,6 +94,13 @@ jobs:
         shell: bash
         run: ./hack/check-conversion-authorities.sh
 
+      # The release archives carry THIRD-PARTY-NOTICES.md, which is generated from
+      # about.toml's pinned target list — so a platform release.yml ships but
+      # about.toml omits distributes a notices file missing that platform's
+      # crates. Windows was in exactly that state for six releases.
+      - name: Release targets match the notices config
+        run: ./hack/check-release-targets.sh
+
       - name: Assert the vendored miniquad patch is active
         shell: bash
         # `[/\\]`: cargo tree prints the path with backslashes on Windows.

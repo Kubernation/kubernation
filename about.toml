@@ -4,15 +4,22 @@
 # The `accepted` list is every SPDX license present in the tree; cargo-about
 # picks an accepted option for each crate's OR-expression.
 
-# Pin the platforms we ship (release.yml builds macOS-universal + Linux x86_64),
-# so the notices are the UNION of their dependency trees and identical no matter
-# which OS regenerates them. Without this, a macOS run omits the Linux X11/ALSA
-# crates and the CI diff (on Linux) fails. cargo-about evaluates cfg per triple
-# from Cargo.lock; the target toolchains need not be installed.
+# Pin the platforms we ship — release.yml builds macOS-universal (aarch64 +
+# x86_64 lipo'd), Linux x86_64 AND Windows x86_64 — so the notices are the UNION
+# of their dependency trees and identical no matter which OS regenerates them.
+# Without this, a macOS run omits the Linux X11/ALSA crates and the CI diff (on
+# Linux) fails. cargo-about evaluates cfg per triple from Cargo.lock; the target
+# toolchains need not be installed.
+#
+# Windows was missing here until v1.33.2 while release.yml shipped a Windows zip
+# that CARRIES this file, so the notices distributed with the Windows binary
+# omitted the licences of the crates only that binary links. This list must name
+# every target release.yml builds; adding a platform there means adding it here.
 targets = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
     "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
 ]
 
 accepted = [
