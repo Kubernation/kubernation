@@ -9,6 +9,12 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **The Oracle said "streaming" before the model had produced anything.** While
+  waiting for a local model's first token — 10 to 30 seconds on a large one — the
+  consult window read `streaming… 0s · 0 chars` and dropped the countdown, which
+  is exactly the wait that the timeout governs. It now says `consulting the
+  Oracle… 0s (timeout 600s)` with the "local models can take a while" hint until
+  a token actually arrives.
 - **The attention queue's "×N" now says what it counts, and it was understating
   trouble.** A concern reading `restarting repeatedly ×1` meant *one pod that has
   restarted at least five times*, not one restart — while two lines below it in

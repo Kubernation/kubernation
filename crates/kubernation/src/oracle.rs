@@ -254,6 +254,41 @@ pub fn stream_status_line(elapsed_secs: u64, chars: usize) -> String {
     format!("streaming… {elapsed_secs}s · {chars} chars")
 }
 
+/// PURE draw-decision fn: which progress row to show while a consult is in
+/// flight, and the hint under it.
+///
+/// The choice is whether a token has ACTUALLY ARRIVED, not whether a stream
+/// buffer exists. The net thread pre-inserts an empty `StreamBuf` when it
+/// spawns the request, so `reply` becomes `Some("")` immediately — and branching
+/// on `is_some()` showed `streaming… 0s · 0 chars` for the whole cold-start
+/// window, which on a 30B local model is 10–30s.
+///
+/// That was wrong three ways at once, all in the window where the operator most
+/// needs help: it said streaming when nothing had streamed; it dropped the
+/// timeout clause, which is exactly the bound that governs the FIRST token (the
+/// client gives it the full per-profile timeout and only then a 30s
+/// idle-per-token bound); and it replaced "local models can take a while" with
+/// the terser hint precisely when the wait is longest.
+///
+/// [`stream_status_line`]'s own doc said "used once tokens start arriving" — the
+/// contract was written down and the caller did not meet it.
+pub fn progress_row(
+    reply: Option<&str>,
+    elapsed_secs: u64,
+    timeout_secs: u64,
+) -> (String, &'static str) {
+    match reply {
+        Some(r) if !r.is_empty() => (
+            stream_status_line(elapsed_secs, r.chars().count()),
+            "(Cancel to stop)",
+        ),
+        _ => (
+            consult_progress_line(elapsed_secs, timeout_secs),
+            "(local models can take a while — Cancel to stop)",
+        ),
+    }
+}
+
 /// PURE draw-decision fn: the reply-carousel pager label. `total = history_len + 1`
 /// (the current/live reply is NOT in history). The latest page is actionable; an
 /// earlier page is read-only. Unit-tested.
@@ -2065,20 +2100,22 @@ impl OracleView {
                 }
             } else if self.pending.is_some() {
                 let elapsed = (get_time() - self.pending_started).max(0.0) as u64;
-                if let Some(reply) = &self.reply {
-                    // Streaming: the text grows in place; the heavy reply-land parsers
-                    // (Stage buttons, CONSULT NEXT) wait for the Done edge.
-                    let shown = strip_machine_blocks(reply);
-                    cx.md_block(&shown, 96);
+                // Text first, when there is any: it grows in place, and the heavy
+                // reply-land parsers (Stage buttons, CONSULT NEXT) wait for the
+                // Done edge.
+                if let Some(reply) = self.reply.as_deref().filter(|r| !r.is_empty()) {
+                    cx.md_block(&strip_machine_blocks(reply), 96);
                     cx.gap();
-                    cx.row(&stream_status_line(elapsed, reply.chars().count()), DIM);
-                    cx.row("(Cancel to stop)", DIM);
-                } else {
-                    // No token yet — the spinner with the cold-start countdown.
-                    let timeout = cfg.as_ref().map(|c| c.timeout().as_secs()).unwrap_or(0);
-                    cx.row(&consult_progress_line(elapsed, timeout), DIM);
-                    cx.row("(local models can take a while — Cancel to stop)", DIM);
                 }
+                let timeout = cfg.as_ref().map(|c| c.timeout().as_secs()).unwrap_or(0);
+                // The RAW reply: `progress_row` owns the has-a-token-arrived test,
+                // so there is no filtered value a caller could get wrong. Pinning
+                // the authority while the caller decides for itself is how the
+                // same defect walks back in (D2 §3.4) — and `draw_consult` is
+                // GL-driven, so no test could see it.
+                let (status, hint) = progress_row(self.reply.as_deref(), elapsed, timeout);
+                cx.row(&status, DIM);
+                cx.row(hint, DIM);
             } else if logs_pending {
                 cx.row("gathering the pod's logs to include in the consult…", DIM);
             } else if let Some(err) = self.reply_error.clone() {
@@ -2794,6 +2831,33 @@ mod tests {
         assert!(s.contains("streaming") && s.contains("4s") && s.contains("128"));
         // An idle-bounded stream has no total countdown — don't imply one.
         assert!(!s.contains("timeout"));
+    }
+
+    /// A stream buffer is not a token. The net thread pre-inserts an empty one
+    /// when it spawns the request, so the view said `streaming… 0s · 0 chars`
+    /// for the whole cold-start window — 10–30s on a 30B local model — and
+    /// dropped the timeout clause exactly where the first token is the thing the
+    /// timeout bounds. Caught by rendering a real consult, not by reading.
+    #[test]
+    fn the_progress_row_waits_for_a_real_token() {
+        // Pre-insert: a buffer exists, nothing has arrived.
+        for empty in [None, Some("")] {
+            let (status, hint) = progress_row(empty, 4, 180);
+            assert!(
+                status.contains("consulting") && status.contains("timeout 180s"),
+                "an empty buffer must not read as streaming: {status}"
+            );
+            assert!(hint.contains("can take a while"), "{hint}");
+        }
+        // First token in: now it is streaming, and a countdown would mislead
+        // (the bound past this point is idle-per-token, not total).
+        let (status, hint) = progress_row(Some("He"), 4, 180);
+        assert!(
+            status.contains("streaming") && status.contains("2 chars"),
+            "{status}"
+        );
+        assert!(!status.contains("timeout"), "{status}");
+        assert_eq!(hint, "(Cancel to stop)");
     }
 
     #[test]

@@ -96,6 +96,47 @@ advisor's own text, not by a number I can point at on kind.
 
 ---
 
+## 2a. The Oracle said "streaming" before anything had streamed
+
+The audit recorded the Oracle's wording as **unchecked** because it needs a live
+endpoint. With a local Ollama up, a real realm consult rendered:
+
+```
+streaming… 0s · 0 chars
+(Cancel to stop)
+```
+
+Zero chars: no token had arrived. `stream_status_line`'s own doc says *"used once
+tokens start arriving"* — the contract was written down, and the caller branched
+on `self.reply.is_some()` instead. The net thread pre-inserts an **empty**
+`StreamBuf` when it spawns the request, so `reply` becomes `Some("")` at once and
+the view flipped to the streaming row immediately.
+
+Wrong three ways, all inside the window where the operator most needs help — on a
+30B local model that window is 10–30s:
+
+- it said *streaming* when nothing had streamed;
+- it **dropped the timeout clause**, and that clause governs precisely the first
+  token (the client gives it the full per-profile timeout, then a 30s
+  idle-per-token bound) — so the countdown vanished exactly where it applies;
+- it replaced *"local models can take a while"* with the terser hint, exactly
+  when the wait is longest.
+
+Now `consulting the Oracle… 0s (timeout 600s)` until a token lands, verified on
+screen against the live model.
+
+**The decision moved into a pure `progress_row`**, and then one step further.
+The first version left the caller filtering (`reply.filter(|r| !r.is_empty())`)
+and passing the result in — mutation **U3 replaced that filter and survived**,
+because the authority was pinned and the caller was not, in a GL-driven function
+no test can watch. That is D2 §3.4 exactly. So `progress_row` now takes the RAW
+`Option<&str>` and owns the has-a-token test: there is no filtered value left for
+a caller to get wrong. U3 re-run still survives — and now *should*, because
+`progress_row(Some(""))` and `progress_row(None)` are asserted equal, so the
+mutation is a no-op rather than a defect.
+
+---
+
 ## 3. Checked and found correct
 
 Recorded so a later pass does not re-derive them: `strain: calm · pods 7/110`,
@@ -119,6 +160,9 @@ is false, not what is terse. It is not false.
 | S2 | both bases render the same word (the label becomes decoration) | caught |
 | T1 | the workload count loses its unit | caught |
 | T2 | the bare pod gets the tally too | caught |
+| U1 | an empty stream buffer reads as streaming | caught |
+| U2 | the cold-start row loses its timeout clause | caught |
+| U3 | the caller re-mirrors the has-a-token test | survived → made unrepresentable |
 
 S2 matters as much as S1: a basis label that says the same thing for both bases
 is decoration, and the test would pass on the strength of the word being present.
@@ -148,6 +192,11 @@ counted pod at five restarts and its three siblings at four.
 - [x] Mutations asserted applied
 - [x] `cargo nextest` green; clippy clean with and without features; 0 broken doc links
 
-**Not done:** the Oracle bundle's wording still needs an endpoint to render, and
-the drain line's blocked state needs a live blocking budget — both remain
-**unchecked**, not correct.
+**Also checked and correct:** the consent preview's `POST
+{endpoint}/chat/completions` — I suspected a missing `/v1` and the code was
+right: the client builds `{base_url}/chat/completions`, and `DEFAULT_LLM_URL`
+already ends in `/v1`. My test run passed a `--llm-url` without it; my error, not
+a defect.
+
+**Not done:** the drain line's blocked state still needs a live blocking budget to
+render, so it remains **unchecked**, not correct.
