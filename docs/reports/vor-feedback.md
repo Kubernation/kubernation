@@ -1,7 +1,8 @@
 # VOR — field notes from first use
 
-> **Re-checked 2026-08-29, after a VOR update: §1 and §4's first item are both
-> addressed, verified against source. See §0.**
+> **Re-checked twice on 2026-08-29 after two VOR updates. §1 and every item in
+> §4 that was real are addressed — and two of my §4 nits were not real. See §0
+> and §0.2.**
 
 **Date:** 2026-08-29 · **Project:** Kubernation (Rust, 2-crate workspace)
 **Context:** first session using VOR, during the panel-wording pass. rust-analyzer
@@ -50,6 +51,48 @@ claim about the import's position.
 
 **Unaddressed, and it was explicitly minor:** `find_symbol` still has no `kind`
 filter (§4).
+
+### 0.2 Second re-check — the remaining items, and two nits that were wrong
+
+**The import row is fixed, and my nit about it was mistaken.** It now carries
+`call_sites: [2217]`. I had written that the `use` was at line 8 and that `1` was
+therefore imprecise. Line 8 is `use …cost::{self, CostBasis, NodeCost}` — it
+imports the `cost` **module**, not `idle_meaning`. The only line that imports
+`idle_meaning` by name is 2217, a function-local `use` inside a test, and that is
+exactly where VOR points. It was right when I flagged it and it is more precise
+now; the error was mine, and it was an assumption I had not checked.
+
+**`find_symbol`'s `kind` filter works and always existed.** `name=primary,
+kind=function` returns 2 rows instead of 3, dropping the test whose *name*
+merely contains "primary". My §4 said a kind filter "would have saved a step",
+implying absence. It is in the schema and I did not use it.
+
+**Regression check:** `Agg::primary` still returns `call_sites: [446, 478, 524]`
+with `caller_start_line: 277` and `reference_kind: "calls"`.
+
+**`vor_impact` does NOT carry `call_sites`, and should not.** Its rows are
+transitive dependents, not callers — only a depth-1 row could have a call site at
+all. Noting it so nobody "fixes" it into a field that would be empty or
+misleading for most rows.
+
+**Spot-checked `vor_impact` for invention, and found none.** On `Agg::primary` it
+reports 37 dependents at `risk: HIGH`, reaching the GUI crate at depth 3. I read
+one far row back: `net::build_carrying` → `Models::build_with` →
+`attention::build` (model.rs:2162) → `Agg::primary`. Three hops, two crates,
+correct. The `provenance` split (29 corroborated / 7 cross-file-only / 1 local at
+0.6 from tree-sitter) matched: that low-confidence row is a real test.
+
+### 0.3 What this says about the report, not the tool
+
+Of my four §4 items: one was real and is fixed (the unlabelled file row), one
+was already addressed before I wrote it (`reference_kind`), and **two were simply
+wrong** — the import line and the `kind` filter. §1's practical complaint was
+real, but its framing was unfair (§0.1).
+
+So a majority of my smaller criticisms did not survive being checked. I would
+weight this report accordingly: **§1 and the file-row are worth acting on and
+were; the nits should be read as things I got wrong, kept here because deleting
+them would hide the correction.**
 
 ### 0.1 One correction to this report's own framing
 
