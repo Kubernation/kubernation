@@ -200,6 +200,22 @@ impl ObservedWorld {
         g.node_history(name)
     }
 
+    /// Recent usage samples for one pod (oldest→newest) — the right-sizing
+    /// advisor's P90 input. Empty while metrics-server is down, exactly like
+    /// [`Self::node_usage_history`]: the ring survives a blip but is hidden, so
+    /// a recommendation is never computed from a stale window.
+    pub fn pod_usage_history(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Vec<crate::k8s::metrics::NodeUsage> {
+        let g = match self.metrics.lock() {
+            Ok(g) if g.available => g,
+            _ => return Vec::new(),
+        };
+        g.pod_history(namespace, name)
+    }
+
     /// Recent cluster-aggregate usage samples (oldest→newest) — the STATUS
     /// overview sparkline. Empty when metrics-server isn't reporting.
     pub fn cluster_usage_history(&self) -> Vec<crate::k8s::metrics::NodeUsage> {

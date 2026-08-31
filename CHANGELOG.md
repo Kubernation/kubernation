@@ -8,6 +8,21 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+- **Right-sizing advice now comes from what a pod has actually been using, not
+  from one instant.** The advisor recommends CPU and memory requests — numbers
+  you act on by editing a manifest — and it derived them from a single
+  metrics-server reading, with "peak" meaning the busiest replica at that one
+  moment. It now keeps a short history per pod and uses the 90th percentile of
+  each pod's own usage, so a workload that idles and spikes is no longer sized
+  from whichever second the poll happened to land on.
+- **And the advisor says which reading it used.** A recommendation from a
+  two-minute percentile and one from a single sample deserve different trust, so
+  the footer names the window (`P90 of each pod's usage over the last 40 samples
+  (~10 min)`) and counts any rows too new to have one. Until a pod has about two
+  minutes of history it stays on the single-sample basis and says so, rather than
+  calling three readings a percentile.
+
 ## [1.34.1] — 2026-08-29
 
 ### Changed

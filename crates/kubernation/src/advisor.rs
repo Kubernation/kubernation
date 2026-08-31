@@ -8,8 +8,8 @@
 //! machinery. Cluster-wide (hot).
 
 use kubernation_core::state::advisor::{
-    HealthReport, NetworkReport, RightSizingReport, RsRow, RsVerdict, StorageReport, health_report,
-    network_report, rightsizing_report, storage_report,
+    HealthReport, NetworkReport, RightSizingReport, RsRow, RsVerdict, StorageReport, UsageBasis,
+    health_report, network_report, rightsizing_report, storage_report,
 };
 use kubernation_core::state::cost::{self, CostBasis, CostMode, CostReport};
 use kubernation_core::state::harden::{self, HardeningReport, WorkloadFindings};
@@ -332,6 +332,61 @@ fn push_section(
 }
 
 /// PURE: the right-sizing advisor's lines as (text, role). Unit-tested.
+/// PURE draw-decision fn: the right-sizing footer's basis clause.
+///
+/// It said "from 1 metrics-server sample" unconditionally. That was true when the
+/// advisor had only the latest reading; now most rows are a 90th percentile of
+/// each pod's own history, and a footer still claiming one sample UNDERSTATES
+/// what the recommendation rests on — the mirror of the `idle` defect, which
+/// overstated by staying silent.
+///
+/// Reporting the WEAKEST row was the first attempt and is also wrong: a rolling
+/// deploy leaves one fresh pod almost permanently, so a table of solid P90 rows
+/// would describe itself as single-sample forever and the window would look
+/// unearned. So it reports the predominant basis AND counts the exceptions —
+/// neither overstating the weak rows nor understating the strong ones.
+///
+/// The window quoted is the SHORTEST among the P90 rows, for the same reason a
+/// row takes its thinnest pod's window: it is the one the whole table can claim.
+pub fn basis_note(r: &RightSizingReport) -> String {
+    let rows: Vec<&RsRow> = r
+        .over
+        .iter()
+        .chain(&r.under)
+        .chain(&r.unrequested)
+        .collect();
+    if rows.is_empty() {
+        return "no measured workloads yet".to_string();
+    }
+    let mut shortest: Option<usize> = None;
+    let mut latest = 0usize;
+    for row in &rows {
+        match row.basis {
+            UsageBasis::Latest => latest += 1,
+            UsageBasis::P90 { samples } => {
+                shortest = Some(shortest.map_or(samples, |w: usize| w.min(samples)))
+            }
+        }
+    }
+    let tail = "directional, not a multi-day VPA fit";
+    match shortest {
+        None => format!("from a single metrics-server sample — {tail}"),
+        Some(n) => {
+            // Samples AND minutes: samples are what we have, minutes are what a
+            // reader can judge, so neither has to be taken on trust.
+            let mins = (n * 15).div_ceil(60);
+            let mut s = format!("P90 of each pod's usage over the last {n} samples (~{mins} min)");
+            if latest > 0 {
+                s.push_str(&format!(
+                    " — {latest} of {} rows from a single sample",
+                    rows.len()
+                ));
+            }
+            format!("{s} — {tail}")
+        }
+    }
+}
+
 pub fn rightsizing_lines(r: &RightSizingReport) -> Vec<(String, RsRole)> {
     let mut out: Vec<(String, RsRole)> = Vec::new();
     let footer = "advice only — KuberNation can't edit container requests; apply via kubectl/manifest, then observe over time.";
@@ -364,10 +419,7 @@ pub fn rightsizing_lines(r: &RightSizingReport) -> Vec<(String, RsRole)> {
         headline.push_str(&format!("  ≈ {:.1} nodes", r.node_equiv));
     }
     out.push((headline, RsRole::Headline));
-    out.push((
-        "from 1 metrics-server sample — directional, not a multi-day VPA fit".to_string(),
-        RsRole::Dim,
-    ));
+    out.push((basis_note(r), RsRole::Dim));
 
     // Count strip.
     let count = |n: usize, on: RsRole| if n > 0 { on } else { RsRole::Dim };
@@ -1070,6 +1122,66 @@ fn page_network(cx: &mut Ctx, r: &NetworkReport, walls: &NetpolReport) {
 
 #[cfg(test)]
 mod tests {
+
+    /// The footer reports the basis it actually has, and the WEAKEST one.
+    ///
+    /// It claimed "from 1 metrics-server sample" unconditionally. Once most rows
+    /// became a P90 of each pod's history, that UNDERSTATED what the
+    /// recommendation rests on — the mirror of the `idle` defect, which
+    /// overstated by staying silent. And one `Latest` row among P90s means the
+    /// table is not all-P90: saying otherwise lends that row confidence it has
+    /// not earned.
+    #[test]
+    fn the_footer_reports_the_weakest_basis_present() {
+        use kubernation_core::state::advisor::UsageBasis;
+        let row = |b| {
+            let mut r = over_row("app");
+            r.basis = b;
+            r
+        };
+        let rep = |rows: Vec<RsRow>| RightSizingReport {
+            metrics_available: true,
+            over: rows,
+            ..Default::default()
+        };
+
+        let all_p90 = basis_note(&rep(vec![
+            row(UsageBasis::P90 { samples: 40 }),
+            row(UsageBasis::P90 { samples: 12 }),
+        ]));
+        assert!(all_p90.contains("P90"), "{all_p90}");
+        assert!(
+            all_p90.contains("12 samples"),
+            "the SHORTEST window: {all_p90}"
+        );
+        assert!(
+            all_p90.contains("~3 min"),
+            "minutes too, so neither is trusted: {all_p90}"
+        );
+
+        // Mixed: the strong rows keep their window and the weak ones are
+        // COUNTED. Reporting the weakest instead would let one fresh pod from a
+        // rolling deploy describe a solid table as single-sample forever.
+        let mixed = basis_note(&rep(vec![
+            row(UsageBasis::P90 { samples: 40 }),
+            row(UsageBasis::Latest),
+        ]));
+        assert!(mixed.contains("P90"), "{mixed}");
+        assert!(mixed.contains("40 samples"), "{mixed}");
+        assert!(
+            mixed.contains("1 of 2 rows from a single sample"),
+            "{mixed}"
+        );
+
+        // All weak: no window is claimed at all.
+        let none = basis_note(&rep(vec![row(UsageBasis::Latest)]));
+        assert!(none.contains("single metrics-server sample"), "{none}");
+        assert!(!none.contains("P90"), "{none}");
+
+        // No rows at all: say that, rather than claim a window over nothing.
+        let empty = basis_note(&rep(vec![]));
+        assert!(empty.contains("no measured workloads"), "{empty}");
+    }
     use super::*;
     use kubernation_core::state::advisor::{RsQos, RsResource};
     use kubernation_core::state::model::{WorkloadKind, WorkloadRef};
@@ -1162,6 +1274,7 @@ mod tests {
             },
             mem: RsResource::default(),
             worst: RsVerdict::Over,
+            basis: UsageBasis::Latest,
         }
     }
 

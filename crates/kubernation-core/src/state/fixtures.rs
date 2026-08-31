@@ -397,6 +397,46 @@ pub fn set_pod_usage(world: &ObservedWorld, ns: &str, name: &str, cpu: f64, mem:
     }
 }
 
+/// Seed usage HISTORY for one or more pods by driving the real `record_sample`
+/// once per timestep, so a test exercises the same path the poller does rather
+/// than a hand-built ring. Leaves `pods` holding the final step, as a live poll
+/// would.
+///
+/// Takes ALL the pods at once because the ring machinery is timeline-shaped: a
+/// per-pod helper that recorded one pod at a time would make every other pod
+/// absent for those polls, ageing out their rings via `RING_GRACE` and clobbering
+/// `pods` — so a two-pod fixture would silently collapse to one measured pod.
+/// (It did. The mutation that makes a row claim its LONGEST window survived
+/// against exactly that fixture, because with one pod the longest and shortest
+/// are the same number.)
+///
+/// Series may differ in length; a pod is simply absent from the steps it has no
+/// sample for, which is what a pod that started later looks like to the poller.
+pub fn set_pod_histories(world: &ObservedWorld, ns: &str, pods: &[(&str, &[(f64, f64)])]) {
+    let steps = pods.iter().map(|(_, s)| s.len()).max().unwrap_or(0);
+    if let Ok(mut g) = world.metrics.lock() {
+        g.available = true;
+        for i in 0..steps {
+            let mut step = std::collections::HashMap::new();
+            for (name, series) in pods {
+                // Align to the END: a shorter series is a pod that started
+                // later, so its samples are the most RECENT steps.
+                let offset = steps - series.len();
+                if i >= offset
+                    && let Some(&(cpu, mem)) = series.get(i - offset)
+                {
+                    step.insert(
+                        (ns.to_string(), (*name).to_string()),
+                        crate::k8s::metrics::NodeUsage { cpu, mem },
+                    );
+                }
+            }
+            g.record_sample(&std::collections::HashMap::new(), &step);
+            g.pods = step;
+        }
+    }
+}
+
 pub fn pod_owned(mut p: Pod, kind: &str, owner: &str) -> Pod {
     p.metadata.owner_references = Some(vec![OwnerReference {
         api_version: "apps/v1".into(),

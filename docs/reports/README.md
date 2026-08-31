@@ -64,6 +64,7 @@ Read this before assuming a question is unanswered.
 | `about-toml-windows.md` | the Windows zip shipped notices missing its own crates; the guard was broken too |
 | `panel-wording.md` | `×N` had two units in one list; "idle" had two meanings and said neither |
 | `vor-feedback.md` | first VOR session, plus a verified re-check: the call-site gap is fixed |
+| `p90-rightsizing.md` | sizing advice moved off one instant onto each pod's own history |
 
 ## Conventions
 
