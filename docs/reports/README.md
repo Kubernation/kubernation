@@ -67,6 +67,7 @@ Read this before assuming a question is unanswered.
 | `p90-rightsizing.md` | sizing advice moved off one instant onto each pod's own history |
 | `advisor-memo.md` | reports built once per snapshot; the bypass that passed every test |
 | `drain-line-check.md` | v1.36.0 released; the blocked drain state closed and made capturable |
+| `advisor-substrate.md` | the fleet question answered by daemonset; tab and overlay pinned to one report |
 
 ## Conventions
 

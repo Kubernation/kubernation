@@ -23,6 +23,7 @@ STATES=(
   "advisor-hardening|--advisor hardening"
   "advisor-posture|--advisor posture"
   "advisor-cost|--advisor cost"
+  "advisor-substrate|--advisor substrate"
   "charter|--charter"
   "annals|--annals"
   "postmortem|--postmortem"

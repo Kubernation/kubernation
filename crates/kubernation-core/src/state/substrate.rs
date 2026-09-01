@@ -30,6 +30,41 @@ use crate::state::observed::ObservedWorld;
 /// that would otherwise be reported as gaps.
 pub const FLEET_PREVALENCE: f64 = 0.8;
 
+/// The prevalence claim, in words — ONE home, consumed by the Almanac and the
+/// Advisors ▸ Substrate tab so they cannot describe the heuristic differently
+/// (the `SITING_CLAIM` pattern). Built from [`FLEET_PREVALENCE`], so the number
+/// in the sentence cannot drift from the number in the code.
+pub fn prevalence_note() -> String {
+    format!(
+        "'expected' is inferred from prevalence, not intent: a daemonset on at least \
+         {}% of nodes is treated as fleet-wide, because the map never reads its spec \
+         and cannot tell 'should be here and isn't' from 'excluded by a nodeSelector \
+         you wrote deliberately'",
+        (FLEET_PREVALENCE * 100.0).round() as u32
+    )
+}
+
+/// Does the arithmetic make a gap unrepresentable at this fleet size?
+///
+/// A DaemonSet is expected once it is on `>= FLEET_PREVALENCE * n` nodes, and a
+/// gap needs it on FEWER than n. When the smallest count that clears the bar is
+/// n itself, being expected and having a gap are mutually exclusive, so the
+/// report is empty BY CONSTRUCTION — not because the fleet is clean. At 0.8 that
+/// is every fleet of four nodes or fewer, which is why a laptop `kind` looks
+/// permanently covered. Pinned against `coverage_report` by test, so this is the
+/// same rule and not a re-derivation with different rounding.
+pub fn floor_binds(nodes_total: usize) -> bool {
+    let n = nodes_total as f64;
+    // Smallest integer count meeting the bar. `>= threshold` matches the
+    // report's filter exactly.
+    (FLEET_PREVALENCE * n).ceil() >= n
+}
+
+/// The largest fleet at which [`floor_binds`]; the Almanac quotes it.
+pub fn floor_nodes() -> usize {
+    (1..).take_while(|&n| floor_binds(n)).last().unwrap_or(0)
+}
+
 /// Whole-cluster DaemonSet coverage. One report feeds the overlay, the province
 /// window and the SELECTION box, so they cannot disagree.
 #[derive(Debug, Clone, Default)]
@@ -354,6 +389,24 @@ mod tests {
     /// *fewer* than n. For n ≤ 4, `ceil(0.8n) == n` — being expected and having
     /// a gap are mutually exclusive, so no gap is representable at all. n = 5
     /// (threshold 4) is the smallest fleet where one can be reported.
+    /// `floor_binds` is the SAME rule as the report, not a re-derivation: for
+    /// every fleet size, the report shows a gap at all-but-one coverage exactly
+    /// when the predicate says one is representable.
+    #[test]
+    fn floor_binds_agrees_with_the_report_at_every_size() {
+        for n in 1..=25 {
+            let r = coverage_report(&world_with(n, &[("cni", n - 1)]));
+            let gap_shown = r.nodes_with_gaps > 0;
+            assert_eq!(
+                gap_shown,
+                !floor_binds(n),
+                "n={n}: report shows gap={gap_shown}, floor_binds={}",
+                floor_binds(n)
+            );
+        }
+        assert_eq!(floor_nodes(), 4, "the number the Almanac quotes");
+    }
+
     #[test]
     fn no_gap_is_representable_below_five_nodes() {
         for n in 1..=4 {

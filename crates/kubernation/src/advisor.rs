@@ -15,10 +15,12 @@ use kubernation_core::state::advisor::{
 };
 use kubernation_core::state::cost::{self, CostBasis, CostMode, CostReport};
 use kubernation_core::state::harden::{self, HardeningReport, WorkloadFindings};
+use kubernation_core::state::model::MapModel;
 use kubernation_core::state::model::Models;
 use kubernation_core::state::netpol::{self, NetpolReport};
 use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::posture::{Axis, FactorKind, PostureReport, PostureTier, band};
+use kubernation_core::state::substrate::SubstrateReport;
 use kubernation_core::util::human_bytes;
 use macroquad::prelude::*;
 
@@ -36,10 +38,11 @@ pub enum AdvisorTab {
     Hardening,
     Posture,
     Cost,
+    Substrate,
 }
 
 impl AdvisorTab {
-    pub const ALL: [AdvisorTab; 7] = [
+    pub const ALL: [AdvisorTab; 8] = [
         AdvisorTab::Health,
         AdvisorTab::Storage,
         AdvisorTab::Network,
@@ -47,6 +50,7 @@ impl AdvisorTab {
         AdvisorTab::Hardening,
         AdvisorTab::Posture,
         AdvisorTab::Cost,
+        AdvisorTab::Substrate,
     ];
     fn idx(self) -> usize {
         match self {
@@ -57,8 +61,23 @@ impl AdvisorTab {
             AdvisorTab::Hardening => 4,
             AdvisorTab::Posture => 5,
             AdvisorTab::Cost => 6,
+            AdvisorTab::Substrate => 7,
         }
     }
+
+    /// The tab strip's labels, in `ALL` order. ONE list, so a tab added to
+    /// `ALL` without a label is a test failure rather than an off-by-one that
+    /// highlights the wrong button.
+    pub const LABELS: [&'static str; 8] = [
+        "Health",
+        "Storage",
+        "Network",
+        "Right-sizing",
+        "Hardening",
+        "Posture",
+        "Cost",
+        "Substrate",
+    ];
 }
 
 pub enum AdvisorAction {
@@ -166,16 +185,8 @@ impl Advisor {
     }
 
     pub fn draw(&mut self, snap: Option<&Snapshot>, mouse: Vec2, click: bool) -> AdvisorAction {
-        let labels = [
-            "Health",
-            "Storage",
-            "Network",
-            "Right-sizing",
-            "Hardening",
-            "Posture",
-            "Cost",
-            "Close",
-        ];
+        let mut labels: Vec<&str> = AdvisorTab::LABELS.to_vec();
+        labels.push("Close");
         let win = draw_window(
             "Advisors — state of the realm",
             vec2(760.0, 540.0),
@@ -208,6 +219,15 @@ impl Advisor {
                 AdvisorTab::Posture => page_posture(&mut cx, &s.hot.posture),
                 // Upkeep (cost) is memoized on the snapshot beside posture.
                 AdvisorTab::Cost => page_cost(&mut cx, &s.hot.cost),
+                // Substrate is already on `Models`, computed once per tick for the
+                // map overlay — so this READS it, like Posture and Cost, rather
+                // than adding a `ReportCache` slot that would rebuild what exists.
+                // Decided by reading: the report the overlay paints from IS the
+                // report the tab shows, which is also what makes them unable to
+                // disagree.
+                AdvisorTab::Substrate => {
+                    page_substrate(&mut cx, &s.hot.models.substrate, &s.hot.models.map)
+                }
             }
         } else {
             cx.note("the world is not yet explored", DIM);
@@ -880,6 +900,207 @@ fn page_hardening(cx: &mut Ctx, r: &HardeningReport) {
     }
 }
 
+// --- substrate page (DaemonSet coverage, by DaemonSet) ----------------------
+
+/// One expected DaemonSet and where it is missing. The tab's unit of answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubstrateRow {
+    /// `namespace/name` — the report's identity, never a bare name.
+    pub daemonset: String,
+    /// Nodes it is present on: `nodes_total - missing.len()`.
+    pub on: usize,
+    /// Nodes it is expected on and absent from, sorted. Each is tagged when the
+    /// node is NotReady, because then the node is the story and the gap is a
+    /// symptom — the case the Almanac warns is a false chase.
+    pub missing: Vec<(String, bool)>,
+}
+
+/// PURE draw-decision fn: invert `missing_by_node` into per-DaemonSet rows.
+///
+/// The map answers *which nodes* and the province window *which DaemonSets, for
+/// this node*. Neither answers the fleet question — "is my log agent
+/// everywhere?" — which is one row per DaemonSet, so the table is keyed by
+/// DaemonSet and a node missing two appears in two rows. Row order is
+/// `expected`'s, which is sorted, so rows do not reorder between ticks.
+///
+/// `not_ready` is the set of NotReady node names; a missing node in it is
+/// flagged rather than dropped, because dropping it would hide a real gap on a
+/// node that later comes back without its DaemonSet.
+pub fn substrate_rows(
+    r: &SubstrateReport,
+    not_ready: &std::collections::HashSet<&str>,
+) -> Vec<SubstrateRow> {
+    r.expected
+        .iter()
+        .map(|ds| {
+            let mut missing: Vec<(String, bool)> = r
+                .missing_by_node
+                .iter()
+                .filter(|(_, gaps)| gaps.contains(ds))
+                .map(|(node, _)| (node.clone(), not_ready.contains(node.as_str())))
+                .collect();
+            missing.sort();
+            SubstrateRow {
+                daemonset: ds.clone(),
+                on: r.nodes_total.saturating_sub(missing.len()),
+                missing,
+            }
+        })
+        .collect()
+}
+
+/// PURE draw-decision fn: the Substrate tab's lines.
+///
+/// Three empty states, each named — standing question 2. An empty table with no
+/// explanation on the dev cluster would be the unearned all-clear, and the dev
+/// cluster is where most people first open this:
+///
+/// - **the floor binds** (n ≤ `floor_nodes()`): no gap is representable, by
+///   arithmetic — not because the fleet is clean;
+/// - **no DaemonSet reaches the bar**: nothing is fleet-wide, so nothing can be
+///   missing from it (the overlay falls back to terrain for the same reason);
+/// - **every node covered**: the one genuine all-clear, and only claimed when
+///   something was actually expected.
+pub fn substrate_lines(
+    r: &SubstrateReport,
+    not_ready: &std::collections::HashSet<&str>,
+) -> Vec<(String, RsRole)> {
+    use kubernation_core::state::substrate::{floor_binds, floor_nodes, prevalence_note};
+    let mut out: Vec<(String, RsRole)> = Vec::new();
+    if r.nodes_total == 0 {
+        out.push(("no nodes observed yet".into(), RsRole::Dim));
+        return out;
+    }
+    if floor_binds(r.nodes_total) {
+        out.push((
+            format!(
+                "{} nodes: no gap is representable at this size",
+                r.nodes_total
+            ),
+            RsRole::Headline,
+        ));
+        out.push((
+            format!(
+                "a daemonset is fleet-wide once it is on {}% of nodes, and a gap needs it \
+                 on fewer than all of them; at {} nodes or fewer those cannot both hold, \
+                 so an empty table here means nothing about the fleet. {} nodes is the \
+                 smallest fleet where a gap can exist to find.",
+                (kubernation_core::state::substrate::FLEET_PREVALENCE * 100.0).round() as u32,
+                floor_nodes(),
+                floor_nodes() + 1
+            ),
+            RsRole::Dim,
+        ));
+        out.push((prevalence_note(), RsRole::Dim));
+        return out;
+    }
+    if !r.has_data() {
+        out.push((
+            format!(
+                "{} nodes: no daemonset reaches the fleet bar",
+                r.nodes_total
+            ),
+            RsRole::Headline,
+        ));
+        out.push((
+            "nothing is fleet-wide, so there is nothing to be missing from — this is not \
+             'all covered', it is 'no expectation to measure against'"
+                .into(),
+            RsRole::Dim,
+        ));
+        out.push((prevalence_note(), RsRole::Dim));
+        return out;
+    }
+    let rows = substrate_rows(r, not_ready);
+    out.push((
+        format!(
+            "{} fleet-wide daemonsets · {} of {} nodes with gaps",
+            r.expected.len(),
+            r.nodes_with_gaps,
+            r.nodes_total
+        ),
+        if r.nodes_with_gaps == 0 {
+            RsRole::Good
+        } else {
+            RsRole::Headline
+        },
+    ));
+    out.push((prevalence_note(), RsRole::Dim));
+    out.push((String::new(), RsRole::Dim));
+    for row in &rows {
+        let role = match row.missing.len() {
+            0 => RsRole::Good,
+            1 => RsRole::Warn,
+            _ => RsRole::Crit,
+        };
+        out.push((
+            format!(
+                "{}   on {} / {}   missing from {}",
+                row.daemonset,
+                row.on,
+                r.nodes_total,
+                row.missing.len()
+            ),
+            role,
+        ));
+        for (node, nr) in &row.missing {
+            out.push((
+                if *nr {
+                    format!("    {node}   (NotReady — the node is the story)")
+                } else {
+                    format!("    {node}")
+                },
+                if *nr { RsRole::Dim } else { role },
+            ));
+        }
+    }
+    out.push((String::new(), RsRole::Dim));
+    out.push((
+        "coverage is presence, not health: a crash-looping daemonset pod still counts as \
+         covered. a node added moments ago shows gaps until its pods land."
+            .into(),
+        RsRole::Dim,
+    ));
+    out
+}
+
+fn page_substrate(cx: &mut Ctx, r: &SubstrateReport, map: &MapModel) {
+    // Only walk the map for readiness when there are gaps to tag; a clean fleet
+    // costs nothing here (the report itself is memoized on `Models`).
+    let not_ready: std::collections::HashSet<&str> = if r.nodes_with_gaps == 0 {
+        Default::default()
+    } else {
+        map.zones
+            .iter()
+            .flat_map(|z| &z.nodes)
+            .filter(|t| !t.ready)
+            .map(|t| t.name.as_str())
+            .collect()
+    };
+    for (line, role) in substrate_lines(r, &not_ready) {
+        let (color, bold) = match role {
+            RsRole::Headline | RsRole::Heading => (PARCHMENT, true),
+            RsRole::Good => (good(), false),
+            RsRole::Warn => (WARN, false),
+            RsRole::Crit => (CRIT, false),
+            RsRole::Dim => (DIM, false),
+        };
+        let size = if bold { 15.0 } else { 13.0 };
+        let avail = cx.body.w - if bold { 10.0 } else { 22.0 };
+        if matches!(role, RsRole::Dim) {
+            // The Dim lines are the caveats — sentences, not rows. The other
+            // pages truncate everything to the window width, and a caveat cut
+            // at "beca..." is not stated; wrap these instead.
+            for piece in crate::almanac::wrap(&ascii(&line), avail, size) {
+                cx.row(&piece, color, bold);
+            }
+        } else {
+            let shown = crate::panels::fit_width(&ascii(&line), size, avail);
+            cx.row(&shown, color, bold);
+        }
+    }
+}
+
 // --- posture page (the realm-defense rollup) --------------------------------
 
 /// The `RsRole` whose colour matches a posture tier (the shared meaning palette).
@@ -1201,6 +1422,116 @@ fn page_network(cx: &mut Ctx, r: &NetworkReport, walls: &NetpolReport) {
 
 #[cfg(test)]
 mod tests {
+
+    /// A tab in `ALL` without a label would highlight the wrong button.
+    #[test]
+    fn every_advisor_tab_has_a_label_at_its_index() {
+        assert_eq!(AdvisorTab::ALL.len(), AdvisorTab::LABELS.len());
+        for t in AdvisorTab::ALL {
+            assert!(!AdvisorTab::LABELS[t.idx()].is_empty());
+        }
+    }
+
+    fn sub_report(total: usize, expected: &[&str], gaps: &[(&str, &[&str])]) -> SubstrateReport {
+        SubstrateReport {
+            expected: expected.iter().map(|s| s.to_string()).collect(),
+            missing_by_node: gaps
+                .iter()
+                .map(|(n, g)| (n.to_string(), g.iter().map(|s| s.to_string()).collect()))
+                .collect(),
+            nodes_total: total,
+            nodes_with_gaps: gaps.len(),
+        }
+    }
+
+    /// Inverted correctly: keyed by DaemonSet, a node missing two appears in two
+    /// rows, and each row's count is NODES, not gaps.
+    #[test]
+    fn substrate_rows_invert_by_daemonset_and_count_nodes() {
+        let r = sub_report(
+            10,
+            &["kube-system/cni", "kube-system/proxy"],
+            &[
+                ("n7", &["kube-system/cni", "kube-system/proxy"]),
+                ("n3", &["kube-system/cni"]),
+            ],
+        );
+        let rows = substrate_rows(&r, &Default::default());
+        assert_eq!(rows.len(), 2, "one row per expected daemonset");
+        assert_eq!(rows[0].daemonset, "kube-system/cni");
+        assert_eq!(rows[0].on, 8);
+        assert_eq!(
+            rows[0]
+                .missing
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>(),
+            ["n3", "n7"],
+            "sorted, so rows do not reorder between ticks"
+        );
+        assert_eq!(rows[1].daemonset, "kube-system/proxy");
+        assert_eq!(rows[1].on, 9);
+        assert_eq!(rows[1].missing.len(), 1, "n7 appears in BOTH rows");
+        // A NotReady node is flagged, not dropped.
+        let nr: std::collections::HashSet<&str> = ["n7"].into_iter().collect();
+        let rows = substrate_rows(&r, &nr);
+        assert_eq!(
+            rows[0].missing,
+            vec![("n3".to_string(), false), ("n7".to_string(), true)]
+        );
+    }
+
+    /// Three empty states, each saying which it is — standing question 2.
+    #[test]
+    fn substrate_lines_name_each_empty_state() {
+        let none: std::collections::HashSet<&str> = Default::default();
+        // The floor: four nodes, a daemonset on all four is expected, and no gap
+        // is representable. This is the dev cluster, so it is the one that
+        // matters most.
+        let floor = substrate_lines(&sub_report(4, &["kube-system/cni"], &[]), &none);
+        assert!(
+            floor[0].0.contains("no gap is representable"),
+            "{}",
+            floor[0].0
+        );
+        assert!(
+            floor
+                .iter()
+                .any(|(l, _)| l.contains("5 nodes is the smallest")),
+            "{floor:?}"
+        );
+        // No daemonset reaches the bar — distinct from covered.
+        let bar = substrate_lines(&sub_report(20, &[], &[]), &none);
+        assert!(
+            bar[0].0.contains("no daemonset reaches the fleet bar"),
+            "{}",
+            bar[0].0
+        );
+        assert!(
+            bar.iter().any(|(l, _)| l.contains("not 'all covered'")),
+            "{bar:?}"
+        );
+        // Genuinely covered: the only all-clear, and only when something was expected.
+        let clean = substrate_lines(&sub_report(20, &["kube-system/cni"], &[]), &none);
+        assert!(
+            clean[0].0.contains("0 of 20 nodes with gaps"),
+            "{}",
+            clean[0].0
+        );
+        assert_eq!(clean[0].1, RsRole::Good);
+        // And the three headlines are three different sentences.
+        assert_ne!(floor[0].0, bar[0].0);
+        assert_ne!(bar[0].0, clean[0].0);
+        // The prevalence heuristic is stated in every populated state.
+        for lines in [&floor, &bar, &clean] {
+            assert!(
+                lines
+                    .iter()
+                    .any(|(l, _)| l.contains("inferred from prevalence")),
+                "{lines:?}"
+            );
+        }
+    }
 
     /// The memo is keyed on the snapshot, and one key invalidates every slot.
     ///

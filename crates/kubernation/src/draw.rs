@@ -3682,6 +3682,85 @@ mod tests {
         );
     }
 
+    /// THE GATE: the Substrate tab and the Substrate overlay never disagree
+    /// about which nodes have gaps.
+    ///
+    /// Both read one `SubstrateReport`, so they agree by construction on the
+    /// FACT — but the overlay buckets into colours and the tab lists names, and
+    /// the risk is the two summarising differently (`fresh_tier` was shared
+    /// between colour and words for exactly this reason). Asserted over a REAL
+    /// report from `coverage_report`, not a hand-built one, so the inversion the
+    /// tab performs is checked against the shape the report actually produces.
+    #[test]
+    fn substrate_tab_and_overlay_agree_on_which_nodes_have_gaps() {
+        use kubernation_core::state::model::Models;
+        use kubernation_core::state::substrate::coverage_report;
+        use kubernation_core::state::{fixtures as fx, world::Province};
+
+        // Six nodes; `cni` on five (expected, one gap), `logs` on five (expected,
+        // a different gap), `rare` on two (below the bar — must appear nowhere).
+        let (world, mut s) = fx::world();
+        let names = ["n0", "n1", "n2", "n3", "n4", "n5"];
+        for n in names {
+            s.node(fx::node(n, Some("z-a")));
+        }
+        let mut place = |ds: &str, on: &[&str]| {
+            s.daemonset(fx::daemonset(
+                "kube-system",
+                ds,
+                on.len() as i32,
+                on.len() as i32,
+            ));
+            for n in on {
+                let pod = format!("{ds}-{n}");
+                s.pod(fx::pod_owned(
+                    fx::pod("kube-system", &pod, Some(n)),
+                    "DaemonSet",
+                    ds,
+                ));
+            }
+        };
+        place("cni", &["n0", "n1", "n2", "n3", "n4"]);
+        place("logs", &["n0", "n1", "n2", "n3", "n5"]);
+        place("rare", &["n0", "n1"]);
+
+        let report = coverage_report(&world);
+        assert_eq!(report.expected, ["kube-system/cni", "kube-system/logs"]);
+        let models = Models::build(&world);
+        let provs: Vec<&Province> = models.world.continents[0].provinces.iter().collect();
+
+        // The overlay's set: provinces NOT painted idle land.
+        let data = OverlayData {
+            substrate: Some(&report),
+            ..Default::default()
+        };
+        let coloured: std::collections::BTreeSet<&str> = provs
+            .iter()
+            .filter(|p| overlay_pair(Overlay::Substrate, p, data).0 != idle_land_pair().0)
+            .map(|p| p.tile.name.as_str())
+            .collect();
+
+        // The tab's set: every node named in any row.
+        let rows = crate::advisor::substrate_rows(&report, &Default::default());
+        let listed: std::collections::BTreeSet<&str> = rows
+            .iter()
+            .flat_map(|r| r.missing.iter().map(|(n, _)| n.as_str()))
+            .collect();
+
+        assert_eq!(
+            coloured, listed,
+            "the tab and the overlay must name the same nodes"
+        );
+        assert_eq!(
+            coloured,
+            ["n4", "n5"].into_iter().collect(),
+            "and both must be right"
+        );
+        // Guard the guard: the fixture really has a below-bar daemonset, and
+        // it really is absent from both surfaces.
+        assert!(!rows.iter().any(|r| r.daemonset.ends_with("/rare")));
+    }
+
     #[test]
     fn substrate_overlay_recedes_when_clean_and_escalates_by_gap_count() {
         use kubernation_core::state::model::Models;

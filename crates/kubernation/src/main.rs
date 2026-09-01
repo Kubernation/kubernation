@@ -296,6 +296,7 @@ struct Args {
     #[arg(long, value_name = "NAME")]
     menu: Option<String>,
     /// Open an advisor screen on sync — health / storage / network / rightsizing / hardening
+    /// / posture / cost / substrate
     /// (development verification of the advisor windows)
     #[arg(long, value_name = "NAME")]
     advisor: Option<String>,
@@ -1707,6 +1708,10 @@ async fn main() {
                 (KeyCode::Key4, AdvisorTab::RightSizing),
                 (KeyCode::Key5, AdvisorTab::Hardening),
                 (KeyCode::Key6, AdvisorTab::Posture),
+                // Cost had no key — an eighth tab with none would have widened
+                // that gap, so both are mapped here.
+                (KeyCode::Key7, AdvisorTab::Cost),
+                (KeyCode::Key8, AdvisorTab::Substrate),
             ] {
                 if is_key_pressed(k) {
                     a.go(t);
@@ -1941,6 +1946,7 @@ async fn main() {
                         "hardening" => AdvisorTab::Hardening,
                         "posture" => AdvisorTab::Posture,
                         "cost" => AdvisorTab::Cost,
+                        "substrate" => AdvisorTab::Substrate,
                         _ => AdvisorTab::Health,
                     }));
                 }

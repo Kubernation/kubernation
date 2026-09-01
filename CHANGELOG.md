@@ -15,6 +15,24 @@ version covers every crate; releases are git tags `vX.Y.Z`.
   tooling only; no change to the app.
 
 ### Added
+- **Advisors ▸ Substrate — the fleet's daemonset coverage, by daemonset.** The
+  `substrate` map overlay says *which nodes* are missing infrastructure and the
+  province window says *which daemonsets, for this node*; neither answered the
+  fleet question — "is my log agent everywhere?" The new tab lists each
+  fleet-wide daemonset with how many nodes it is on and which it is missing
+  from, tagging a NotReady node as the story rather than the gap. It reads the
+  same coverage report the overlay colours from, so the two cannot disagree — a
+  test sweeps every province asserting they don't. Its three empty states each
+  say which they are: no nodes yet; too few nodes for a gap to be representable
+  at all (four or fewer — at the 80% bar, being fleet-wide and having a gap are
+  mutually exclusive); and no daemonset reaching the bar. Never a blank table
+  that reads as "all covered". The caveat that "expected" is inferred from
+  prevalence, not from a daemonset's intent, is written once and shared by the
+  tab and the field guide, and it wraps rather than truncating — a caveat cut
+  off mid-sentence is not stated. Key `8`, `--advisor substrate`.
+- A headless `substrate` example prints the same coverage report for a context,
+  so a screenshot of the tab or the overlay has something exact to be checked
+  against.
 - The sample cluster now includes a disruption budget that refuses every
   voluntary disruption, so the "draining blocked" state can be rendered and
   crash-checked like every other screen. It is on the `db` StatefulSet rather

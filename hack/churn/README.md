@@ -25,7 +25,7 @@ hack/churn/down.sh                            # tear the cluster down
 Also available as `make churn-up`, `make churn-capture`, `make churn-reset`,
 `make churn-down`.
 
-## The six scenarios
+## The eight scenarios
 
 | # | Script | Proves | Gate |
 |---|---|---|---|
@@ -35,6 +35,8 @@ Also available as `make churn-up`, `make churn-capture`, `make churn-reset`,
 | 4 | `4-pool-add.sh` | A cataclysm is detected and recorded | A5 |
 | 5 | `5-pool-remove.sh` | Structural loss, distinct from routine churn | A5 |
 | 6 | `6-zone-loss.sh` | The failure-domain claim in the hierarchy | A5 |
+| 7 | `7-workload-churn.sh` | A city stays put when a DIFFERENT workload changes (touches no nodes) | A3 |
+| 8 | `8-substrate-gaps.sh` | The Substrate tab, the overlay and the headless `substrate` example name the same gaps; `MODE=discrim` drops a daemonset below the bar (touches no nodes) | Advisors ▸ Substrate |
 
 Every scenario takes env-var overrides (`BATCH`, `OVERLAP`, `COUNT`, `POOL`,
 `ZONE`, `CAPTURE`); read the header of each.

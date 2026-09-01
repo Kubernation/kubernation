@@ -109,6 +109,39 @@ pub(crate) fn menu_bar_text() -> String {
     )
 }
 
+/// The Substrate overlay's field-guide entry. The prevalence claim and the floor
+/// size come from `substrate::prevalence_note` / `substrate::floor_nodes`, the
+/// same authority the Advisors ▸ Substrate tab reads — so the guide, the tab and
+/// the code cannot quote three different numbers.
+pub(crate) fn substrate_text() -> String {
+    use kubernation_core::state::substrate::{floor_nodes, prevalence_note};
+    let floor = floor_nodes();
+    format!(
+        "Which nodes are missing infrastructure the rest of the fleet has — the CNI, \
+         kube-proxy, log and metric agents that run UNDER your workloads. A node quietly \
+         missing one looks healthy (its own pods are fine) while lacking something every \
+         other node has. Provinces recede to plain land when fully covered, so only the \
+         gaps show: amber for one missing daemonset, red for two or more. The province \
+         SELECTION names them, the province window's SUBSTRATE section lists what IS \
+         stationed there, and Advisors > Substrate answers the fleet question — which \
+         daemonsets are expected and which nodes each is missing from. HONEST LIMIT: {} \
+         So: targeted daemonsets on most-but-not-all nodes will read as gaps; a newly \
+         added node shows gaps until its pods land; and a node whose pods have actually \
+         been deleted (a drain, or a NotReady long enough for pod GC) reads as a gap when \
+         the node itself is the real story. Coverage is PRESENCE, not health: a daemonset \
+         pod that is crash-looping still counts as covered, so this view tells you what is \
+         MISSING, never what is broken — the attention queue does that. Names are \
+         namespace-qualified because two daemonsets in different namespaces may share one. \
+         Small clusters under-report, and at {floor} nodes or fewer the overlay can report \
+         NOTHING — being fleet-wide and having a gap are mutually exclusive there. {} nodes \
+         is the smallest fleet where a gap exists to find; this view is for real clusters, \
+         not a laptop kind. When no daemonset is fleet-wide the overlay falls back to \
+         terrain rather than paint an all-clear it hasn't earned.",
+        prevalence_note(),
+        floor + 1
+    )
+}
+
 /// The Legend's City entry. Built here so a test can read it.
 pub(crate) fn city_legend_text() -> String {
     format!(
@@ -408,7 +441,9 @@ impl Ctx<'_> {
     }
 }
 
-fn wrap(s: &str, max_w: f32, size: f32) -> Vec<String> {
+/// Word-wrap `s` to `max_w` px at `size`, measuring with the bundled font.
+/// Shared with the advisor pages whose caveat lines are sentences, not rows.
+pub(crate) fn wrap(s: &str, max_w: f32, size: f32) -> Vec<String> {
     let mut lines = Vec::new();
     let mut cur = String::new();
     for word in s.split_whitespace() {
@@ -667,9 +702,7 @@ fn page_controls(cx: &mut Ctx) {
         "The 4th golden signal — how full a province is toward its hard limits: cpu/mem usage, scheduled pods vs the kubelet max-pods, and the kubelet Disk/PID/Mem-pressure conditions. Red = at/over a limit and refusing or evicting work; the province SELECTION names the binding dimension (e.g. 'pods 105/110', 'DiskPressure (pegged)'). Distinct from Pressure, which shows cpu/mem utilization only — Saturation also lights up a node at max-pods or under a kubelet condition while cpu/mem look calm (and needs no metrics-server for those axes).",
     );
     cx.heading("Substrate overlay (daemonsets)");
-    cx.para(
-        "Which nodes are missing infrastructure the rest of the fleet has — the CNI, kube-proxy, log and metric agents that run UNDER your workloads. A node quietly missing one looks healthy (its own pods are fine) while lacking something every other node has. Provinces recede to plain land when fully covered, so only the gaps show: amber for one missing daemonset, red for two or more. The province SELECTION names them, and the province window's SUBSTRATE section lists what IS stationed there. HONEST LIMIT: 'expected' is inferred from prevalence, not intent — a daemonset on at least 80% of nodes is treated as fleet-wide, because the map never reads its spec and so cannot tell 'should be here and isn't' from 'correctly excluded by a nodeSelector you wrote deliberately'. So: targeted daemonsets on most-but-not-all nodes will read as gaps; a newly added node shows gaps until its pods land; and a node whose pods have actually been deleted (a drain, or a NotReady long enough for pod GC) reads as a gap when the node itself is the real story. Coverage is PRESENCE, not health: a daemonset pod that is crash-looping still counts as covered, so this view tells you what is MISSING, never what is broken — the attention queue does that. Names are namespace-qualified because two daemonsets in different namespaces may share one. Small clusters under-report, and at four nodes or fewer the overlay can report NOTHING — 80% of 4 rounds up to 4, so being fleet-wide and having a gap are mutually exclusive. Five nodes is the smallest fleet where a gap exists to find; this view is for real clusters, not a laptop kind. When no daemonset is fleet-wide the overlay falls back to terrain rather than paint an all-clear it hasn't earned.",
-    );
+    cx.para(&substrate_text());
     cx.heading("Upkeep overlay + Cost advisor");
     cx.para(
         "What the cluster costs to run, allocated across the map. Each province is tinted bronze by its node's cost (a 'spend' choropleth), a gold idle coin marks a node carrying lots of unrequested capacity, and Advisors > Cost rolls it up (total, by namespace, costliest workloads, idle/waste). Honest about what a laptop can know: with no pricing it's a relative 'cost units' score from resource requests (any cluster, no metrics-server, never a $); supply rates with --cpu-rate / --mem-rate (per GiB) / --node-rate NODE=USD or a kubernation.io/cost-hourly node annotation and it shows real $/hr + a ~$/mo projection — an estimate from your rates x reservation, never a cloud invoice. Idle = the unrequested capacity you could consolidate; metrics-server sharpens it to paid-for-but-unused. For invoice-grade numbers, run --opencost: KuberNation reads the in-cluster OpenCost /allocation API (read-only, through the kube API-server service proxy — no port-forward, no new egress; needs RBAC get services/proxy) and shows real amortized $ that include the network / load-balancer / storage lines the estimate can't see (labelled 'from OpenCost').",

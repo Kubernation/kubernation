@@ -5001,6 +5001,59 @@ what makes the interesting logic unit-testable without a cluster.
   pieces named across columns B and C — §3.4.4's "a pool across three AZs should
   render as three regions", on screen). 450 core + 110 GUI tests; gui-smoke 55.
 
+- **Advisors ▸ Substrate — the fleet question, by daemonset** (2026-09-01,
+  **v1.37.0**; from the "Advisors ▸ Substrate" implementation prompt, report in
+  `docs/reports/advisor-substrate.md`): the eighth Advisors tab, presenting the
+  `SubstrateReport` that already existed — inverted **by daemonset** (one row:
+  on N / total, missing from which nodes), because the overlay answers *which
+  nodes* and the province window *which daemonsets, for this node*, and neither
+  answers "is my log agent everywhere?". **§1's slot question decided by
+  reading: the tab reads `Models.substrate` directly** — the report is computed
+  per tick for the map, so a `ReportCache` slot would memoize a field read
+  (recorded at the match arm; the memo lint is unaffected). **Words shared, not
+  paraphrased:** `substrate::prevalence_note()`, `floor_binds(n)` and
+  `floor_nodes()` are the ONE source for the tab AND the Almanac, and
+  `floor_binds` is pinned against `coverage_report` at every n in 1..=25.
+  **Four states each say which they are** — no nodes yet / *N nodes: no gap is
+  representable at this size* / *no daemonset reaches the fleet bar* / the
+  table, Good only when something was expected and nothing is missing. The
+  floor state matters on the dev cluster precisely because `expected` is NOT
+  empty there (kindnet + kube-proxy at 4/4): an unguarded table would have
+  shown two clean rows. A NotReady node is tagged "the node is the story",
+  never dropped. **Caveats wrap** (`almanac::wrap` now `pub(crate)`), rows
+  truncate — the first kind capture cut the prevalence note at "beca…", and a
+  caveat cut mid-sentence is not stated; the other advisor pages still
+  truncate their footers (pre-existing, noted). **THE GATE, live on the
+  100-node churn fleet:** `kubectl`, the new headless `examples/substrate.rs`
+  and the rendered tab named the SAME three nodes with the same attribution;
+  centred captures show sys-g2-000 red (three gaps) and edge-g1-000 /
+  sys-g2-001 amber; excluding `log-agent` from the whole `sys` pool (70/100)
+  removed its row AND sys-g2-001's amber band in the same tick (3/100 → 2/100),
+  and restoring returned the exact baseline. The prompt's "two rows, three
+  nodes" was true of v1.5.0's fixture and stale for the fleet: `node-agent`
+  (A3's fixture) makes three rows, and the allocatable-less node cannot
+  schedule ANY daemonset pod, so it is missing all three. **Three instrument
+  failures in one round, all caught before they reached a conclusion:** my
+  `kubectl` node count read a Pending pod's empty `nodeName` as a node and I
+  explained the phantom as a "ghost node" (none exists — the report skips
+  unscheduled pods; the instrument fabricated a mechanism for its own
+  artefact); the first discrimination run stored `kubectl --context …` in a
+  variable zsh would not word-split, so it applied nothing and photographed
+  the baseline under discrim filenames (caught by reading the task log, not
+  the pictures); and the gate summary printed `exit=0` for two failing gates
+  (`PIPESTATUS` is `pipestatus` in zsh). **And the v1.29.0 shape recurred:**
+  inserting the agreement test left a stray `#[test]` above its doc comment
+  and stole the attribute from
+  `substrate_overlay_recedes_when_clean_and_escalates_by_gap_count`, which
+  silently stopped running through every green run this round; caught only by
+  clippy's dead-code lint under `-D warnings`, re-armed, and it passes.
+  Mutation floor five (threshold drift, empty-`expected`-as-clean, floor
+  removed, build call in the draw, tab without a label), all caught, M2
+  re-targeted after a fmt reflow. Fixture committed as
+  `hack/churn/scenarios/8-substrate-gaps.sh` (`MODE=up|discrim|down`); the
+  churn README's scenario table gained rows 7 and 8 (7 had never been listed).
+  642 workspace tests; gui-smoke 59.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

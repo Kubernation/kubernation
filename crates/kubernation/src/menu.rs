@@ -298,6 +298,10 @@ fn menus(ctx: &MenuCtx) -> Vec<Menu> {
                     MenuAction::Advisor(AdvisorTab::Posture),
                 ),
                 Item::act("Cost (upkeep)", MenuAction::Advisor(AdvisorTab::Cost)),
+                Item::act(
+                    "Substrate (daemonset coverage)",
+                    MenuAction::Advisor(AdvisorTab::Substrate),
+                ),
             ],
         },
         Menu {
