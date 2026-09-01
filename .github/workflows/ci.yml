@@ -109,6 +109,12 @@ jobs:
       - name: Release targets match the notices config
         run: ./hack/check-release-targets.sh
 
+      # The advisor's reports must be built through ReportCache, not in the draw
+      # — `Advisor::draw` is GL-driven and untestable, so a bypass there returns
+      # every tab to a per-frame rebuild with the whole suite still green.
+      - name: Advisor reports go through the memo
+        run: ./hack/check-advisor-memo.sh
+
       - name: Assert the vendored miniquad patch is active
         shell: bash
         # `[/\\]`: cargo tree prints the path with backslashes on Windows.

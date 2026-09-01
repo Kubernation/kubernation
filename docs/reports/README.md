@@ -65,6 +65,7 @@ Read this before assuming a question is unanswered.
 | `panel-wording.md` | `×N` had two units in one list; "idle" had two meanings and said neither |
 | `vor-feedback.md` | first VOR session, plus a verified re-check: the call-site gap is fixed |
 | `p90-rightsizing.md` | sizing advice moved off one instant onto each pod's own history |
+| `advisor-memo.md` | reports built once per snapshot; the bypass that passed every test |
 
 ## Conventions
 

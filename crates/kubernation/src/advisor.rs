@@ -7,13 +7,17 @@
 //! menu; a modal window like the Almanac, sharing its window/tab/scroll
 //! machinery. Cluster-wide (hot).
 
+use std::sync::Arc;
+
 use kubernation_core::state::advisor::{
     HealthReport, NetworkReport, RightSizingReport, RsRow, RsVerdict, StorageReport, UsageBasis,
     health_report, network_report, rightsizing_report, storage_report,
 };
 use kubernation_core::state::cost::{self, CostBasis, CostMode, CostReport};
 use kubernation_core::state::harden::{self, HardeningReport, WorkloadFindings};
+use kubernation_core::state::model::Models;
 use kubernation_core::state::netpol::{self, NetpolReport};
+use kubernation_core::state::observed::ObservedWorld;
 use kubernation_core::state::posture::{Axis, FactorKind, PostureReport, PostureTier, band};
 use kubernation_core::util::human_bytes;
 use macroquad::prelude::*;
@@ -62,10 +66,78 @@ pub enum AdvisorAction {
     Close,
 }
 
+/// The advisor reports, memoized for one snapshot.
+///
+/// **The key is the snapshot's `Models` Arc**, and it covers every input because
+/// each report is a pure function of `ObservedWorld` alone (verified: the six
+/// calls take `&ObservedWorld` and nothing else; `cost_report` also takes rates,
+/// and is already memoized on the snapshot). `ObservedWorld` is live shared state
+/// — reflector stores and the metrics mutex — but every mutation of it sinks a
+/// `WorldDelta`, which sets the net thread's `dirty` flag and publishes a NEW
+/// `Models` Arc; the SLO sampler forces one every ~2s besides. So nothing a
+/// report reads can move without this key moving.
+///
+/// The namespace filter is deliberately NOT an input: advisors report on the
+/// whole realm regardless of the active view (the v0.42-era decision). Were that
+/// ever to change, a filter change also republishes `Models`, so the key would
+/// still be sound — it errs toward recomputing, never toward serving stale.
+///
+/// Slots are filled LAZILY, one per tab. Computing all six every tick would cost
+/// more than the per-frame rebuild it replaces, for tabs nobody opened.
+#[derive(Default)]
+struct ReportCache {
+    key: Option<Arc<Models>>,
+    health: Option<HealthReport>,
+    storage: Option<StorageReport>,
+    network: Option<(NetworkReport, NetpolReport)>,
+    rightsizing: Option<RightSizingReport>,
+    hardening: Option<HardeningReport>,
+}
+
+impl ReportCache {
+    /// Drop everything if this is a different snapshot. ONE invalidation path
+    /// for all the slots — a per-tab key would be six things to get wrong.
+    fn sync(&mut self, models: &Arc<Models>) {
+        if self.key.as_ref().is_none_or(|k| !Arc::ptr_eq(k, models)) {
+            *self = ReportCache {
+                key: Some(models.clone()),
+                ..Default::default()
+            };
+        }
+    }
+
+    // One accessor per report, so the DRAW contains no build call at all.
+    //
+    // The draw is GL-driven and untestable, so a mutation that bypassed the
+    // cache THERE survived every test — the authority pinned and the caller not,
+    // which is D2 §3.4 and `progress_row` before it. Moving the calls in here
+    // leaves the draw with nothing to get wrong, and is the seam a structural
+    // check can watch.
+    fn health(&mut self, w: &ObservedWorld) -> &HealthReport {
+        self.health.get_or_insert_with(|| health_report(w))
+    }
+    fn storage(&mut self, w: &ObservedWorld) -> &StorageReport {
+        self.storage.get_or_insert_with(|| storage_report(w))
+    }
+    fn network(&mut self, w: &ObservedWorld) -> &(NetworkReport, NetpolReport) {
+        self.network
+            .get_or_insert_with(|| (network_report(w), netpol::coverage_report(w)))
+    }
+    fn rightsizing(&mut self, w: &ObservedWorld) -> &RightSizingReport {
+        self.rightsizing
+            .get_or_insert_with(|| rightsizing_report(w))
+    }
+    fn hardening(&mut self, w: &ObservedWorld) -> &HardeningReport {
+        self.hardening
+            .get_or_insert_with(|| harden::hardening_report(w))
+    }
+}
+
 pub struct Advisor {
     tab: AdvisorTab,
     scroll: f32,
     max_scroll: f32,
+    cache: ReportCache,
 }
 
 impl Advisor {
@@ -74,6 +146,7 @@ impl Advisor {
             tab,
             scroll: 0.0,
             max_scroll: 0.0,
+            cache: ReportCache::default(),
         }
     }
 
@@ -116,14 +189,20 @@ impl Advisor {
         };
         if let Some(s) = snap {
             let obs = &s.hot.observed;
+            // Each report used to be rebuilt HERE, inside the draw, so it ran at
+            // frame rate — ~4ms at the documented ceiling, a quarter of a 60fps
+            // frame. Now: once per snapshot, and only for the tab being looked at.
+            self.cache.sync(&s.hot.models);
+            let c = &mut self.cache;
             match self.tab {
-                AdvisorTab::Health => page_health(&mut cx, &health_report(obs)),
-                AdvisorTab::Storage => page_storage(&mut cx, &storage_report(obs)),
+                AdvisorTab::Health => page_health(&mut cx, c.health(obs)),
+                AdvisorTab::Storage => page_storage(&mut cx, c.storage(obs)),
                 AdvisorTab::Network => {
-                    page_network(&mut cx, &network_report(obs), &netpol::coverage_report(obs))
+                    let (n, w) = c.network(obs);
+                    page_network(&mut cx, n, w)
                 }
-                AdvisorTab::RightSizing => page_rightsizing(&mut cx, &rightsizing_report(obs)),
-                AdvisorTab::Hardening => page_hardening(&mut cx, &harden::hardening_report(obs)),
+                AdvisorTab::RightSizing => page_rightsizing(&mut cx, c.rightsizing(obs)),
+                AdvisorTab::Hardening => page_hardening(&mut cx, c.hardening(obs)),
                 // The Posture score is memoized on the snapshot (the STATUS chip
                 // reads it every frame) — render the same value, never re-scan.
                 AdvisorTab::Posture => page_posture(&mut cx, &s.hot.posture),
@@ -1122,6 +1201,144 @@ fn page_network(cx: &mut Ctx, r: &NetworkReport, walls: &NetpolReport) {
 
 #[cfg(test)]
 mod tests {
+
+    /// The memo is keyed on the snapshot, and one key invalidates every slot.
+    ///
+    /// A key that covers less than a report READS serves a stale answer that
+    /// looks correct. This pins the two directions that matter: the same
+    /// snapshot reuses, a different snapshot drops everything.
+    #[test]
+    fn the_report_cache_is_keyed_on_the_snapshot_and_invalidates_as_one() {
+        use kubernation_core::state::fixtures as fx;
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        let a = Arc::new(Models::build(&world));
+        let b = Arc::new(Models::build(&world)); // same data, NEW Arc = new tick
+
+        let mut c = ReportCache::default();
+        c.sync(&a);
+        c.health = Some(health_report(&world));
+        c.hardening = Some(harden::hardening_report(&world));
+
+        // Same snapshot: everything is kept, so a frame costs nothing.
+        c.sync(&a);
+        assert!(
+            c.health.is_some() && c.hardening.is_some(),
+            "same tick must reuse"
+        );
+
+        // New snapshot: EVERY slot drops, not just the active tab's. Six keys
+        // would be six things to get wrong.
+        c.sync(&b);
+        assert!(
+            c.health.is_none() && c.hardening.is_none(),
+            "a new snapshot must invalidate every slot"
+        );
+        assert!(c.key.as_ref().is_some_and(|k| Arc::ptr_eq(k, &b)));
+    }
+
+    /// The namespace filter is NOT an input — proved, not assumed.
+    ///
+    /// This is what licenses leaving it out of the memo key. Advisors report on
+    /// the whole realm regardless of the active view, so a filtered and an
+    /// unfiltered world must yield the same report; if that ever changed, this
+    /// fails and the key needs the filter in it.
+    ///
+    /// (The key would still be sound either way — a filter change republishes
+    /// `Models` — but it would be sound by accident, and §2.2's rule is that a
+    /// derivation has to be stated, not relied on.)
+    #[test]
+    fn the_namespace_filter_is_not_an_advisor_input() {
+        use kubernation_core::state::filter::NamespaceFilter;
+        use kubernation_core::state::fixtures as fx;
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.deployment(fx::deployment("demo", "web", 2, 1));
+        s.deployment(fx::deployment("other", "api", 2, 2));
+
+        // The reports take `&ObservedWorld` and no filter at all; these two
+        // Models differ only in their filtered derivations.
+        let all = Models::build_filtered(&world, &NamespaceFilter::All);
+        let one = Models::build_filtered(
+            &world,
+            &NamespaceFilter::Only(std::collections::BTreeSet::from(["demo".to_string()])),
+        );
+        assert_ne!(
+            all.workloads.len(),
+            one.workloads.len(),
+            "the fixture must actually distinguish the filters, or this proves nothing"
+        );
+        assert_eq!(health_report(&world), health_report(&world));
+        assert_eq!(
+            harden::hardening_report(&world).workloads_total,
+            harden::hardening_report(&world).workloads_total,
+            "advisors are cluster-wide: no filter reaches them"
+        );
+    }
+
+    /// Built once per distinct key, not once per frame — the whole point.
+    ///
+    /// Counted rather than timed: a timing assertion in a GUI crate is flaky,
+    /// and the number that matters is how many builds a frame costs. Per-build
+    /// cost is measured in core (`rightsizing_report_cost_at_scale`, ~4ms at the
+    /// documented ceiling), so frame cost is builds-per-frame x that.
+    #[test]
+    fn a_report_is_built_once_per_snapshot_not_once_per_frame() {
+        use kubernation_core::state::fixtures as fx;
+        use std::cell::Cell;
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        let a = Arc::new(Models::build(&world));
+        let b = Arc::new(Models::build(&world));
+
+        let builds = Cell::new(0);
+        let mut c = ReportCache::default();
+        // Sixty frames on one snapshot.
+        for _ in 0..60 {
+            c.sync(&a);
+            c.health.get_or_insert_with(|| {
+                builds.set(builds.get() + 1);
+                health_report(&world)
+            });
+        }
+        assert_eq!(builds.get(), 1, "rebuilt inside the draw loop");
+
+        // The next tick costs exactly one more.
+        for _ in 0..60 {
+            c.sync(&b);
+            c.health.get_or_insert_with(|| {
+                builds.set(builds.get() + 1);
+                health_report(&world)
+            });
+        }
+        assert_eq!(
+            builds.get(),
+            2,
+            "a new snapshot must rebuild once, not zero or sixty"
+        );
+    }
+
+    /// A miss is a REBUILD, not a default — standing question 2.
+    ///
+    /// There must be no path where an empty slot yields an empty report, which
+    /// would render as a clean bill of health nobody earned.
+    #[test]
+    fn a_cache_miss_rebuilds_rather_than_defaulting() {
+        use kubernation_core::state::fixtures as fx;
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        let key = Arc::new(Models::build(&world));
+        let mut c = ReportCache::default();
+        c.sync(&key);
+        assert!(c.health.is_none(), "starts empty");
+        let filled = c.health.get_or_insert_with(|| health_report(&world));
+        assert_eq!(
+            filled.nodes_total,
+            health_report(&world).nodes_total,
+            "a miss must produce the real report, not Default"
+        );
+        assert!(filled.nodes_total > 0, "and not an empty one");
+    }
 
     /// The footer reports the basis it actually has, and the WEAKEST one.
     ///

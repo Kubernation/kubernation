@@ -1073,7 +1073,7 @@ dependencies = [
 
 [[package]]
 name = "kubernation"
-version = "1.35.0"
+version = "1.36.0"
 dependencies = [
  "clap",
  "image",
@@ -1089,7 +1089,7 @@ dependencies = [
 
 [[package]]
 name = "kubernation-core"
-version = "1.35.0"
+version = "1.36.0"
 dependencies = [
  "color-eyre",
  "futures",

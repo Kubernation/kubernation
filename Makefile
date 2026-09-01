@@ -114,6 +114,7 @@ lint:
 	cargo clippy --workspace --all-targets --locked -- -D warnings
 	./hack/check-conversion-authorities.sh
 	./hack/check-release-targets.sh
+	./hack/check-advisor-memo.sh
 
 ## test: unit tests (core logic + GUI render helpers)
 test:

@@ -9,6 +9,15 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 ## [Unreleased]
 
 ### Changed
+- **The Advisors screens no longer rebuild their report on every frame.** Each
+  tab recomputed its whole analysis sixty times a second while open — about a
+  quarter of a frame's budget on a large cluster, spent recalculating an answer
+  that had not changed. They are now computed once per refresh, which is what the
+  Posture and Cost tabs already did. The reports themselves are unchanged; they
+  are simply at most one refresh (a quarter-second) behind, as those two always
+  have been.
+
+### Changed
 - **Right-sizing advice now comes from what a pod has actually been using, not
   from one instant.** The advisor recommends CPU and memory requests — numbers
   you act on by editing a manifest — and it derived them from a single
