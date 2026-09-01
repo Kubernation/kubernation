@@ -8,6 +8,8 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [1.37.0] — 2026-09-01
+
 ### Fixed
 - **A screenshot of a refused eviction captured nothing.** The `--evict-go`
   development flag took the shot before the request had even been sent, so the
