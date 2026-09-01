@@ -40,6 +40,11 @@ STATES=(
   "browse-pick|--browse"
   "browse-table|--browse configmaps"
   "city|--inspect web"
+  # The drain line's BLOCKED state. Uses a WORKLOAD scope, not a node: which node
+  # `db` lands on is not deterministic, but its city always resolves, and the
+  # SELECTION box carries its province's drain line. Needs `db-strict` from
+  # hack/samples.yaml — without a live blocking budget there is nothing to draw.
+  "drain-blocked|--inspect db"
   "city-logs|--inspect web --tail"
   "crashy-previous|--inspect crashy --tail"
   "yaml|--inspect web --yaml"

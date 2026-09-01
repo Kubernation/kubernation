@@ -244,3 +244,23 @@ spec:
       app: db
   policyTypes:
     - Ingress
+---
+# A budget that refuses every voluntary disruption: `minAvailable` equal to the
+# replica count leaves `disruptionsAllowed: 0` permanently. It is on `db` and
+# NOT on `web` on purpose — `web` is the evict-demo target, and a blocking budget
+# there would make `--evict web` always refuse.
+#
+# It exists so the drain line's BLOCKED state is reproducible on the dev cluster.
+# That state renders only against a live blocking budget, so without this it
+# could not be a gui-smoke state at all; the PDB round recorded it as deferred
+# for exactly that reason.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: db-strict
+  namespace: kubernation-demo
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: db

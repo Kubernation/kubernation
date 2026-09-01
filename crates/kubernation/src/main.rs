@@ -3853,6 +3853,14 @@ async fn main() {
             // Auto-discovery of the local endpoint's models needs a couple net
             // ticks (250ms each) to land in the picker.
             180
+        } else if args.evict_go {
+            // The eviction is a round-trip through the net thread — an SSAR then
+            // a POST to `pods/eviction`, a couple of 250ms ticks — and the
+            // resulting toast clears itself after ~3s. So this has to land AFTER
+            // the answer and INSIDE that window; the default 45 fired before the
+            // request had even been picked up, which is why a refusal could not
+            // be photographed.
+            120
         } else if args.plan_go || args.blast.is_some() || args.chaos.is_some() {
             120
         } else if args.browse.is_some() {

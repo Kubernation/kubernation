@@ -66,6 +66,7 @@ Read this before assuming a question is unanswered.
 | `vor-feedback.md` | first VOR session, plus a verified re-check: the call-site gap is fixed |
 | `p90-rightsizing.md` | sizing advice moved off one instant onto each pod's own history |
 | `advisor-memo.md` | reports built once per snapshot; the bypass that passed every test |
+| `drain-line-check.md` | v1.36.0 released; the blocked drain state closed and made capturable |
 
 ## Conventions
 

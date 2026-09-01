@@ -8,6 +8,18 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **A screenshot of a refused eviction captured nothing.** The `--evict-go`
+  development flag took the shot before the request had even been sent, so the
+  message explaining why an eviction was refused could not be photographed. Dev
+  tooling only; no change to the app.
+
+### Added
+- The sample cluster now includes a disruption budget that refuses every
+  voluntary disruption, so the "draining blocked" state can be rendered and
+  crash-checked like every other screen. It is on the `db` StatefulSet rather
+  than `web`, which stays evictable for the demo.
+
 ## [1.36.0] — 2026-08-31
 
 ### Changed
