@@ -1,5 +1,12 @@
 # Planning handoff — v1.32.0 released
 
+> **SUPERSEDED by `docs/kubernation-planning-handoff-v1.35.md` (2026-08-31).**
+> That document's §3 folds in everything still open here, so read it for current
+> state. Kept for the record rather than deleted — §5.6 is about this document's
+> own staleness, which is the reason the next one replaced it instead of being a
+> fourth amendment.
+
+
 **Date:** 2026-08-29 · **Tag:** `v1.32.0` (pushed) · **Previous tag:** `v1.9.0`
 **Amended 2026-08-29**, later the same day: v1.33.0–v1.33.2 landed after this was
 written and closed two of its five open items. See §4 — and §5.6, which is about
