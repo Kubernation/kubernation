@@ -5001,6 +5001,240 @@ what makes the interesting logic unit-testable without a cluster.
   pieces named across columns B and C — §3.4.4's "a pool across three AZs should
   render as three regions", on screen). 450 core + 110 GUI tests; gui-smoke 55.
 
+- **The prose audit — nine false claims, one mechanism given one home**
+  (2026-08-29, **v1.33.0**; from `docs/kubernation-prose-audit-guidance.md`,
+  report in `docs/reports/prose-audit.md`): the audit's first kind — doc comments
+  and the field guide, checked by READING against source. **Its own known-open
+  item was already closed**: §3.2 said `--dump-positions` still labels a city's
+  province `node`; v1.28.1 had renamed it `plurality_node` — the author's own
+  week-old claim wrong again, inherited report → handoff → guidance. **The one
+  that mattered most:** `k8s/actions.rs`'s module header — the write surface's
+  own statement of what it does — was false three ways: "pod eviction (a
+  delete)" (the `pods/eviction` subresource since v1.30.0, whose whole point was
+  that a delete does NOT enforce budgets), two planning verbs where there are
+  five, "both frontends" where there has been one since 2026-06-18.
+  `window::evict_button`'s doc still said "no delete permission" after v1.31.0
+  moved the probe to `create pods/eviction` — the probe was fixed, its doc was
+  not. `state/world.rs`'s module doc still said cities sit on the province with
+  "most" pods — the exact falsehood v1.26.0 removed, in the module that
+  IMPLEMENTS siting; the v1.26 sweep guarded the almanac and looked nowhere
+  else. **The field guide named eight of nine overlays** for fourteen versions
+  (`Pool` shipped v1.14.0); three places listed the set, so the Controls
+  sentence is now BUILT from `Overlay::ALL` (the `SITING_CLAIM` pattern's second
+  instance) and the menu rows get a test that every variant has a View row.
+  Present-tense TUI claims in `browse.rs`/`draw.rs` corrected on `logline.rs`'s
+  model (state the history, keep it). Doc links: 2 genuinely wrong names
+  (`window_rect` → `window_rect_at`, D1), 2 unlinkable, 4 lint false positives
+  escaped, **7 left "cosmetic, names verified, cause not isolated"** (→ v1.33.1).
+  Closed first, as directed: the licence CI job had been red ten days because
+  `cargo install --locked cargo-about` pins its *dependencies*, not cargo-about —
+  0.9.0 → 0.9.2 changed the output structure (same 208 crates, 110 → 129
+  headers); pinned to 0.9.2. Mutations P1–P3 caught. 623 tests. **Standing
+  question 8 — true AND sufficient? — was born here:** "the field is named
+  `node`" was true when written and insufficient now; "the probe checks
+  permission" is true and silent about WHICH.
+
+- **A compiler for prose — rustdoc links denied** (2026-08-29, **v1.33.1**;
+  report in `docs/reports/rustdoc-lint.md`): the audit's seven "cosmetic" links
+  had ONE cause, and it was not cosmetic — **two doc comments on one module**. An
+  outer `///` on `pub mod adapter;` in `k8s/mod.rs` beside the file's own inner
+  `//!` makes rustdoc resolve the file's links in the PARENT's scope, where its
+  items are invisible (7 → 0 by stripping the outer docs — confirmed by
+  experiment, not argued). Three modules had it (`adapter`, `opencost`,
+  `oracle_client`); every outer doc was pure duplication — two homes for one
+  claim, the audit's own subject one level up; `k8s/mod.rs` carries a plain `//`
+  warning so a `///` cannot recreate it. In passing: `oracle_client.rs`'s header
+  — the egress module — said "ONE thing: a single non-streaming POST", false
+  three ways (`consult_stream` v0.59.0, `probe`, `list_models` v0.53.x). Guard:
+  `#![deny(rustdoc::broken_intra_doc_links)]` at both crate roots + a
+  `cargo doc --workspace --no-deps --locked` CI step (without the step the deny
+  is inert). **Deliberately NOT `-D warnings`**: nine `private_intra_doc_links`
+  are true names that will not hyperlink, and denying them would push toward
+  widening a type's visibility to satisfy a doc tool. *Broken = a false name;
+  private = a true name that will not hyperlink.* Q1–Q3 caught (Q1 first NOT
+  APPLIED — the target appeared twice; the single-occurrence assertion's ninth
+  catch that stretch).
+
+- **The Windows archive's notices were missing its own crates** (2026-08-29,
+  **v1.33.2**; report in `docs/reports/about-toml-windows.md`; closes the last
+  item from the v0.62.0 About review): `about.toml` pinned macOS + Linux while
+  `release.yml` had shipped a Windows zip carrying `THIRD-PARTY-NOTICES.md` since
+  v0.65.0 — six releases whose Windows notices omitted the six crates only that
+  binary links, `schannel` (Windows' TLS) among them (MIT 202 → 208, no new
+  licence kind, the About claim still holds). Nothing compared the two lists;
+  `hack/check-release-targets.sh` (in `make lint` + CI) asserts every platform
+  release.yml ships has its triples in about.toml — a lint, since neither file is
+  reachable from Rust. **THE FINDING: the guard was broken on arrival, and the
+  mutation floor is what said so.** R1 — remove the Windows target, the original
+  defect — SURVIVED: the matrix parse used `[a-z0-9-]+` without `_`, so
+  `linux-x86_64` and `windows-x86_64` were silently skipped and only macOS had
+  ever been checked; R2 passed for an accidental reason (its renamed platform had
+  no underscore) and nearly certified it. The nineteenth catalogued instrument
+  failure, and the first where the instrument was a guard written in the same
+  sitting. Guard-the-guard: the script fails if it extracts fewer than three
+  platforms — the durable part, because "the parse silently matched less than it
+  should" is the shape that recurs, not the character class. bash 3.2 again
+  (`declare -A` → `case`).
+
+- **Panel wording — checked by rendering, not reading** (2026-08-29,
+  **v1.34.0**; report in `docs/reports/panel-wording.md`): the audit's second
+  kind, the surface an operator reads during an incident; neither defect was
+  visible in source review. **(1) `×N` had two units on one screen.** Every `Agg`
+  counter counts PODS, so `restarting repeatedly ×1` meant one pod past
+  `RESTART_THRESHOLD`=5 (kindnet: one pod at 5, three siblings at 4) while
+  `events: … ×522` two lines below meant occurrences — the number was right and
+  the sentence understated the product's spine. `tally()` gives the count its
+  unit (`×1 pod`); then the bare-pod path restated its own subject, so
+  `Agg::primary` returns `(Severity, label, n)` and each caller decides —
+  asserted both ways. **A third caller my grep missed**: `and_then(Agg::primary)`,
+  a path reference with no parentheses — the compiler caught it (→ the VOR
+  finding). **(2) "idle" meant two things.** Under `Requests` it is capacity
+  nobody reserved, under `Usage` capacity nobody uses — nearly opposite on a
+  fully-reserved, lightly-used node, the case the cost feature exists for — and
+  the panel named the basis in one case and was silent in the other (the
+  `pool_line` rule fits a fallback CASCADE, not two questions). The advisor had
+  always distinguished them; `cost::idle_meaning(basis)` is now the one home for
+  the panel line AND the advisor footer. Honest: on kind both bases read ≈100%,
+  so the swing is a design fact evidenced by the advisor's own text, not a
+  number on screen. Checked-and-correct surfaces recorded so a later pass need
+  not redo them. Mutations S1/S2/T1/T2 caught (S2 matters as much as S1 — a
+  basis label that reads the same for both bases is decoration). Not changed:
+  the ungrammatical multi-backend orphan-ingress line — terse, not false.
+
+- **The Oracle said "streaming" before anything streamed; the lockfile guard
+  made to guard; VOR adopted** (2026-08-29/30, **v1.34.1**; reports
+  `docs/reports/panel-wording.md` §2a and `docs/reports/vor-feedback.md`): with a
+  live Ollama, a realm consult read `streaming… 0s · 0 chars` — the net thread
+  pre-inserts an EMPTY `StreamBuf`, so `reply` was `Some("")` at once and the
+  view flipped to the streaming row, dropping the timeout clause exactly where it
+  governs (the first token — 10–30 s on a 30B local model). Now `consulting the
+  Oracle… 0s (timeout 600s)` until a token lands. The decision moved into a pure
+  `progress_row` taking the RAW `Option<&str>` and owning the has-a-token test:
+  mutation U3 (the caller re-mirrors the filter) SURVIVED while the caller held
+  it — D2 §3.4's shape — so there is no filtered value left for a caller to get
+  wrong, and `progress_row(Some("")) == progress_row(None)` is pinned. **The
+  lockfile guard**: CI's `--locked` check was defeated by an earlier unlocked
+  `cargo clippy` in the same job that silently corrected the file — v1.34.1 was
+  pushed with a stale lock and CI went green while the release job (whose first
+  cargo call IS `--locked`, on a fresh checkout) would have failed on all three
+  platforms; found by running the pre-tag checks by hand; `--locked` on every
+  step and in the Makefile. **VOR** (user: "leverage VOR when appropriate … write
+  a report I can take to the VOR session"): first used during the panel pass.
+  The headline finding — `find_references` answered at CALLER granularity
+  (`result_count: 1, exhaustive: true`) where a signature change needs call
+  SITES, and would have missed two of three — was fixed across two VOR updates
+  (`call_sites`, `caller_start_line`, `reference_kind`), each re-checked line by
+  line against source. **Two of my four nits were wrong** (the import line was
+  exact; the `kind` filter always existed) and §1's framing was unfair — the
+  tool's description already documented the fields the server lacked; kept in
+  the report so the correction is visible. Split adopted and standing: **VOR for
+  callers, blast radius, definitions, reading one body; grep for prose, config,
+  workflows.**
+
+- **P90 right-sizing — per-pod usage history** (2026-08-30, **v1.35.0**; user
+  "do the per-pod usage history and P90 right-sizing", the graft recorded at
+  v0.41.0; report in `docs/reports/p90-rightsizing.md`): the advisor emitted
+  concrete requests — advice acted on by editing a manifest — from ONE
+  instantaneous reading, "peak" meaning the hottest replica at that instant, not
+  the hottest moment. **Per-pod rings, not per-workload**, for two recorded
+  reasons: layering (`metrics.rs` is the poller; the pod→workload map lives in
+  `state/`, so recording per pod keeps the poller ignorant of workloads and
+  `rightsizing_report` pure over `ObservedWorld`) and because aggregating at
+  record time destroys "which replica is hot over time" permanently. Cost
+  computed, not feared: 5000 × 60 × 16 B ≈ 5.5 MB at the ceiling. Churn is the
+  one real difference from node rings — a CronJob mints a new pod name per run —
+  so `RING_GRACE` (4 polls) bounds the map at about the live pod count. **One
+  retention rule**: `Metrics::roll`, shared by both ring sets (the node path had
+  inlined the same logic minutes after a session spent removing two-homes).
+  **Honesty rules:** below `P90_MIN_SAMPLES`=8 (~2 min) a row falls back to
+  `Latest` — a percentile of three readings is the maximum wearing a statistical
+  name; `percentile` returns `None` for an empty ring, never 0.0; `RsRow.basis`
+  takes the row's SHORTEST history; `UsageBasis::Latest` is the `#[default]`;
+  and the surface says which — **the footer was got wrong twice**: an
+  unconditional "from 1 sample" understated once most rows were P90s, then the
+  weakest-row form let one fresh pod under a rolling deploy call a table of solid
+  P90s "single sample" forever; now the predominant basis plus counted
+  exceptions, samples AND minutes. Mutations V1–V6: **V2 survived twice** —
+  `set_pod_history` replaced the metrics map per call, so a two-pod test
+  collapsed to one pod, where longest and shortest are the same number (a fixture
+  whose DESIGN made the negative case unrepresentable) → `set_pod_histories`
+  drives all pods along one timeline, shorter series aligned to the END as the
+  poller sees them; **V6 survived** — nothing tested pod-ring churn at all.
+  **Cost measured**: 4.20 ms/call with P90 vs 4.76 without — the ~4 ms is the
+  PRE-EXISTING per-frame 5000-pod walk inside the advisor's draw, ~25% of a
+  frame, left for its own change (→ v1.36.0) and guarded meanwhile by
+  `rightsizing_report_cost_at_scale`. Gate `examples/rightsize.rs` live on kind
+  with metrics-server: rows on `latest` for four polls, flipping to `P90 over 8`
+  at exactly 121 s — the four `latest` polls are the discrimination. kind is
+  idle, so every recommendation sits at the VPA floor either way: the gate proves
+  the mechanism; the changed-recommendation half is the unit test. Deferred:
+  per-container P90 (metrics-server sums containers — the data does not exist),
+  P95/P99 (one or two readings in a 60-ring), longer windows (need persistence).
+
+- **Advisor reports built once per snapshot, not once per frame** (2026-08-31,
+  **v1.36.0**; from the "Memoize the Advisor Reports" prompt; report in
+  `docs/reports/advisor-memo.md`): every tab built its report inside the DRAW at
+  frame rate. **Premise corrected on reading:** not six reports across six tabs —
+  Posture and Cost were already memoized on the snapshot; the per-frame rebuilds
+  were six calls across five of seven tabs (Network builds two). **§2.1's input
+  list written down as the acceptance artifact:** every report takes
+  `&ObservedWorld` and nothing else — the namespace filter is NOT an input
+  (advisors are cluster-wide; proved by test), P90 history rides
+  `ObservedWorld.metrics`, no runtime setting is read. Key: `Arc::ptr_eq` on
+  `Models`, sufficient because the delta sink sets `dirty` on EVERY `WorldDelta`
+  and the net loop republishes `Arc<Models>` whenever dirty (the SLO sampler
+  forces one besides) — verified by reading, stated at the key's definition. One
+  honest semantic change: reports reflect the snapshot, not the frame (≤250 ms,
+  as Posture/Cost always did). **THE FINDING:** the §6.1 discrimination mutation
+  — bypass the memo at the draw site — SURVIVED with every test green.
+  `ReportCache`'s tests pin the key and the invalidation; nothing pinned that the
+  DRAW uses it, and `Advisor::draw` has no test module (D2 §3.4 and
+  `progress_row`'s limit: no behavioural test can observe code in a function that
+  has none). Build calls moved INTO the impl (`c.health(obs)`) so the draw has
+  none to get wrong, plus `hack/check-advisor-memo.sh` in `make lint` + CI,
+  verified to bite. **Three memo homes, kept deliberately**: `Models.substrate /
+  .coverage / .pools` (per tick, core, for the map), `WorldSnap.posture / .cost`
+  (per tick, net thread, for the sidebar chip), `ReportCache` (per snapshot, in
+  the view, for modals) — always-visible surfaces need their value every tick, an
+  on-demand modal should cost nothing while closed, and folding the advisor
+  reports onto `WorldSnap` would build five reports per tick for tabs nobody
+  opened. `rightsizing_report_cost_at_scale` still measures the uncached path
+  (it lives in core and cannot reach the GUI memo). Gate as arithmetic over
+  counted builds: 1 per frame → 1 per snapshot (0 ms on 14 frames in 15); with
+  `sync` forced to invalidate, 60 frames → 60 builds. A/B re-run: 3.84 ms/call
+  (was 4.20) — unchanged within noise, so the cost has not moved. Noted, out of
+  scope: net.rs builds `hardening_report` every tick for the concern loop.
+
+- **v1.36.0 cut; the drain line's blocked state closed** (2026-09-01,
+  **v1.36.1**; report in `docs/reports/drain-line-check.md`): the pre-tag
+  routine in the order where `--locked` cannot be defeated — a fresh
+  `git worktree` at HEAD with `cargo metadata --locked` as the FIRST cargo
+  invocation — and the changelog roll counted both ways; the macOS release took
+  8m56s with both notarizations Accepted. The drain check closed the last thing
+  this project had recorded as **unchecked, not correct**: the pre-check's two
+  budgets left no node covered ONLY by a permissive budget, so the check would
+  have passed vacuously → a one-replica deployment pinned to worker3 puts all
+  three states on one cluster. Rendered beside neighbours: blocked (red, names
+  the budget) / drainable (dim; SELECTION silent) / unknown (amber) — and the
+  line and the evict button agree in one frame (`… is protected — The disruption
+  budget web-strict needs 3 healthy pods and has 3 currently`). **Capture bug:**
+  `--evict-go` had no arm in the screenshot-hold chain, so it fired before the
+  SSAR + POST round-trip and the ~3 s toast — a 120-frame arm, reasoning
+  recorded. **The gui-smoke state captured, not recorded as uncapturable**:
+  `hack/samples.yaml` gains `db-strict` (`minAvailable: 2` on two replicas →
+  permanently `disruptionsAllowed: 0`), on `db` not `web` (the evict-demo
+  target), scoped to the workload because its node is not deterministic —
+  `drain-blocked`, 58 states; worker's box listed TWO budgets, each on its own
+  row. Live through a PDB-denied ServiceAccount: `budgets not read` in amber,
+  while netpol on the same identity reads `unwalled` and posture drops to 63 —
+  two features, two choices, side by side (netpol accepts the conflation because
+  its fail-safe direction is the same; PDB refuses it because its is not).
+  **A diagnostic I got wrong:** the example "hung" and a bisect blamed the
+  v1.31.0 `wait_until_ready` waiter; the two binaries also differed by build
+  freshness, and rebuilt at HEAD it worked — no full explanation, recorded
+  rather than invented (an unrelated project's nextest holding the cargo lock
+  cost time in the same sequence, diagnosed from the process list). 637 tests.
+
 - **Advisors ▸ Substrate — the fleet question, by daemonset** (2026-09-01,
   **v1.37.0**; from the "Advisors ▸ Substrate" implementation prompt, report in
   `docs/reports/advisor-substrate.md`): the eighth Advisors tab, presenting the
