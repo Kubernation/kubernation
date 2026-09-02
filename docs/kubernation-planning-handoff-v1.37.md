@@ -81,8 +81,9 @@ Nothing is in flight. Everything below is a choice, and none is blocking.
    caveat lines through `almanac::wrap`; the other seven pages still truncate
    theirs to the window width, so a footer can end at "beca…". About twenty
    lines; could ride with any round.
-5. **The decision log has a hole.** CLAUDE.md's dated entries stop at v1.32.0
-   and resume at v1.37.0. Eight rounds — v1.33.0 (prose audit), v1.33.1
+5. **The decision log has a hole — DONE, same day** (`c18af76`, eight entries
+   backfilled from their reports). CLAUDE.md's dated entries stopped at v1.32.0
+   and resumed at v1.37.0. Eight rounds — v1.33.0 (prose audit), v1.33.1
    (rustdoc lint), v1.33.2 (about.toml Windows), v1.34.0 (panel wording),
    v1.34.1 (VOR feedback + Oracle), v1.35.0 (P90 right-sizing), v1.36.0 (memo),
    v1.36.1 (drain check) — have reports but no log entry. The log is what a
