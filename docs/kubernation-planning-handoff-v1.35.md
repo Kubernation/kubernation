@@ -1,5 +1,11 @@
 # Planning handoff — v1.35.0
 
+> **SUPERSEDED by `docs/kubernation-planning-handoff-v1.37.md` (2026-09-01).**
+> That document's §3 folds in everything still open here — three of this
+> document's four open items have since shipped (v1.36.0, v1.36.1, v1.37.0) —
+> so read it for current state. Kept for the record rather than deleted; §4 and
+> §5 still stand and are carried forward rather than repeated.
+
 **Date:** 2026-08-31 · **Head:** `d43e4af`, CI green · **Last tag:** `v1.34.1`
 **Supersedes** `docs/kubernation-planning-handoff-v1.32.md` entirely. Its
 still-open items are folded into §3 below rather than left to be cross-read; its
