@@ -624,6 +624,27 @@ pub fn node_pool(node: &Node, override_key: Option<&str>) -> (String, PoolSource
 }
 
 impl NodeTile {
+    /// True when the node publishes **no allocatable capacity at all** — neither
+    /// cpu nor memory — so nothing ratio-derived can be said about it and, more
+    /// to the point, the scheduler will place nothing on it.
+    ///
+    /// The ONE home for a question three surfaces ask: the attention queue's
+    /// "capacity not reported" concern, the Pressure overlay's hatch (*this
+    /// reading has no denominator*), and the Substrate tab's per-node tag. Each
+    /// spelled it out separately before, and a rule with three spellings is one
+    /// this codebase has repeatedly paid to re-unify.
+    ///
+    /// Reads the DERIVED pair deliberately: `cpu_ratio` falls back to requests
+    /// when there is no metrics sample, so `None` here means the *allocatable
+    /// key is absent*, never that metrics-server is down.
+    ///
+    /// **Partial reporting is not this.** A node publishing cpu but not memory
+    /// is `false`: it has a denominator on one axis and the scheduler can still
+    /// place on it, which is why `worst_known` calls it measured too.
+    pub fn capacity_unreported(&self) -> bool {
+        self.cpu_ratio.is_none() && self.mem_ratio.is_none()
+    }
+
     /// The layout engine's view of this node.
     ///
     /// Lives here rather than in `state::layout` on purpose: the engine takes
@@ -2772,6 +2793,39 @@ mod tests {
     /// THE DISCRIMINATION TEST, and the point of the whole change: a node that
     /// cannot be measured and a node that is genuinely empty must not produce
     /// the same number.
+    #[test]
+    fn capacity_unreported_needs_both_axes_absent() {
+        let (world, mut s) = fx::world();
+        s.node(fx::node("ok", Some("z-a")));
+        let mut bare = fx::node("bare", Some("z-a"));
+        bare.status.as_mut().unwrap().allocatable = None;
+        s.node(bare);
+        // Half-reporting: a denominator on one axis, so the scheduler can still
+        // place here. `worst_known` calls this measured and so does this.
+        let mut half = fx::node("half", Some("z-a"));
+        half.status.as_mut().unwrap().allocatable = Some(fx::quantities(&[("cpu", "8")]));
+        s.node(half);
+        let m = Models::build(&world);
+        let tile = |n: &str| {
+            m.map
+                .zones
+                .iter()
+                .flat_map(|z| &z.nodes)
+                .find(|t| t.name == n)
+                .expect("tile")
+                .clone()
+        };
+        assert!(!tile("ok").capacity_unreported());
+        assert!(
+            tile("bare").capacity_unreported(),
+            "no allocatable at all: nothing schedules here"
+        );
+        assert!(
+            !tile("half").capacity_unreported(),
+            "partial reporting is NOT this — one axis is enough to place on"
+        );
+    }
+
     #[test]
     fn an_unmeasurable_node_is_distinguishable_from_an_idle_one() {
         let idle = node_alloc("idle", &[("cpu", "4"), ("memory", "8Gi")]);

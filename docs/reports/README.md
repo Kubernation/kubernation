@@ -68,6 +68,7 @@ Read this before assuming a question is unanswered.
 | `advisor-memo.md` | reports built once per snapshot; the bypass that passed every test |
 | `drain-line-check.md` | v1.36.0 released; the blocked drain state closed and made capturable |
 | `advisor-substrate.md` | the fleet question answered by daemonset; tab and overlay pinned to one report |
+| `node-is-the-story.md` | one node fact, not many gaps; a shell convention, and a v1.37.0 regression that could not render |
 
 ## Conventions
 

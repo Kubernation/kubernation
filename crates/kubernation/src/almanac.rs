@@ -128,7 +128,11 @@ pub(crate) fn substrate_text() -> String {
          So: targeted daemonsets on most-but-not-all nodes will read as gaps; a newly \
          added node shows gaps until its pods land; and a node whose pods have actually \
          been deleted (a drain, or a NotReady long enough for pod GC) reads as a gap when \
-         the node itself is the real story. Coverage is PRESENCE, not health: a daemonset \
+         the node itself is the real story. A node publishing no allocatable capacity \
+         is missing EVERY fleet-wide daemonset, because the scheduler places nothing \
+         there — one node fact wearing the shape of many gaps. The Substrate tab tags \
+         both cases and keeps them apart: a NotReady node may recover on its own, one \
+         reporting no capacity will not until it is fixed. Coverage is PRESENCE, not health: a daemonset \
          pod that is crash-looping still counts as covered, so this view tells you what is \
          MISSING, never what is broken — the attention queue does that. Names are \
          namespace-qualified because two daemonsets in different namespaces may share one. \

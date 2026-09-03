@@ -5288,6 +5288,61 @@ what makes the interesting logic unit-testable without a cluster.
   churn README's scenario table gained rows 7 and 8 (7 had never been listed).
   642 workspace tests; gui-smoke 59.
 
+- **The node is the story; and a shell convention for the instruments**
+  (2026-09-03, **v1.38.0**; from the "The Node Is the Story" prompt, report in
+  `docs/reports/node-is-the-story.md`): the churn fleet's allocatable-less node
+  is missing EVERY fleet-wide daemonset because nothing schedules there — the
+  Substrate tab listed it as three unexplained gaps when the truth is one node
+  fact. **"Read, don't add" answered by reading: the predicate already existed
+  TWICE** — `attention.rs`'s "capacity not reported" concern
+  (`cpu_ratio.is_none() && mem_ratio.is_none()`) and the Pressure hatch
+  (`worst_known(..).is_none()`, the same thing) — so the tab would have been a
+  third; all three now call **`NodeTile::capacity_unreported()`**, no new field.
+  It reads the DERIVED pair deliberately (`cpu_ratio` falls back to requests, so
+  `None` means the allocatable key is absent, never that metrics-server is
+  down), and **partial reporting is not this** — a node publishing cpu but not
+  memory can still be scheduled on, which is its own test. **§1.3 decided and
+  stated: counted AND tagged** — excluding the node would make `on N / total`
+  disagree with `kubectl`, and the substrate rounds were built on tab, overlay
+  and census naming the same nodes; the tag explains the count, never alters it.
+  **§1.4: two flags, not an enum** (`NodeTrouble{not_ready, no_capacity}`),
+  because a node can be BOTH, with the note composed so the both-case cannot be
+  forgotten — deliberately not collapsed into "unschedulable", since a NotReady
+  node may recover and one reporting no capacity will not until it is fixed.
+  **Standing question 8, and it bit:** "the tab already tags NotReady this way"
+  was true and the ROW had room, but the TYPE (`Vec<(String, bool)>`) could
+  carry one reason and could not express a node that is both. **THE FINDING — a
+  v1.37.0 regression that could not render:** v1.37.0 made `Dim` advisor lines
+  wrap so a caveat would not be cut at "beca…", but `almanac::wrap` splits on
+  `split_whitespace()`, so a dimmed *row* lost its indent and read as a heading.
+  `Dim` meant both "prose" and "a dimmed node row", and the only dimmed row that
+  existed was a NotReady node — which **kwok cannot produce** (the A-pre
+  finding), so no fixture on either cluster could render it; adding a second
+  reason to dim a row is what exposed it. Fixed with
+  `is_prose(line, role) = Dim && !line.starts_with(' ')` — prose wraps, a row
+  truncates — pinned by a test that also asserts `wrap` would strip the indent,
+  so changing `wrap` cannot silently undo it. **§2, the shell convention**
+  (`hack/README.md`): functions not command variables; `set -euo pipefail`;
+  **assert the fixture changed before you photograph it** — and rule 3 fired on
+  its own author at once, when the gate's first draft waited on
+  `desiredNumberScheduled` (which counts nodes matching a daemonset's affinity
+  and never moves when capacity changes) and REFUSED to capture rather than
+  photographing a world that had not reached the claimed state; the right signal
+  is `numberReady`. Two more caught by reading: `restore` resolved its node by
+  name-sort, but a name carries a generation token a refresh rewrites (now by
+  the fixture's labels); and kwok has no kubelet, so nothing evicts the pods that
+  land during the capacity window (restore deletes them, or the fixture only
+  looks restored). **THE GATE, live on the 100-node fleet:** the node is tagged
+  in all three rows with the counts matching `kubectl` (98/99/98); giving it
+  capacity removes the tag, drops `node-agent` to 100/100 and `node-exporter` to
+  one gap, while `log-agent`'s gap — caused by a hostname affinity, not by
+  capacity — REMAINS as a real untagged gap, which is what proves the tag reads
+  capacity and not something else; restore returns the exact baseline. Six
+  mutations, all caught, each asserted applied. Fixture committed as
+  `hack/churn/scenarios/9-node-capacity.sh` (`MODE=give|restore`). 648 workspace
+  tests, `make lint` run BEFORE the count was quoted (the v1.37.0 rule);
+  gui-smoke 59.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

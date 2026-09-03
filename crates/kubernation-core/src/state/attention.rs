@@ -576,7 +576,7 @@ pub fn build(
                         tile.saturation.pod_label().unwrap_or("pods")
                     ),
                 )
-            } else if tile.cpu_ratio.is_none() && tile.mem_ratio.is_none() {
+            } else if tile.capacity_unreported() {
                 // The node publishes no allocatable, so nothing ratio-derived
                 // can be said about it. Info, not Warning: it is usually a node
                 // mid-registration, and the map already hatches it.

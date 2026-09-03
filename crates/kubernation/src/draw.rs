@@ -352,7 +352,10 @@ fn worst_known(a: Option<f64>, b: Option<f64>) -> Option<f64> {
 /// Substrate never touch allocatable.
 pub(crate) fn province_unmeasured(overlay: Overlay, prov: &Province) -> bool {
     match overlay {
-        Overlay::Pressure => worst_known(prov.tile.cpu_ratio, prov.tile.mem_ratio).is_none(),
+        // Same question as the attention queue's "capacity not reported" concern
+        // and the Substrate tab's tag, so it is asked in one place. Equivalent to
+        // `worst_known(..).is_none()`, which is how this used to read.
+        Overlay::Pressure => prov.tile.capacity_unreported(),
         Overlay::Saturation => prov.tile.saturation.worst_level().is_none(),
         _ => false,
     }
@@ -3744,7 +3747,7 @@ mod tests {
         let rows = crate::advisor::substrate_rows(&report, &Default::default());
         let listed: std::collections::BTreeSet<&str> = rows
             .iter()
-            .flat_map(|r| r.missing.iter().map(|(n, _)| n.as_str()))
+            .flat_map(|r| r.missing.iter().map(|m| m.node.as_str()))
             .collect();
 
         assert_eq!(

@@ -499,8 +499,9 @@ pub fn draw_frame_note(on: bool) {
 /// panel-sized claim rather than a terrain-sized one.
 ///
 /// The hatch does not cover this case anyway: `province_unmeasured` fires only
-/// when `worst_known(cpu, mem)` is `None`, so a node reporting allocatable cpu
-/// but not memory gets a fallback extent and no hatch at all.
+/// when the node reports NEITHER allocatable key (`NodeTile::capacity_unreported`),
+/// so a node reporting allocatable cpu but not memory gets a fallback extent and
+/// no hatch at all.
 /// What a city actually stands for: its placed pods, and how many nodes they
 /// are on. PURE.
 ///

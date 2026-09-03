@@ -8,6 +8,24 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **A node that reports no capacity is now named as one node fact, not as a gap
+  per daemonset.** Nothing schedules on such a node, so it is missing *every*
+  fleet-wide daemonset — Advisors ▸ Substrate listed it once per row with no
+  explanation. Each occurrence now carries a tag saying why, and the tag keeps
+  the two reasons apart: a node that is NotReady may come back on its own, while
+  one publishing no capacity stays empty until it is fixed. A node that is both
+  says both. The counts are unchanged, so they still agree with `kubectl` — the
+  tag explains the figure rather than altering it. The field guide's list of why
+  a node shows gaps gains the case.
+
+### Fixed
+- **Rows in the Substrate advisor lost their indentation when they were
+  dimmed**, so a node listed under a daemonset read as another heading. Present
+  since the tab shipped in v1.37.0, but impossible to see: the only dimmed row
+  then was a NotReady node, and the simulated fleet cannot hold a node NotReady.
+  Caveats still wrap; table rows do not.
+
 ## [1.37.0] — 2026-09-01
 
 ### Fixed

@@ -902,17 +902,111 @@ fn page_hardening(cx: &mut Ctx, r: &HardeningReport) {
 
 // --- substrate page (DaemonSet coverage, by DaemonSet) ----------------------
 
+/// Why a gap may be about the NODE rather than about the DaemonSet.
+///
+/// Two distinct facts, and a node can carry BOTH — so they are deliberately not
+/// collapsed into one "unschedulable". An operator triages them differently: a
+/// NotReady node may come back on its own, while one publishing no capacity
+/// stays empty until something is fixed. Losing that distinction would cost the
+/// tag most of its value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NodeTrouble {
+    /// The kubelet is not reporting Ready, so its pods may have been GC'd.
+    pub not_ready: bool,
+    /// The node publishes no allocatable capacity, so the scheduler places
+    /// nothing there and it is missing EVERY fleet-wide DaemonSet — one node
+    /// fact wearing the shape of many gaps. See `NodeTile::capacity_unreported`.
+    pub no_capacity: bool,
+}
+
+impl NodeTrouble {
+    fn any(&self) -> bool {
+        self.not_ready || self.no_capacity
+    }
+
+    /// The parenthetical shown after the node name, or `None` when the node is
+    /// ordinary and the gap really is the DaemonSet's. Composed rather than
+    /// tabulated, so the both-reasons case cannot be forgotten.
+    pub fn note(&self) -> Option<String> {
+        if !self.any() {
+            return None;
+        }
+        let mut why: Vec<&str> = Vec::new();
+        if self.not_ready {
+            why.push("NotReady");
+        }
+        if self.no_capacity {
+            why.push("reports no capacity");
+        }
+        Some(format!("({} — the node is the story)", why.join(", ")))
+    }
+}
+
+/// A node a DaemonSet is missing from, with whatever makes the node itself the
+/// story.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingNode {
+    pub node: String,
+    pub trouble: NodeTrouble,
+}
+
 /// One expected DaemonSet and where it is missing. The tab's unit of answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubstrateRow {
     /// `namespace/name` — the report's identity, never a bare name.
     pub daemonset: String,
     /// Nodes it is present on: `nodes_total - missing.len()`.
+    ///
+    /// **A troubled node is counted like any other.** `missing from 3` means
+    /// three nodes, one of which happens to be the story — so the figure agrees
+    /// with `kubectl get pods -o wide`, and the substrate rounds were built on
+    /// the tab, the overlay and the census naming the same nodes. The tag
+    /// EXPLAINS the count; it must not alter it. Excluding a no-capacity node
+    /// would make this column disagree with the cluster.
     pub on: usize,
-    /// Nodes it is expected on and absent from, sorted. Each is tagged when the
-    /// node is NotReady, because then the node is the story and the gap is a
-    /// symptom — the case the Almanac warns is a false chase.
-    pub missing: Vec<(String, bool)>,
+    /// Nodes it is expected on and absent from, sorted, each carrying the node
+    /// facts that explain the gap — dropping a troubled node would hide a real
+    /// gap on a node that later comes back without its DaemonSet.
+    pub missing: Vec<MissingNode>,
+}
+
+/// PURE draw-decision fn: does this line wrap, or truncate?
+///
+/// Prose wraps; a table row truncates. `wrap` splits on whitespace and rejoins
+/// with single spaces, so wrapping a row would strip the indent that puts it
+/// UNDER its DaemonSet and collapse its column spacing — the row would read as
+/// another top-level heading.
+///
+/// The discriminator is the indent, because that is already what makes a line a
+/// row here. Keying on `Dim` alone was enough while `Dim` meant only prose; the
+/// moment a node row could be dimmed — a NotReady node (v1.37.0), and now one
+/// reporting no capacity — the two meanings collided. That defect shipped
+/// unseen because kwok cannot hold a node NotReady, so no fixture ever rendered
+/// the one dimmed row that existed.
+fn is_prose(line: &str, role: RsRole) -> bool {
+    matches!(role, RsRole::Dim) && !line.starts_with(' ')
+}
+
+/// PURE draw-decision fn: the per-node facts the tab joins onto coverage.
+///
+/// The report deliberately knows nothing about node health — it says what
+/// coverage IS, and readiness is the map's fact (v1.37.0 §5, standing question
+/// 8). So the tab joins them here from the same `MapModel` the overlay colours
+/// from, which is what keeps the two surfaces naming the same nodes.
+///
+/// Only troubled nodes get an entry; an ordinary node needs none.
+pub fn node_trouble(map: &MapModel) -> std::collections::HashMap<&str, NodeTrouble> {
+    map.zones
+        .iter()
+        .flat_map(|z| &z.nodes)
+        .filter_map(|t| {
+            let n = NodeTrouble {
+                not_ready: !t.ready,
+                no_capacity: t.capacity_unreported(),
+            };
+            n.any().then_some((t.name.as_str(), n))
+        })
+        .collect()
 }
 
 /// PURE draw-decision fn: invert `missing_by_node` into per-DaemonSet rows.
@@ -923,23 +1017,25 @@ pub struct SubstrateRow {
 /// DaemonSet and a node missing two appears in two rows. Row order is
 /// `expected`'s, which is sorted, so rows do not reorder between ticks.
 ///
-/// `not_ready` is the set of NotReady node names; a missing node in it is
-/// flagged rather than dropped, because dropping it would hide a real gap on a
-/// node that later comes back without its DaemonSet.
+/// `trouble` carries the node facts from [`node_trouble`]; a node in it is
+/// TAGGED, never dropped and never uncounted — see [`SubstrateRow::on`].
 pub fn substrate_rows(
     r: &SubstrateReport,
-    not_ready: &std::collections::HashSet<&str>,
+    trouble: &std::collections::HashMap<&str, NodeTrouble>,
 ) -> Vec<SubstrateRow> {
     r.expected
         .iter()
         .map(|ds| {
-            let mut missing: Vec<(String, bool)> = r
+            let mut missing: Vec<MissingNode> = r
                 .missing_by_node
                 .iter()
                 .filter(|(_, gaps)| gaps.contains(ds))
-                .map(|(node, _)| (node.clone(), not_ready.contains(node.as_str())))
+                .map(|(node, _)| MissingNode {
+                    trouble: trouble.get(node.as_str()).copied().unwrap_or_default(),
+                    node: node.clone(),
+                })
                 .collect();
-            missing.sort();
+            missing.sort_by(|a, b| a.node.cmp(&b.node));
             SubstrateRow {
                 daemonset: ds.clone(),
                 on: r.nodes_total.saturating_sub(missing.len()),
@@ -963,7 +1059,7 @@ pub fn substrate_rows(
 ///   something was actually expected.
 pub fn substrate_lines(
     r: &SubstrateReport,
-    not_ready: &std::collections::HashSet<&str>,
+    trouble: &std::collections::HashMap<&str, NodeTrouble>,
 ) -> Vec<(String, RsRole)> {
     use kubernation_core::state::substrate::{floor_binds, floor_nodes, prevalence_note};
     let mut out: Vec<(String, RsRole)> = Vec::new();
@@ -1011,7 +1107,7 @@ pub fn substrate_lines(
         out.push((prevalence_note(), RsRole::Dim));
         return out;
     }
-    let rows = substrate_rows(r, not_ready);
+    let rows = substrate_rows(r, trouble);
     out.push((
         format!(
             "{} fleet-wide daemonsets · {} of {} nodes with gaps",
@@ -1043,14 +1139,14 @@ pub fn substrate_lines(
             ),
             role,
         ));
-        for (node, nr) in &row.missing {
+        for m in &row.missing {
+            let note = m.trouble.note();
             out.push((
-                if *nr {
-                    format!("    {node}   (NotReady — the node is the story)")
-                } else {
-                    format!("    {node}")
+                match &note {
+                    Some(n) => format!("    {}   {n}", m.node),
+                    None => format!("    {}", m.node),
                 },
-                if *nr { RsRole::Dim } else { role },
+                if note.is_some() { RsRole::Dim } else { role },
             ));
         }
     }
@@ -1065,19 +1161,14 @@ pub fn substrate_lines(
 }
 
 fn page_substrate(cx: &mut Ctx, r: &SubstrateReport, map: &MapModel) {
-    // Only walk the map for readiness when there are gaps to tag; a clean fleet
-    // costs nothing here (the report itself is memoized on `Models`).
-    let not_ready: std::collections::HashSet<&str> = if r.nodes_with_gaps == 0 {
+    // Only walk the map when there are gaps to tag; a clean fleet costs nothing
+    // here (the report itself is memoized on `Models`).
+    let trouble = if r.nodes_with_gaps == 0 {
         Default::default()
     } else {
-        map.zones
-            .iter()
-            .flat_map(|z| &z.nodes)
-            .filter(|t| !t.ready)
-            .map(|t| t.name.as_str())
-            .collect()
+        node_trouble(map)
     };
-    for (line, role) in substrate_lines(r, &not_ready) {
+    for (line, role) in substrate_lines(r, &trouble) {
         let (color, bold) = match role {
             RsRole::Headline | RsRole::Heading => (PARCHMENT, true),
             RsRole::Good => (good(), false),
@@ -1087,10 +1178,10 @@ fn page_substrate(cx: &mut Ctx, r: &SubstrateReport, map: &MapModel) {
         };
         let size = if bold { 15.0 } else { 13.0 };
         let avail = cx.body.w - if bold { 10.0 } else { 22.0 };
-        if matches!(role, RsRole::Dim) {
-            // The Dim lines are the caveats — sentences, not rows. The other
-            // pages truncate everything to the window width, and a caveat cut
-            // at "beca..." is not stated; wrap these instead.
+        if is_prose(&line, role) {
+            // Caveats are sentences, not rows. The other pages truncate
+            // everything to the window width, and a caveat cut at "beca..." is
+            // not stated; wrap these instead.
             for piece in crate::almanac::wrap(&ascii(&line), avail, size) {
                 cx.row(&piece, color, bold);
             }
@@ -1464,7 +1555,7 @@ mod tests {
             rows[0]
                 .missing
                 .iter()
-                .map(|(n, _)| n.as_str())
+                .map(|m| m.node.as_str())
                 .collect::<Vec<_>>(),
             ["n3", "n7"],
             "sorted, so rows do not reorder between ticks"
@@ -1473,18 +1564,233 @@ mod tests {
         assert_eq!(rows[1].on, 9);
         assert_eq!(rows[1].missing.len(), 1, "n7 appears in BOTH rows");
         // A NotReady node is flagged, not dropped.
-        let nr: std::collections::HashSet<&str> = ["n7"].into_iter().collect();
-        let rows = substrate_rows(&r, &nr);
+        let rows = substrate_rows(&r, &trouble(&[("n7", true, false)]));
         assert_eq!(
             rows[0].missing,
-            vec![("n3".to_string(), false), ("n7".to_string(), true)]
+            vec![
+                MissingNode {
+                    node: "n3".into(),
+                    trouble: NodeTrouble::default()
+                },
+                MissingNode {
+                    node: "n7".into(),
+                    trouble: NodeTrouble {
+                        not_ready: true,
+                        no_capacity: false
+                    }
+                }
+            ]
+        );
+    }
+
+    /// Build a trouble map without going through a `MapModel` — the join is
+    /// tested separately by `node_trouble_reads_readiness_and_capacity`.
+    fn trouble(
+        rows: &[(&'static str, bool, bool)],
+    ) -> std::collections::HashMap<&'static str, NodeTrouble> {
+        rows.iter()
+            .map(|&(n, nr, nc)| {
+                (
+                    n,
+                    NodeTrouble {
+                        not_ready: nr,
+                        no_capacity: nc,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// §1.3, decided: a no-capacity node is TAGGED IN EVERY ROW it appears in,
+    /// and still COUNTED.
+    ///
+    /// It is missing every fleet-wide DaemonSet because nothing schedules there,
+    /// so it turns up in each row — and each occurrence must carry the tag, or
+    /// the reader sees N unexplained gaps instead of one node fact. Excluding it
+    /// instead would make `missing from` disagree with `kubectl`, which the
+    /// substrate rounds were built on.
+    #[test]
+    fn a_no_capacity_node_is_tagged_in_every_row_and_still_counted() {
+        let r = sub_report(
+            10,
+            &["kube-system/cni", "kube-system/proxy", "obs/agent"],
+            &[
+                (
+                    "dead",
+                    &["kube-system/cni", "kube-system/proxy", "obs/agent"],
+                ),
+                ("n3", &["kube-system/cni"]),
+            ],
+        );
+        let rows = substrate_rows(&r, &trouble(&[("dead", false, true)]));
+        assert_eq!(rows.len(), 3);
+        for row in &rows {
+            let m = row
+                .missing
+                .iter()
+                .find(|m| m.node == "dead")
+                .unwrap_or_else(|| panic!("{} should list the node", row.daemonset));
+            assert!(
+                m.trouble.no_capacity,
+                "{}: every occurrence carries the tag, or it reads as three gaps",
+                row.daemonset
+            );
+            assert!(
+                m.trouble.note().unwrap().contains("reports no capacity"),
+                "and the tag says which reason"
+            );
+        }
+        // COUNTED: cni is missing from two nodes, so it is on 8 of 10 — the
+        // figure `kubectl` gives. The tag explains the count, never alters it.
+        assert_eq!(rows[0].daemonset, "kube-system/cni");
+        assert_eq!(rows[0].missing.len(), 2);
+        assert_eq!(rows[0].on, 8);
+        assert_eq!(rows[2].on, 9, "and a row whose only gap is the dead node");
+    }
+
+    /// §1.4: two reasons for one symptom, distinguishable, and a node can be
+    /// BOTH. Collapsing them into "unschedulable" would lose the triage
+    /// difference — NotReady may recover, no-capacity will not until fixed.
+    #[test]
+    fn not_ready_and_no_capacity_are_distinguishable_and_both_carriable() {
+        let nr = NodeTrouble {
+            not_ready: true,
+            no_capacity: false,
+        };
+        let nc = NodeTrouble {
+            not_ready: false,
+            no_capacity: true,
+        };
+        let both = NodeTrouble {
+            not_ready: true,
+            no_capacity: true,
+        };
+        let (a, b, c) = (nr.note().unwrap(), nc.note().unwrap(), both.note().unwrap());
+        assert!(a.contains("NotReady") && !a.contains("capacity"), "{a}");
+        assert!(
+            b.contains("reports no capacity") && !b.contains("NotReady"),
+            "{b}"
+        );
+        assert_ne!(a, b, "one word for two reasons would be the collapse");
+        assert!(
+            c.contains("NotReady") && c.contains("reports no capacity"),
+            "a node that is both says both: {c}"
+        );
+        assert_eq!(
+            NodeTrouble::default().note(),
+            None,
+            "an ordinary node is untagged"
+        );
+    }
+
+    /// Prose wraps, rows truncate — and a dimmed ROW must still be a row.
+    ///
+    /// The regression this pins shipped in v1.37.0 and could not be seen: the
+    /// only dimmed row then was a NotReady node, and kwok cannot hold a node
+    /// NotReady, so no fixture produced one.
+    #[test]
+    fn a_dimmed_node_row_truncates_while_a_caveat_wraps() {
+        assert!(
+            is_prose(
+                "'expected' is inferred from prevalence, not intent: …",
+                RsRole::Dim
+            ),
+            "an unindented Dim line is a caveat and wraps"
+        );
+        assert!(
+            !is_prose("    n7   (NotReady — the node is the story)", RsRole::Dim),
+            "an indented Dim line is a ROW; wrapping it would strip the indent"
+        );
+        assert!(
+            !is_prose("    n7", RsRole::Crit),
+            "an ordinary row truncates"
+        );
+        assert!(
+            !is_prose("churn/cni   on 98 / 100   missing from 2", RsRole::Crit),
+            "and so does a heading"
+        );
+        // The property the fix rests on, asserted rather than assumed.
+        let row = "    n7   (NotReady — the node is the story)";
+        assert_ne!(
+            row.split_whitespace().collect::<Vec<_>>().join(" "),
+            row,
+            "wrap() would strip this row's indent and collapse its columns"
+        );
+    }
+
+    /// §1.2's third bullet: the field guide's "why a node shows gaps" list
+    /// covers the case, and keeps the two reasons apart there too — the tag
+    /// names the fact, the guide explains why one node produces many gaps.
+    #[test]
+    fn the_field_guide_explains_a_node_that_reports_no_capacity() {
+        let t = crate::almanac::substrate_text();
+        assert!(
+            t.contains("no allocatable capacity"),
+            "the case is named: {t}"
+        );
+        assert!(
+            t.contains("every fleet-wide daemonset") || t.contains("EVERY fleet-wide daemonset"),
+            "and why one node fact reads as many gaps: {t}"
+        );
+        assert!(
+            t.contains("NotReady node may recover"),
+            "and the two reasons are kept apart, as the tag keeps them: {t}"
+        );
+    }
+
+    /// The join reads the right field for each reason — the mutation target.
+    #[test]
+    fn node_trouble_reads_readiness_and_capacity() {
+        use kubernation_core::state::fixtures as fx;
+        use kubernation_core::state::model::Models;
+        let (world, mut s) = fx::world();
+        s.node(fx::node("fine", Some("z-a")));
+        // NotReady, but publishing capacity — so the two flags cannot be read
+        // off one another.
+        s.node(fx::node_with_condition(
+            fx::node("down", Some("z-a")),
+            "Ready",
+            "False",
+        ));
+        let mut bare = fx::node("bare", Some("z-a"));
+        bare.status.as_mut().unwrap().allocatable = None;
+        s.node(bare);
+        // Both at once.
+        let mut worst = fx::node_with_condition(fx::node("worst", Some("z-a")), "Ready", "False");
+        worst.status.as_mut().unwrap().allocatable = None;
+        s.node(worst);
+        let m = Models::build(&world);
+        let t = node_trouble(&m.map);
+        assert_eq!(t.get("fine"), None, "an ordinary node has no entry");
+        assert_eq!(
+            t.get("down").copied(),
+            Some(NodeTrouble {
+                not_ready: true,
+                no_capacity: false
+            }),
+            "NotReady must not be read off capacity"
+        );
+        assert_eq!(
+            t.get("bare").copied(),
+            Some(NodeTrouble {
+                not_ready: false,
+                no_capacity: true
+            }),
+            "no-capacity must not be read off readiness"
+        );
+        assert_eq!(
+            t.get("worst").copied(),
+            Some(NodeTrouble {
+                not_ready: true,
+                no_capacity: true
+            })
         );
     }
 
     /// Three empty states, each saying which it is — standing question 2.
     #[test]
     fn substrate_lines_name_each_empty_state() {
-        let none: std::collections::HashSet<&str> = Default::default();
+        let none: std::collections::HashMap<&str, NodeTrouble> = Default::default();
         // The floor: four nodes, a daemonset on all four is expected, and no gap
         // is representable. This is the dev cluster, so it is the one that
         // matters most.
