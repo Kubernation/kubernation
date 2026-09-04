@@ -8,6 +8,8 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [1.38.0] — 2026-09-03
+
 ### Added
 - **A node that reports no capacity is now named as one node fact, not as a gap
   per daemonset.** Nothing schedules on such a node, so it is missing *every*
