@@ -5343,6 +5343,46 @@ what makes the interesting logic unit-testable without a cluster.
   tests, `make lint` run BEFORE the count was quoted (the v1.37.0 rule);
   gui-smoke 59.
 
+- **Caveats wrap on every advisor page — declared, not guessed** (2026-09-04,
+  **v1.39.0**; report in `docs/reports/advisor-caveats.md`): v1.37.0 gave the
+  Substrate page wrapping for its caveats and v1.38.0 fixed the row it broke;
+  this extends it to the rest. **The ask could not be done as written.** Routing
+  the other pages through `is_prose` (`Dim && !starts_with(' ')`) would have
+  wrapped **hardening's entire INFO section, cost's system-namespace rows,
+  posture's Info factors and every `+N more` trailer** — all dimmed, unindented
+  ROWS. The heuristic is correct on Substrate, where the dimmed rows happen to
+  be indented, and false on five of six pages; found by reading
+  `hardening_section`, not by grepping literals. **Two premise corrections:**
+  it is six pages, not eight — `page_health` and `page_storage` use
+  `cx.stat`/`cx.note` directly and have no caveat lines — and five of the six
+  already had dimmed rows, so the question "does one already have one?" changed
+  the design rather than naming a gate. **Fix: `RsRole::Caveat`** (prose, wraps)
+  beside `RsRole::Dim` (a row, truncates), both the same dim ink — the
+  distinction was never colour. No property of the TEXT separates hardening's
+  INFO row from hardening's footer (neither indented, both long, both dim), so
+  the emitter declares it; 28 prose lines reclassified, `is_prose` deleted.
+  **One home per LINE, not per page**: the six pages genuinely differ in colour
+  (cost renders `Good` as neutral INK, posture overrides its headline), so
+  `emit_line` owns wrap-vs-truncate and the caller keeps colour — and the
+  decision is extracted once more as the pure `wraps(role)`, because `emit_line`
+  paints and an inversion inside it would truncate every caveat and wrap every
+  row with nothing able to see it. **`hack/check-advisor-render.sh`** (in
+  `make lint` + CI) keeps `wrap`/`fit_width` inside `emit_line` — a lint because
+  the page fns are GL-driven with no test module (D2 §3.4) — with a
+  guard-the-guard that fails if its parse matches fewer than both calls.
+  **Mutation floor 11, all caught**, including the demotion of EACH page's
+  closing caveat separately. **W1 for right-sizing SURVIVED first** — the
+  prompt's own "per-page or it survives" hazard, but caused by the FIXTURE:
+  `rightsizing_lines` early-returns when `metrics_available` is false, so the
+  probe world never rendered the main-path footer; the probe now seeds metrics
+  AND the assertions run over both a with-metrics and a no-metrics world. *A
+  per-page test only covers the branch its fixture reaches.* **THE GATE, live on
+  kind, same page and window with one line changed:** the Hardening footer went
+  from `…seccomp & default-SA deferr…` (cut mid-word, losing "(often set at the
+  namespace default)") to two complete lines, while the INFO row beside it is
+  byte-identical — the caveat gained its ending and the row was untouched. 650
+  workspace tests, `make lint` run BEFORE the count was quoted; gui-smoke 59.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

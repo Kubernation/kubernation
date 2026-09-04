@@ -331,7 +331,24 @@ pub enum RsRole {
     Good,
     Warn,
     Crit,
+    /// A dimmed data ROW — a system namespace, an Info finding, a `+N more`
+    /// trailer, a node whose own state explains its gap. **Truncates.**
     Dim,
+    /// PROSE: a caveat, a footer, an empty-state explanation. **Wraps.**
+    ///
+    /// Renders in the same dim ink as [`RsRole::Dim`]; the distinction is not
+    /// colour, it is whether the text is a sentence. Truncating a caveat leaves
+    /// it ending at "…beca", which is not a stated caveat — and wrapping a row
+    /// strips its indent (`wrap` splits on whitespace) so the continuation
+    /// reads as another row.
+    ///
+    /// **Inferring this from the text was tried and does not generalise.** The
+    /// v1.38.0 rule — dim AND unindented ⇒ prose — holds on the Substrate page
+    /// and is false on five others: hardening's INFO section, cost's
+    /// system-namespace rows, posture's Info factors and every `+N more`
+    /// trailer are dimmed, unindented ROWS. The emitter knows which it is
+    /// writing, so it says so here rather than leaving the renderer to guess.
+    Caveat,
 }
 
 fn cpu_s(cores: f64) -> String {
@@ -418,7 +435,7 @@ fn push_section(
 ) {
     out.push((heading.to_string(), RsRole::Heading));
     if rows.is_empty() {
-        out.push((empty.to_string(), RsRole::Dim));
+        out.push((empty.to_string(), RsRole::Caveat));
         return;
     }
     for row in rows.iter().take(RS_CAP) {
@@ -503,7 +520,7 @@ pub fn rightsizing_lines(r: &RightSizingReport) -> Vec<(String, RsRole)> {
             RsRole::Crit,
             "every workload declares requests",
         );
-        out.push((footer.to_string(), RsRole::Dim));
+        out.push((footer.to_string(), RsRole::Caveat));
         return out;
     }
 
@@ -518,7 +535,7 @@ pub fn rightsizing_lines(r: &RightSizingReport) -> Vec<(String, RsRole)> {
         headline.push_str(&format!("  ≈ {:.1} nodes", r.node_equiv));
     }
     out.push((headline, RsRole::Headline));
-    out.push((basis_note(r), RsRole::Dim));
+    out.push((basis_note(r), RsRole::Caveat));
 
     // Count strip.
     let count = |n: usize, on: RsRole| if n > 0 { on } else { RsRole::Dim };
@@ -570,8 +587,37 @@ pub fn rightsizing_lines(r: &RightSizingReport) -> Vec<(String, RsRole)> {
         RsRole::Crit,
         "every workload declares requests",
     );
-    out.push((footer.to_string(), RsRole::Dim));
+    out.push((footer.to_string(), RsRole::Caveat));
     out
+}
+
+/// The ONE home for how an advisor line reaches the screen.
+///
+/// A [`RsRole::Caveat`] is a sentence and WRAPS; everything else is a row and
+/// TRUNCATES to the body width. Colour stays with the caller because it really
+/// is per page — Cost renders `Good` as neutral INK rather than green, and
+/// Posture overrides its headline — but this decision is made once, so a page
+/// cannot forget it. `hack/check-advisor-render.sh` keeps `wrap`/`fit_width`
+/// out of the page functions.
+/// PURE draw-decision fn: does this role wrap, or truncate?
+///
+/// Extracted so the decision is assertable — [`emit_line`] itself paints, and a
+/// painting function has no test that could see this inverted.
+pub fn wraps(role: RsRole) -> bool {
+    matches!(role, RsRole::Caveat)
+}
+
+fn emit_line(cx: &mut Ctx, line: &str, role: RsRole, color: Color, bold: bool) {
+    let size = if bold { 15.0 } else { 13.0 };
+    let avail = cx.body.w - if bold { 10.0 } else { 22.0 };
+    let text = ascii(line);
+    if wraps(role) {
+        for piece in crate::almanac::wrap(&text, avail, size) {
+            cx.row(&piece, color, bold);
+        }
+    } else {
+        cx.row(&crate::panels::fit_width(&text, size, avail), color, bold);
+    }
 }
 
 fn page_rightsizing(cx: &mut Ctx, r: &RightSizingReport) {
@@ -582,13 +628,9 @@ fn page_rightsizing(cx: &mut Ctx, r: &RightSizingReport) {
             RsRole::Good => (good(), false),
             RsRole::Warn => (WARN, false),
             RsRole::Crit => (CRIT, false),
-            RsRole::Dim => (DIM, false),
+            RsRole::Dim | RsRole::Caveat => (DIM, false),
         };
-        // Truncate to the body width so a long row never overflows the window.
-        let size = if bold { 15.0 } else { 13.0 };
-        let avail = cx.body.w - if bold { 10.0 } else { 22.0 };
-        let shown = crate::panels::fit_width(&ascii(&line), size, avail);
-        cx.row(&shown, color, bold);
+        emit_line(cx, &line, role, color, bold);
     }
 }
 
@@ -615,10 +657,10 @@ pub fn cost_lines(r: &CostReport) -> Vec<(String, RsRole)> {
     // priced nodes, or an OpenCost realm would falsely read as empty.
     let has_data = r.nodes_priced > 0 || r.total_per_hour > 0.0 || !r.by_namespace.is_empty();
     if !has_data {
-        out.push(("no priced nodes yet".to_string(), RsRole::Dim));
+        out.push(("no priced nodes yet".to_string(), RsRole::Caveat));
         out.push((
             "(not synced, or — in $ mode — no rate applies to any node)".to_string(),
-            RsRole::Dim,
+            RsRole::Caveat,
         ));
         return out;
     }
@@ -636,13 +678,13 @@ pub fn cost_lines(r: &CostReport) -> Vec<(String, RsRole)> {
                 CostMode::Currency => "$ estimate from your rates × reservation — not a cloud invoice (excludes network/storage/LB/discounts)".to_string(),
             }
         },
-        RsRole::Dim,
+        RsRole::Caveat,
     ));
     if r.basis == CostBasis::OpenCost {
         out.push((
             "per-node map overlay n/a from OpenCost (it bills by workload/namespace, not node)"
                 .to_string(),
-            RsRole::Dim,
+            RsRole::Caveat,
         ));
     }
 
@@ -667,7 +709,7 @@ pub fn cost_lines(r: &CostReport) -> Vec<(String, RsRole)> {
 
     out.push(("BY NAMESPACE".to_string(), RsRole::Heading));
     if r.by_namespace.is_empty() {
-        out.push(("(no allocated workloads)".to_string(), RsRole::Dim));
+        out.push(("(no allocated workloads)".to_string(), RsRole::Caveat));
     }
     for ns in r.by_namespace.iter().take(RS_CAP) {
         let tag = if ns.system { " (system)" } else { "" };
@@ -691,7 +733,7 @@ pub fn cost_lines(r: &CostReport) -> Vec<(String, RsRole)> {
 
     out.push(("COSTLIEST CITIES".to_string(), RsRole::Heading));
     if r.top_workloads.is_empty() {
-        out.push(("(no priced workloads)".to_string(), RsRole::Dim));
+        out.push(("(no priced workloads)".to_string(), RsRole::Caveat));
     }
     for w in r.top_workloads.iter().take(8) {
         out.push((
@@ -722,7 +764,7 @@ pub fn cost_lines(r: &CostReport) -> Vec<(String, RsRole)> {
                 "install metrics-server to refine idle from reserved to actually-used.",
             ),
         },
-        RsRole::Dim,
+        RsRole::Caveat,
     ));
     out
 }
@@ -745,12 +787,9 @@ fn page_cost(cx: &mut Ctx, r: &CostReport) {
             RsRole::Crit => (CRIT, false),
             // Cost data is NEUTRAL spend — not "good"/green, not "bad"/red.
             RsRole::Good => (INK, false),
-            RsRole::Dim => (DIM, false),
+            RsRole::Dim | RsRole::Caveat => (DIM, false),
         };
-        let size = if bold { 15.0 } else { 13.0 };
-        let avail = cx.body.w - if bold { 10.0 } else { 22.0 };
-        let shown = crate::panels::fit_width(&ascii(&line), size, avail);
-        cx.row(&shown, color, bold);
+        emit_line(cx, &line, role, color, bold);
     }
 }
 
@@ -826,7 +865,7 @@ pub fn hardening_lines(r: &HardeningReport) -> Vec<(String, RsRole)> {
     ));
     out.push((
         "curated subset: PSS-baseline + PSS-restricted + OWASP-K01 + Popeye — not full PSS compliance".to_string(),
-        RsRole::Dim,
+        RsRole::Caveat,
     ));
     let by_std = |s: &str| r.counts_by_standard.get(s).copied().unwrap_or(0);
     out.push((
@@ -842,7 +881,7 @@ pub fn hardening_lines(r: &HardeningReport) -> Vec<(String, RsRole)> {
     if r.unresolved > 0 {
         out.push((
             format!("{} workload(s) not yet resolved", r.unresolved),
-            RsRole::Dim,
+            RsRole::Caveat,
         ));
     }
 
@@ -851,7 +890,7 @@ pub fn hardening_lines(r: &HardeningReport) -> Vec<(String, RsRole)> {
     // (a reassuring green there would be a false all-clear).
     let nothing_found = r.critical.is_empty() && r.warning.is_empty() && r.info.is_empty();
     if r.workloads_total == 0 {
-        out.push(("no workloads to scan".to_string(), RsRole::Dim));
+        out.push(("no workloads to scan".to_string(), RsRole::Caveat));
     } else if nothing_found && r.unresolved == 0 && r.workloads_clean > 0 {
         out.push((
             "every workload is fortified against the checked controls".to_string(),
@@ -860,7 +899,7 @@ pub fn hardening_lines(r: &HardeningReport) -> Vec<(String, RsRole)> {
     } else if nothing_found && r.unresolved > 0 {
         out.push((
             "scan pending — templates not yet resolved".to_string(),
-            RsRole::Dim,
+            RsRole::Caveat,
         ));
     }
     hardening_section(
@@ -879,7 +918,7 @@ pub fn hardening_lines(r: &HardeningReport) -> Vec<(String, RsRole)> {
 
     out.push((
         "read-only — fix in the manifest/Helm chart and redeploy. Bare pods & Jobs not scanned; seccomp & default-SA deferred (often set at the namespace default).".to_string(),
-        RsRole::Dim,
+        RsRole::Caveat,
     ));
     out
 }
@@ -891,12 +930,9 @@ fn page_hardening(cx: &mut Ctx, r: &HardeningReport) {
             RsRole::Good => (good(), false),
             RsRole::Warn => (WARN, false),
             RsRole::Crit => (CRIT, false),
-            RsRole::Dim => (DIM, false),
+            RsRole::Dim | RsRole::Caveat => (DIM, false),
         };
-        let size = if bold { 15.0 } else { 13.0 };
-        let avail = cx.body.w - if bold { 10.0 } else { 22.0 };
-        let shown = crate::panels::fit_width(&ascii(&line), size, avail);
-        cx.row(&shown, color, bold);
+        emit_line(cx, &line, role, color, bold);
     }
 }
 
@@ -968,23 +1004,6 @@ pub struct SubstrateRow {
     /// facts that explain the gap — dropping a troubled node would hide a real
     /// gap on a node that later comes back without its DaemonSet.
     pub missing: Vec<MissingNode>,
-}
-
-/// PURE draw-decision fn: does this line wrap, or truncate?
-///
-/// Prose wraps; a table row truncates. `wrap` splits on whitespace and rejoins
-/// with single spaces, so wrapping a row would strip the indent that puts it
-/// UNDER its DaemonSet and collapse its column spacing — the row would read as
-/// another top-level heading.
-///
-/// The discriminator is the indent, because that is already what makes a line a
-/// row here. Keying on `Dim` alone was enough while `Dim` meant only prose; the
-/// moment a node row could be dimmed — a NotReady node (v1.37.0), and now one
-/// reporting no capacity — the two meanings collided. That defect shipped
-/// unseen because kwok cannot hold a node NotReady, so no fixture ever rendered
-/// the one dimmed row that existed.
-fn is_prose(line: &str, role: RsRole) -> bool {
-    matches!(role, RsRole::Dim) && !line.starts_with(' ')
 }
 
 /// PURE draw-decision fn: the per-node facts the tab joins onto coverage.
@@ -1064,7 +1083,7 @@ pub fn substrate_lines(
     use kubernation_core::state::substrate::{floor_binds, floor_nodes, prevalence_note};
     let mut out: Vec<(String, RsRole)> = Vec::new();
     if r.nodes_total == 0 {
-        out.push(("no nodes observed yet".into(), RsRole::Dim));
+        out.push(("no nodes observed yet".into(), RsRole::Caveat));
         return out;
     }
     if floor_binds(r.nodes_total) {
@@ -1085,9 +1104,9 @@ pub fn substrate_lines(
                 floor_nodes(),
                 floor_nodes() + 1
             ),
-            RsRole::Dim,
+            RsRole::Caveat,
         ));
-        out.push((prevalence_note(), RsRole::Dim));
+        out.push((prevalence_note(), RsRole::Caveat));
         return out;
     }
     if !r.has_data() {
@@ -1102,9 +1121,9 @@ pub fn substrate_lines(
             "nothing is fleet-wide, so there is nothing to be missing from — this is not \
              'all covered', it is 'no expectation to measure against'"
                 .into(),
-            RsRole::Dim,
+            RsRole::Caveat,
         ));
-        out.push((prevalence_note(), RsRole::Dim));
+        out.push((prevalence_note(), RsRole::Caveat));
         return out;
     }
     let rows = substrate_rows(r, trouble);
@@ -1121,7 +1140,7 @@ pub fn substrate_lines(
             RsRole::Headline
         },
     ));
-    out.push((prevalence_note(), RsRole::Dim));
+    out.push((prevalence_note(), RsRole::Caveat));
     out.push((String::new(), RsRole::Dim));
     for row in &rows {
         let role = match row.missing.len() {
@@ -1155,7 +1174,7 @@ pub fn substrate_lines(
         "coverage is presence, not health: a crash-looping daemonset pod still counts as \
          covered. a node added moments ago shows gaps until its pods land."
             .into(),
-        RsRole::Dim,
+        RsRole::Caveat,
     ));
     out
 }
@@ -1174,21 +1193,9 @@ fn page_substrate(cx: &mut Ctx, r: &SubstrateReport, map: &MapModel) {
             RsRole::Good => (good(), false),
             RsRole::Warn => (WARN, false),
             RsRole::Crit => (CRIT, false),
-            RsRole::Dim => (DIM, false),
+            RsRole::Dim | RsRole::Caveat => (DIM, false),
         };
-        let size = if bold { 15.0 } else { 13.0 };
-        let avail = cx.body.w - if bold { 10.0 } else { 22.0 };
-        if is_prose(&line, role) {
-            // Caveats are sentences, not rows. The other pages truncate
-            // everything to the window width, and a caveat cut at "beca..." is
-            // not stated; wrap these instead.
-            for piece in crate::almanac::wrap(&ascii(&line), avail, size) {
-                cx.row(&piece, color, bold);
-            }
-        } else {
-            let shown = crate::panels::fit_width(&ascii(&line), size, avail);
-            cx.row(&shown, color, bold);
-        }
+        emit_line(cx, &line, role, color, bold);
     }
 }
 
@@ -1217,7 +1224,7 @@ pub fn posture_lines(r: &PostureReport) -> Vec<(String, RsRole)> {
             out.push(("DEFENSE — not yet scanned (fog of war)".into(), RsRole::Dim));
             out.push((
                 "no workloads observed yet — explore the realm first".into(),
-                RsRole::Dim,
+                RsRole::Caveat,
             ));
             return out;
         }
@@ -1243,7 +1250,7 @@ pub fn posture_lines(r: &PostureReport) -> Vec<(String, RsRole)> {
                 "system namespaces: {} critical, {} warning — distro defaults, not yours to fix, excluded",
                 r.system_critical, r.system_warning
             ),
-            RsRole::Dim,
+            RsRole::Caveat,
         ));
     }
 
@@ -1275,7 +1282,7 @@ pub fn posture_lines(r: &PostureReport) -> Vec<(String, RsRole)> {
 
     out.push((
         "curated subset (PSS-baseline/restricted + OWASP-K01/K07 + Popeye) — a defense indicator, not CIS/full-PSS compliance. coverage = a policy exists; CNI enforcement not verified.".into(),
-        RsRole::Dim,
+        RsRole::Caveat,
     ));
     out
 }
@@ -1287,7 +1294,7 @@ fn page_posture(cx: &mut Ctx, r: &PostureReport) {
             RsRole::Good => (good(), false),
             RsRole::Warn => (WARN, false),
             RsRole::Crit => (CRIT, false),
-            RsRole::Dim => (DIM, false),
+            RsRole::Dim | RsRole::Caveat => (DIM, false),
         };
         // The headline (line 0) is always bold + tier-coloured, big and clear.
         let bold = base_bold || i == 0;
@@ -1296,16 +1303,13 @@ fn page_posture(cx: &mut Ctx, r: &PostureReport) {
                 RsRole::Good => good(),
                 RsRole::Warn => WARN,
                 RsRole::Crit => CRIT,
-                RsRole::Dim => DIM,
+                RsRole::Dim | RsRole::Caveat => DIM,
                 _ => PARCHMENT,
             }
         } else {
             color
         };
-        let size = if bold { 15.0 } else { 13.0 };
-        let avail = cx.body.w - if bold { 10.0 } else { 22.0 };
-        let shown = crate::panels::fit_width(&ascii(&line), size, avail);
-        cx.row(&shown, color, bold);
+        emit_line(cx, &line, role, color, bold);
     }
 }
 
@@ -1411,7 +1415,7 @@ pub fn walls_lines(r: &NetpolReport) -> Vec<(String, RsRole)> {
     if r.unwalled_exposed.is_empty() {
         // Never a green all-clear on an empty / unevaluated cluster.
         if r.workloads == 0 {
-            out.push(("no workloads to evaluate".into(), RsRole::Dim));
+            out.push(("no workloads to evaluate".into(), RsRole::Caveat));
         } else {
             out.push(("no exposed city is unwalled".into(), RsRole::Good));
         }
@@ -1466,7 +1470,7 @@ pub fn walls_lines(r: &NetpolReport) -> Vec<(String, RsRole)> {
     ));
     out.push((
         "coverage = an isolating policy EXISTS (matched on pod-template labels) — enforcement not verified (CNI); namespaceSelector / ipBlock / port rules not analyzed.".into(),
-        RsRole::Dim,
+        RsRole::Caveat,
     ));
     out
 }
@@ -1502,12 +1506,9 @@ fn page_network(cx: &mut Ctx, r: &NetworkReport, walls: &NetpolReport) {
             RsRole::Good => (good(), false),
             RsRole::Warn => (WARN, false),
             RsRole::Crit => (CRIT, false),
-            RsRole::Dim => (DIM, false),
+            RsRole::Dim | RsRole::Caveat => (DIM, false),
         };
-        let size = if bold { 15.0 } else { 13.0 };
-        let avail = cx.body.w - if bold { 10.0 } else { 22.0 };
-        let shown = crate::panels::fit_width(&ascii(&line), size, avail);
-        cx.row(&shown, color, bold);
+        emit_line(cx, &line, role, color, bold);
     }
 }
 
@@ -1683,37 +1684,145 @@ mod tests {
         );
     }
 
-    /// Prose wraps, rows truncate — and a dimmed ROW must still be a row.
-    ///
-    /// The regression this pins shipped in v1.37.0 and could not be seen: the
-    /// only dimmed row then was a NotReady node, and kwok cannot hold a node
-    /// NotReady, so no fixture produced one.
+    /// Only a caveat wraps. Inverting this would truncate every caveat and wrap
+    /// every row at once, and `emit_line` paints, so nothing else could see it.
     #[test]
-    fn a_dimmed_node_row_truncates_while_a_caveat_wraps() {
-        assert!(
-            is_prose(
-                "'expected' is inferred from prevalence, not intent: …",
-                RsRole::Dim
-            ),
-            "an unindented Dim line is a caveat and wraps"
+    fn only_a_caveat_wraps() {
+        assert!(wraps(RsRole::Caveat));
+        for r in [
+            RsRole::Dim,
+            RsRole::Headline,
+            RsRole::Heading,
+            RsRole::Good,
+            RsRole::Warn,
+            RsRole::Crit,
+        ] {
+            assert!(!wraps(r), "{r:?} is a row and must truncate");
+        }
+    }
+
+    /// Build one fixture world rich enough that every advisor report has
+    /// something to say — so the per-page test below reads real output.
+    fn probe_world() -> kubernation_core::state::observed::ObservedWorld {
+        use kubernation_core::state::fixtures as fx;
+        let (world, mut s) = fx::world();
+        s.node(fx::node("n1", Some("z-a")));
+        s.node(fx::node("n2", Some("z-a")));
+        s.deployment(fx::deployment("demo", "web", 2, 2));
+        s.replicaset(fx::replicaset("demo", "web-1", "web"));
+        s.pod(fx::pod_owned(
+            fx::pod("demo", "web-1-a", Some("n1")),
+            "ReplicaSet",
+            "web-1",
+        ));
+        s.pod(fx::pod_owned(
+            fx::pod("demo", "web-1-b", Some("n2")),
+            "ReplicaSet",
+            "web-1",
+        ));
+        // Metrics ON. Without them the right-sizing and cost pages take their
+        // no-metrics EARLY RETURN, and the test would then only ever see that
+        // branch — which is how the right-sizing mutation first survived.
+        fx::set_pod_histories(
+            &world,
+            "demo",
+            &[
+                ("web-1-a", &[(0.01, 8.0e6), (0.01, 8.0e6)]),
+                ("web-1-b", &[(0.01, 8.0e6), (0.01, 8.0e6)]),
+            ],
         );
+        world
+    }
+
+    /// EVERY page's caveats wrap, and no page wraps a row. Per page, because a
+    /// page that forgot would otherwise be covered by its five neighbours.
+    ///
+    /// The footer is the anchor: every one of these pages ends with an honesty
+    /// caveat, and that is the line most likely to be cut at "…beca". Demoting
+    /// any single page's footer back to `Dim` fails exactly that page.
+    #[test]
+    fn every_advisor_page_declares_its_caveats_and_wraps_none_of_its_rows() {
+        use kubernation_core::state::{advisor as ca, harden, netpol, posture};
+        for (branch, w) in [
+            ("with metrics", probe_world()),
+            ("no metrics", kubernation_core::state::fixtures::world().0),
+        ] {
+            let sub = sub_report(10, &["kube-system/cni"], &[("n7", &["kube-system/cni"])]);
+            let pages: Vec<(&str, Vec<(String, RsRole)>)> = vec![
+                (
+                    "right-sizing",
+                    rightsizing_lines(&ca::rightsizing_report(&w)),
+                ),
+                (
+                    "cost",
+                    cost_lines(&kubernation_core::state::cost::cost_report(
+                        &w,
+                        &Default::default(),
+                    )),
+                ),
+                ("hardening", hardening_lines(&harden::hardening_report(&w))),
+                (
+                    "substrate",
+                    substrate_lines(&sub, &trouble(&[("n7", false, true)])),
+                ),
+                ("posture", posture_lines(&posture::posture_report(&w))),
+                ("network/walls", walls_lines(&netpol::coverage_report(&w))),
+            ];
+            for (name, lines) in &pages {
+                let name = &format!("{name} ({branch})");
+                assert!(!lines.is_empty(), "{name}: no lines");
+                // The feature, per page: the closing caveat is declared as prose, so
+                // it wraps instead of being truncated mid-sentence.
+                let (last, role) = lines.last().unwrap();
+                assert_eq!(
+                    *role,
+                    RsRole::Caveat,
+                    "{name}: the closing caveat must be Caveat or it will be cut: {last:?}"
+                );
+                // The regression, per page: nothing that would lose an indent is
+                // ever wrapped.
+                for (line, role) in lines {
+                    if line.starts_with(' ') {
+                        assert_ne!(
+                            *role,
+                            RsRole::Caveat,
+                            "{name}: an indented line must not wrap — wrap() strips the \
+                         indent and the row reads as a heading: {line:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A caveat wraps; a dimmed ROW does not — and the rule is now DECLARED by
+    /// the emitter rather than guessed from the text.
+    ///
+    /// The guess it replaces (`Dim && !starts_with(' ')`) holds on this page and
+    /// is false on five others, where hardening's INFO section, cost's
+    /// system-namespace rows, posture's Info factors and every `+N more`
+    /// trailer are dimmed, unindented ROWS. Routing those through it would have
+    /// wrapped every one of them.
+    #[test]
+    fn rows_and_caveats_are_declared_not_guessed() {
+        let r = sub_report(10, &["kube-system/cni"], &[("n7", &["kube-system/cni"])]);
+        let lines = substrate_lines(&r, &trouble(&[("n7", false, true)]));
+        let row = lines
+            .iter()
+            .find(|(l, _)| l.contains("n7"))
+            .expect("the tagged node row");
+        assert!(row.0.starts_with(' '), "a row is indented: {:?}", row.0);
+        assert_eq!(row.1, RsRole::Dim, "a dimmed ROW is Dim, so it truncates");
         assert!(
-            !is_prose("    n7   (NotReady — the node is the story)", RsRole::Dim),
-            "an indented Dim line is a ROW; wrapping it would strip the indent"
+            lines
+                .iter()
+                .any(|(l, role)| *role == RsRole::Caveat && l.contains("inferred from prevalence")),
+            "and the caveat is Caveat, so it wraps"
         );
-        assert!(
-            !is_prose("    n7", RsRole::Crit),
-            "an ordinary row truncates"
-        );
-        assert!(
-            !is_prose("churn/cni   on 98 / 100   missing from 2", RsRole::Crit),
-            "and so does a heading"
-        );
-        // The property the fix rests on, asserted rather than assumed.
-        let row = "    n7   (NotReady — the node is the story)";
+        // The property the split rests on: wrapping that row would destroy it.
         assert_ne!(
-            row.split_whitespace().collect::<Vec<_>>().join(" "),
-            row,
+            row.0.split_whitespace().collect::<Vec<_>>().join(" "),
+            row.0,
             "wrap() would strip this row's indent and collapse its columns"
         );
     }

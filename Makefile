@@ -115,6 +115,7 @@ lint:
 	./hack/check-conversion-authorities.sh
 	./hack/check-release-targets.sh
 	./hack/check-advisor-memo.sh
+	./hack/check-advisor-render.sh
 
 ## test: unit tests (core logic + GUI render helpers)
 test:

@@ -8,6 +8,17 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **The Advisors' honesty footers are no longer cut off mid-sentence.** Every
+  advisor page ends with a caveat saying what its numbers do and do not cover —
+  that a scan is a curated subset, that a cost figure is not a cloud invoice,
+  that coverage means a policy exists rather than that it is enforced — and each
+  was truncated to the window width, so several ended in the middle of a word.
+  They now wrap and read to the end. Data rows still truncate: wrapping one
+  would push its tail onto a second line where it reads as another row, and on
+  the Substrate page it would strip the indent that puts a node under its
+  daemonset.
+
 ## [1.38.0] — 2026-09-03
 
 ### Added

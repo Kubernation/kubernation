@@ -115,6 +115,9 @@ jobs:
       - name: Advisor reports go through the memo
         run: ./hack/check-advisor-memo.sh
 
+      - name: Advisor render authority
+        run: ./hack/check-advisor-render.sh
+
       - name: Assert the vendored miniquad patch is active
         shell: bash
         # `[/\\]`: cargo tree prints the path with backslashes on Windows.
