@@ -8,6 +8,8 @@ version covers every crate; releases are git tags `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [1.39.0] — 2026-09-04
+
 ### Fixed
 - **The Advisors' honesty footers are no longer cut off mid-sentence.** Every
   advisor page ends with a caveat saying what its numbers do and do not cover —
