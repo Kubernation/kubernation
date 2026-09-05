@@ -5383,6 +5383,51 @@ what makes the interesting logic unit-testable without a cluster.
   byte-identical — the caveat gained its ending and the row was untouched. 650
   workspace tests, `make lint` run BEFORE the count was quoted; gui-smoke 59.
 
+- **The both-reasons blind spot, closed** (2026-09-05, unversioned — test assets
+  and docs only, the A0/A-pre precedent; from the "Close the Both-Reasons Blind
+  Spot" prompt, report in `docs/reports/both-reasons-blind-spot.md`): a node can
+  be BOTH NotReady and allocatable-less, and no fixture could produce one — kind
+  has a real kubelet (no missing capacity) and kwok rewrites Ready within a
+  second. That is exactly where the v1.37.0 wrap regression hid for a version,
+  so the gap was worth closing rather than carrying. **Why claim 1 holds, which
+  A-pre did not establish:** the kwok controller runs `--manage-all-nodes=true`,
+  so there is no managed set to fall out of and the annotation removal A-pre
+  tried could not have worked. **THE FINDING — re-verifying claim 1 destroyed
+  the fixture claim 4 describes:** patching `Ready=False` on `churn-sys-g2-000`
+  confirmed the rewrite AND left the node reporting `1k cpu / 1Ti / 1M pods`,
+  because kwok's node-initialize stage re-fires when Ready is anything but True
+  — a fact neither A-pre nor v1.38.0 recorded, and the reason
+  `10-node-notready.sh` must set **Ready=True BEFORE restarting the controller**.
+  (Residual, stated: the node now permanently carries kwok's full condition set
+  rather than only Ready; all are `False`, so nothing reads differently.)
+  **BOTH paths work.** §3.2 (stop the kwok controller, flip Ready) holds across
+  two reads; and standing question 8 — never asked before — is answered: a
+  status patch emptying `allocatable` on a **stopped** kind node is **accepted
+  and holds**, so §3.1 is a live fallback with no 200s clock. The capture must
+  still be on churn, but for a better reason than the prompt's: kind has four
+  nodes, `floor_binds(4)` is true, and the tab correctly refuses to show a table
+  there at all. **Not a gui-smoke state, recorded not deferred:** gui-smoke runs
+  against kind (the floor), and the churn path needs a stopped component inside
+  a ~200s node-lease window — so the scenario asserts the target is the ONLY
+  NotReady node before letting a capture happen. **Two instrument bugs, both
+  found by running it.** `assert_twice` ended with `[ "$i" = 1 ] && sleep`, which
+  on the second pass returns 1 as the function's last command, so `set -e`
+  aborted the CALLER after both "ok" lines printed and the fleet-wide assertion
+  never ran — now `if`, and a corollary to rule 2 in `hack/README.md`, because
+  *an instrument that prints success and then fails silently* is the family the
+  convention exists for. And `9-node-capacity.sh`'s pod delete blocks forever
+  while kwok is stopped (kwok finalizes fake pods) — `--wait=false`; the
+  ten-minute timeout it caused let the lease lapse, took four nodes NotReady, and
+  needed `node-agent`'s pods recreated to restore the fleet. **THE GATE:** the
+  composed `(NotReady, reports no capacity — the node is the story)` renders in
+  all three rows, indented and uncut — the longest wording, through the
+  wrap/truncate path, in the exact case the v1.37.0 regression hid in.
+  Discrimination: restoring capacity alone drops the tag to `(NotReady — …)`, so
+  the composition reads both flags. Mutation (compose from one flag) caught.
+  Fixture committed as `hack/churn/scenarios/10-node-notready.sh`
+  (`MODE=notready|restore`); the churn README gained rows 9 and 10 (9 had never
+  been listed). Both clusters left as found.
+
 ## The pair (hot/warm)
 
 `--warm <context>` attaches a second cluster (the config `warm_context` form

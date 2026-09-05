@@ -30,6 +30,13 @@ found" — which a loop then swallows. Write `kc() { kubectl --context "$CTX"
 expand to nothing. Note that `bash 3.2` ships on macOS: no `declare -A`, and
 `"${arr[@]}"` on an empty array trips `set -u`.
 
+*Corollary, and it cost a gate run:* **never end a function with
+`[ cond ] && cmd`.** When the test is false the compound returns 1, that becomes
+the function's exit status, and `set -e` aborts the CALLER — after the function
+has printed every one of its success lines. `10-node-notready.sh` did exactly
+this: both "ok" reads printed, then the script died silently before its most
+important assertion, and the caller reported nothing wrong. Use `if`.
+
 **3. Assert the fixture CHANGED before you photograph it.** A run that applies
 nothing and captures the baseline is indistinguishable from a passing run —
 this is the one that cost the most, and it is the same shape as

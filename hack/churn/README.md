@@ -25,7 +25,7 @@ hack/churn/down.sh                            # tear the cluster down
 Also available as `make churn-up`, `make churn-capture`, `make churn-reset`,
 `make churn-down`.
 
-## The eight scenarios
+## The ten scenarios
 
 | # | Script | Proves | Gate |
 |---|---|---|---|
@@ -37,6 +37,8 @@ Also available as `make churn-up`, `make churn-capture`, `make churn-reset`,
 | 6 | `6-zone-loss.sh` | The failure-domain claim in the hierarchy | A5 |
 | 7 | `7-workload-churn.sh` | A city stays put when a DIFFERENT workload changes (touches no nodes) | A3 |
 | 8 | `8-substrate-gaps.sh` | The Substrate tab, the overlay and the headless `substrate` example name the same gaps; `MODE=discrim` drops a daemonset below the bar (touches no nodes) | Advisors ▸ Substrate |
+| 9 | `9-node-capacity.sh` | The Substrate tab's "reports no capacity" tag reads capacity — `MODE=give` removes it (touches no nodes) | Advisors ▸ Substrate |
+| 10 | `10-node-notready.sh` | A node that is BOTH NotReady and allocatable-less — the only combination no single cluster can express (stops the kwok controller; ~200s window) | the both-reasons tag |
 
 Every scenario takes env-var overrides (`BATCH`, `OVERLAP`, `COUNT`, `POOL`,
 `ZONE`, `CAPTURE`); read the header of each.

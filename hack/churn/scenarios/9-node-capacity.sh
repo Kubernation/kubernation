@@ -92,7 +92,11 @@ case "$MODE" in
     # had capacity — they would keep the node covered and the fixture would not
     # actually be restored. Delete them and let the daemonset controller try
     # again, which now leaves them Unschedulable as before.
-    kc -n churn delete pods --field-selector "spec.nodeName=$NODE" --ignore-not-found >/dev/null
+    # `--wait=false`: kwok finalizes fake pods, so with its controller stopped
+    # (scenario 10) a waiting delete blocks forever. The daemonset recreates
+    # them either way.
+    kc -n churn delete pods --field-selector "spec.nodeName=$NODE" \
+      --ignore-not-found --wait=false >/dev/null
     echo "  ok  cleared pods stranded on $NODE by the capacity window"
     ;;
   *) echo "  !! MODE must be give|restore" >&2; exit 2 ;;

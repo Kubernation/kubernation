@@ -70,6 +70,7 @@ Read this before assuming a question is unanswered.
 | `advisor-substrate.md` | the fleet question answered by daemonset; tab and overlay pinned to one report |
 | `node-is-the-story.md` | one node fact, not many gaps; a shell convention, and a v1.37.0 regression that could not render |
 | `advisor-caveats.md` | caveats wrap on every advisor page, declared by the emitter rather than guessed from the text |
+| `both-reasons-blind-spot.md` | the one state no cluster could express, captured; and the check that destroyed its own fixture |
 
 ## Conventions
 
